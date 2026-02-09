@@ -24,11 +24,6 @@ namespace Config {
     /** Number of days to keep offline cache. */
     const int OFFLINE_CACHE_DAYS = 7;
     
-    /** Directory for storing cached data and logs. 
-     *  Using app-specific path for compatibility with non-rooted devices/emulators.
-     */
-    const std::string CACHE_DIR = "/sdcard/Android/data/com.example.rk3288_opencv/files/rk3288_app/cache/"; 
-    
     /** Minimum confidence score for biometric authentication (0.0 - 1.0). */
     const double BIO_AUTH_THRESHOLD = 0.92;
 

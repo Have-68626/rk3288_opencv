@@ -14,6 +14,7 @@
 #include "Types.h"
 #include <atomic>
 #include <memory>
+#include <functional>
 
 class Engine {
 public:
@@ -23,16 +24,20 @@ public:
     /**
      * @brief Initializes the engine and all sub-modules.
      * @param cameraId The camera device index to open.
+     * @param cascadePath Path to HAAR/LBP cascade file.
+     * @param storagePath Path to application private storage.
      * @return true if successful.
      */
-    bool initialize(int cameraId = 0);
+    bool initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath);
 
     /**
      * @brief Initializes the engine with a mock file source.
      * @param filePath Path to image or video file.
+     * @param cascadePath Path to HAAR/LBP cascade file.
+     * @param storagePath Path to application private storage.
      * @return true if successful.
      */
-    bool initialize(const std::string& filePath);
+    bool initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath);
 
     /**
      * @brief Starts the main processing loop.
@@ -76,4 +81,12 @@ private:
     // Performance stats
     int frameCount;
     long long lastStatTime;
+
+    std::string storagePath;
+    std::function<void(std::string)> onResultCallback;
+
+public:
+    void setOnResultCallback(std::function<void(std::string)> callback) {
+        onResultCallback = callback;
+    }
 };

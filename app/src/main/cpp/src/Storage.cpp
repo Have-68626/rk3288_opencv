@@ -31,8 +31,11 @@ bool Storage::ensureDirectory(const std::string& path) {
 
     std::string currentPath;
     for (size_t i = 0; i < tempPath.length(); ++i) {
-        currentPath += tempPath[i];
-        if (tempPath[i] == '/' && currentPath.length() > 1) {
+        if (tempPath[i] == '/') {
+            if (currentPath.empty()) {
+                currentPath += "/";
+                continue;
+            }
             // Check/Create intermediate directory
             struct stat info;
             if (stat(currentPath.c_str(), &info) != 0) {
@@ -40,13 +43,10 @@ bool Storage::ensureDirectory(const std::string& path) {
                     std::cerr << "Error creating directory: " << currentPath << " (errno: " << errno << ")" << std::endl;
                     return false;
                 }
-            } else if (!(info.st_mode & S_IFDIR)) {
-                // If it exists but is not a directory, that's a problem
-                // But for intermediate paths, we might want to fail or just continue hoping it's a symlink?
-                // Standard strict check:
-                std::cerr << "Path exists but is not a directory: " << currentPath << std::endl;
-                return false;
             }
+            currentPath += "/";
+        } else {
+            currentPath += tempPath[i];
         }
     }
 

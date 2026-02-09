@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#121212"
+    android:orientation="vertical"
     tools:context=".MainActivity">
 
     <!-- Header Status Bar -->
@@ -14,8 +15,7 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:background="#1E1E1E"
-        android:padding="8dp"
-        app:layout_constraintTop_toTopOf="parent">
+        android:padding="8dp">
 
         <TextView
             android:id="@+id/tv_fps"
@@ -58,39 +58,71 @@
     <!-- Main Content Area -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:orientation="horizontal"
-        app:layout_constraintTop_toBottomOf="@id/status_bar"
-        app:layout_constraintBottom_toBottomOf="parent">
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
 
-        <!-- Left: Video Monitor (70%) -->
-        <FrameLayout
+        <!-- Left: Video Monitor & Logs (70%) -->
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="0.7"
+            android:orientation="vertical"
             android:background="#000000"
             android:padding="2dp">
 
-            <ImageView
-                android:id="@+id/monitor_view"
+            <FrameLayout
                 android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:scaleType="fitCenter"
-                android:contentDescription="Video Monitor" />
-            
-            <!-- Overlay Text for Status -->
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <ImageView
+                    android:id="@+id/monitor_view"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="Video Monitor" />
+
+                <!-- Overlay Text for Status -->
+                <TextView
+                    android:id="@+id/tv_overlay_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="top|start"
+                    android:padding="10dp"
+                    android:text="SYSTEM READY"
+                    android:textColor="#FFFF00"
+                    android:background="#80000000"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+            </FrameLayout>
+
             <TextView
-                android:id="@+id/tv_overlay_status"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top|start"
-                android:padding="10dp"
-                android:text="SYSTEM READY"
-                android:textColor="#FFFF00"
-                android:background="#80000000"
-                android:textStyle="bold"
-                android:visibility="gone" />
-        </FrameLayout>
+                android:text="Recognition Events"
+                android:textColor="#FFFFFF"
+                android:background="#333333"
+                android:padding="4dp"
+                android:textStyle="bold"/>
+
+            <ScrollView
+                android:id="@+id/scroll_log"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"
+                android:background="#111111"
+                android:fillViewport="true">
+                <TextView
+                    android:id="@+id/tv_recognition_log"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#00FF00"
+                    android:textSize="12sp"
+                    android:padding="4dp"
+                    android:text=""
+                    android:fontFamily="monospace"/>
+            </ScrollView>
+
+        </LinearLayout>
 
         <!-- Right: Control Panel (30%) -->
         <ScrollView
@@ -223,4 +255,4 @@
 
     </LinearLayout>
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+</LinearLayout>

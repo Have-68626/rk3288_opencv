@@ -58,7 +58,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
 
     private ImageView monitorView;
-    private TextView tvFps, tvCpu, tvMemory, tvStatus, tvOverlayStatus;
+    private TextView tvFps, tvCpu, tvMemory, tvStatus, tvOverlayStatus, tvRecognitionLog;
+    private ScrollView scrollLog;
     private Button btnStartStop, btnViewLogs;
     private RadioGroup rgMode;
     private Spinner spinnerCameras;
@@ -113,8 +114,8 @@ public class MainActivity extends AppCompatActivity {
 
     // Native methods
     public native String stringFromJNI();
-    public native boolean nativeInit(int cameraId);
-    public native boolean nativeInitFile(String filePath);
+    public native boolean nativeInit(int cameraId, String cascadePath, String storagePath);
+    public native boolean nativeInitFile(String filePath, String cascadePath, String storagePath);
     public native void nativeStart();
     public native void nativeStop();
     public native void nativeSetMode(int mode);
@@ -138,6 +139,8 @@ public class MainActivity extends AppCompatActivity {
         tvMemory = findViewById(R.id.tv_memory);
         tvStatus = findViewById(R.id.tv_app_status);
         tvOverlayStatus = findViewById(R.id.tv_overlay_status);
+        tvRecognitionLog = findViewById(R.id.tv_recognition_log);
+        scrollLog = findViewById(R.id.scroll_log);
         btnStartStop = findViewById(R.id.btn_start_stop);
         btnViewLogs = findViewById(R.id.btn_view_logs);
         rgMode = findViewById(R.id.rg_mode);
@@ -509,9 +512,12 @@ public class MainActivity extends AppCompatActivity {
             updateSystemReadyUi("权限不足，禁止初始化引擎");
             return;
         }
+
+        String cascadePath = copyAssetToCache("lbpcascade_frontalface.xml");
+        String storagePath = getAppStoragePath();
         
         if (selectedCameraId == -1 && mockFilePath != null) {
-            engineInitialized = nativeInitFile(mockFilePath);
+            engineInitialized = nativeInitFile(mockFilePath, cascadePath, storagePath);
             if (engineInitialized) {
                 tvStatus.setText("Status: Engine Initialized (Mock Mode)");
                 updateSystemReadyUi("引擎初始化成功 (Mock)");
@@ -520,7 +526,7 @@ public class MainActivity extends AppCompatActivity {
                 updateSystemReadyUi("引擎初始化失败 (Mock)");
             }
         } else {
-            engineInitialized = nativeInit(selectedCameraId);
+            engineInitialized = nativeInit(selectedCameraId, cascadePath, storagePath);
             if (engineInitialized) {
                 tvStatus.setText("Status: Engine Initialized (Cam " + selectedCameraId + ")");
                 updateSystemReadyUi("引擎初始化成功");
@@ -529,6 +535,30 @@ public class MainActivity extends AppCompatActivity {
                 updateSystemReadyUi("引擎初始化失败");
             }
         }
+    }
+
+    private String getAppStoragePath() {
+        File f = getExternalFilesDir(null);
+        if (f != null) return f.getAbsolutePath() + "/";
+        return getFilesDir().getAbsolutePath() + "/";
+    }
+
+    private String copyAssetToCache(String fileName) {
+        File cacheFile = new File(getFilesDir(), fileName);
+        if (!cacheFile.exists()) {
+            try (java.io.InputStream is = getAssets().open(fileName);
+                 java.io.FileOutputStream fos = new java.io.FileOutputStream(cacheFile)) {
+                byte[] buffer = new byte[1024];
+                int size;
+                while ((size = is.read(buffer)) != -1) {
+                    fos.write(buffer, 0, size);
+                }
+            } catch (IOException e) {
+                AppLog.e(TAG, "copyAssetToCache", "Failed to copy asset: " + fileName, e);
+                return "";
+            }
+        }
+        return cacheFile.getAbsolutePath();
     }
 
     private void updateSystemReadyUi(String reason) {

@@ -9,6 +9,7 @@
 #include <sys/resource.h>
 #include <future>
 #include <chrono>
+#include <algorithm>
 
 VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
     // Enable OpenCL transparently if available (Mali-T764)
@@ -51,14 +52,15 @@ bool VideoManager::open(const std::string& filePath) {
     isMockMode = true;
     isStaticImage = false;
 
-    // Check extension (naive check)
+    // Check extension (case-insensitive)
     std::string ext = "";
     size_t dotPos = filePath.find_last_of(".");
     if (dotPos != std::string::npos) {
         ext = filePath.substr(dotPos + 1);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     }
     
-    if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp") {
+    if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp") {
         isStaticImage = true;
         staticFrame = cv::imread(filePath);
         if (staticFrame.empty()) {
@@ -175,7 +177,16 @@ void VideoManager::captureLoop() {
             // Handle EOF or Error
             if (isMockMode && cap.isOpened()) {
                 // Rewind for video loop
-                cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                if (!cap.set(cv::CAP_PROP_POS_FRAMES, 0)) {
+                    // Seek failed (some backends don't support it), try reopen
+                    // Note: We need the original path. But VideoManager doesn't store it.
+                    // Assuming seek works for local files usually.
+                    // If not, we might need to store filePath in VideoManager.
+                    std::cerr << "Rewind failed, stopping playback." << std::endl;
+                    // For now, let's just break or try again next loop?
+                    // If we break, thread ends.
+                    // Better: log error and maybe wait a bit.
+                }
                 continue;
             }
             

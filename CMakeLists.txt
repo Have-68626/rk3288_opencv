@@ -18,8 +18,25 @@ endif()
 # Include directories
 include_directories(app/src/main/cpp/include)
 
+# Define OpenCV Root Paths
+if(NOT DEFINED OPENCV_ROOT)
+    if(DEFINED ENV{OPENCV_ROOT})
+        set(OPENCV_ROOT $ENV{OPENCV_ROOT})
+    else()
+        set(OPENCV_ROOT "D:/ProgramData/OpenCV/opencv-4.10.0") # Default Fallback
+    endif()
+endif()
+
+if(NOT DEFINED OPENCV_CONTRIB_ROOT)
+    if(DEFINED ENV{OPENCV_CONTRIB_ROOT})
+        set(OPENCV_CONTRIB_ROOT $ENV{OPENCV_CONTRIB_ROOT})
+    else()
+        set(OPENCV_CONTRIB_ROOT "D:/ProgramData/OpenCV/opencv_contrib-4.10.0") # Default Fallback
+    endif()
+endif()
+
 # Configure OpenCV Build
-set(OPENCV_EXTRA_MODULES_PATH "D:/ProgramData/OpenCV/opencv_contrib-4.10.0/modules" CACHE PATH "Path to opencv_contrib modules")
+set(OPENCV_EXTRA_MODULES_PATH "${OPENCV_CONTRIB_ROOT}/modules" CACHE PATH "Path to opencv_contrib modules")
 # Disable unnecessary modules to speed up build
 set(BUILD_SHARED_LIBS ON CACHE BOOL "Build shared libraries")
 set(BUILD_TESTS OFF CACHE BOOL "Build tests")
@@ -36,27 +53,27 @@ set(BUILD_opencv_world OFF CACHE BOOL "Build opencv_world")
 
 # Add OpenCV source subdirectory
 # This will build OpenCV as part of the project
-add_subdirectory("D:/ProgramData/OpenCV/opencv-4.10.0" "${CMAKE_BINARY_DIR}/opencv")
+add_subdirectory("${OPENCV_ROOT}" "${CMAKE_BINARY_DIR}/opencv")
 
 # Explicitly add include directories for OpenCV modules
 # This is necessary because add_subdirectory might not propagate includes automatically for all modules in this context
 include_directories(
-    "D:/ProgramData/OpenCV/opencv-4.10.0/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/core/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/imgproc/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/video/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/objdetect/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/imgcodecs/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/calib3d/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/features2d/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/flann/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/dnn/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/ml/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/photo/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/videoio/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/highgui/include"
-    "D:/ProgramData/OpenCV/opencv-4.10.0/modules/stitching/include"
-    "D:/ProgramData/OpenCV/opencv_contrib-4.10.0/modules/face/include"
+    "${OPENCV_ROOT}/include"
+    "${OPENCV_ROOT}/modules/core/include"
+    "${OPENCV_ROOT}/modules/imgproc/include"
+    "${OPENCV_ROOT}/modules/video/include"
+    "${OPENCV_ROOT}/modules/objdetect/include"
+    "${OPENCV_ROOT}/modules/imgcodecs/include"
+    "${OPENCV_ROOT}/modules/calib3d/include"
+    "${OPENCV_ROOT}/modules/features2d/include"
+    "${OPENCV_ROOT}/modules/flann/include"
+    "${OPENCV_ROOT}/modules/dnn/include"
+    "${OPENCV_ROOT}/modules/ml/include"
+    "${OPENCV_ROOT}/modules/photo/include"
+    "${OPENCV_ROOT}/modules/videoio/include"
+    "${OPENCV_ROOT}/modules/highgui/include"
+    "${OPENCV_ROOT}/modules/stitching/include"
+    "${OPENCV_CONTRIB_ROOT}/modules/face/include"
     "${CMAKE_BINARY_DIR}"
 )
 

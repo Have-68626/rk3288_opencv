@@ -13,22 +13,75 @@
 // Global Engine Instance
 static std::unique_ptr<Engine> g_engine;
 static std::thread g_engineThread;
+static JavaVM* g_vm = nullptr;
+static jobject g_activity = nullptr;
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    g_vm = vm;
+    return JNI_VERSION_1_6;
+}
+
+void sendRecognitionResult(const std::string& result) {
+    if (!g_vm || !g_activity) return;
+
+    JNIEnv* env;
+    int getEnvStat = g_vm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    bool attached = false;
+
+    if (getEnvStat == JNI_EDETACHED) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != 0) {
+            return;
+        }
+        attached = true;
+    }
+
+    jclass cls = env->GetObjectClass(g_activity);
+    jmethodID mid = env->GetMethodID(cls, "onNativeResult", "(Ljava/lang/String;)V");
+    if (mid) {
+        jstring jStr = env->NewStringUTF(result.c_str());
+        env->CallVoidMethod(g_activity, mid, jStr);
+        env->DeleteLocalRef(jStr);
+    }
+
+    // Clean up local ref to class not strictly needed but good practice
+    env->DeleteLocalRef(cls);
+
+    if (attached) {
+        g_vm->DetachCurrentThread();
+    }
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
         JNIEnv* env,
-        jobject /* this */,
-        jstring filePath) {
+        jobject thiz,
+        jstring filePath,
+        jstring cascadePath,
+        jstring storagePath) {
     RKLOG_ENTER(TAG);
+
+    // Update global activity ref
+    if (g_activity) env->DeleteGlobalRef(g_activity);
+    g_activity = env->NewGlobalRef(thiz);
     const char* path = filePath ? env->GetStringUTFChars(filePath, nullptr) : nullptr;
+    const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
+    const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
+
     std::string pathStr = path ? path : "";
+    std::string cascadeStr = cascade ? cascade : "";
+    std::string storageStr = storage ? storage : "";
+
     if (path) env->ReleaseStringUTFChars(filePath, path);
+    if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
+    if (storage) env->ReleaseStringUTFChars(storagePath, storage);
     
     LOGI("Initializing Engine with Mock File: %s...", pathStr.c_str());
     if (!g_engine) {
         g_engine = std::make_unique<Engine>();
     }
-    return g_engine->initialize(pathStr);
+
+    g_engine->setOnResultCallback(sendRecognitionResult);
+    return g_engine->initialize(pathStr, cascadeStr, storageStr);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -66,14 +119,31 @@ Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
         JNIEnv* env,
-        jobject /* this */,
-        jint cameraId) {
+        jobject thiz,
+        jint cameraId,
+        jstring cascadePath,
+        jstring storagePath) {
     RKLOG_ENTER(TAG);
+
+    // Update global activity ref
+    if (g_activity) env->DeleteGlobalRef(g_activity);
+    g_activity = env->NewGlobalRef(thiz);
+    const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
+    const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
+
+    std::string cascadeStr = cascade ? cascade : "";
+    std::string storageStr = storage ? storage : "";
+
+    if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
+    if (storage) env->ReleaseStringUTFChars(storagePath, storage);
+
     LOGI("Initializing Engine with Camera ID: %d...", cameraId);
     if (!g_engine) {
         g_engine = std::make_unique<Engine>();
     }
-    return g_engine->initialize(cameraId);
+
+    g_engine->setOnResultCallback(sendRecognitionResult);
+    return g_engine->initialize(cameraId, cascadeStr, storageStr);
 }
 
 extern "C" JNIEXPORT void JNICALL

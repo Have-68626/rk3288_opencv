@@ -21,19 +21,26 @@ Engine::~Engine() {
     stop();
 }
 
-bool Engine::initialize(int cameraId) {
+bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
     RKLOG_ENTER("Engine");
+    this->storagePath = storagePath + "cache/";
+
     // 1. Ensure storage
-    if (!Storage::ensureDirectory(Config::CACHE_DIR)) {
-        std::cerr << "Failed to init storage." << std::endl;
+    if (!Storage::ensureDirectory(this->storagePath)) {
+        std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
     
     // 2. Cleanup old data
-    Storage::cleanupOldData(Config::CACHE_DIR, Config::OFFLINE_CACHE_DAYS);
+    Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
 
-    // 3. Init Camera
+    // 3. Init BioAuth
+    if (!bioAuth->initialize(cascadePath)) {
+        rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
+    }
+
+    // 4. Init Camera
     // Note: On Android with JNI, camera ID 0 is usually back camera.
     // If opening fails, it might be due to permissions or index.
     if (!videoManager->open(cameraId)) {
@@ -46,19 +53,26 @@ bool Engine::initialize(int cameraId) {
     return true;
 }
 
-bool Engine::initialize(const std::string& filePath) {
+bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
     RKLOG_ENTER("Engine");
+    this->storagePath = storagePath + "cache/";
+
     // 1. Ensure storage
-    if (!Storage::ensureDirectory(Config::CACHE_DIR)) {
-        std::cerr << "Failed to init storage." << std::endl;
+    if (!Storage::ensureDirectory(this->storagePath)) {
+        std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
     
     // 2. Cleanup old data
-    Storage::cleanupOldData(Config::CACHE_DIR, Config::OFFLINE_CACHE_DAYS);
+    Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
 
-    // 3. Init Mock Source
+    // 3. Init BioAuth
+    if (!bioAuth->initialize(cascadePath)) {
+        rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
+    }
+
+    // 4. Init Mock Source
     if (!videoManager->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file");
@@ -145,6 +159,10 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
 
         if (identity.isAuthenticated) {
             std::cout << "User Verified: " << identity.id << " (" << identity.confidence << ")" << std::endl;
+            if (onResultCallback) {
+                std::string msg = "Verified: " + identity.id + " (" + std::to_string((int)(identity.confidence * 100)) + "%)";
+                onResultCallback(msg);
+            }
         } else {
             // 3. Abnormal Event: Unknown person
             handleAbnormalEvent("AUTH_FAIL", "Unknown person detected", inputFrame);
@@ -168,7 +186,7 @@ bool Engine::getRenderFrame(cv::Mat& outFrame) {
 void Engine::handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence) {
     RKLOG_ENTER("Engine");
     std::string timestamp = std::to_string(std::time(nullptr));
-    std::string imgPath = Config::CACHE_DIR + type + "_" + timestamp + ".jpg";
+    std::string imgPath = this->storagePath + type + "_" + timestamp + ".jpg";
     
     // Save evidence asynchronously or quickly
     if (Storage::saveImage(imgPath, evidence)) {
