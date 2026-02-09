@@ -1,0 +1,13 @@
+plugins {
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+application {
+    mainClass = 'com.example.rk3288.tools.ScreenshotAnalyzer'
+}
+
