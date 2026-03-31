@@ -1,0 +1,6 @@
+{
+  "files.associations": {
+    "*_build.gradle": "diff"
+  },
+  "java.configuration.updateBuildConfiguration": "interactive"
+}

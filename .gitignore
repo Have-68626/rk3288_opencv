@@ -14,6 +14,9 @@ bin/
 gen/
 out/
 build/
+build_*/
+build-*/
+cmake-build*/
 
 # Gradle files
 .gradle/
@@ -28,6 +31,7 @@ proguard/
 # Log Files
 *.log
 ErrorLog/
+errorlog/
 
 # Android Studio Navigation editor temp files
 .navigation/
@@ -63,3 +67,13 @@ cmake_install.cmake
 Makefile
 *.so
 *.a
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+.idea/
+
+# Temp
+*.tmp
+*.log
+

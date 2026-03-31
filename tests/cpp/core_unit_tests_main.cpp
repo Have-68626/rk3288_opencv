@@ -1,0 +1,43 @@
+#include <iostream>
+
+namespace rk_core_test {
+
+using TestFn = bool (*)();
+
+struct TestCase {
+    const char* name;
+    TestFn fn;
+};
+
+bool runAll(const TestCase* cases, int n) {
+    int pass = 0;
+    int fail = 0;
+    for (int i = 0; i < n; i++) {
+        const bool ok = cases[i].fn();
+        if (ok) {
+            pass++;
+            std::cout << "TEST_PASS name=" << cases[i].name << std::endl;
+        } else {
+            fail++;
+            std::cout << "TEST_FAIL name=" << cases[i].name << std::endl;
+        }
+    }
+    std::cout << "TEST_SUMMARY pass=" << pass << " fail=" << fail << " total=" << (pass + fail) << std::endl;
+    return fail == 0;
+}
+
+}  // namespace rk_core_test
+
+bool test_face_search_stable_topk();
+bool test_threshold_policy_version_and_consecutive();
+
+int main() {
+    using namespace rk_core_test;
+    const TestCase cases[] = {
+        {"face_search_stable_topk", test_face_search_stable_topk},
+        {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
+    };
+    const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
+    return ok ? 0 : 1;
+}
+

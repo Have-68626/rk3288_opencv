@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RK3288 机器视觉</string>
+
+    <string name="ui_fps">FPS: --</string>
+    <string name="ui_cpu">CPU: --%</string>
+    <string name="ui_mem">MEM: --MB</string>
+    <string name="ui_cache">缓存: 7天</string>
+
+    <string name="ui_system_ready">系统就绪</string>
+    <string name="ui_video_monitor">视频监控</string>
+    <string name="ui_recognition_events">识别事件</string>
+    <string name="ui_controls">控制栏</string>
+
+    <string name="ui_nav_monitor">监控</string>
+    <string name="ui_nav_playback">回放</string>
+    <string name="ui_nav_settings">设置</string>
+    <string name="ui_nav_logs">日志</string>
+    <string name="ui_nav_about">关于</string>
+
+    <string name="ui_settings_camera_selection">摄像头选择</string>
+    <string name="ui_settings_overlay">悬浮数据显示</string>
+    <string name="ui_settings_show_status_bar">显示状态栏</string>
+    <string name="ui_settings_mode_selection">模式选择</string>
+    <string name="ui_settings_mode_continuous">连续模式</string>
+    <string name="ui_settings_mode_motion">运动触发</string>
+
+    <string name="ui_settings_mock_url">虚拟源地址 (MP4/HLS/RTSP)</string>
+    <string name="ui_settings_mock_url_hint">rtsp:// 或 https:// 或 file://</string>
+    <string name="ui_settings_apply_mock_url">应用为虚拟源</string>
+
+    <string name="ui_settings_rtmp">RTMP 推流</string>
+    <string name="ui_settings_rtmp_hint">rtmp://host/app/stream</string>
+    <string name="ui_settings_rtmp_start">开始推流</string>
+    <string name="ui_settings_rtmp_stop">停止推流</string>
+
+    <string name="ui_register_face">人脸注册</string>
+    <string name="ui_view_logs">查看日志</string>
+    <string name="ui_status_idle">状态: 空闲</string>
+</resources>

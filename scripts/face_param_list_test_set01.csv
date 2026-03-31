@@ -1,0 +1,9 @@
+tag,scale,neighbors,min,max,nms_iou
+default,1.10,3,30,0,0.00
+tuned_n6_min60,1.10,6,60,0,0.00
+tuned_n8_min60,1.10,8,60,0,0.00
+tuned_n8_min60_nms030,1.10,8,60,0,0.30
+tuned_n8_min60_nms040,1.10,8,60,0,0.40
+tuned_n8_min60_nms050,1.10,8,60,0,0.50
+tuned_n8_min30,1.10,8,30,0,0.00
+tuned_n8_min30_nms030,1.10,8,30,0,0.30

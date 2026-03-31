@@ -1,28 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#121212"
-    android:orientation="vertical"
     tools:context=".MainActivity">
 
-    <!-- Header Status Bar -->
     <LinearLayout
         android:id="@+id/status_bar"
-        android:layout_width="match_parent"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:background="#1E1E1E"
-        android:padding="8dp">
+        android:padding="8dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
         <TextView
             android:id="@+id/tv_fps"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="FPS: --"
+            android:text="@string/ui_fps"
             android:textColor="#00FF00"
             android:textSize="16sp"
             android:textStyle="bold" />
@@ -32,7 +33,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="CPU: --%"
+            android:text="@string/ui_cpu"
             android:textColor="#FFFFFF"
             android:textSize="16sp" />
 
@@ -41,7 +42,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="MEM: --MB"
+            android:text="@string/ui_mem"
             android:textColor="#FFFFFF"
             android:textSize="16sp" />
 
@@ -50,209 +51,301 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Cache: 7d"
+            android:text="@string/ui_cache"
             android:textColor="#FFFFFF"
             android:textSize="16sp" />
     </LinearLayout>
 
-    <!-- Main Content Area -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="horizontal">
+    <FrameLayout
+        android:id="@+id/monitor_container"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#000000"
+        app:layout_constraintTop_toBottomOf="@id/status_bar"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/recognition_title">
 
-        <!-- Left: Video Monitor & Logs (70%) -->
-        <LinearLayout
+        <FrameLayout
+            android:id="@+id/video_wrapper"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center">
+
+            <ImageView
+                android:id="@+id/monitor_view"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                android:contentDescription="@string/ui_video_monitor" />
+
+            <com.example.rk3288_opencv.OsdOverlayView
+                android:id="@+id/osd_view"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <TextView
+                android:id="@+id/tv_overlay_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:padding="10dp"
+                android:text="@string/ui_system_ready"
+                android:textColor="#FFFF00"
+                android:background="#80000000"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab_toggle_events"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="12dp"
+            android:contentDescription="@string/ui_recognition_events"
+            android:src="@android:drawable/ic_menu_view"
+            app:backgroundTint="#333333"
+            app:tint="#FFFFFF" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/recognition_title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/ui_recognition_events"
+        android:textColor="#FFFFFF"
+        android:background="#333333"
+        android:padding="4dp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/panel_recognition_events" />
+
+    <FrameLayout
+        android:id="@+id/panel_recognition_events"
+        android:layout_width="0dp"
+        android:layout_height="180dp"
+        android:background="#111111"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/bottom_nav">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_recognition_events"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:padding="4dp" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/bottom_nav"
+        android:layout_width="0dp"
+        android:layout_height="72dp"
+        android:orientation="horizontal"
+        android:background="#1E1E1E"
+        android:padding="8dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <Button
+            android:id="@+id/btn_start_stop"
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="0.7"
+            android:layout_weight="1"
+            android:text="@string/ui_nav_monitor" />
+
+        <Button
+            android:id="@+id/btn_nav_playback"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/ui_nav_playback" />
+
+        <Button
+            android:id="@+id/btn_nav_settings"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/ui_nav_settings" />
+
+        <Button
+            android:id="@+id/btn_view_logs"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/ui_nav_logs" />
+
+        <Button
+            android:id="@+id/btn_nav_about"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="@string/ui_nav_about" />
+    </LinearLayout>
+
+    <ScrollView
+        android:id="@+id/panel_settings"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#1E1E1E"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/status_bar"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/bottom_nav">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#000000"
-            android:padding="2dp">
-
-            <FrameLayout
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1">
-
-                <ImageView
-                    android:id="@+id/monitor_view"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:scaleType="fitCenter"
-                    android:contentDescription="Video Monitor" />
-
-                <!-- Overlay Text for Status -->
-                <TextView
-                    android:id="@+id/tv_overlay_status"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="top|start"
-                    android:padding="10dp"
-                    android:text="SYSTEM READY"
-                    android:textColor="#FFFF00"
-                    android:background="#80000000"
-                    android:textStyle="bold"
-                    android:visibility="gone" />
-            </FrameLayout>
+            android:padding="16dp">
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Recognition Events"
-                android:textColor="#FFFFFF"
-                android:background="#333333"
-                android:padding="4dp"
-                android:textStyle="bold"/>
+                android:text="@string/ui_settings_camera_selection"
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
 
-            <ScrollView
-                android:id="@+id/scroll_log"
+            <Spinner
+                android:id="@+id/spinner_cameras"
                 android:layout_width="match_parent"
-                android:layout_height="150dp"
-                android:background="#111111"
-                android:fillViewport="true">
-                <TextView
-                    android:id="@+id/tv_recognition_log"
+                android:layout_height="48dp"
+                android:background="#333333"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ui_settings_mock_url"
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/et_mock_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/ui_settings_mock_url_hint"
+                android:inputType="textUri"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#666666"
+                android:background="#333333"
+                android:padding="10dp"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btn_set_mock_url"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="@string/ui_settings_apply_mock_url"
+                android:backgroundTint="#444444"
+                android:textColor="#FFFFFF"
+                android:layout_marginBottom="16dp" />
+
+            <Switch
+                android:id="@+id/switch_overlay"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ui_settings_show_status_bar"
+                android:textColor="#FFFFFF"
+                android:thumbTint="#00FF00"
+                android:trackTint="#444444"
+                android:layout_marginBottom="16dp" />
+
+            <RadioGroup
+                android:id="@+id/rg_mode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp">
+
+                <RadioButton
+                    android:id="@+id/rb_continuous"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:textColor="#00FF00"
-                    android:textSize="12sp"
-                    android:padding="4dp"
-                    android:text=""
-                    android:fontFamily="monospace"/>
-            </ScrollView>
+                android:text="@string/ui_settings_mode_continuous"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#00FF00"
+                    android:checked="true"
+                    android:padding="8dp"/>
 
-        </LinearLayout>
+                <RadioButton
+                    android:id="@+id/rb_motion"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                android:text="@string/ui_settings_mode_motion"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#00FF00"
+                    android:padding="8dp"/>
+            </RadioGroup>
 
-        <!-- Right: Control Panel (30%) -->
-        <ScrollView
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="0.3"
-            android:background="#1E1E1E">
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ui_settings_rtmp"
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/et_rtmp_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/ui_settings_rtmp_hint"
+                android:inputType="textUri"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#666666"
+                android:background="#333333"
+                android:padding="10dp"
+                android:layout_marginBottom="8dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="CONTROLS"
-                    android:textColor="#AAAAAA"
-                    android:textSize="14sp"
-                    android:layout_marginBottom="16dp" />
+                android:orientation="horizontal"
+                android:layout_marginBottom="16dp">
 
                 <Button
-                    android:id="@+id/btn_start_stop"
-                    android:layout_width="match_parent"
-                    android:layout_height="64dp"
-                    android:text="START MONITORING"
-                    android:backgroundTint="#008000"
-                    android:textColor="#FFFFFF"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    android:layout_marginBottom="16dp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="CAMERA SELECTION"
-                    android:textColor="#AAAAAA"
-                    android:textSize="14sp"
-                    android:layout_marginBottom="8dp" />
-
-                <Spinner
-                    android:id="@+id/spinner_cameras"
-                    android:layout_width="match_parent"
+                    android:id="@+id/btn_push_rtmp"
+                    android:layout_width="0dp"
                     android:layout_height="48dp"
-                    android:background="#333333"
-                    android:layout_marginBottom="16dp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="OVERLAY"
-                    android:textColor="#AAAAAA"
-                    android:textSize="14sp"
-                    android:layout_marginBottom="8dp" />
-
-                <Switch
-                    android:id="@+id/switch_overlay"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Show Status Bar"
-                    android:textColor="#FFFFFF"
-                    android:thumbTint="#00FF00"
-                    android:trackTint="#444444"
-                    android:layout_marginBottom="16dp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="MODE SELECTION"
-                    android:textColor="#AAAAAA"
-                    android:textSize="14sp"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/rg_mode"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp">
-
-                    <RadioButton
-                        android:id="@+id/rb_continuous"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Continuous"
-                        android:textColor="#FFFFFF"
-                        android:buttonTint="#00FF00"
-                        android:checked="true"
-                        android:padding="8dp"/>
-
-                    <RadioButton
-                        android:id="@+id/rb_motion"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Motion Trigger"
-                        android:textColor="#FFFFFF"
-                        android:buttonTint="#00FF00"
-                        android:padding="8dp"/>
-                </RadioGroup>
+                    android:layout_weight="1"
+                    android:text="@string/ui_settings_rtmp_start"
+                    android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF" />
 
                 <Button
-                    android:id="@+id/btn_register_face"
-                    android:layout_width="match_parent"
-                    android:layout_height="56dp"
-                    android:text="REGISTER FACE"
+                    android:id="@+id/btn_stop_rtmp"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:text="@string/ui_settings_rtmp_stop"
                     android:backgroundTint="#444444"
-                    android:textColor="#FFFFFF"
-                    android:layout_marginBottom="16dp" />
-
-                <Button
-                    android:id="@+id/btn_view_logs"
-                    android:layout_width="match_parent"
-                    android:layout_height="56dp"
-                    android:text="VIEW LOGS"
-                    android:backgroundTint="#444444"
-                    android:textColor="#FFFFFF"
-                    android:layout_marginBottom="16dp" />
-
-                <TextView
-                    android:id="@+id/tv_app_status"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Status: Idle"
-                    android:textColor="#888888"
-                    android:textSize="12sp"
-                    android:layout_marginTop="20dp"/>
-
+                    android:textColor="#FFFFFF" />
             </LinearLayout>
-        </ScrollView>
 
-    </LinearLayout>
+            <Button
+                android:id="@+id/btn_register_face"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:text="@string/ui_register_face"
+                android:backgroundTint="#444444"
+                android:textColor="#FFFFFF"
+                android:layout_marginBottom="16dp" />
 
-</LinearLayout>
+            <TextView
+                android:id="@+id/tv_app_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/ui_status_idle"
+                android:textColor="#888888"
+                android:textSize="12sp"
+                android:layout_marginTop="20dp"/>
+        </LinearLayout>
+    </ScrollView>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

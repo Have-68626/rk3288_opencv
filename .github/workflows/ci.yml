@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: windows-build-test
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      OPENCV_VERSION: "4.10.0"
+      OPENCV_CONTRIB_VERSION: "4.10.0"
+      DEPS_DIR: _deps
+      BUILD_DIR: build_ci_win
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_PLATFORM: x64
+      CMAKE_BUILD_CONFIG: Release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: clean-repo-junk dry-run scan (CI)
+        shell: pwsh
+        run: |
+          node --version
+          node scripts/clean-repo-junk.js scan --ci
+
+      - name: Cache _deps (opencv sources)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DEPS_DIR }}
+          key: deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-v1
+          restore-keys: |
+            deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-
+            deps-${{ runner.os }}-opencv-
+
+      - name: Fetch OpenCV + opencv_contrib sources into _deps
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $repoRoot = $env:GITHUB_WORKSPACE
+          $deps = Join-Path $repoRoot $env:DEPS_DIR
+          New-Item -ItemType Directory -Force -Path $deps | Out-Null
+
+          function Ensure-Repo {
+            param(
+              [Parameter(Mandatory=$true)][string]$RepoUrl,
+              [Parameter(Mandatory=$true)][string]$DestDir,
+              [Parameter(Mandatory=$true)][string]$Ref
+            )
+            if (-not (Test-Path (Join-Path $DestDir ".git"))) {
+              Write-Host "Cloning $RepoUrl ($Ref) -> $DestDir"
+              git clone --depth 1 --branch $Ref $RepoUrl $DestDir
+              return
+            }
+            Write-Host "Reusing cached repo: $DestDir"
+            git -C $DestDir fetch --depth 1 origin $Ref
+            git -C $DestDir checkout --force $Ref
+          }
+
+          $opencvDir = Join-Path $deps "opencv"
+          $opencvContribDir = Join-Path $deps "opencv_contrib"
+
+          Ensure-Repo -RepoUrl "https://github.com/opencv/opencv.git" -DestDir $opencvDir -Ref $env:OPENCV_VERSION
+          Ensure-Repo -RepoUrl "https://github.com/opencv/opencv_contrib.git" -DestDir $opencvContribDir -Ref $env:OPENCV_CONTRIB_VERSION
+
+          "OPENCV_ROOT=$opencvDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENCV_CONTRIB_ROOT=$opencvContribDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "OPENCV_ROOT=$opencvDir"
+          Write-Host "OPENCV_CONTRIB_ROOT=$opencvContribDir"
+
+      - name: Configure (CMake)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --version
+          cmake -S . -B $env:BUILD_DIR -G "$env:CMAKE_GENERATOR" -A $env:CMAKE_PLATFORM `
+            -DOPENCV_ROOT="$env:OPENCV_ROOT" `
+            -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT"
+
+      - name: Build win_unit_tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target win_unit_tests -- /m
+
+      - name: Run ctest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG --output-on-failure

@@ -1,0 +1,5 @@
+- [x] `AndroidManifest.xml` 中 `android:allowBackup` 已设置为 `false`。
+- [x] `MainActivity.java` 中不再有空的 `catch (NumberFormatException ignored)` 块。
+- [x] `scripts/build_android.bat` 中不再包含 `D:\Program Files` 等硬编码路径。
+- [x] `AppLog.java` 已集成 `SensitiveDataUtil`，具备脱敏能力。
+- [x] `CMakeLists.txt` 确认包含 NEON 优化标志。

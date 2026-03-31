@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "outputDir": "ErrorLog/cleanup",
+  "quarantineDir": null,
+  "whitelist": [],
+  "protect": [
+    ".git",
+    ".git/**",
+    ".trae",
+    ".trae/**",
+    "src",
+    "src/**",
+    "app",
+    "app/**",
+    "docs",
+    "docs/**",
+    "config",
+    "config/**",
+    "gradle",
+    "gradle/**",
+    "CMakeLists.txt",
+    "README.md",
+    "README_BUILD.md",
+    "DEVELOP.md",
+    "CREDITS.md",
+    "CHANGELOG.md",
+    ".gitignore",
+    "**/*.keystore",
+    "**/*.jks",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.crt",
+    "**/*.cer",
+    "**/*.env"
+  ],
+  "protectedFileExtensions": [
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".java",
+    ".kt",
+    ".kts",
+    ".xml",
+    ".gradle",
+    ".cmake",
+    ".mk",
+    ".sln",
+    ".vcxproj",
+    ".props",
+    ".targets",
+    ".filters",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".sh",
+    ".yml",
+    ".yaml",
+    ".ini",
+    ".json"
+  ],
+  "scan": {
+    "skipDirs": [
+      ".git",
+      ".trae"
+    ]
+  },
+  "targets": [
+    {
+      "id": "build_host",
+      "kind": "path",
+      "pattern": "build_host",
+      "action": "quarantine",
+      "reason": "构建产物目录（默认可重建）"
+    },
+    {
+      "id": "build_android_rk3288",
+      "kind": "path",
+      "pattern": "build_android_rk3288",
+      "action": "quarantine",
+      "reason": "构建产物/第三方源码镜像（默认可重建或可再拉取）"
+    },
+    {
+      "id": "build_win_wcfr",
+      "kind": "path",
+      "pattern": "build_win_wcfr",
+      "action": "quarantine",
+      "reason": "Windows 构建产物目录（默认可重建）"
+    },
+    {
+      "id": "androidstudio_external_native_build_cache",
+      "kind": "path",
+      "pattern": "app/.cxx",
+      "action": "quarantine",
+      "allowInProtected": true,
+      "reason": "Android Studio 外部原生构建缓存（可重建，体积通常很大）"
+    },
+    {
+      "id": "gradle_app_build_outputs",
+      "kind": "path",
+      "pattern": "app/build",
+      "action": "quarantine",
+      "allowInProtected": true,
+      "reason": "Gradle 构建产物目录（可重建，体积通常很大）"
+    },
+    {
+      "id": "build_dirs_underscore",
+      "kind": "glob",
+      "pattern": "build_*",
+      "action": "quarantine",
+      "reason": "临时/任务构建目录（可重建）"
+    },
+    {
+      "id": "cmake_build_dirs",
+      "kind": "glob",
+      "pattern": "cmake-build*",
+      "action": "quarantine",
+      "reason": "CMake 构建目录（可重建）"
+    },
+    {
+      "id": "system_garbage",
+      "kind": "glob",
+      "pattern": "**/.DS_Store",
+      "action": "delete",
+      "reason": "系统垃圾文件"
+    },
+    {
+      "id": "system_garbage_win",
+      "kind": "glob",
+      "pattern": "**/Thumbs.db",
+      "action": "delete",
+      "reason": "系统垃圾文件"
+    },
+    {
+      "id": "system_garbage_win2",
+      "kind": "glob",
+      "pattern": "**/desktop.ini",
+      "action": "delete",
+      "reason": "系统垃圾文件"
+    }
+  ]
+}
+

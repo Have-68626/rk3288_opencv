@@ -20,7 +20,7 @@ android {
         minSdk 21 // Android 5.0+ (RK3288 常用版本)
         targetSdk 34
         versionCode 2
-        versionName "1.1.0"
+        versionName "v0.1beta0"
 
         externalNativeBuild {
             cmake {
@@ -33,6 +33,16 @@ android {
         ndk {
             // 支持 RK3288 (armeabi-v7a), 现代手机 (arm64-v8a) 和 模拟器 (x86_64)
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = ['../src/java']
+            // assets, res, manifest use default locations
+        }
+        test {
+            java.srcDirs = ['../tests/unit/java']
         }
     }
 
@@ -56,4 +66,13 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'androidx.window:window:1.2.0'
+
+    testImplementation 'junit:junit:4.13.2'
+
+    def ffmpegKitAar = file('libs/ffmpeg-kit.aar')
+    if (ffmpegKitAar.exists()) {
+        implementation(files(ffmpegKitAar))
+    }
 }

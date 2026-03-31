@@ -1,0 +1,5 @@
+- [x] OpenCV 4.10.0 source path is verified (D:/ProgramData/OpenCV/opencv-4.10.0).
+- [x] Codebase is adapted for Host compilation (Android dependencies made optional).
+- [x] Build verification script `scripts/verify_opencv_host.bat` is created.
+- [x] Test data is prepared in `tests/data`.
+- [x] Test report `TEST_REPORT_OPENCV.md` is generated (documenting missing CMake/NDK).

@@ -14,4 +14,3 @@ dependencyResolutionManagement {
 }
 rootProject.name = "RK3288_OpenCV"
 include ':app'
-include ':screenshot-analyzer'
