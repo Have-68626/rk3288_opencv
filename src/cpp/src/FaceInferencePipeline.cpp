@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace {
 
@@ -29,21 +30,65 @@ static std::string jsonEscape(const std::string& s) {
     for (unsigned char c : s) {
         if (c == '\\') out += "\\\\";
         else if (c == '"') out += "\\\"";
+        else if (c == '\b') out += "\\b";
+        else if (c == '\f') out += "\\f";
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else if (c < 0x20) out += "?";
+        else if (c < 0x20) {
+            static const char kHex[] = "0123456789abcdef";
+            out += "\\u00";
+            out.push_back(kHex[(c >> 4) & 0x0f]);
+            out.push_back(kHex[c & 0x0f]);
+        }
+        else if (c == 0x7f) {
+            out += "\\u007f";
+        }
         else out.push_back(static_cast<char>(c));
     }
     return out;
 }
 
+class JsonWriter {
+public:
+    void beginObject() {
+        oss_ << "{";
+        first_.push_back(true);
+    }
+    void endObject() {
+        oss_ << "}";
+        if (!first_.empty()) first_.pop_back();
+    }
+
+    void key(const char* k) {
+        if (!first_.empty()) {
+            if (!first_.back()) oss_ << ",";
+            first_.back() = false;
+        }
+        oss_ << "\"" << jsonEscape(k) << "\":";
+    }
+
+    void string(const std::string& v) { oss_ << "\"" << jsonEscape(v) << "\""; }
+    void string(const char* v) { oss_ << "\"" << jsonEscape(v ? std::string(v) : std::string()) << "\""; }
+    void boolean(bool v) { oss_ << (v ? "true" : "false"); }
+    void number(double v) { oss_ << v; }
+    void number(long long v) { oss_ << v; }
+    void number(std::uint64_t v) { oss_ << v; }
+
+    std::string str() const { return oss_.str(); }
+
+private:
+    std::ostringstream oss_;
+    std::vector<bool> first_;
+};
+
 static bool l2NormalizeInplace(std::vector<float>& v) {
     if (v.empty()) return false;
     double s = 0.0;
     for (float x : v) s += static_cast<double>(x) * static_cast<double>(x);
+    if (!(s > 0.0) || !std::isfinite(s)) return false;
     const double n = std::sqrt(s);
-    if (!(n > 0.0)) return false;
+    if (!(n > 0.0) || !std::isfinite(n)) return false;
     const float inv = static_cast<float>(1.0 / n);
     for (float& x : v) x *= inv;
     return true;
@@ -190,8 +235,131 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         std::string msg;
 
         if (img.empty()) {
-            stage = "image_load";
-            msg = "image_load_failed";
+            const long long msTotal = msLoad;
+            out.ok = false;
+            out.stage = "image_load";
+            out.message = "image_load_failed";
+            out.errorCode = errorCodeForStage(out.stage);
+            out.auditDir = "ErrorLog";
+            out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
+            JsonWriter j;
+            j.beginObject();
+            j.key("ok");
+            j.boolean(false);
+            j.key("errorCode");
+            j.number(static_cast<long long>(out.errorCode));
+            j.key("stage");
+            j.string(out.stage);
+            j.key("message");
+            j.string(out.message);
+            j.key("timestamp_ms");
+            j.number(tsMs);
+            j.key("image");
+            j.string(req.imagePath);
+            j.key("frame");
+            j.beginObject();
+            j.key("w");
+            j.number(0LL);
+            j.key("h");
+            j.number(0LL);
+            j.endObject();
+            j.key("metrics");
+            j.beginObject();
+            j.key("msLoad");
+            j.number(msLoad);
+            j.key("msTotal");
+            j.number(msTotal);
+            j.endObject();
+            j.key("request");
+            j.beginObject();
+            j.key("yolo");
+            j.beginObject();
+            j.key("backend");
+            j.string(req.yoloBackend);
+            j.key("modelPath");
+            j.string(req.yoloModelPath);
+            j.key("configPath");
+            j.string(req.yoloConfigPath);
+            j.key("framework");
+            j.string(req.yoloFramework);
+            j.key("outputName");
+            j.string(req.yoloOutputName);
+            j.key("inputW");
+            j.number(static_cast<long long>(req.yoloInputW));
+            j.key("inputH");
+            j.number(static_cast<long long>(req.yoloInputH));
+            j.key("scoreThreshold");
+            j.number(static_cast<double>(req.yoloScoreThreshold));
+            j.key("nmsIouThreshold");
+            j.number(static_cast<double>(req.yoloNmsIouThreshold));
+            j.key("enableKeypoints5");
+            j.boolean(req.yoloEnableKeypoints5);
+            j.key("letterbox");
+            j.boolean(req.yoloLetterbox);
+            j.key("swapRB");
+            j.boolean(req.yoloSwapRB);
+            j.key("scale");
+            j.number(static_cast<double>(req.yoloScale));
+            j.key("meanB");
+            j.number(static_cast<long long>(req.yoloMeanB));
+            j.key("meanG");
+            j.number(static_cast<long long>(req.yoloMeanG));
+            j.key("meanR");
+            j.number(static_cast<long long>(req.yoloMeanR));
+            j.key("opencvBackend");
+            j.number(static_cast<long long>(req.yoloOpenCvBackend));
+            j.key("opencvTarget");
+            j.number(static_cast<long long>(req.yoloOpenCvTarget));
+            j.endObject();
+            j.key("arc");
+            j.beginObject();
+            j.key("backend");
+            j.string(req.arcBackend);
+            j.key("modelPath");
+            j.string(req.arcModelPath);
+            j.key("configPath");
+            j.string(req.arcConfigPath);
+            j.key("framework");
+            j.string(req.arcFramework);
+            j.key("outputName");
+            j.string(req.arcOutputName);
+            j.key("inputName");
+            j.string(req.arcInputName);
+            j.key("inputW");
+            j.number(static_cast<long long>(req.arcInputW));
+            j.key("inputH");
+            j.number(static_cast<long long>(req.arcInputH));
+            j.key("modelVersion");
+            j.number(static_cast<std::uint64_t>(req.arcModelVersion));
+            j.key("preprocessVersion");
+            j.number(static_cast<std::uint64_t>(req.arcPreprocessVersion));
+            j.key("fakeEmbedding");
+            j.boolean(req.fakeEmbedding);
+            j.endObject();
+            j.key("gallery");
+            j.beginObject();
+            j.key("dir");
+            j.string(req.galleryDir);
+            j.key("topK");
+            j.number(static_cast<std::uint64_t>(req.topK));
+            j.endObject();
+            j.key("threshold");
+            j.beginObject();
+            j.key("acceptThreshold");
+            j.number(static_cast<double>(req.acceptThreshold));
+            j.key("versionId");
+            j.string(req.thresholdVersionId);
+            j.key("consecutivePassesToTrigger");
+            j.number(static_cast<long long>(req.consecutivePassesToTrigger));
+            j.endObject();
+            j.key("faceSelectPolicy");
+            j.string(req.faceSelectPolicy);
+            j.key("fakeDetect");
+            j.boolean(req.fakeDetect);
+            j.endObject();
+            j.endObject();
+            out.json = j.str();
+            return out;
         }
 
     FaceDetections faces;
