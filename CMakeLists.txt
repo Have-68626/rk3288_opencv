@@ -43,10 +43,10 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     add_executable(core_unit_tests
         "tests/cpp/core_unit_tests_main.cpp"
         "tests/cpp/test_face_search.cpp"
+        "tests/cpp/test_face_align.cpp"
         "tests/cpp/test_threshold_policy.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
-        "tests/cpp/test_face_align.cpp"
     )
     if(NOT RK_SKIP_OPENCV)
         target_sources(core_unit_tests PRIVATE "src/cpp/src/FaceAlign.cpp")
@@ -56,6 +56,9 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )
+    if(NOT RK_SKIP_OPENCV AND TARGET opencv_core)
+        target_link_libraries(core_unit_tests PRIVATE opencv_core opencv_imgproc opencv_calib3d)
+    endif()
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
