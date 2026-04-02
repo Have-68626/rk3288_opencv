@@ -17,6 +17,7 @@ build/
 build_*/
 build-*/
 cmake-build*/
+_deps/
 
 # Gradle files
 .gradle/
@@ -53,6 +54,15 @@ inspectProfiles/
 # Keystore files
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+*.cer
+.env
+.env.*
+!.env.example
 
 # External native build folder generated in Android Studio 2.2 and later
 .externalNativeBuild
@@ -70,11 +80,13 @@ Makefile
 *.a
 
 # IDE
-.vscode/*
-!.vscode/settings.json
+.vscode/
+.trae/
 .idea/
+.vs/
 
 # Temp
 *.tmp
 *.log
+工作流建议_本地备忘_勿提交.txt
 
