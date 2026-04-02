@@ -1,6 +1,0 @@
-- [x] `docs/RK3288_CONSTRAINTS.md` 已创建，内容准确涵盖硬件参数与约束。
-- [x] README.md 已更新，包含“日志免责声明”。
-- [x] 项目目录结构已调整为 `docs/`, `src/`, `scripts/`, `tests/`, `tools/` 标准形式。
-- [x] 冗余文件已清理，`.gitignore` 已配置。
-- [x] 项目可正常编译（通过脚本或 Gradle）。
-- [x] 《项目整理报告》已生成。
