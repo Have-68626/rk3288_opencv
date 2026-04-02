@@ -34,6 +34,12 @@ proguard/
 ErrorLog/
 errorlog/
 tests/reports/docs-sync-audit/
+tests/data/
+tests/reports/
+tests/test_set01/
+tests/win_eval_sample/
+tests/metrics/*
+!tests/metrics/.gitkeep
 
 # Android Studio Navigation editor temp files
 .navigation/
