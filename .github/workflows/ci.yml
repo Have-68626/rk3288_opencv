@@ -1,8 +1,11 @@
 name: ci
 
 on:
-  push:
   pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,7 +15,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  repo-hygiene:
+    name: repo-hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Scan workspace junk (dry-run)
+        run: node scripts/clean-repo-junk.js scan --ci
+      - name: Upload cleanup reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-reports
+          path: |
+            ErrorLog/cleanup
+            errorlog/cleanup
+          if-no-files-found: ignore
+
+  unit-tests:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+      - name: Configure (skip OpenCV)
+        run: cmake -S . -B build_ci -G "Ninja" -DRK_SKIP_OPENCV=ON -DRK_BUILD_CORE_UNIT_TESTS=ON
+      - name: Build core_unit_tests
+        run: cmake --build build_ci --target core_unit_tests -j 2
+      - name: Run tests
+        run: ctest --test-dir build_ci --output-on-failure
+
   windows:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     name: windows-build-test
     runs-on: windows-latest
     timeout-minutes: 120
