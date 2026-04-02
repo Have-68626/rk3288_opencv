@@ -45,8 +45,42 @@ public class LogDetailActivity extends AppCompatActivity {
         String path = getIntent().getStringExtra(EXTRA_LOG_PATH);
         if (path != null) {
             File file = new File(path);
-            getSupportActionBar().setTitle(file.getName());
-            loadLogContent(file);
+
+            // Validate that the path is within the allowed log directories
+            boolean isAllowed = false;
+            try {
+                String canonicalPath = file.getCanonicalPath();
+                File extFiles = getExternalFilesDir(null);
+                File internalLogs = new File(getFilesDir(), "logs");
+
+                if (extFiles != null) {
+                    File pkgDir = extFiles.getParentFile();
+                    if (pkgDir != null) {
+                        File externalLogs = new File(pkgDir, "logs");
+                        if (externalLogs.exists() && canonicalPath.startsWith(externalLogs.getCanonicalPath() + File.separator)) {
+                            isAllowed = true;
+                        }
+                    }
+                    File fallback = new File(extFiles, "logs");
+                    if (fallback.exists() && canonicalPath.startsWith(fallback.getCanonicalPath() + File.separator)) {
+                        isAllowed = true;
+                    }
+                }
+
+                if (internalLogs.exists() && canonicalPath.startsWith(internalLogs.getCanonicalPath() + File.separator)) {
+                    isAllowed = true;
+                }
+            } catch (IOException e) {
+                isAllowed = false;
+            }
+
+            if (isAllowed) {
+                getSupportActionBar().setTitle(file.getName());
+                loadLogContent(file);
+            } else {
+                Toast.makeText(this, "Invalid file path", Toast.LENGTH_SHORT).show();
+                finish();
+            }
         } else {
             Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
             finish();
