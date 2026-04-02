@@ -94,11 +94,11 @@ jobs:
             -DOPENCV_ROOT="$env:OPENCV_ROOT" `
             -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT"
 
-      - name: Build win_unit_tests
+      - name: Build unit tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target win_unit_tests -- /m
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests -- /m
 
       - name: Run ctest
         shell: pwsh
