@@ -1,12 +1,12 @@
 # RK3288 机器视觉引擎 (AI Engine)
 
-![Platform](https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv8%20%7C%20x86-blue)
+![Platform](https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue)
 ![Language](https://img.shields.io/badge/Language-C%2B%2B17-green)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.10.0-orange)
 
 ## 📖 项目简介
 
-本项目是一个专为 **Rockchip RK3288** 平台（Cortex-A17 架构 + Mali-T764 GPU）深度优化的嵌入式机器视觉应用，同时兼容 **ARMv8 (arm64-v8a)** 和 **x86_64** 架构。
+本项目是一个专为 **Rockchip RK3288** 平台（Cortex-A17 架构 + Mali-T764 GPU）深度优化的嵌入式机器视觉应用，目标设备以 **ARMv7（armeabi-v7a）** 为基线，同时提供 **x86_64（Windows/Host 工具链）** 支持。
 
 核心目标是在资源受限的旧设备上（<512MB 可用内存）实现稳定、低延迟的视频监控与生物识别功能。项目核心逻辑采用纯 C++ 开发，支持两种运行模式：**Android APK**（带 UI）和 **Native Executable**（无头模式，极低资源占用）。
 
@@ -116,6 +116,13 @@ cmake --build build_win --config Release --target win_camera_face_recognition
 *   核心模块详细设计
 *   数据流转逻辑
 *   扩展与维护指南
+
+### 文档同步审计（可量化）
+运行脚本会对 `README.md` / `DEVELOP.md` / `docs/RK3288_CONSTRAINTS.md` 做版本滞后、链接可用性、章节完整性、交叉引用与（可选）BSP/defconfig 同步性检查，并输出报告到 `tests/reports/docs-sync-audit/`：
+
+```powershell
+node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
+```
 
 ## 📊 性能指标
 

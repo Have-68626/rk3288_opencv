@@ -54,8 +54,6 @@ rk3288_opencv/
 ├── CMakeLists.txt         # Native 构建脚本 (CMake 3.18.1+) [GitHub]
 ├── DEVELOP.md             # 本开发文档 [GitHub]
 ├── README.md              # 项目主页 [GitHub]
-├── README_BUILD.md        # 详细构建指南 [GitHub]
-├── TEST_REPORT.md         # 测试报告模板 [GitHub]
 ├── CREDITS.md             # 致谢与许可证 [GitHub]
 └── CHANGELOG.md           # 变更日志 [GitHub]
 ```
@@ -195,6 +193,18 @@ echo "环境配置完成！请运行: source env_setup.sh"
   - A：`.\build_host\bin\Release\win_camera_face_recognition.exe --test_a`
   - B：`.\build_host\bin\Release\win_camera_face_recognition.exe --test_b --test_b_repeats 10`
   - C：`.\build_host\bin\Release\win_camera_face_recognition.exe --test_c --test_c_seconds 3600`
+
+##### 2.3.5.3 文档同步审计（README/DEVELOP/约束文档）
+输出目录：`tests/reports/docs-sync-audit/`（JSON + Markdown 报告）
+
+- 运行审计（默认）：
+  - `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit`
+- 可选：尝试调用 markdownlint-cli2（需要联网下载，失败会在报告中体现）：
+  - `node scripts/docs-sync-audit.js --markdownlint-cli2 --out-dir tests/reports/docs-sync-audit`
+- BSP/内核同步：若要启用“约束文档 vs BSP Release Note / defconfig”的强校验，需要在仓库内提供以下输入（缺失会被报告为缺陷）：
+  - BSP Release Note（最新）：`docs/bsp/BSP_RELEASE_NOTES.md`
+  - defconfig（作为对齐基准）：`docs/bsp/defconfig/rk3288_defconfig`
+  - 运行内核配置快照（建议从设备导出）：`docs/bsp/kernel-config/rk3288_kernel.config`
 
 
 ---
@@ -1890,6 +1900,24 @@ if __name__ == "__main__":
   --out-dir tests/reports/face_baseline --out-prefix face_baseline
 ```
 
+### 6.8 分支策略 / 代码规范 / 发布流程（用于文档同步审计）
+
+#### 6.8.1 分支策略（Branch Strategy）
+- 主分支：`master`（默认稳定分支，所有合并进入该分支后再做版本化与交付）
+- 功能分支：`feature/<topic>`（开发完通过 PR 合并回 `master`）
+- 修复分支：`hotfix/<issue>`（紧急问题修复，合并回 `master`）
+- 版本标签：`vX.Y.Z`（与 Changelog/构建产物口径一致）
+
+#### 6.8.2 代码规范（Code Style）
+- 语言与编码：统一 UTF-8；对外输出（日志/报告/文档）默认使用 ZH_CN。
+- 安全：禁止输出密钥/令牌/隐私信息；日志粘贴前必须打码。
+- 质量门禁（建议）：至少通过基础构建、核心单测、文档同步审计（`scripts/docs-sync-audit.js`）。
+
+#### 6.8.3 发布流程（Release Process）
+1) 运行 `scripts/docs-sync-audit.js`，确保 high 缺陷为 0；若存在 BSP/defconfig/内核配置占位，则先补齐输入再发布。
+2) 生成版本号并更新本文件的 Changelog（记录 build_id、模型版本号、阈值版本号等关键口径）。
+3) 产出构建物（APK/Native 可执行程序），并附带性能基线报告（`tests/reports/face_baseline/`）。
+
 ---
 
 ## 7. 高级主题与故障排查 (Advanced & Troubleshooting)
@@ -2013,7 +2041,7 @@ if __name__ == "__main__":
 20. AWS Rekognition  
     https://aws.amazon.com/rekognition/
 21. Azure AI Face  
-    https://learn.microsoft.com/azure/ai-services/face/
+    https://learn.microsoft.com/en-us/azure/ai-services/face/overview-identity
 22. Deng, J. et al.: ArcFace: Additive Angular Margin Loss for Deep Face Recognition (CVPR 2019)  
     https://arxiv.org/abs/1801.07698
 23. InsightFace（开源实现集合，ArcFace 等）  

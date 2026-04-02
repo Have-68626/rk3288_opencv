@@ -126,3 +126,71 @@ adb shell ls -l /system/lib/libOpenCL.so /vendor/lib/libOpenCL.so 2>/dev/null ||
 
 ### 2.3 摄像头能力（建议按项目内口径导出到 ErrorLog）
 启动应用后，建议在启动自检阶段把“cameraId / 硬件级别 / YUV&JPEG 尺寸 / FPS ranges”写入 `ErrorLog/`，以便选型与回归对比。
+
+### 2.4 内核配置导出（root 可用时优先做）
+本节用于在设备侧导出“正在运行的内核配置”，并把结果固化为仓库内的可审计输入，便于后续与 BSP Release Note / defconfig 做同步性检查。
+
+#### 2.4.1 从设备导出内核配置（优先）
+前提：设备支持 `adb root`，且内核启用了 IKCONFIG（常见表现为存在 `/proc/config.gz`）。
+
+1) 进入 root shell：
+```bash
+adb root
+adb shell
+```
+
+2) 检查是否存在 `/proc/config.gz`：
+```sh
+ls -l /proc/config.gz
+```
+
+3) 导出到设备临时目录（两种方式二选一）：
+```sh
+zcat /proc/config.gz > /data/local/tmp/kernel.config
+```
+或：
+```sh
+gzip -dc /proc/config.gz > /data/local/tmp/kernel.config
+```
+
+4) 拉回到电脑：
+```bash
+adb pull /data/local/tmp/kernel.config .
+```
+
+#### 2.4.2 固化到仓库（用于审计）
+把导出的 `kernel.config` 复制到仓库路径，并记录来源与时间戳：
+- 运行内核配置快照（建议固定为最新一份）：`docs/bsp/kernel-config/rk3288_kernel.config`
+
+建议做一次快速校验（确认包含 CONFIG_ 项）：
+```bash
+grep -E "^CONFIG_" docs/bsp/kernel-config/rk3288_kernel.config | head -n 20
+```
+
+## 3. BSP 同步性检查输入（必须固化）
+本节用于声明“本约束文档当前同步的 BSP 输入”，使审计脚本可以量化判断是否同步。
+
+- BSP Release Note: `docs/bsp/BSP_RELEASE_NOTES.md`
+- defconfig（对齐基准）: `docs/bsp/defconfig/rk3288_defconfig`
+- Kernel Config Snapshot（运行态快照）: `docs/bsp/kernel-config/rk3288_kernel.config`
+
+### 3.1 内核配置（Kernel config）最小关注清单（CONFIG_）
+以下清单用于“最低必要能力”核对。实际以 `rk3288_kernel.config` 与 `rk3288_defconfig` 为准；若任一项缺失/冲突，需要在 BSP Release Note 中给出解释或替代方案。
+
+- `CONFIG_IKCONFIG` / `CONFIG_IKCONFIG_PROC`（决定是否能导出 `/proc/config.gz`）
+- `CONFIG_VIDEO_V4L2` / `CONFIG_VIDEOBUF2`（摄像头采集链路基础）
+- `CONFIG_USB` / `CONFIG_USB_EHCI_HCD` / `CONFIG_USB_OHCI_HCD`（USB HOST 口与外设）
+- `CONFIG_EXT4_FS`（/data 等分区常用文件系统）
+- `CONFIG_TMPFS`（Android 运行时常用）
+
+### 3.2 驱动补丁（Driver patches）同步口径
+本仓库不直接维护 BSP 内核源码时，至少需要在 BSP Release Note 中记录：
+- 内核版本（Linux version + Android tag）
+- 摄像头/ISP 相关补丁摘要（影响格式、分辨率、稳定性）
+- USB/存储/显示相关补丁摘要（影响可用性与长期稳定）
+
+### 3.3 已知缺陷（Known issues）
+用于记录与 BSP Release Note 对齐的“已知问题/限制”，避免误判为应用缺陷：
+- 相机：偶发 CameraService 重启/断流/黑屏（若存在，记录触发条件与规避）
+- USB：某些 UVC 摄像头无法稳定输出 720p（若存在，记录可用 FPS/格式）
+- 存储：/data 空间不足导致日志/审计落盘失败（记录阈值与清理策略）

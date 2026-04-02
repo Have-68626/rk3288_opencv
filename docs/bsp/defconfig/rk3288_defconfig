@@ -1,0 +1,11 @@
+# PLACEHOLDER
+#
+# 说明：
+# - 本文件用于存放“目标 RK3288 BSP 的 defconfig（或等价的内核配置基准）”
+# - 审计脚本会把 docs/RK3288_CONSTRAINTS.md 中列出的 CONFIG_ 项与本文件逐条对齐
+# - 在你尚未获得 BSP 源码/defconfig 前，保留占位会被审计脚本判定为“无法核对”（缺陷）
+#
+# 你可以用以下任意方式补齐为真实内容（建议优先顺序从上到下）：
+# 1) 从 BSP 源码中找到对应 defconfig（例如 rk3288_defconfig），复制完整内容到这里
+# 2) 若拿不到 BSP 源码，但设备支持 /proc/config.gz，则把导出的 kernel.config 作为临时基准放入此处
+

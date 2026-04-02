@@ -32,6 +32,7 @@ proguard/
 *.log
 ErrorLog/
 errorlog/
+tests/reports/docs-sync-audit/
 
 # Android Studio Navigation editor temp files
 .navigation/

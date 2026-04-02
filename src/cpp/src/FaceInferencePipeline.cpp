@@ -1,13 +1,55 @@
+#if __has_include("FaceInferencePipeline.h")
 #include "FaceInferencePipeline.h"
+#else
+#include "../include/FaceInferencePipeline.h"
+#endif
 
-#include "ArcFaceEmbedder.h"
-#include "FaceAlign.h"
-#include "FaceSearch.h"
-#include "FaceTemplate.h"
-#include "ThresholdPolicy.h"
-#include "YoloFaceDetector.h"
-
+#if __has_include(<opencv2/core.hpp>) && __has_include(<opencv2/imgcodecs.hpp>)
+#define RK_CPP_HAS_OPENCV 1
+#include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#else
+#define RK_CPP_HAS_OPENCV 0
+#endif
+
+#if RK_CPP_HAS_OPENCV
+#if __has_include("ArcFaceEmbedder.h")
+#include "ArcFaceEmbedder.h"
+#else
+#include "../include/ArcFaceEmbedder.h"
+#endif
+
+#if __has_include("FaceAlign.h")
+#include "FaceAlign.h"
+#else
+#include "../include/FaceAlign.h"
+#endif
+
+#if __has_include("FaceSearch.h")
+#include "FaceSearch.h"
+#else
+#include "../include/FaceSearch.h"
+#endif
+
+#if __has_include("FaceTemplate.h")
+#include "FaceTemplate.h"
+#else
+#include "../include/FaceTemplate.h"
+#endif
+
+#if __has_include("ThresholdPolicy.h")
+#include "ThresholdPolicy.h"
+#else
+#include "../include/ThresholdPolicy.h"
+#endif
+
+#if __has_include("YoloFaceDetector.h")
+#include "YoloFaceDetector.h"
+#else
+#include "../include/YoloFaceDetector.h"
+#endif
+
+#endif
 
 #include <chrono>
 #include <cmath>
@@ -82,6 +124,7 @@ private:
     std::vector<bool> first_;
 };
 
+#if RK_CPP_HAS_OPENCV
 static bool l2NormalizeInplace(std::vector<float>& v) {
     if (v.empty()) return false;
     double s = 0.0;
@@ -219,8 +262,25 @@ static int errorCodeForStage(const std::string& stage) {
     return 1;
 }
 
+#else
+static int errorCodeForStage(const std::string& stage) {
+    if (stage == "image_load") return 100;
+    if (stage == "opencv_headers") return 110;
+    if (stage == "yolo_load") return 200;
+    if (stage == "yolo_detect") return 210;
+    if (stage == "align") return 300;
+    if (stage == "arc_init") return 400;
+    if (stage == "arc_embed") return 410;
+    if (stage == "gallery_load") return 500;
+    if (stage == "search") return 510;
+    if (stage == "exception") return 900;
+    return 1;
+}
+#endif
+
 }  // namespace
 
+#if RK_CPP_HAS_OPENCV
 FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
     FaceInferOutcome out;
     const long long tsMs = nowEpochMillis();
@@ -702,3 +762,32 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         return out;
     }
 }
+#else
+FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
+    FaceInferOutcome out;
+    const long long tsMs = nowEpochMillis();
+    out.ok = false;
+    out.stage = "opencv_headers";
+    out.message = "opencv_headers_not_found";
+    out.errorCode = errorCodeForStage(out.stage);
+    out.auditDir = "ErrorLog";
+    out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
+    JsonWriter j;
+    j.beginObject();
+    j.key("ok");
+    j.boolean(false);
+    j.key("errorCode");
+    j.number(static_cast<long long>(out.errorCode));
+    j.key("stage");
+    j.string(out.stage);
+    j.key("message");
+    j.string(out.message);
+    j.key("timestamp_ms");
+    j.number(tsMs);
+    j.key("image");
+    j.string(req.imagePath);
+    j.endObject();
+    out.json = j.str();
+    return out;
+}
+#endif
