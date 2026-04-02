@@ -40,6 +40,7 @@ tests/test_set01/
 tests/win_eval_sample/
 tests/metrics/*
 !tests/metrics/.gitkeep
+docs/bsp/device-profile/
 
 # Android Studio Navigation editor temp files
 .navigation/

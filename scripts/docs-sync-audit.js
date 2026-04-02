@@ -32,6 +32,8 @@ function parseArgs(argv) {
     spacingSampleLimit: 12,
     bspReleaseNotes: "docs/bsp/BSP_RELEASE_NOTES.md",
     runMarkdownlintCli2: false,
+    skipLinks: false,
+    linkConcurrency: 6,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
@@ -48,6 +50,11 @@ function parseArgs(argv) {
       args.bspReleaseNotes = argv[i + 1];
       i += 1;
     } else if (a === "--markdownlint-cli2") args.runMarkdownlintCli2 = true;
+    else if (a === "--skip-links") args.skipLinks = true;
+    else if (a === "--link-concurrency" && argv[i + 1]) {
+      args.linkConcurrency = Math.max(1, Number(argv[i + 1]) || 1);
+      i += 1;
+    }
   }
   return args;
 }
@@ -432,19 +439,51 @@ async function getFetchFallback(url) {
   }
 }
 
-async function checkLinks(urls) {
+async function checkLinks(urls, concurrency) {
   const uniq = Array.from(new Set(urls.filter((u) => isHttpUrl(u))));
-  const results = [];
-  for (const u of uniq) {
-    const r = await headFetch(u);
-    if (!r.ok && (r.status === 403 || r.status === 405 || r.status === 0)) {
-      const r2 = await getFetchFallback(u);
-      results.push({ url: u, ...r2, method: "GET_RANGE" });
-    } else {
-      results.push({ url: u, ...r, method: "HEAD" });
+  const results = new Array(uniq.length);
+  let idx = 0;
+  const withTimeout = async (p, ms) => {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Timeout")), ms);
+    });
+    try {
+      return await Promise.race([p, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-  }
-  return results;
+  };
+  const worker = async () => {
+    while (true) {
+      const cur = idx;
+      idx += 1;
+      if (cur >= uniq.length) return;
+      const u = uniq[cur];
+      try {
+        const r = await withTimeout(headFetch(u), 15000);
+        if (!r.ok && (r.status === 403 || r.status === 405 || r.status === 0)) {
+          const r2 = await withTimeout(getFetchFallback(u), 15000);
+          results[cur] = { url: u, ...r2, method: "GET_RANGE" };
+        } else {
+          results[cur] = { url: u, ...r, method: "HEAD" };
+        }
+      } catch (e) {
+        results[cur] = {
+          url: u,
+          ok: false,
+          status: 0,
+          finalUrl: u,
+          error: String(e && e.message ? e.message : e),
+          unverifiable: true,
+          method: "WORKER",
+        };
+      }
+    }
+  };
+  const n = Math.min(Math.max(1, concurrency || 1), uniq.length || 1);
+  await Promise.all(new Array(n).fill(0).map(() => worker()));
+  return results.filter(Boolean);
 }
 
 function parseCrossRefs(md, fromFile) {
@@ -485,12 +524,73 @@ function isPlaceholderText(text) {
   return /(^|\n)\s*#\s*PLACEHOLDER\b/i.test(text) || /\bPLACEHOLDER\b/i.test(text);
 }
 
+function parseKernelConfigMap(text) {
+  const map = new Map();
+  const lines = String(text || "").split(/\r?\n/);
+  for (const line of lines) {
+    const m1 = line.match(/^(CONFIG_[A-Z0-9_]+)=(.+?)\s*$/);
+    if (m1) {
+      map.set(m1[1], m1[2]);
+      continue;
+    }
+    const m2 = line.match(/^#\s*(CONFIG_[A-Z0-9_]+)\s+is\s+not\s+set\s*$/);
+    if (m2) {
+      map.set(m2[1], "n");
+    }
+  }
+  return map;
+}
+
+function parseKernelConfigPolicyFromConstraints(md) {
+  const lines = String(md || "").split(/\r?\n/);
+  let inBlock = false;
+  let section = null;
+  const must = new Set();
+  const optional = new Set();
+  const forbidden = new Set();
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!inBlock) {
+      if (line === "DOCSYNC_KERNEL_CONFIG_POLICY") inBlock = true;
+      continue;
+    }
+    if (line.startsWith("```")) break;
+    if (!line) continue;
+    if (line === "[MUST]") {
+      section = "must";
+      continue;
+    }
+    if (line === "[OPTIONAL]") {
+      section = "optional";
+      continue;
+    }
+    if (line === "[FORBIDDEN]") {
+      section = "forbidden";
+      continue;
+    }
+    if (line.startsWith("#")) continue;
+    if (!/^CONFIG_[A-Z0-9_]+$/.test(line)) continue;
+    if (section === "must") must.add(line);
+    else if (section === "optional") optional.add(line);
+    else if (section === "forbidden") forbidden.add(line);
+  }
+
+  return {
+    must: Array.from(must),
+    optional: Array.from(optional),
+    forbidden: Array.from(forbidden),
+    enabled: must.size + optional.size + forbidden.size > 0,
+  };
+}
+
 function parseConfigItems(text) {
   const out = new Set();
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
-    const m = line.match(/\b(CONFIG_[A-Z0-9_]+)\b/);
-    if (m) out.add(m[1]);
+    const re = /\b(CONFIG_[A-Z0-9_]+)\b/g;
+    let m;
+    while ((m = re.exec(line)) !== null) out.add(m[1]);
   }
   return out;
 }
@@ -674,32 +774,81 @@ async function main() {
           message: "defconfig 当前为占位文件（PLACEHOLDER），无法执行“约束文档 vs defconfig”的逐条 diff",
         });
       } else {
-      const a = parseConfigItems(constraints);
-      const b = parseConfigItems(def);
-      if (a.size === 0) {
-        report.defects.push({
-          type: "bsp",
-          severity: "high",
-          file: "docs/RK3288_CONSTRAINTS.md",
-          message: "RK3288_CONSTRAINTS.md 未列出任何 CONFIG_ 项，无法按要求与 defconfig 执行逐条 diff",
-        });
-      } else if (b.size === 0) {
-        report.defects.push({ type: "bsp", severity: "high", file: defconfigPath, message: "defconfig 未解析到任何 CONFIG_ 项" });
-      } else {
-        let diffCount = 0;
-        for (const k of a) if (!b.has(k)) diffCount += 1;
-        for (const k of b) if (!a.has(k)) diffCount += 1;
-        const base = Math.max(a.size, b.size);
-        const diffPct = base === 0 ? 0 : diffCount / base;
-        if (diffPct > 0.03) {
-          report.defects.push({
-            type: "bsp",
-            severity: "high",
-            file: "docs/RK3288_CONSTRAINTS.md",
-            message: `内核配置不同步：约束文档与 defconfig 差异 ${(diffPct * 100).toFixed(2)}%（阈值 3%）`,
-          });
+        const policy = parseKernelConfigPolicyFromConstraints(constraints);
+        const defMap = parseKernelConfigMap(def);
+        const isEnabled = (v) => v !== undefined && v !== null && String(v).trim() !== "" && String(v).trim() !== "n";
+
+        if (policy.enabled) {
+          const missingMust = [];
+          for (const k of policy.must) {
+            const v = defMap.get(k);
+            if (!isEnabled(v)) missingMust.push(k);
+          }
+          const forbidden = [];
+          for (const k of policy.forbidden) {
+            const v = defMap.get(k);
+            if (isEnabled(v)) forbidden.push(`${k}=${String(v).trim()}`);
+          }
+          const optionalMissing = [];
+          for (const k of policy.optional) {
+            const v = defMap.get(k);
+            if (!isEnabled(v)) optionalMissing.push(k);
+          }
+
+          const base = Math.max(1, policy.must.length);
+          const diffPct = missingMust.length / base;
+          if (diffPct > 0.03) {
+            report.defects.push({
+              type: "bsp",
+              severity: "high",
+              file: defconfigPath,
+              message: `内核配置不同步：defconfig 缺失 MUST 项 ${(diffPct * 100).toFixed(2)}%（阈值 3%），缺失项：${missingMust.join(", ")}`,
+            });
+          }
+          if (forbidden.length > 0) {
+            report.defects.push({
+              type: "bsp",
+              severity: "high",
+              file: defconfigPath,
+              message: `defconfig 出现 FORBIDDEN 项：${forbidden.join(", ")}`,
+            });
+          }
+          if (optionalMissing.length > 0) {
+            report.defects.push({
+              type: "bsp",
+              severity: "low",
+              file: defconfigPath,
+              message: `defconfig 缺失 OPTIONAL 项（按业务裁剪）：${optionalMissing.join(", ")}`,
+            });
+          }
+        } else {
+          const a = parseConfigItems(constraints);
+          const b = parseConfigItems(def);
+          if (a.size === 0) {
+            report.defects.push({
+              type: "bsp",
+              severity: "high",
+              file: "docs/RK3288_CONSTRAINTS.md",
+              message: "RK3288_CONSTRAINTS.md 未列出任何 CONFIG_ 项，无法按要求与 defconfig 执行逐条 diff",
+            });
+          } else if (b.size === 0) {
+            report.defects.push({ type: "bsp", severity: "high", file: defconfigPath, message: "defconfig 未解析到任何 CONFIG_ 项" });
+          } else {
+            let diffCount = 0;
+            for (const k of a) if (!b.has(k)) diffCount += 1;
+            for (const k of b) if (!a.has(k)) diffCount += 1;
+            const base = Math.max(a.size, b.size);
+            const diffPct = base === 0 ? 0 : diffCount / base;
+            if (diffPct > 0.03) {
+              report.defects.push({
+                type: "bsp",
+                severity: "high",
+                file: "docs/RK3288_CONSTRAINTS.md",
+                message: `内核配置不同步：约束文档与 defconfig 差异 ${(diffPct * 100).toFixed(2)}%（阈值 3%）`,
+              });
+            }
+          }
         }
-      }
       }
     }
   }
@@ -760,6 +909,62 @@ async function main() {
           file: kernelCfgPath,
           message: "kernel config 快照当前为占位文件（PLACEHOLDER），需要按约束文档 2.4 节从设备导出后替换",
         });
+      } else {
+        const policy = parseKernelConfigPolicyFromConstraints(constraints);
+        if (!policy.enabled) {
+          report.defects.push({
+            type: "bsp",
+            severity: "high",
+            file: "docs/RK3288_CONSTRAINTS.md",
+            message: "缺少 DOCSYNC_KERNEL_CONFIG_POLICY 机器可读清单，无法执行 MUST/OPTIONAL/FORBIDDEN 量化检查",
+          });
+        } else {
+          const kernelMap = parseKernelConfigMap(ktxt);
+          const isEnabled = (v) => v !== undefined && v !== null && String(v).trim() !== "" && String(v).trim() !== "n";
+
+          const missingMustKernel = [];
+          for (const k of policy.must) {
+            const vK = kernelMap.get(k);
+            if (!isEnabled(vK)) missingMustKernel.push(k);
+          }
+
+          const forbiddenKernel = [];
+          for (const k of policy.forbidden) {
+            const vK = kernelMap.get(k);
+            if (isEnabled(vK)) forbiddenKernel.push(`${k}=${String(vK).trim()}`);
+          }
+
+          const missingOptionalKernel = [];
+          for (const k of policy.optional) {
+            const vK = kernelMap.get(k);
+            if (!isEnabled(vK)) missingOptionalKernel.push(k);
+          }
+
+          if (missingMustKernel.length > 0) {
+            report.defects.push({
+              type: "bsp",
+              severity: "high",
+              file: kernelCfgPath,
+              message: `运行态内核配置缺失 MUST 项：${missingMustKernel.join(", ")}`,
+            });
+          }
+          if (forbiddenKernel.length > 0) {
+            report.defects.push({
+              type: "bsp",
+              severity: "high",
+              file: kernelCfgPath,
+              message: `运行态内核配置出现 FORBIDDEN 项：${forbiddenKernel.join(", ")}`,
+            });
+          }
+          if (missingOptionalKernel.length > 0) {
+            report.defects.push({
+              type: "bsp",
+              severity: "low",
+              file: kernelCfgPath,
+              message: `运行态内核配置缺失 OPTIONAL 项（按业务裁剪）：${missingOptionalKernel.join(", ")}`,
+            });
+          }
+        }
       }
     }
   }
@@ -772,7 +977,7 @@ async function main() {
   }
 
   const urlsAll = Array.from(new Set([...collectMdLinks(readme), ...collectMdLinks(develop), ...collectMdLinks(constraints)]));
-  const linkResults = await checkLinks(urlsAll);
+  const linkResults = args.skipLinks ? [] : await checkLinks(urlsAll, args.linkConcurrency);
   report.linkChecks = linkResults;
   for (const r of linkResults) {
     if (!r.ok) {

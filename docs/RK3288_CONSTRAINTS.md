@@ -130,6 +130,15 @@ adb shell ls -l /system/lib/libOpenCL.so /vendor/lib/libOpenCL.so 2>/dev/null ||
 ### 2.4 内核配置导出（root 可用时优先做）
 本节用于在设备侧导出“正在运行的内核配置”，并把结果固化为仓库内的可审计输入，便于后续与 BSP Release Note / defconfig 做同步性检查。
 
+Windows（CMD）建议直接用以下命令导出（只读为主，仅会在设备 `/data/local/tmp/` 写入临时文件，随后可手动删除）：
+```bat
+adb -s <DEVICE_SERIAL_OR_IP:PORT> root
+adb -s <DEVICE_SERIAL_OR_IP:PORT> shell ls -l /proc/config.gz
+adb -s <DEVICE_SERIAL_OR_IP:PORT> shell "gzip -d -c /proc/config.gz > /data/local/tmp/kernel.config"
+adb -s <DEVICE_SERIAL_OR_IP:PORT> pull /data/local/tmp/kernel.config .
+adb -s <DEVICE_SERIAL_OR_IP:PORT> shell rm -f /data/local/tmp/kernel.config
+```
+
 #### 2.4.1 从设备导出内核配置（优先）
 前提：设备支持 `adb root`，且内核启用了 IKCONFIG（常见表现为存在 `/proc/config.gz`）。
 
@@ -144,13 +153,13 @@ adb shell
 ls -l /proc/config.gz
 ```
 
-3) 导出到设备临时目录（两种方式二选一）：
+3) 导出到设备临时目录（按成功率优先顺序）：
 ```sh
 zcat /proc/config.gz > /data/local/tmp/kernel.config
 ```
 或：
 ```sh
-gzip -dc /proc/config.gz > /data/local/tmp/kernel.config
+gzip -d -c /proc/config.gz > /data/local/tmp/kernel.config
 ```
 
 4) 拉回到电脑：
@@ -160,11 +169,11 @@ adb pull /data/local/tmp/kernel.config .
 
 #### 2.4.2 固化到仓库（用于审计）
 把导出的 `kernel.config` 复制到仓库路径，并记录来源与时间戳：
-- 运行内核配置快照（建议固定为最新一份）：`docs/bsp/kernel-config/rk3288_kernel.config`
+- 运行内核配置快照（建议固定为最新一份）：`docs/bsp/kernel-config/kernel.config`
 
 建议做一次快速校验（确认包含 CONFIG_ 项）：
 ```bash
-grep -E "^CONFIG_" docs/bsp/kernel-config/rk3288_kernel.config | head -n 20
+grep -E "^CONFIG_" docs/bsp/kernel-config/kernel.config | head -n 20
 ```
 
 ## 3. BSP 同步性检查输入（必须固化）
@@ -172,16 +181,91 @@ grep -E "^CONFIG_" docs/bsp/kernel-config/rk3288_kernel.config | head -n 20
 
 - BSP Release Note: `docs/bsp/BSP_RELEASE_NOTES.md`
 - defconfig（对齐基准）: `docs/bsp/defconfig/rk3288_defconfig`
-- Kernel Config Snapshot（运行态快照）: `docs/bsp/kernel-config/rk3288_kernel.config`
+- Kernel Config Snapshot（运行态快照）: `docs/bsp/kernel-config/kernel.config`
 
 ### 3.1 内核配置（Kernel config）最小关注清单（CONFIG_）
-以下清单用于“最低必要能力”核对。实际以 `rk3288_kernel.config` 与 `rk3288_defconfig` 为准；若任一项缺失/冲突，需要在 BSP Release Note 中给出解释或替代方案。
+以下清单用于“最低必要能力”核对。实际以 `kernel.config` 与 `rk3288_defconfig` 为准；若任一项缺失/冲突，需要在 BSP Release Note 中给出解释或替代方案。
 
-- `CONFIG_IKCONFIG` / `CONFIG_IKCONFIG_PROC`（决定是否能导出 `/proc/config.gz`）
-- `CONFIG_VIDEO_V4L2` / `CONFIG_VIDEOBUF2`（摄像头采集链路基础）
-- `CONFIG_USB` / `CONFIG_USB_EHCI_HCD` / `CONFIG_USB_OHCI_HCD`（USB HOST 口与外设）
-- `CONFIG_EXT4_FS`（/data 等分区常用文件系统）
-- `CONFIG_TMPFS`（Android 运行时常用）
+#### 3.1.1 分类规则（必须 / 可选 / 禁止）
+- 必须（MUST）：缺失即判定为“不可用/不合规”（高优先级缺陷）。
+- 可选（OPTIONAL）：建议启用以满足扩展场景；缺失只记录为低优先级缺陷。
+- 禁止（FORBIDDEN）：一旦启用即判定为“违背目标平台约束”（高优先级缺陷）。
+
+#### 3.1.2 MUST（目标设备必须具备）
+- 导出能力：`CONFIG_IKCONFIG` / `CONFIG_IKCONFIG_PROC`
+- 摄像头与媒体（V4L2）：`CONFIG_MEDIA_SUPPORT` / `CONFIG_MEDIA_CAMERA_SUPPORT` / `CONFIG_MEDIA_CONTROLLER` / `CONFIG_VIDEO_V4L2` / `CONFIG_VIDEOBUF2_CORE` / `CONFIG_VIDEOBUF2_MEMOPS` / `CONFIG_VIDEOBUF2_VMALLOC`
+- USB（HOST 与存储）：`CONFIG_USB` / `CONFIG_USB_EHCI_HCD` / `CONFIG_USB_OHCI_HCD` / `CONFIG_USB_STORAGE`
+- 图形/显示（Rockchip）：`CONFIG_DRM` / `CONFIG_DRM_ROCKCHIP` / `CONFIG_FB`
+- GPU（Mali Midgard）：`CONFIG_MALI_MIDGARD` / `CONFIG_MALI_DT` / `CONFIG_MALI_DEVFREQ` / `CONFIG_MALI_PLATFORM_THIRDPARTY` / `CONFIG_MALI_PLATFORM_THIRDPARTY_NAME`
+- 加速：`CONFIG_ROCKCHIP_RGA` / `CONFIG_ROCKCHIP_RGA2`
+- Android 运行时：`CONFIG_ANDROID` / `CONFIG_ASHMEM` / `CONFIG_ION`
+- 安全与隔离：`CONFIG_SECURITY_SELINUX` / `CONFIG_CGROUPS` / `CONFIG_NAMESPACES` / `CONFIG_SECCOMP`
+- 文件系统：`CONFIG_EXT4_FS` / `CONFIG_TMPFS`
+
+#### 3.1.3 OPTIONAL（按设备/业务启用）
+- UVC（USB 摄像头）：`CONFIG_MEDIA_USB_SUPPORT` / `CONFIG_USB_VIDEO_CLASS` / `CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV`
+- 网络增强：`CONFIG_IPV6` / `CONFIG_BRIDGE`
+- 无线与蓝牙：`CONFIG_CFG80211` / `CONFIG_MAC80211` / `CONFIG_RFKILL` / `CONFIG_BT`
+- 视频编解码（若使用 MPP/硬解）：`CONFIG_RK_VCODEC`
+
+#### 3.1.4 FORBIDDEN（违背“RK3288 仅 CPU+GPU”约束的配置）
+以下项在 RK3288 目标设备上不应启用；若发现启用，需要立即解释来源并整改：
+- `CONFIG_RKNPU`
+- `CONFIG_ROCKCHIP_NPU`
+- `CONFIG_RKNN`
+
+#### 3.1.5 机器可读清单（供 docs-sync-audit 自动判定）
+```text
+DOCSYNC_KERNEL_CONFIG_POLICY
+[MUST]
+CONFIG_IKCONFIG
+CONFIG_IKCONFIG_PROC
+CONFIG_MEDIA_SUPPORT
+CONFIG_MEDIA_CAMERA_SUPPORT
+CONFIG_MEDIA_CONTROLLER
+CONFIG_VIDEO_V4L2
+CONFIG_VIDEOBUF2_CORE
+CONFIG_VIDEOBUF2_MEMOPS
+CONFIG_VIDEOBUF2_VMALLOC
+CONFIG_USB
+CONFIG_USB_EHCI_HCD
+CONFIG_USB_OHCI_HCD
+CONFIG_USB_STORAGE
+CONFIG_DRM
+CONFIG_DRM_ROCKCHIP
+CONFIG_FB
+CONFIG_MALI_MIDGARD
+CONFIG_MALI_DT
+CONFIG_MALI_DEVFREQ
+CONFIG_MALI_PLATFORM_THIRDPARTY
+CONFIG_MALI_PLATFORM_THIRDPARTY_NAME
+CONFIG_ROCKCHIP_RGA
+CONFIG_ROCKCHIP_RGA2
+CONFIG_ANDROID
+CONFIG_ASHMEM
+CONFIG_ION
+CONFIG_SECURITY_SELINUX
+CONFIG_CGROUPS
+CONFIG_NAMESPACES
+CONFIG_SECCOMP
+CONFIG_EXT4_FS
+CONFIG_TMPFS
+[OPTIONAL]
+CONFIG_MEDIA_USB_SUPPORT
+CONFIG_USB_VIDEO_CLASS
+CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV
+CONFIG_IPV6
+CONFIG_BRIDGE
+CONFIG_CFG80211
+CONFIG_MAC80211
+CONFIG_RFKILL
+CONFIG_BT
+CONFIG_RK_VCODEC
+[FORBIDDEN]
+CONFIG_RKNPU
+CONFIG_ROCKCHIP_NPU
+CONFIG_RKNN
+```
 
 ### 3.2 驱动补丁（Driver patches）同步口径
 本仓库不直接维护 BSP 内核源码时，至少需要在 BSP Release Note 中记录：

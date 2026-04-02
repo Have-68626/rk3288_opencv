@@ -204,7 +204,7 @@ echo "环境配置完成！请运行: source env_setup.sh"
 - BSP/内核同步：若要启用“约束文档 vs BSP Release Note / defconfig”的强校验，需要在仓库内提供以下输入（缺失会被报告为缺陷）：
   - BSP Release Note（最新）：`docs/bsp/BSP_RELEASE_NOTES.md`
   - defconfig（作为对齐基准）：`docs/bsp/defconfig/rk3288_defconfig`
-  - 运行内核配置快照（建议从设备导出）：`docs/bsp/kernel-config/rk3288_kernel.config`
+  - 运行内核配置快照（建议从设备导出）：`docs/bsp/kernel-config/kernel.config`
 
 
 ---
