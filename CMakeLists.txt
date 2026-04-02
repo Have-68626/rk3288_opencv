@@ -46,7 +46,13 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_threshold_policy.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
+        "tests/cpp/test_face_align.cpp"
     )
+    if(NOT RK_SKIP_OPENCV)
+        target_sources(core_unit_tests PRIVATE "src/cpp/src/FaceAlign.cpp")
+    else()
+        target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
+    endif()
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )

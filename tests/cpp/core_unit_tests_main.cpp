@@ -29,12 +29,14 @@ bool runAll(const TestCase* cases, int n) {
 }  // namespace rk_core_test
 
 bool test_face_search_stable_topk();
+bool test_face_align_bbox_edge_cases();
 bool test_threshold_policy_version_and_consecutive();
 
 int main() {
     using namespace rk_core_test;
     const TestCase cases[] = {
         {"face_search_stable_topk", test_face_search_stable_topk},
+        {"face_align_bbox_edge_cases", test_face_align_bbox_edge_cases},
         {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
