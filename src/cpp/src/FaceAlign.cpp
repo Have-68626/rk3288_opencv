@@ -75,13 +75,9 @@ FaceAlignResult alignFaceForArcFace112(const cv::Mat& bgr, const FaceDetection& 
     if (opt.preferKeypoints5 && det.keypoints5.has_value()) {
         const auto& kps = *det.keypoints5;
         if (pointsFinite(kps)) {
-            std::vector<cv::Point2f> src;
-            std::vector<cv::Point2f> dst;
-            src.reserve(5);
-            dst.reserve(5);
-            for (int i = 0; i < 5; i++) src.push_back(kps[static_cast<size_t>(i)]);
             const auto ref = arcFace112Ref5();
-            for (int i = 0; i < 5; i++) dst.push_back(ref[static_cast<size_t>(i)]);
+            std::vector<cv::Point2f> src(kps.begin(), kps.begin() + 5);
+            std::vector<cv::Point2f> dst(ref.begin(), ref.begin() + 5);
 
             cv::Mat inliers;
             cv::Mat M = cv::estimateAffinePartial2D(src, dst, inliers, cv::LMEDS);
