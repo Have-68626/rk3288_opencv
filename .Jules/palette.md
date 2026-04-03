@@ -1,0 +1,3 @@
+## 2025-04-03 - Marking List Item Indicators as Decorative
+**Learning:** In Android RecyclerView items, trailing icons (like "info" or chevron arrows) used purely as visual indicators for interactive list items often trigger "Missing contentDescription" accessibility warnings in Lint. Since the list item itself handles the click action, these icons do not need independent descriptions, which would just add noise for screen reader users.
+**Action:** Use `android:importantForAccessibility="no"` on these decorative `ImageView` elements to hide them from screen readers instead of providing a redundant `contentDescription`.
