@@ -205,6 +205,7 @@ public final class FeatureTemplateEncryptedStore {
     }
 
     private static Code mapWriteError(@NonNull Exception e) {
+        if (e instanceof IllegalStateException) return Code.KEYSTORE_ERROR;
         String cn = e.getClass().getName();
         if (cn.contains("KeyStore") || cn.contains("android.security")) return Code.KEYSTORE_ERROR;
         if (cn.contains("InvalidAlgorithmParameter") || cn.contains("InvalidKey")) return Code.KEYSTORE_ERROR;
@@ -212,6 +213,7 @@ public final class FeatureTemplateEncryptedStore {
     }
 
     private static Code mapReadError(@NonNull Exception e) {
+        if (e instanceof IllegalStateException) return Code.KEYSTORE_ERROR;
         String cn = e.getClass().getName();
         if (cn.contains("KeyStore") || cn.contains("android.security")) return Code.KEYSTORE_ERROR;
         if (cn.contains("InvalidAlgorithmParameter") || cn.contains("InvalidKey")) return Code.KEYSTORE_ERROR;
@@ -342,12 +344,13 @@ public final class FeatureTemplateEncryptedStore {
         out[off + 3] = (byte) ((v) & 0xFF);
     }
 
-    private static byte[] sha256(byte[] input) {
+    @androidx.annotation.VisibleForTesting
+    static byte[] sha256(byte[] input) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             return md.digest(input);
         } catch (Exception e) {
-            return new byte[32];
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
         }
     }
 
