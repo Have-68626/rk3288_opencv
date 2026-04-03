@@ -45,11 +45,46 @@ public class LogDetailActivity extends AppCompatActivity {
         String path = getIntent().getStringExtra(EXTRA_LOG_PATH);
         if (path != null) {
             File file = new File(path);
+            if (!isValidLogPath(file)) {
+                Toast.makeText(this, "Invalid log path", Toast.LENGTH_SHORT).show();
+                finish();
+                return;
+            }
             getSupportActionBar().setTitle(file.getName());
             loadLogContent(file);
         } else {
             Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
             finish();
+        }
+    }
+
+    private boolean isValidLogPath(File file) {
+        try {
+            String canonicalPath = file.getCanonicalPath();
+
+            File internalLogs = new File(getFilesDir(), "logs");
+            if (canonicalPath.startsWith(internalLogs.getCanonicalPath() + File.separator)) {
+                return true;
+            }
+
+            File extFiles = getExternalFilesDir(null);
+            if (extFiles != null) {
+                File pkgDir = extFiles.getParentFile();
+                if (pkgDir != null) {
+                    File externalLogs = new File(pkgDir, "logs");
+                    if (canonicalPath.startsWith(externalLogs.getCanonicalPath() + File.separator)) {
+                        return true;
+                    }
+                }
+                File fallback = new File(extFiles, "logs");
+                if (canonicalPath.startsWith(fallback.getCanonicalPath() + File.separator)) {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (IOException e) {
+            return false;
         }
     }
 
