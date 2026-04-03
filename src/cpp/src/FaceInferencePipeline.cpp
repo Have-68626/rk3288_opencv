@@ -94,11 +94,26 @@ static std::string jsonEscape(const std::string& s) {
 class JsonWriter {
 public:
     void beginObject() {
+        beginValue_();
         oss_ << "{";
+        ctx_.push_back(CtxType::Object);
         first_.push_back(true);
     }
     void endObject() {
         oss_ << "}";
+        if (!ctx_.empty()) ctx_.pop_back();
+        if (!first_.empty()) first_.pop_back();
+    }
+
+    void beginArray() {
+        beginValue_();
+        oss_ << "[";
+        ctx_.push_back(CtxType::Array);
+        first_.push_back(true);
+    }
+    void endArray() {
+        oss_ << "]";
+        if (!ctx_.empty()) ctx_.pop_back();
         if (!first_.empty()) first_.pop_back();
     }
 
@@ -110,17 +125,47 @@ public:
         oss_ << "\"" << jsonEscape(k) << "\":";
     }
 
-    void string(const std::string& v) { oss_ << "\"" << jsonEscape(v) << "\""; }
-    void string(const char* v) { oss_ << "\"" << jsonEscape(v ? std::string(v) : std::string()) << "\""; }
-    void boolean(bool v) { oss_ << (v ? "true" : "false"); }
-    void number(double v) { oss_ << v; }
-    void number(long long v) { oss_ << v; }
-    void number(std::uint64_t v) { oss_ << v; }
+    void string(const std::string& v) {
+        beginValue_();
+        oss_ << "\"" << jsonEscape(v) << "\"";
+    }
+    void string(const char* v) {
+        beginValue_();
+        oss_ << "\"" << jsonEscape(v ? std::string(v) : std::string()) << "\"";
+    }
+    void boolean(bool v) {
+        beginValue_();
+        oss_ << (v ? "true" : "false");
+    }
+    void number(double v) {
+        beginValue_();
+        oss_ << v;
+    }
+    void number(long long v) {
+        beginValue_();
+        oss_ << v;
+    }
+    void number(std::uint64_t v) {
+        beginValue_();
+        oss_ << v;
+    }
 
     std::string str() const { return oss_.str(); }
 
 private:
+    enum class CtxType { Object, Array };
+
+    void beginValue_() {
+        if (ctx_.empty() || first_.empty()) return;
+        if (ctx_.size() != first_.size()) return;
+        if (ctx_.back() == CtxType::Array) {
+            if (!first_.back()) oss_ << ",";
+            first_.back() = false;
+        }
+    }
+
     std::ostringstream oss_;
+    std::vector<CtxType> ctx_;
     std::vector<bool> first_;
 };
 
@@ -249,6 +294,352 @@ static FaceDetections fakeDetectCenterFace(const cv::Mat& bgr) {
     return {d};
 }
 
+struct FaceInferMetrics {
+    long long msLoad = 0;
+    long long msDetect = 0;
+    long long msAlign = 0;
+    long long msEmbed = 0;
+    long long msSearch = 0;
+    long long msTotal = 0;
+};
+
+struct FaceInferContext {
+    cv::Mat img;
+
+    FaceDetections faces;
+    bool hasFace = false;
+    FaceDetection mainFace;
+
+    cv::Mat aligned112;
+    bool usedKeypoints5 = false;
+    bool usedBboxFallback = false;
+
+    std::vector<float> embedding;
+    bool embeddingOk = false;
+    bool embeddingFake = false;
+
+    std::string yoloBackendName;
+    std::string arcBackendName;
+
+    std::vector<FaceSearchEntry> galleryEntries;
+    std::vector<std::string> galleryWarnings;
+
+    FaceSearchLinearIndex index;
+    std::vector<FaceSearchHit> hits;
+    float bestScore = -1.0f;
+    bool hasCandidate = false;
+};
+
+static void writeRequestJson(JsonWriter& j, const FaceInferRequest& req) {
+    j.key("request");
+    j.beginObject();
+    j.key("yolo");
+    j.beginObject();
+    j.key("backend");
+    j.string(req.yoloBackend);
+    j.key("modelPath");
+    j.string(req.yoloModelPath);
+    j.key("configPath");
+    j.string(req.yoloConfigPath);
+    j.key("framework");
+    j.string(req.yoloFramework);
+    j.key("outputName");
+    j.string(req.yoloOutputName);
+    j.key("inputW");
+    j.number(static_cast<long long>(req.yoloInputW));
+    j.key("inputH");
+    j.number(static_cast<long long>(req.yoloInputH));
+    j.key("scoreThreshold");
+    j.number(static_cast<double>(req.yoloScoreThreshold));
+    j.key("nmsIouThreshold");
+    j.number(static_cast<double>(req.yoloNmsIouThreshold));
+    j.key("enableKeypoints5");
+    j.boolean(req.yoloEnableKeypoints5);
+    j.key("letterbox");
+    j.boolean(req.yoloLetterbox);
+    j.key("swapRB");
+    j.boolean(req.yoloSwapRB);
+    j.key("scale");
+    j.number(static_cast<double>(req.yoloScale));
+    j.key("meanB");
+    j.number(static_cast<long long>(req.yoloMeanB));
+    j.key("meanG");
+    j.number(static_cast<long long>(req.yoloMeanG));
+    j.key("meanR");
+    j.number(static_cast<long long>(req.yoloMeanR));
+    j.key("opencvBackend");
+    j.number(static_cast<long long>(req.yoloOpenCvBackend));
+    j.key("opencvTarget");
+    j.number(static_cast<long long>(req.yoloOpenCvTarget));
+    j.endObject();
+    j.key("arc");
+    j.beginObject();
+    j.key("backend");
+    j.string(req.arcBackend);
+    j.key("modelPath");
+    j.string(req.arcModelPath);
+    j.key("configPath");
+    j.string(req.arcConfigPath);
+    j.key("framework");
+    j.string(req.arcFramework);
+    j.key("outputName");
+    j.string(req.arcOutputName);
+    j.key("inputName");
+    j.string(req.arcInputName);
+    j.key("inputW");
+    j.number(static_cast<long long>(req.arcInputW));
+    j.key("inputH");
+    j.number(static_cast<long long>(req.arcInputH));
+    j.key("modelVersion");
+    j.number(static_cast<std::uint64_t>(req.arcModelVersion));
+    j.key("preprocessVersion");
+    j.number(static_cast<std::uint64_t>(req.arcPreprocessVersion));
+    j.key("fakeEmbedding");
+    j.boolean(req.fakeEmbedding);
+    j.endObject();
+    j.key("gallery");
+    j.beginObject();
+    j.key("dir");
+    j.string(req.galleryDir);
+    j.key("topK");
+    j.number(static_cast<std::uint64_t>(req.topK));
+    j.endObject();
+    j.key("threshold");
+    j.beginObject();
+    j.key("acceptThreshold");
+    j.number(static_cast<double>(req.acceptThreshold));
+    j.key("versionId");
+    j.string(req.thresholdVersionId);
+    j.key("consecutivePassesToTrigger");
+    j.number(static_cast<long long>(req.consecutivePassesToTrigger));
+    j.endObject();
+    j.key("faceSelectPolicy");
+    j.string(req.faceSelectPolicy);
+    j.key("fakeDetect");
+    j.boolean(req.fakeDetect);
+    j.endObject();
+}
+
+static std::string buildImageLoadFailureJson(const FaceInferOutcome& out,
+                                             const FaceInferRequest& req,
+                                             const FaceInferMetrics& m,
+                                             long long tsMs) {
+    JsonWriter j;
+    j.beginObject();
+    j.key("ok");
+    j.boolean(false);
+    j.key("errorCode");
+    j.number(static_cast<long long>(out.errorCode));
+    j.key("stage");
+    j.string(out.stage);
+    j.key("message");
+    j.string(out.message);
+    j.key("timestamp_ms");
+    j.number(tsMs);
+    j.key("image");
+    j.string(req.imagePath);
+    j.key("frame");
+    j.beginObject();
+    j.key("w");
+    j.number(0LL);
+    j.key("h");
+    j.number(0LL);
+    j.endObject();
+    j.key("metrics");
+    j.beginObject();
+    j.key("msLoad");
+    j.number(m.msLoad);
+    j.key("msTotal");
+    j.number(m.msTotal);
+    j.endObject();
+    writeRequestJson(j, req);
+    j.endObject();
+    return j.str();
+}
+
+static std::string buildOutcomeJson(const FaceInferOutcome& out,
+                                    const FaceInferRequest& req,
+                                    const FaceInferContext& ctx,
+                                    const ThresholdDecisionResult& decision,
+                                    const FaceInferMetrics& m,
+                                    long long tsMs) {
+    JsonWriter j;
+    j.beginObject();
+    j.key("ok");
+    j.boolean(out.ok);
+    j.key("errorCode");
+    j.number(static_cast<long long>(out.errorCode));
+    j.key("stage");
+    j.string(out.stage);
+    j.key("message");
+    j.string(out.message);
+    j.key("timestamp_ms");
+    j.number(tsMs);
+    j.key("image");
+    j.string(req.imagePath);
+    j.key("modelVersion");
+    j.number(static_cast<std::uint64_t>(req.arcModelVersion));
+    j.key("thresholdVersion");
+    j.string(decision.versionId);
+    j.key("frame");
+    j.beginObject();
+    j.key("w");
+    j.number(static_cast<long long>(ctx.img.cols));
+    j.key("h");
+    j.number(static_cast<long long>(ctx.img.rows));
+    j.endObject();
+    j.key("yolo");
+    j.beginObject();
+    j.key("backend");
+    j.string(ctx.yoloBackendName.empty() ? req.yoloBackend : ctx.yoloBackendName);
+    j.key("fake");
+    j.boolean(req.fakeDetect);
+    j.endObject();
+    j.key("face");
+    j.beginObject();
+    j.key("hasFace");
+    j.boolean(ctx.hasFace);
+    if (ctx.hasFace) {
+        j.key("bbox");
+        j.beginObject();
+        j.key("x");
+        j.number(static_cast<double>(ctx.mainFace.bbox.x));
+        j.key("y");
+        j.number(static_cast<double>(ctx.mainFace.bbox.y));
+        j.key("w");
+        j.number(static_cast<double>(ctx.mainFace.bbox.width));
+        j.key("h");
+        j.number(static_cast<double>(ctx.mainFace.bbox.height));
+        j.endObject();
+        j.key("score");
+        j.number(static_cast<double>(ctx.mainFace.score));
+        j.key("hasKeypoints5");
+        j.boolean(ctx.mainFace.keypoints5.has_value());
+        j.key("align");
+        j.beginObject();
+        j.key("usedKeypoints5");
+        j.boolean(ctx.usedKeypoints5);
+        j.key("usedBboxFallback");
+        j.boolean(ctx.usedBboxFallback);
+        j.key("outW");
+        j.number(static_cast<long long>(req.arcInputW));
+        j.key("outH");
+        j.number(static_cast<long long>(req.arcInputH));
+        j.endObject();
+    }
+    j.endObject();
+    j.key("embedding");
+    j.beginObject();
+    j.key("dim");
+    j.number(512LL);
+    j.key("backend");
+    j.string(ctx.arcBackendName);
+    j.key("fake");
+    j.boolean(ctx.embeddingFake);
+    j.key("modelVersion");
+    j.number(static_cast<std::uint64_t>(req.arcModelVersion));
+    j.key("preprocessVersion");
+    j.number(static_cast<std::uint64_t>(req.arcPreprocessVersion));
+    j.endObject();
+    j.key("gallery");
+    j.beginObject();
+    j.key("dir");
+    j.string(req.galleryDir);
+    j.key("size");
+    j.number(static_cast<std::uint64_t>((ctx.hasFace && ctx.embeddingOk) ? ctx.index.size() : 0));
+    if (!ctx.galleryWarnings.empty()) {
+        j.key("warnings");
+        j.beginArray();
+        for (const auto& w : ctx.galleryWarnings) j.string(w);
+        j.endArray();
+    }
+    j.endObject();
+    j.key("TopK");
+    j.beginObject();
+    j.key("k");
+    j.number(static_cast<std::uint64_t>(req.topK));
+    j.key("hits");
+    j.beginArray();
+    for (size_t i = 0; i < ctx.hits.size(); i++) {
+        j.beginObject();
+        j.key("rank");
+        j.number(static_cast<long long>(i + 1));
+        j.key("id");
+        j.string(ctx.hits[i].id);
+        j.key("index");
+        j.number(static_cast<long long>(ctx.hits[i].index));
+        j.key("score");
+        j.number(static_cast<double>(ctx.hits[i].score));
+        j.endObject();
+    }
+    j.endArray();
+    j.endObject();
+    j.key("decision");
+    j.beginObject();
+    j.key("threshold");
+    j.number(static_cast<double>(decision.threshold));
+    j.key("thresholdVersion");
+    j.string(decision.versionId);
+    j.key("passNow");
+    j.boolean(decision.passNow);
+    j.key("triggeredNow");
+    j.boolean(decision.triggeredNow);
+    j.key("triggeredLatched");
+    j.boolean(decision.triggeredLatched);
+    j.key("passStreak");
+    j.number(static_cast<std::uint64_t>(decision.passStreak));
+    j.key("bestScore");
+    j.number(static_cast<double>(decision.score));
+    j.endObject();
+    j.key("metrics");
+    j.beginObject();
+    j.key("msLoad");
+    j.number(m.msLoad);
+    j.key("msDetect");
+    j.number(m.msDetect);
+    j.key("msAlign");
+    j.number(m.msAlign);
+    j.key("msEmbed");
+    j.number(m.msEmbed);
+    j.key("msSearch");
+    j.number(m.msSearch);
+    j.key("msTotal");
+    j.number(m.msTotal);
+    j.endObject();
+    j.endObject();
+    return j.str();
+}
+
+static size_t pickMainFaceIndex(const FaceInferRequest& req, const FaceDetections& faces) {
+    if (faces.empty()) return 0;
+    std::string p;
+    p.reserve(req.faceSelectPolicy.size());
+    for (char c : req.faceSelectPolicy) p.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+
+    if (p == "first") return 0;
+    size_t bestIdx = 0;
+    if (p == "area" || p == "largest") {
+        for (size_t i = 1; i < faces.size(); i++) {
+            const auto& a = faces[i];
+            const auto& b = faces[bestIdx];
+            const float areaA = a.bbox.width * a.bbox.height;
+            const float areaB = b.bbox.width * b.bbox.height;
+            if (areaA > areaB) bestIdx = i;
+        }
+        return bestIdx;
+    }
+
+    for (size_t i = 1; i < faces.size(); i++) {
+        const auto& a = faces[i];
+        const auto& b = faces[bestIdx];
+        const float areaA = a.bbox.width * a.bbox.height;
+        const float areaB = b.bbox.width * b.bbox.height;
+        if (a.score > b.score) bestIdx = i;
+        else if (a.score == b.score && areaA > areaB) bestIdx = i;
+    }
+    return bestIdx;
+}
+
 static int errorCodeForStage(const std::string& stage) {
     if (stage == "image_load") return 100;
     if (stage == "yolo_load") return 200;
@@ -286,451 +677,232 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
     const long long tsMs = nowEpochMillis();
     try {
         const auto t0 = std::chrono::steady_clock::now();
+        FaceInferContext ctx;
+        FaceInferMetrics m;
+        ctx.arcBackendName = req.arcBackend;
 
-        cv::Mat img = cv::imread(req.imagePath, cv::IMREAD_COLOR);
+        ctx.img = cv::imread(req.imagePath, cv::IMREAD_COLOR);
         const auto t1 = std::chrono::steady_clock::now();
-        const long long msLoad = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        m.msLoad = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
         std::string stage;
         std::string msg;
 
-        if (img.empty()) {
-            const long long msTotal = msLoad;
-            out.ok = false;
-            out.stage = "image_load";
-            out.message = "image_load_failed";
-            out.errorCode = errorCodeForStage(out.stage);
-            out.auditDir = "ErrorLog";
-            out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
-            JsonWriter j;
-            j.beginObject();
-            j.key("ok");
-            j.boolean(false);
-            j.key("errorCode");
-            j.number(static_cast<long long>(out.errorCode));
-            j.key("stage");
-            j.string(out.stage);
-            j.key("message");
-            j.string(out.message);
-            j.key("timestamp_ms");
-            j.number(tsMs);
-            j.key("image");
-            j.string(req.imagePath);
-            j.key("frame");
-            j.beginObject();
-            j.key("w");
-            j.number(0LL);
-            j.key("h");
-            j.number(0LL);
-            j.endObject();
-            j.key("metrics");
-            j.beginObject();
-            j.key("msLoad");
-            j.number(msLoad);
-            j.key("msTotal");
-            j.number(msTotal);
-            j.endObject();
-            j.key("request");
-            j.beginObject();
-            j.key("yolo");
-            j.beginObject();
-            j.key("backend");
-            j.string(req.yoloBackend);
-            j.key("modelPath");
-            j.string(req.yoloModelPath);
-            j.key("configPath");
-            j.string(req.yoloConfigPath);
-            j.key("framework");
-            j.string(req.yoloFramework);
-            j.key("outputName");
-            j.string(req.yoloOutputName);
-            j.key("inputW");
-            j.number(static_cast<long long>(req.yoloInputW));
-            j.key("inputH");
-            j.number(static_cast<long long>(req.yoloInputH));
-            j.key("scoreThreshold");
-            j.number(static_cast<double>(req.yoloScoreThreshold));
-            j.key("nmsIouThreshold");
-            j.number(static_cast<double>(req.yoloNmsIouThreshold));
-            j.key("enableKeypoints5");
-            j.boolean(req.yoloEnableKeypoints5);
-            j.key("letterbox");
-            j.boolean(req.yoloLetterbox);
-            j.key("swapRB");
-            j.boolean(req.yoloSwapRB);
-            j.key("scale");
-            j.number(static_cast<double>(req.yoloScale));
-            j.key("meanB");
-            j.number(static_cast<long long>(req.yoloMeanB));
-            j.key("meanG");
-            j.number(static_cast<long long>(req.yoloMeanG));
-            j.key("meanR");
-            j.number(static_cast<long long>(req.yoloMeanR));
-            j.key("opencvBackend");
-            j.number(static_cast<long long>(req.yoloOpenCvBackend));
-            j.key("opencvTarget");
-            j.number(static_cast<long long>(req.yoloOpenCvTarget));
-            j.endObject();
-            j.key("arc");
-            j.beginObject();
-            j.key("backend");
-            j.string(req.arcBackend);
-            j.key("modelPath");
-            j.string(req.arcModelPath);
-            j.key("configPath");
-            j.string(req.arcConfigPath);
-            j.key("framework");
-            j.string(req.arcFramework);
-            j.key("outputName");
-            j.string(req.arcOutputName);
-            j.key("inputName");
-            j.string(req.arcInputName);
-            j.key("inputW");
-            j.number(static_cast<long long>(req.arcInputW));
-            j.key("inputH");
-            j.number(static_cast<long long>(req.arcInputH));
-            j.key("modelVersion");
-            j.number(static_cast<std::uint64_t>(req.arcModelVersion));
-            j.key("preprocessVersion");
-            j.number(static_cast<std::uint64_t>(req.arcPreprocessVersion));
-            j.key("fakeEmbedding");
-            j.boolean(req.fakeEmbedding);
-            j.endObject();
-            j.key("gallery");
-            j.beginObject();
-            j.key("dir");
-            j.string(req.galleryDir);
-            j.key("topK");
-            j.number(static_cast<std::uint64_t>(req.topK));
-            j.endObject();
-            j.key("threshold");
-            j.beginObject();
-            j.key("acceptThreshold");
-            j.number(static_cast<double>(req.acceptThreshold));
-            j.key("versionId");
-            j.string(req.thresholdVersionId);
-            j.key("consecutivePassesToTrigger");
-            j.number(static_cast<long long>(req.consecutivePassesToTrigger));
-            j.endObject();
-            j.key("faceSelectPolicy");
-            j.string(req.faceSelectPolicy);
-            j.key("fakeDetect");
-            j.boolean(req.fakeDetect);
-            j.endObject();
-            j.endObject();
-            out.json = j.str();
-            return out;
-        }
+        do {
+            if (ctx.img.empty()) {
+                stage = "image_load";
+                msg = "image_load_failed";
+                break;
+            }
 
-    FaceDetections faces;
-    std::string yoloBackendName;
-    long long msDetect = 0;
-
-    if (stage.empty()) {
-        if (req.fakeDetect) {
-            faces = fakeDetectCenterFace(img);
-            yoloBackendName = "fake";
-        } else {
-            std::string detErr;
-            std::unique_ptr<YoloFaceDetector> det;
-            if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn") {
-                det = CreateOpenCvDnnYoloFaceDetector();
-                YoloFaceModelSpec spec;
-                spec.modelPath = req.yoloModelPath;
-                spec.configPath = req.yoloConfigPath;
-                spec.framework = req.yoloFramework;
-                spec.outputName = req.yoloOutputName;
-                YoloFaceOptions opt;
-                opt.inputW = req.yoloInputW;
-                opt.inputH = req.yoloInputH;
-                opt.scoreThreshold = req.yoloScoreThreshold;
-                opt.nmsIouThreshold = req.yoloNmsIouThreshold;
-                opt.enableKeypoints5 = req.yoloEnableKeypoints5;
-                opt.letterbox = req.yoloLetterbox;
-                opt.swapRB = req.yoloSwapRB;
-                opt.scale = req.yoloScale;
-                opt.meanB = req.yoloMeanB;
-                opt.meanG = req.yoloMeanG;
-                opt.meanR = req.yoloMeanR;
-                opt.opencvBackend = req.yoloOpenCvBackend;
-                opt.opencvTarget = req.yoloOpenCvTarget;
-                if (!det->load(spec, opt, detErr)) {
-                    stage = "yolo_load";
-                    msg = detErr.empty() ? "yolo_load_failed" : detErr;
-                }
-            } else if (req.yoloBackend == "ncnn") {
+            if (req.fakeDetect) {
+                ctx.faces = fakeDetectCenterFace(ctx.img);
+                ctx.yoloBackendName = "fake";
+            } else {
+                std::string detErr;
+                std::unique_ptr<YoloFaceDetector> det;
+                if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn") {
+                    det = CreateOpenCvDnnYoloFaceDetector();
+                    YoloFaceModelSpec spec;
+                    spec.modelPath = req.yoloModelPath;
+                    spec.configPath = req.yoloConfigPath;
+                    spec.framework = req.yoloFramework;
+                    spec.outputName = req.yoloOutputName;
+                    YoloFaceOptions opt;
+                    opt.inputW = req.yoloInputW;
+                    opt.inputH = req.yoloInputH;
+                    opt.scoreThreshold = req.yoloScoreThreshold;
+                    opt.nmsIouThreshold = req.yoloNmsIouThreshold;
+                    opt.enableKeypoints5 = req.yoloEnableKeypoints5;
+                    opt.letterbox = req.yoloLetterbox;
+                    opt.swapRB = req.yoloSwapRB;
+                    opt.scale = req.yoloScale;
+                    opt.meanB = req.yoloMeanB;
+                    opt.meanG = req.yoloMeanG;
+                    opt.meanR = req.yoloMeanR;
+                    opt.opencvBackend = req.yoloOpenCvBackend;
+                    opt.opencvTarget = req.yoloOpenCvTarget;
+                    if (!det->load(spec, opt, detErr)) {
+                        stage = "yolo_load";
+                        msg = detErr.empty() ? "yolo_load_failed" : detErr;
+                        break;
+                    }
+                } else if (req.yoloBackend == "ncnn") {
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-                stage = "yolo_load";
-                msg = "ncnn_backend_requires_param_bin_via_yolo_face_cli";
+                    stage = "yolo_load";
+                    msg = "ncnn_backend_requires_param_bin_via_yolo_face_cli";
 #else
-                stage = "yolo_load";
-                msg = "RK_HAVE_NCNN_not_enabled";
+                    stage = "yolo_load";
+                    msg = "RK_HAVE_NCNN_not_enabled";
 #endif
-            } else {
-                stage = "yolo_load";
-                msg = "yolo_backend_unsupported";
-            }
-
-            if (stage.empty() && det) {
-                yoloBackendName = det->backendName();
-                const auto td0 = std::chrono::steady_clock::now();
-                faces = det->detect(img, detErr);
-                const auto td1 = std::chrono::steady_clock::now();
-                msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
-                if (!detErr.empty()) {
-                    stage = "yolo_detect";
-                    msg = detErr;
-                }
-            }
-        }
-    }
-
-    bool hasFace = false;
-    FaceDetection mainFace;
-    if (stage.empty() && !faces.empty()) {
-        hasFace = true;
-        size_t bestIdx = 0;
-        std::string p;
-        p.reserve(req.faceSelectPolicy.size());
-        for (char c : req.faceSelectPolicy) p.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-
-        if (p == "first") {
-            bestIdx = 0;
-        } else if (p == "area" || p == "largest") {
-            for (size_t i = 1; i < faces.size(); i++) {
-                const auto& a = faces[i];
-                const auto& b = faces[bestIdx];
-                const float areaA = a.bbox.width * a.bbox.height;
-                const float areaB = b.bbox.width * b.bbox.height;
-                if (areaA > areaB) bestIdx = i;
-            }
-        } else if (p == "score") {
-            for (size_t i = 1; i < faces.size(); i++) {
-                const auto& a = faces[i];
-                const auto& b = faces[bestIdx];
-                const float areaA = a.bbox.width * a.bbox.height;
-                const float areaB = b.bbox.width * b.bbox.height;
-                if (a.score > b.score) bestIdx = i;
-                else if (a.score == b.score && areaA > areaB) bestIdx = i;
-            }
-        } else {
-            for (size_t i = 1; i < faces.size(); i++) {
-                const auto& a = faces[i];
-                const auto& b = faces[bestIdx];
-                const float areaA = a.bbox.width * a.bbox.height;
-                const float areaB = b.bbox.width * b.bbox.height;
-                if (a.score > b.score) bestIdx = i;
-                else if (a.score == b.score && areaA > areaB) bestIdx = i;
-            }
-        }
-        mainFace = faces[bestIdx];
-    }
-
-    cv::Mat aligned112;
-    bool usedKeypoints5 = false;
-    bool usedBboxFallback = false;
-    long long msAlign = 0;
-
-    if (stage.empty() && hasFace) {
-        const auto ta0 = std::chrono::steady_clock::now();
-        FaceAlignOptions aopt;
-        aopt.outW = req.arcInputW;
-        aopt.outH = req.arcInputH;
-        aopt.preferKeypoints5 = true;
-        auto ar = alignFaceForArcFace112(img, mainFace, aopt);
-        const auto ta1 = std::chrono::steady_clock::now();
-        msAlign = std::chrono::duration_cast<std::chrono::milliseconds>(ta1 - ta0).count();
-        if (ar.alignedBgr.empty()) {
-            stage = "align";
-            msg = ar.err.empty() ? "align_failed" : ar.err;
-        } else {
-            aligned112 = std::move(ar.alignedBgr);
-            usedKeypoints5 = ar.usedKeypoints5;
-            usedBboxFallback = ar.usedBboxFallback;
-        }
-    }
-
-    std::vector<float> embedding;
-    bool embeddingOk = false;
-    bool embeddingFake = false;
-    long long msEmbed = 0;
-    std::string arcBackendName = req.arcBackend;
-
-    if (stage.empty() && hasFace) {
-        const auto te0 = std::chrono::steady_clock::now();
-        if (req.fakeEmbedding) {
-            embedding = makeFakeEmbedding512(mainFace.bbox, img.size());
-            embeddingOk = (embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
-            embeddingFake = true;
-        } else {
-            ArcFaceEmbedderConfig cfg;
-            cfg.inputW = req.arcInputW;
-            cfg.inputH = req.arcInputH;
-            cfg.modelVersion = req.arcModelVersion;
-            cfg.preprocessVersion = req.arcPreprocessVersion;
-            cfg.opencvModel = req.arcModelPath;
-            cfg.opencvConfig = req.arcConfigPath;
-            cfg.opencvFramework = req.arcFramework;
-            cfg.opencvOutput = req.arcOutputName;
-            cfg.opencvInput = req.arcInputName;
-
-            if (req.arcBackend == "opencv" || req.arcBackend == "opencv_dnn") {
-                cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
-            } else if (req.arcBackend == "ncnn") {
-                cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
-            } else {
-                stage = "arc_init";
-                msg = "arc_backend_unsupported";
-            }
-
-            if (stage.empty()) {
-                ArcFaceEmbedder emb;
-                std::string initErr;
-                if (!emb.initialize(cfg, &initErr)) {
-                    stage = "arc_init";
-                    msg = initErr.empty() ? "arc_init_failed" : initErr;
+                    break;
                 } else {
-                    arcBackendName = (cfg.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) ? "opencv_dnn" : "ncnn";
-                    std::string embedErr;
-                    auto e = emb.embedAlignedFaceBgr(aligned112, &embedErr);
-                    if (!e.has_value()) {
-                        stage = "arc_embed";
-                        msg = embedErr.empty() ? "arc_embed_failed" : embedErr;
-                    } else {
-                        embedding = std::move(e->values);
-                        embeddingOk = (embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
+                    stage = "yolo_load";
+                    msg = "yolo_backend_unsupported";
+                    break;
+                }
+
+                if (det) {
+                    ctx.yoloBackendName = det->backendName();
+                    const auto td0 = std::chrono::steady_clock::now();
+                    ctx.faces = det->detect(ctx.img, detErr);
+                    const auto td1 = std::chrono::steady_clock::now();
+                    m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+                    if (!detErr.empty()) {
+                        stage = "yolo_detect";
+                        msg = detErr;
+                        break;
                     }
                 }
             }
-        }
-        const auto te1 = std::chrono::steady_clock::now();
-        msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-    }
 
-    std::vector<FaceSearchEntry> galleryEntries;
-    std::vector<std::string> galleryWarnings;
-    std::string galleryErr;
-    if (stage.empty()) {
-        if (!loadGalleryDir(req.galleryDir, galleryEntries, galleryWarnings, galleryErr)) {
-            stage = "gallery_load";
-            msg = galleryErr.empty() ? "gallery_load_failed" : galleryErr;
-        }
-    }
+            if (!ctx.faces.empty()) {
+                ctx.hasFace = true;
+                const size_t bestIdx = pickMainFaceIndex(req, ctx.faces);
+                ctx.mainFace = ctx.faces[bestIdx];
+            }
 
-    FaceSearchLinearIndex index;
-    std::vector<FaceSearchHit> hits;
-    std::string searchErr;
-    long long msSearch = 0;
+            if (ctx.hasFace) {
+                const auto ta0 = std::chrono::steady_clock::now();
+                FaceAlignOptions aopt;
+                aopt.outW = req.arcInputW;
+                aopt.outH = req.arcInputH;
+                aopt.preferKeypoints5 = true;
+                auto ar = alignFaceForArcFace112(ctx.img, ctx.mainFace, aopt);
+                const auto ta1 = std::chrono::steady_clock::now();
+                m.msAlign = std::chrono::duration_cast<std::chrono::milliseconds>(ta1 - ta0).count();
+                if (ar.alignedBgr.empty()) {
+                    stage = "align";
+                    msg = ar.err.empty() ? "align_failed" : ar.err;
+                    break;
+                }
+                ctx.aligned112 = std::move(ar.alignedBgr);
+                ctx.usedKeypoints5 = ar.usedKeypoints5;
+                ctx.usedBboxFallback = ar.usedBboxFallback;
+            }
 
-    float bestScore = -1.0f;
-    bool hasCandidate = false;
+            if (ctx.hasFace) {
+                const auto te0 = std::chrono::steady_clock::now();
+                if (req.fakeEmbedding) {
+                    ctx.embedding = makeFakeEmbedding512(ctx.mainFace.bbox, ctx.img.size());
+                    ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
+                    ctx.embeddingFake = true;
+                } else {
+                    ArcFaceEmbedderConfig cfg;
+                    cfg.inputW = req.arcInputW;
+                    cfg.inputH = req.arcInputH;
+                    cfg.modelVersion = req.arcModelVersion;
+                    cfg.preprocessVersion = req.arcPreprocessVersion;
+                    cfg.opencvModel = req.arcModelPath;
+                    cfg.opencvConfig = req.arcConfigPath;
+                    cfg.opencvFramework = req.arcFramework;
+                    cfg.opencvOutput = req.arcOutputName;
+                    cfg.opencvInput = req.arcInputName;
 
-    if (stage.empty()) {
-        if (hasFace && embeddingOk) {
-            const auto ts0 = std::chrono::steady_clock::now();
-            if (!index.reset(std::move(galleryEntries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {
-                stage = "search";
-                msg = searchErr.empty() ? "index_reset_failed" : searchErr;
-            } else {
-                if (index.size() > 0) {
+                    if (req.arcBackend == "opencv" || req.arcBackend == "opencv_dnn") {
+                        cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
+                    } else if (req.arcBackend == "ncnn") {
+                        cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
+                    } else {
+                        stage = "arc_init";
+                        msg = "arc_backend_unsupported";
+                        break;
+                    }
+
+                    ArcFaceEmbedder emb;
+                    std::string initErr;
+                    if (!emb.initialize(cfg, &initErr)) {
+                        stage = "arc_init";
+                        msg = initErr.empty() ? "arc_init_failed" : initErr;
+                        break;
+                    }
+
+                    ctx.arcBackendName =
+                        (cfg.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) ? "opencv_dnn" : "ncnn";
+                    std::string embedErr;
+                    auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &embedErr);
+                    if (!e.has_value()) {
+                        stage = "arc_embed";
+                        msg = embedErr.empty() ? "arc_embed_failed" : embedErr;
+                        break;
+                    }
+                    ctx.embedding = std::move(e->values);
+                    ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
+                }
+                const auto te1 = std::chrono::steady_clock::now();
+                m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+            }
+
+            std::string galleryErr;
+            if (!loadGalleryDir(req.galleryDir, ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
+                ctx.galleryEntries.clear();
+                stage = "gallery_load";
+                msg = galleryErr.empty() ? "gallery_load_failed" : galleryErr;
+                break;
+            }
+
+            if (ctx.hasFace && ctx.embeddingOk) {
+                std::string searchErr;
+                const auto ts0 = std::chrono::steady_clock::now();
+                if (!ctx.index.reset(std::move(ctx.galleryEntries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {
+                    stage = "search";
+                    msg = searchErr.empty() ? "index_reset_failed" : searchErr;
+                    const auto ts1 = std::chrono::steady_clock::now();
+                    m.msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
+                    ctx.hits.clear();
+                    ctx.hasCandidate = false;
+                    ctx.bestScore = -1.0f;
+                    break;
+                } else if (ctx.index.size() > 0) {
                     FaceSearchOptions opt;
                     opt.assumeL2Normalized = true;
-                    hits = index.searchTopK(embedding, req.topK, opt, searchErr);
+                    ctx.hits = ctx.index.searchTopK(ctx.embedding, req.topK, opt, searchErr);
                     if (!searchErr.empty()) {
                         stage = "search";
                         msg = searchErr;
                     }
                 }
+                const auto ts1 = std::chrono::steady_clock::now();
+                m.msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
+                if (!ctx.hits.empty()) {
+                    ctx.bestScore = ctx.hits[0].score;
+                    ctx.hasCandidate = true;
+                }
+                if (!stage.empty()) break;
             }
-            const auto ts1 = std::chrono::steady_clock::now();
-            msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
+        } while (false);
 
-            if (stage.empty() && !hits.empty()) {
-                bestScore = hits[0].score;
-                hasCandidate = true;
-            }
+        if (stage == "image_load") {
+            m.msTotal = m.msLoad;
+            out.ok = false;
+            out.stage = "image_load";
+            out.message = msg;
+            out.errorCode = errorCodeForStage(out.stage);
+            out.auditDir = "ErrorLog";
+            out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
+            out.json = buildImageLoadFailureJson(out, req, m, tsMs);
+            return out;
         }
-    }
 
-    ThresholdPolicyVersion v;
-    v.versionId = req.thresholdVersionId;
-    v.acceptThreshold = req.acceptThreshold;
-    v.consecutivePassesToTrigger = req.consecutivePassesToTrigger > 0 ? static_cast<size_t>(req.consecutivePassesToTrigger) : 1;
-    ThresholdDecisionPolicy policy(v);
-    const ThresholdDecisionResult decision = policy.feed(bestScore, hasCandidate);
+        ThresholdPolicyVersion v;
+        v.versionId = req.thresholdVersionId;
+        v.acceptThreshold = req.acceptThreshold;
+        v.consecutivePassesToTrigger =
+            req.consecutivePassesToTrigger > 0 ? static_cast<size_t>(req.consecutivePassesToTrigger) : 1;
+        ThresholdDecisionPolicy policy(v);
+        const ThresholdDecisionResult decision = policy.feed(ctx.bestScore, ctx.hasCandidate);
 
         const auto tEnd = std::chrono::steady_clock::now();
-        const long long msTotal = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - t0).count();
+        m.msTotal = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - t0).count();
 
         out.ok = stage.empty();
         out.stage = stage.empty() ? "done" : stage;
-        if (!stage.empty()) out.message = msg;
-        else out.message = hasFace ? "" : "no_face_detected";
+        out.message = stage.empty() ? (ctx.hasFace ? "" : "no_face_detected") : msg;
         out.errorCode = stage.empty() ? 0 : errorCodeForStage(stage);
         out.auditDir = out.ok ? "tests/metrics" : "ErrorLog";
         out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
 
-        std::ostringstream jout;
-        jout << "{";
-        jout << "\"ok\":" << (out.ok ? "true" : "false") << ",";
-        jout << "\"errorCode\":" << out.errorCode << ",";
-        jout << "\"stage\":\"" << jsonEscape(out.stage) << "\",";
-        jout << "\"message\":\"" << jsonEscape(out.message) << "\",";
-        jout << "\"timestamp_ms\":" << tsMs << ",";
-        jout << "\"image\":\"" << jsonEscape(req.imagePath) << "\",";
-        jout << "\"modelVersion\":" << req.arcModelVersion << ",";
-        jout << "\"thresholdVersion\":\"" << jsonEscape(decision.versionId) << "\",";
-        jout << "\"frame\":{\"w\":" << img.cols << ",\"h\":" << img.rows << "},";
-    jout << "\"yolo\":{\"backend\":\"" << jsonEscape(yoloBackendName.empty() ? req.yoloBackend : yoloBackendName) << "\",\"fake\":" << (req.fakeDetect ? "true" : "false") << "},";
-    jout << "\"face\":{\"hasFace\":" << (hasFace ? "true" : "false");
-    if (hasFace) {
-        jout << ",\"bbox\":{\"x\":" << mainFace.bbox.x << ",\"y\":" << mainFace.bbox.y << ",\"w\":" << mainFace.bbox.width << ",\"h\":" << mainFace.bbox.height << "}";
-        jout << ",\"score\":" << mainFace.score;
-        jout << ",\"hasKeypoints5\":" << (mainFace.keypoints5.has_value() ? "true" : "false");
-        jout << ",\"align\":{\"usedKeypoints5\":" << (usedKeypoints5 ? "true" : "false") << ",\"usedBboxFallback\":" << (usedBboxFallback ? "true" : "false")
-             << ",\"outW\":" << req.arcInputW << ",\"outH\":" << req.arcInputH << "}";
-    }
-    jout << "},";
-    jout << "\"embedding\":{\"dim\":512,\"backend\":\"" << jsonEscape(arcBackendName) << "\",\"fake\":" << (embeddingFake ? "true" : "false")
-         << ",\"modelVersion\":" << req.arcModelVersion << ",\"preprocessVersion\":" << req.arcPreprocessVersion << "},";
-    jout << "\"gallery\":{\"dir\":\"" << jsonEscape(req.galleryDir) << "\",\"size\":" << (hasFace && embeddingOk ? index.size() : 0);
-    if (!galleryWarnings.empty()) {
-        jout << ",\"warnings\":[";
-        for (size_t i = 0; i < galleryWarnings.size(); i++) {
-            if (i) jout << ",";
-            jout << "\"" << jsonEscape(galleryWarnings[i]) << "\"";
-        }
-        jout << "]";
-    }
-    jout << "},";
-    jout << "\"TopK\":{";
-    jout << "\"k\":" << req.topK << ",";
-    jout << "\"hits\":[";
-    for (size_t i = 0; i < hits.size(); i++) {
-        if (i) jout << ",";
-        jout << "{";
-        jout << "\"rank\":" << (i + 1) << ",";
-        jout << "\"id\":\"" << jsonEscape(hits[i].id) << "\",";
-        jout << "\"index\":" << hits[i].index << ",";
-        jout << "\"score\":" << hits[i].score;
-        jout << "}";
-    }
-    jout << "]";
-    jout << "},";
-    jout << "\"decision\":{";
-    jout << "\"threshold\":" << decision.threshold << ",";
-    jout << "\"thresholdVersion\":\"" << jsonEscape(decision.versionId) << "\",";
-    jout << "\"passNow\":" << (decision.passNow ? "true" : "false") << ",";
-    jout << "\"triggeredNow\":" << (decision.triggeredNow ? "true" : "false") << ",";
-    jout << "\"triggeredLatched\":" << (decision.triggeredLatched ? "true" : "false") << ",";
-    jout << "\"passStreak\":" << decision.passStreak << ",";
-    jout << "\"bestScore\":" << decision.score;
-    jout << "},";
-    jout << "\"metrics\":{\"msLoad\":" << msLoad << ",\"msDetect\":" << msDetect << ",\"msAlign\":" << msAlign << ",\"msEmbed\":" << msEmbed
-         << ",\"msSearch\":" << msSearch << ",\"msTotal\":" << msTotal << "}";
-    jout << "}";
-
-        out.json = jout.str();
+        out.json = buildOutcomeJson(out, req, ctx, decision, m, tsMs);
         return out;
     } catch (const std::exception& e) {
         out.ok = false;
@@ -739,16 +911,22 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         out.errorCode = errorCodeForStage(out.stage);
         out.auditDir = "ErrorLog";
         out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
-        std::ostringstream jout;
-        jout << "{";
-        jout << "\"ok\":false,";
-        jout << "\"errorCode\":" << out.errorCode << ",";
-        jout << "\"stage\":\"exception\",";
-        jout << "\"message\":\"" << jsonEscape(out.message) << "\",";
-        jout << "\"timestamp_ms\":" << tsMs << ",";
-        jout << "\"image\":\"" << jsonEscape(req.imagePath) << "\"";
-        jout << "}";
-        out.json = jout.str();
+        JsonWriter j;
+        j.beginObject();
+        j.key("ok");
+        j.boolean(false);
+        j.key("errorCode");
+        j.number(static_cast<long long>(out.errorCode));
+        j.key("stage");
+        j.string("exception");
+        j.key("message");
+        j.string(out.message);
+        j.key("timestamp_ms");
+        j.number(tsMs);
+        j.key("image");
+        j.string(req.imagePath);
+        j.endObject();
+        out.json = j.str();
         return out;
     } catch (...) {
         out.ok = false;
@@ -757,8 +935,20 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         out.errorCode = errorCodeForStage(out.stage);
         out.auditDir = "ErrorLog";
         out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
-        out.json = std::string("{\"ok\":false,\"errorCode\":") + std::to_string(out.errorCode) +
-                   ",\"stage\":\"exception\",\"message\":\"unknown_exception\",\"timestamp_ms\":" + std::to_string(tsMs) + "}";
+        JsonWriter j;
+        j.beginObject();
+        j.key("ok");
+        j.boolean(false);
+        j.key("errorCode");
+        j.number(static_cast<long long>(out.errorCode));
+        j.key("stage");
+        j.string("exception");
+        j.key("message");
+        j.string("unknown_exception");
+        j.key("timestamp_ms");
+        j.number(tsMs);
+        j.endObject();
+        out.json = j.str();
         return out;
     }
 }
