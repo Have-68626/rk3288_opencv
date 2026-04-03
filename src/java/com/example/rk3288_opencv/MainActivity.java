@@ -733,10 +733,29 @@ public class MainActivity extends AppCompatActivity {
                 // We prefer fixed name prefix to avoid clutter, but MUST keep extension for OpenCV
                 String extension = "";
                 int dotIndex = fileName.lastIndexOf(".");
-                if (dotIndex >= 0) {
-                    extension = fileName.substring(dotIndex);
+                if (dotIndex >= 0 && dotIndex < fileName.length() - 1) {
+                    extension = fileName.substring(dotIndex + 1);
                 }
-                String saveName = "mock_source" + extension;
+
+                if (extension.isEmpty() || extension.length() > 16 || !extension.matches("^[A-Za-z0-9]+$")) {
+                    runOnUiThread(() -> {
+                        progressDialog.dismiss();
+                        Toast.makeText(MainActivity.this, "文件名或扩展名无效", Toast.LENGTH_SHORT).show();
+                    });
+                    return;
+                }
+                String saveName = "mock_source." + extension;
+
+                java.io.File cacheFile = new java.io.File(getCacheDir(), saveName);
+                java.io.File cacheDir = getCacheDir();
+
+                if (!cacheFile.getCanonicalPath().startsWith(cacheDir.getCanonicalPath() + java.io.File.separator)) {
+                    runOnUiThread(() -> {
+                        progressDialog.dismiss();
+                        Toast.makeText(MainActivity.this, "文件名或扩展名无效", Toast.LENGTH_SHORT).show();
+                    });
+                    return;
+                }
 
                 java.io.InputStream is = getContentResolver().openInputStream(uri);
                 if (is == null) {
@@ -747,7 +766,6 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
                 
-                java.io.File cacheFile = new java.io.File(getCacheDir(), saveName);
                 java.io.FileOutputStream fos = new java.io.FileOutputStream(cacheFile);
                 
                 byte[] buffer = new byte[8192];
