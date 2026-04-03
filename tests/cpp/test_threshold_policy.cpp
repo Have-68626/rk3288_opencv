@@ -71,3 +71,22 @@ bool test_threshold_policy_version_and_consecutive() {
     return true;
 }
 
+bool test_threshold_policy_rollback_empty_history() {
+    ThresholdPolicyVersion v1;
+    v1.versionId = "v1";
+    v1.acceptThreshold = 0.80f;
+    v1.consecutivePassesToTrigger = 3;
+
+    ThresholdDecisionPolicy p(v1);
+
+    std::string err;
+    bool success = p.rollbackPrevious(err);
+
+    // Verify it fails
+    if (success) return false;
+
+    // Verify error message contains expected substring
+    if (err.find("无可回滚版本") == std::string::npos) return false;
+
+    return true;
+}
