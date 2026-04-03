@@ -44,7 +44,7 @@ rk3288_opencv/
 │       ├── USER_MANUAL.md
 │       ├── PERF_TEST_REPORT.md
 │       └── PERF_TEST_REPORT_BASELINE.md
-├── ErrorLog/             # 报错归档与复现记录（统一入口）[GitHub]
+├── ErrorLog/             # 报错归档与复现记录（统一入口；目录名区分大小写，不使用 errorlog/）[GitHub]
 ├── scripts/              # 构建与验证脚本 [GitHub]
 │   ├── clean-repo-junk.js # 仓库垃圾扫描/清理/回滚（默认 dry-run）[GitHub]
 │   └── clean-repo-junk.rules.json # 清理规则配置（白名单/目标/保护/输出/隔离）[GitHub]
@@ -63,24 +63,47 @@ rk3288_opencv/
 ## 2. 环境准备 (Environment Setup)
 
 ### 2.1 快速开始 (Quick Start)
-为简化开发环境配置，提供了一键初始化脚本。请在 Ubuntu 20.04+ 环境下运行：
+本仓库当前开发/部署主路径为：
+- Windows：主开发环境（构建、运行、验证、工具脚本）
+- Android：APK 部署到 RK3288 设备（`armeabi-v7a`）
+- Linux：仅用于 CI/CD（快速发现编译/测试/脚本问题），不作为部署目标
 
-```bash
-#!/bin/bash
-# setup_env.sh - 自动配置 RK3288 交叉编译环境
+> 重要提示（边界说明）：
+> - 仓库已启用的 CI 工作流见：`.github/workflows/ci.yml`，主要用于“仓库卫生扫描 + 最小单测编译运行”。
+> - 本文档中出现的“CI 模板/示例”会明确标注为模板，不代表仓库已经启用同名工作流或脚本。
 
-echo "正在安装基础依赖..."
-sudo apt update && sudo apt install -y cmake build-essential gcc-arm-linux-gnueabihf
+#### 2.1.1 Windows 端最小准备（建议）
+1) 安装 Visual Studio 2022（勾选“使用 C++ 的桌面开发”）
+2) 安装 Android Studio（可选：仅当你需要构建/部署 APK）
+3) 安装 Node.js 20（可选：仅当你需要运行 `scripts/*.js` 的审计/清理工具）
 
-echo "下载并配置 Android NDK (r21e)..."
-wget -q https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip
-unzip -q android-ndk-r21e-linux-x86_64.zip
-export ANDROID_NDK_HOME=$(pwd)/android-ndk-r21e
+#### 2.1.2 Windows 快速构建（最小闭环，不依赖 OpenCV）
+在仓库根目录打开 PowerShell，执行：
 
-echo "配置 OpenCV (3.4.11 / 4.5.5)..."
-# (此处省略 OpenCV 源码下载与交叉编译步骤，通常需耗时 30 分钟)
+```powershell
+$CMAKE_EXE = "cmake"
+$CTEST_EXE = "ctest"
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+  $sdk = $env:ANDROID_SDK_ROOT
+  $c1 = Join-Path $sdk "cmake\\4.1.2\\bin\\cmake.exe"
+  $c2 = Join-Path $sdk "cmake\\3.22.1\\bin\\cmake.exe"
+  $t1 = Join-Path $sdk "cmake\\4.1.2\\bin\\ctest.exe"
+  $t2 = Join-Path $sdk "cmake\\3.22.1\\bin\\ctest.exe"
+  if (Test-Path $c1) { $CMAKE_EXE = $c1; $CTEST_EXE = $t1 }
+  elseif (Test-Path $c2) { $CMAKE_EXE = $c2; $CTEST_EXE = $t2 }
+  else { throw "未找到 cmake/ctest：请安装 CMake，或安装 Android Studio 并设置 ANDROID_SDK_ROOT" }
+}
 
-echo "环境配置完成！请运行: source env_setup.sh"
+& $CMAKE_EXE -S . -B build_smoke -G "Visual Studio 17 2022" -A x64 -DRK_SKIP_OPENCV=ON -DRK_BUILD_CORE_UNIT_TESTS=ON
+& $CMAKE_EXE --build build_smoke --config Release --target core_unit_tests
+& $CTEST_EXE --test-dir build_smoke -C Release --output-on-failure
+```
+
+#### 2.1.3 Android APK 快速构建（可选）
+在仓库根目录打开 PowerShell，执行：
+
+```powershell
+.\gradlew.bat --no-daemon clean assembleDebug testDebugUnitTest lintDebug
 ```
 
 ### 2.2 技术栈选型 (Tech Stack Selection)
@@ -92,7 +115,7 @@ echo "环境配置完成！请运行: source env_setup.sh"
 | :--- | :--- | :--- | :--- | :--- |
 | **构建系统** | **CMake 3.18.1+** | CMake 3.22+ | [A] 3.18.1 | 高版本 CMake 支持更好的依赖管理，但老旧服务器可能不支持。 |
 | **C++ 标准** | **C++17** | C++20 | [A] 17 | C++20 提供协程等新特性，但需较新版本的编译器 (GCC 10+)。 |
-| **OpenCV** | **3.4.16** | 4.5.5+ | [B] 4.10.0 | 3.x 兼容性好，旧代码迁移成本低；4.x 支持 DNN 模块更完善。 |
+| **OpenCV** | **3.4.16** | 4.10.0 | [B] 4.10.0 | 3.x 兼容性好，旧代码迁移成本低；4.x 支持 DNN 模块更完善。 |
 | **推理后端** | OpenCV DNN (CPU) | **ncnn（CPU / 可选 GPU）** | [B] | CPU 推理通用性强但慢；ncnn 端侧部署成熟、体积小，GPU 加速不作为强依赖前提。 |
 | **视频后端** | **V4L2 (原生)** | GStreamer | [x] | V4L2 延迟最低且可控；GStreamer 功能丰富但引入额外依赖。 |
 | **显示后端** | Android Surface | **DRM/KMS (Linux)** | [A] | Android 适合 APP 开发；DRM 适合嵌入式纯 Linux 极速显示。 |
@@ -112,8 +135,8 @@ echo "环境配置完成！请运行: source env_setup.sh"
 #### 2.3.2 推荐环境变量（避免脚本硬编码）
 - `ANDROID_SDK_ROOT`：指向 Android Studio SDK 根目录（例：`D:\ProgramData\AndroidStudioSDK`）
 - `ANDROID_NDK_HOME`：指向 NDK 根目录（可选；脚本可从 SDK 自动定位）
-- `OPENCV_ROOT`：指向 OpenCV 源码根目录（修改入口：CMake 变量/环境变量）
-- `OPENCV_CONTRIB_ROOT`：指向 OpenCV Contrib 源码根目录（可选）
+- `OPENCV_ROOT`：指向 OpenCV 源码根目录（建议版本：4.10.0；修改入口：CMake 变量/环境变量）
+- `OPENCV_CONTRIB_ROOT`：指向 OpenCV Contrib 源码根目录（建议版本：4.10.0；可选）
 - `RK_WCFR_CONFIG`：Windows 摄像头人脸识别测试系统 ini 路径（默认：`config/windows_camera_face_recognition.ini`）
 - `RK_WCFR_DNN_MODEL`：DNN 模型路径（覆盖 ini 的 `[dnn].model_path`）
 - `RK_WCFR_DNN_CONFIG`：DNN 模型配置路径（覆盖 ini 的 `[dnn].config_path`）
@@ -134,9 +157,9 @@ echo "环境配置完成！请运行: source env_setup.sh"
   - `app/src/main/AndroidManifest.xml`
   - `src/cpp/native-lib.cpp`
 - Windows 命令行复现（在仓库根目录运行）：
-  - `.\gradlew assembleDebug`
-  - `.\gradlew testDebugUnitTest`
-  - `.\gradlew lintDebug`
+  - `.\gradlew.bat assembleDebug`
+  - `.\gradlew.bat testDebugUnitTest`
+  - `.\gradlew.bat lintDebug`
 
 #### 2.3.5 Windows 摄像头人脸识别测试系统（windows-camera-face-recognition）复现与变更入口
 - Spec：`.trae/specs/refactor-win-preview-system/`
@@ -205,6 +228,45 @@ echo "环境配置完成！请运行: source env_setup.sh"
   - BSP Release Note（最新）：`docs/bsp/BSP_RELEASE_NOTES.md`
   - defconfig（作为对齐基准）：`docs/bsp/defconfig/rk3288_defconfig`
   - 运行内核配置快照（建议从设备导出）：`docs/bsp/kernel-config/kernel.config`
+
+### 2.4 最短验收路径（Windows + Android）
+目标是用最少步骤确认：仓库能构建、核心单测能跑、Android 工程配置不崩。
+
+#### 2.4.1 Windows：核心单测（不依赖 OpenCV，推荐先跑）
+在仓库根目录打开 PowerShell，执行：
+
+```powershell
+$CMAKE_EXE = "cmake"
+$CTEST_EXE = "ctest"
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+  $sdk = $env:ANDROID_SDK_ROOT
+  $c1 = Join-Path $sdk "cmake\\4.1.2\\bin\\cmake.exe"
+  $c2 = Join-Path $sdk "cmake\\3.22.1\\bin\\cmake.exe"
+  $t1 = Join-Path $sdk "cmake\\4.1.2\\bin\\ctest.exe"
+  $t2 = Join-Path $sdk "cmake\\3.22.1\\bin\\ctest.exe"
+  if (Test-Path $c1) { $CMAKE_EXE = $c1; $CTEST_EXE = $t1 }
+  elseif (Test-Path $c2) { $CMAKE_EXE = $c2; $CTEST_EXE = $t2 }
+  else { throw "未找到 cmake/ctest：请安装 CMake，或安装 Android Studio 并设置 ANDROID_SDK_ROOT" }
+}
+
+& $CMAKE_EXE -S . -B build_ci_win_smoke -G "Visual Studio 17 2022" -A x64 -DRK_SKIP_OPENCV=ON -DRK_BUILD_CORE_UNIT_TESTS=ON
+& $CMAKE_EXE --build build_ci_win_smoke --config Release --target core_unit_tests
+& $CTEST_EXE --test-dir build_ci_win_smoke -C Release --output-on-failure
+```
+
+#### 2.4.2 Android：构建 + 单测 + Lint（需要 Android Studio SDK）
+在仓库根目录打开 PowerShell，执行：
+
+```powershell
+.\gradlew.bat --no-daemon clean assembleDebug testDebugUnitTest lintDebug
+```
+
+#### 2.4.3 文档同步审计（可选，但发布前建议）
+在仓库根目录打开 PowerShell，执行：
+
+```powershell
+node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
+```
 
 
 ---
@@ -285,7 +347,7 @@ graph TD
 #### 表 4-3 ncnn / OpenCV DNN 推理闭环（伪代码与示例）
 | 伪代码 (Pseudocode) | 示例代码 (Example) |
 | :--- | :--- |
-| 1. 加载 YOLO 人脸检测模型（ncnn/OpenCV DNN）<br>2. 读取帧（CameraX/V4L2 或离线图片）<br>3. 预处理：resize/letterbox/归一化<br>4. 推理：forward<br>5. 后处理：解析 bbox +（可选）5 点关键点 + NMS<br>6. 对齐：优先关键点仿射，否则 bbox 裁剪+resize 到 112×112<br>7. ArcFace 特征：输出 512D embedding（L2 归一化）<br>8. 1:N 检索：TopK + 余弦相似度<br>9. 阈值策略：版本化阈值 + 连续 K 次通过触发<br>10. 输出：事件 JSON + 审计落盘（成功写 tests/metrics，失败写 errorlog/） | 推理与检测模块：<br>- `src/cpp/include/YoloFaceDetector.h`<br>- `src/cpp/include/ArcFaceEmbedder.h`<br><br>闭环管线与 JSON：<br>- `src/cpp/include/FaceInferencePipeline.h`<br>- `src/cpp/src/FaceInferencePipeline.cpp`<br><br>检索与阈值：<br>- `src/cpp/include/FaceSearch.h`<br>- `src/cpp/include/ThresholdPolicy.h`<br><br>离线验证与基线：<br>- `src/cpp/main.cpp`（`--yolo-face` / `--face-infer` / `--face-baseline`）<br>- `src/cpp/tools/inference_bench_cli.cpp` |
+| 1. 加载 YOLO 人脸检测模型（ncnn/OpenCV DNN）<br>2. 读取帧（CameraX/V4L2 或离线图片）<br>3. 预处理：resize/letterbox/归一化<br>4. 推理：forward<br>5. 后处理：解析 bbox +（可选）5 点关键点 + NMS<br>6. 对齐：优先关键点仿射，否则 bbox 裁剪+resize 到 112×112<br>7. ArcFace 特征：输出 512D embedding（L2 归一化）<br>8. 1:N 检索：TopK + 余弦相似度<br>9. 阈值策略：版本化阈值 + 连续 K 次通过触发<br>10. 输出：事件 JSON + 审计落盘（成功写 tests/metrics，失败写 ErrorLog/） | 推理与检测模块：<br>- `src/cpp/include/YoloFaceDetector.h`<br>- `src/cpp/include/ArcFaceEmbedder.h`<br><br>闭环管线与 JSON：<br>- `src/cpp/include/FaceInferencePipeline.h`<br>- `src/cpp/src/FaceInferencePipeline.cpp`<br><br>检索与阈值：<br>- `src/cpp/include/FaceSearch.h`<br>- `src/cpp/include/ThresholdPolicy.h`<br><br>离线验证与基线：<br>- `src/cpp/main.cpp`（`--yolo-face` / `--face-infer` / `--face-baseline`）<br>- `src/cpp/tools/inference_bench_cli.cpp` |
 
 #### 4.3.1 RKNN（仅对“带 NPU 的瑞芯微设备”可选，不适用于目标 RK3288 工控机）
 如后续迁移到“带 NPU 的瑞芯微平台”，可参考 `docs/examples/` 中的 RKNN 示例（仅示例，不作为本项目目标设备的默认链路）：
@@ -995,7 +1057,7 @@ MediaPipe（关键点/对齐）接入要点（模板口径）：
 ArcFace（商业 SDK）接入要点（模板口径）：
 - 许可证：禁止写死在 APK；通过安全通道下发或由设备侧安全区持有，落盘需加密并可吊销。
 - ABI：按设备只打包 `armeabi-v7a`，并在启动自检时校验 so 是否齐全、版本是否匹配。
-- 日志：必须输出 SDK 版本、激活状态、阈值版本、特征维度、失败错误码与重试次数（写入 `errorlog/`）。
+- 日志：必须输出 SDK 版本、激活状态、阈值版本、特征维度、失败错误码与重试次数（写入 `ErrorLog/`）。
 
 Dlib（NDK）接入要点（模板口径）：
 - 构建：建议单独形成 `docs/examples/` 可复现工程；不要把大段构建脚本散落在业务模块。
@@ -1056,6 +1118,10 @@ AWS_SECRET_ACCESS_KEY=...
 AZURE_FACE_ENDPOINT=...
 AZURE_FACE_KEY=...
 ```
+
+> 安全提示（必须遵守）：
+> - 以上变量只允许出现在服务器环境变量/密钥管理系统/本机私有配置中，禁止写入 APK、禁止提交到 Git。
+> - 端侧（Android/Windows 客户端）不得直连云厂商，也不得持有任何云密钥；只允许调用自建后端的受控接口。
 
 端侧 → 自建后端（HTTP）最小请求模板（示例）：
 ```json
@@ -1730,6 +1796,10 @@ class CameraUiTest {
 #### 6.6.3 GitHub Actions：构建 + 测试 + 门禁（识别率≥97% 且 泄漏≤5MB）模板
 本模板把门禁拆成两类：PR 快速门禁（分钟级）与 Nightly 设备门禁（小时级）。PR 门禁不强求跑出最终识别率，而是验证“口径不漂移 + 指标解析链路有效”；Nightly 门禁可接真机 Runner 或自研设备农场。
 
+> 边界说明：
+> - 下述内容为“参考模板”，用于说明门禁拆分与指标口径；不代表本仓库已启用 `.github/workflows/android-ci.yml`。
+> - 本仓库当前实际启用的 CI 工作流为：`.github/workflows/ci.yml`（仓库卫生 + 最小单测/构建验证）。
+
 <a id="tbl-6-11"></a>
 #### 表 6-11 CI 门禁阈值（建议默认值，可按产品定义调整）
 | 指标 | 默认阈值 | 产出来源 | 失败处理 |
@@ -1876,7 +1946,7 @@ if __name__ == "__main__":
   --w 320 --h 320 --warmup 10 --iters 100 --out-dir tests/metrics
 ```
 
-2) YOLO 离线图片检测（输出 JSON 到 stdout，并落盘到 `tests/metrics/` 或 `errorlog/`）：
+2) YOLO 离线图片检测（输出 JSON 到 stdout，并落盘到 `tests/metrics/` 或 `ErrorLog/`）：
 ```bash
 ./rk3288_cli --yolo-face <image.jpg> --backend opencv --model <yolo_face.onnx> --w 320 --h 320 --score 0.40 --nms 0.45
 ```

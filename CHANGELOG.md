@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Structure**: Reorganized `DEVELOP.md` into "Overview -> Environment -> Core Development -> Advanced/Troubleshooting".
 - **Content**: Expanded technical details on V4L2, MPP, RKNN, and DRM/KMS.
 - **Style**: Enforced strict Markdown standards and bilingual terminology.
+- **日志目录**: 错误日志目录统一为 `ErrorLog/`（区分大小写），不再兼容 `errorlog/`。
 
 ## [1.2.0] - 2026-02-09
 

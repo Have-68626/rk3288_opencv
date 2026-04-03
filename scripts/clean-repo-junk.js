@@ -497,10 +497,8 @@ async function writeWorkspaceSnapshots(repoRoot, outputDirAbs, cfg, runId, cmd, 
 
 function resolveErrorLogDir(repoRoot) {
   const errorLog1 = path.join(repoRoot, "ErrorLog");
-  const errorLog2 = path.join(repoRoot, "errorlog");
   return (async () => {
     if (await pathExists(errorLog1)) return errorLog1;
-    if (await pathExists(errorLog2)) return errorLog2;
     await ensureDir(errorLog1);
     return errorLog1;
   })();
@@ -584,7 +582,7 @@ function usage() {
     "默认行为:",
     "  - 默认 dry-run：不会移动/删除任何内容",
     "  - clean 默认“移动隔离”到系统临时目录，并生成 manifest",
-    "  - 输出写入 ErrorLog/cleanup/（若仓库中存在 errorlog/ 则复用）",
+    "  - 输出写入 ErrorLog/cleanup/",
   ].join("\n");
 }
 

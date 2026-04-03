@@ -34,7 +34,6 @@ jobs:
           name: cleanup-reports
           path: |
             ErrorLog/cleanup
-            errorlog/cleanup
           if-no-files-found: ignore
 
   unit-tests:
