@@ -477,6 +477,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         r.reason = "OK";
         r.contentType = "application/json; charset=utf-8";
         r.body = buildFacesJson(snap);
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
         return r;
     }
 
@@ -489,6 +492,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         r.close = false;
         r.headers.push_back({"Cache-Control", "no-cache"});
         r.headers.push_back({"Connection", "keep-alive"});
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
         r.body.clear();
         return r;
     }
@@ -625,6 +631,9 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream; charset=utf-8\r\n"
             "Cache-Control: no-cache\r\n"
+            "X-Content-Type-Options: nosniff\r\n"
+            "X-Frame-Options: DENY\r\n"
+            "Content-Security-Policy: default-src 'none'\r\n"
             "Connection: keep-alive\r\n"
             "\r\n";
         if (!writeRaw(sock, head.data(), head.size())) {
