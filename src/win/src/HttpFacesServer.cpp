@@ -92,6 +92,9 @@ static void sendJsonResponse(SOCKET s, int code, const std::string& body) {
     hdr += "HTTP/1.1 " + status + "\r\n";
     hdr += "Content-Type: application/json; charset=utf-8\r\n";
     hdr += "Cache-Control: no-cache\r\n";
+    hdr += "X-Content-Type-Options: nosniff\r\n";
+    hdr += "X-Frame-Options: DENY\r\n";
+    hdr += "Content-Security-Policy: default-src 'none'\r\n";
     hdr += "Connection: close\r\n";
     hdr += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     hdr += "\r\n";
@@ -139,6 +142,9 @@ void HttpFacesServer::handleClient(std::uintptr_t sock0) {
         hdr += "HTTP/1.1 200 OK\r\n";
         hdr += "Content-Type: text/event-stream; charset=utf-8\r\n";
         hdr += "Cache-Control: no-cache\r\n";
+        hdr += "X-Content-Type-Options: nosniff\r\n";
+        hdr += "X-Frame-Options: DENY\r\n";
+        hdr += "Content-Security-Policy: default-src 'none'\r\n";
         hdr += "Connection: keep-alive\r\n";
         hdr += "\r\n";
         if (!sendAll(s, hdr.c_str(), hdr.size())) {
