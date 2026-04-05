@@ -9,6 +9,7 @@
 #include "rk_win/HttpFacesServer.h"
 #include "rk_win/RenderMetricsLogger.h"
 #include "rk_win/WinConfig.h"
+#include "rk_win/WinJsonConfig.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -27,6 +28,7 @@ namespace rk_win {
 
 struct AppState {
     AppConfig cfg;
+    WinJsonConfigStore settings;
     FramePipeline pipe;
     DisplaySettings displays;
     D3D11Renderer renderer;
@@ -127,6 +129,45 @@ std::string utf8FromW(const std::wstring& ws) {
 
 void setWindowTextUtf8(HWND hwnd, const std::string& s) {
     SetWindowTextW(hwnd, wFromUtf8(s).c_str());
+}
+
+std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    // 控制字符：最小实现用空格替代（避免生成非法 JSON）
+                    out += ' ';
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+// 统一的“落盘配置”入口（替代旧 INI 写入）：
+// - 为什么用 patch JSON：settings API 与本地 UI 共享同一套更新/校验/加密/回滚逻辑，避免两套配置分叉；
+// - 坑：patch 不是完整配置，可能触发 schema 校验失败；因此失败时必须提示用户并保持 UI/运行时回滚一致。
+bool persistSettingsPatch(HWND hwnd, const std::string& patchJson, const wchar_t* failTitle) {
+    if (!g_app) return false;
+    const auto res = g_app->settings.updateFromJsonBody(patchJson);
+    if (!res.ok) {
+        std::wstring msg = wFromUtf8(res.message);
+        if (!res.details.empty()) msg += L"\n" + wFromUtf8(res.details.front());
+        MessageBoxW(hwnd, msg.c_str(), failTitle ? failTitle : L"配置写入失败", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    g_app->cfg = g_app->settings.current();
+    return true;
 }
 
 void fillCameraCombo(HWND combo, const std::vector<CameraDevice>& devs) {
@@ -545,7 +586,28 @@ bool applyDisplaySettings(HWND hwnd) {
     g_app->cfg.display.aaSamples = nextOpt.aaSamples;
     g_app->cfg.display.anisoLevel = nextOpt.anisoLevel;
 
-    saveConfigToIni(g_app->cfg);
+    // 以 patch 的形式更新（局部更新）
+    {
+        std::ostringstream os;
+        os << "{"
+           << "\"display\":{"
+           << "\"outputIndex\":" << outIndex << ","
+           << "\"width\":" << nextOpt.modeWidth << ","
+           << "\"height\":" << nextOpt.modeHeight << ","
+           << "\"refreshNumerator\":" << nextOpt.refreshNumerator << ","
+           << "\"refreshDenominator\":" << nextOpt.refreshDenominator << ","
+           << "\"vsync\":" << (nextOpt.vsync ? "true" : "false") << ","
+           << "\"swapchainBuffers\":" << nextOpt.bufferCount << ","
+           << "\"fullscreen\":" << (nextOpt.fullscreen ? "true" : "false") << ","
+           << "\"allowSystemModeSwitch\":" << (nextOpt.allowSystemModeSwitch ? "true" : "false") << ","
+           << "\"enableSRGB\":" << (nextOpt.enableSRGB ? "true" : "false") << ","
+           << "\"gamma\":" << nextOpt.gamma << ","
+           << "\"colorTempK\":" << nextOpt.colorTempK << ","
+           << "\"aaSamples\":" << nextOpt.aaSamples << ","
+           << "\"anisoLevel\":" << nextOpt.anisoLevel
+           << "}}";
+        (void)persistSettingsPatch(hwnd, os.str(), L"显示切换成功但配置写入失败");
+    }
     if (ms > 500) {
         MessageBoxW(hwnd, (L"切换已完成，但耗时=" + std::to_wstring(ms) + L"ms（超过 500ms 目标）").c_str(), L"提示", MB_OK | MB_ICONINFORMATION);
     }
@@ -790,7 +852,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_app->events.open(g_app->cfg.log.logDir);
                 g_app->pipe.setEventLogger(&g_app->events);
                 if (g_app->abcCfg.testC) g_app->cfg.http.enable = true;
-                if (g_app->cfg.http.enable) g_app->http.start(&g_app->pipe, &g_app->events, g_app->cfg.http.port);
+                if (g_app->cfg.http.enable) g_app->http.start(&g_app->pipe, &g_app->events, g_app->cfg.http.port, &g_app->settings);
                 if (g_app->cfg.poster.enable) {
                     g_app->poster.start(&g_app->pipe, &g_app->events, g_app->cfg.poster.postUrl, g_app->cfg.poster.throttleMs, g_app->cfg.poster.backoffMinMs,
                                         g_app->cfg.poster.backoffMaxMs);
@@ -823,7 +885,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             g_app->cfg.camera.width = 640;
                             g_app->cfg.camera.height = 480;
                             g_app->cfg.camera.fps = 30;
-                            saveConfigToIni(g_app->cfg);
+                            (void)persistSettingsPatch(hwnd, "{\"camera\":{\"width\":640,\"height\":480,\"fps\":30}}", L"相机回退成功但配置写入失败");
                             fillCamResPresetCombo(GetDlgItem(hwnd, kIdComboFormat), 640, 480);
                             fillCamFpsPresetCombo(GetDlgItem(hwnd, kIdComboCamFps), 30);
                         }
@@ -916,7 +978,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_app->cfg.camera.width = res.w;
                 g_app->cfg.camera.height = res.h;
                 g_app->cfg.camera.fps = fps;
-                saveConfigToIni(g_app->cfg);
+                {
+                    std::ostringstream os;
+                    os << "{\"camera\":{"
+                       << "\"preferredDeviceId\":\"" << jsonEscape(utf8FromW(g_app->cfg.camera.preferredDeviceId)) << "\","
+                       << "\"width\":" << res.w << ","
+                       << "\"height\":" << res.h << ","
+                       << "\"fps\":" << fps
+                       << "}}";
+                    (void)persistSettingsPatch(hwnd, os.str(), L"相机切换成功但配置写入失败");
+                }
                 if (r.totalMs > 250) {
                     MessageBoxW(hwnd, (L"切换成功，但耗时=" + std::to_wstring(r.totalMs) + L"ms").c_str(), L"提示", MB_OK | MB_ICONINFORMATION);
                 }
@@ -955,7 +1026,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     const int ph = std::max(1, static_cast<int>(prc.bottom - prc.top));
                     g_app->pipe.setPreviewLayout(pw, ph, g_app->cfg.ui.previewScaleMode);
                 }
-                saveConfigToIni(g_app->cfg);
+                {
+                    std::ostringstream os;
+                    os << "{\"ui\":{\"previewScaleMode\":" << g_app->cfg.ui.previewScaleMode << "}}";
+                    (void)persistSettingsPatch(hwnd, os.str(), L"预览缩放切换成功但配置写入失败");
+                }
                 return 0;
             }
             if (id == kIdComboDisplay && code == CBN_SELCHANGE) {
@@ -1041,6 +1116,36 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                     g_app->metrics.append(s);
                 }
+                // 热重载（轮询）：当 %APPDATA%\rk_wcfr\config.json 被外部修改时，这里会 reload+校验+必要时回滚。
+                // 为什么放在定时器：避免在后台线程直接操控 UI/renderer，减少并发死锁风险。
+                {
+                    AppConfig before = g_app->cfg;
+                    bool applied = false;
+                    std::string err;
+                    if (g_app->settings.pollReloadOnce(applied, err) && applied) {
+                        g_app->cfg = g_app->settings.current();
+                        // 最小可安全热更新：HTTP server / poster（涉及线程与网络资源，可 stop/start）
+                        if (before.http.enable != g_app->cfg.http.enable || before.http.port != g_app->cfg.http.port) {
+                            g_app->http.stop();
+                            if (g_app->cfg.http.enable) {
+                                g_app->http.start(&g_app->pipe, &g_app->events, g_app->cfg.http.port, &g_app->settings);
+                            }
+                        }
+                        const bool posterChanged =
+                            (before.poster.enable != g_app->cfg.poster.enable) ||
+                            (before.poster.postUrl != g_app->cfg.poster.postUrl) ||
+                            (before.poster.throttleMs != g_app->cfg.poster.throttleMs) ||
+                            (before.poster.backoffMinMs != g_app->cfg.poster.backoffMinMs) ||
+                            (before.poster.backoffMaxMs != g_app->cfg.poster.backoffMaxMs);
+                        if (posterChanged) {
+                            g_app->poster.stop();
+                            if (g_app->cfg.poster.enable) {
+                                g_app->poster.start(&g_app->pipe, &g_app->events, g_app->cfg.poster.postUrl, g_app->cfg.poster.throttleMs,
+                                                    g_app->cfg.poster.backoffMinMs, g_app->cfg.poster.backoffMaxMs);
+                            }
+                        }
+                    }
+                }
                 runAutomatedTestsIfNeeded(hwnd);
             }
             return 0;
@@ -1071,7 +1176,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     rk_win::AppState app;
     rk_win::g_app = &app;
-    app.cfg = rk_win::loadConfigFromIniOrDefault();
+    {
+        std::string warn;
+        app.settings.initialize(warn);
+        app.cfg = app.settings.current();
+        // 初始化告警不弹窗（避免启动即打断），但会在日志系统启动后记录。
+        // 坑：如果配置文件损坏且 .bak 也无效，initialize 会退回默认/INI 迁移，warn 可用于定位原因。
+    }
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);

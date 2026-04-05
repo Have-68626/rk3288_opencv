@@ -175,18 +175,42 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
   - 异常事件日志：`src/win/src/EventLogger.cpp`
   - DNN 检测：`src/win/src/DnnSsdFaceDetector.cpp`
   - 叠加绘制：`src/win/src/OverlayRenderer.cpp`
-  - 输出端口（HTTP/SSE）：`src/win/src/HttpFacesServer.cpp`
+  - 输出端口（HTTP/SSE + 静态托管 + OpenAPI，使用 CivetWeb；只监听 127.0.0.1）：`src/win/src/HttpFacesServer.cpp`
   - 外部推送（POST）：`src/win/src/HttpFacesPoster.cpp`
   - 输出 JSON 口径：`src/win/src/FacesJson.cpp`
   - A/B/C 测试模式：`src/win/src/AbcTestRunner.cpp`
   - 识别核心（LBPH embedding + 比对）：`src/win/src/FaceRecognizer.cpp`、`src/win/src/LbphEmbedder.cpp`
   - 结构化日志：`src/win/src/StructuredLogger.cpp`
   - 离线评估：`src/win/tools/win_face_eval_cli.cpp`
-  - 单元测试：`tests/win/`
+-  - 单元测试：`tests/win/`
+- 本地 HTTP 最小联调入口：
+  - 静态页面：`http://127.0.0.1:<port>/`（来自 `exe_dir/webroot/index.html`；构建时从 `src/win/app/webroot` 复制）
+  - OpenAPI：`http://127.0.0.1:<port>/openapi.json`
+  - REST：`GET /api/health`、`GET /api/faces`
+  - SSE：`GET /api/faces/stream`
+- 本地 HTTP 最小联调入口：
+  - 静态页面：`http://127.0.0.1:<port>/`（来自 `exe_dir/webroot/index.html`；构建时从 `src/win/app/webroot` 复制）
+  - OpenAPI：`http://127.0.0.1:<port>/openapi.json`
+  - REST：`GET /api/health`、`GET /api/faces`
+  - SSE：`GET /api/faces/stream`
 - Windows 构建（仓库根目录）：
   - `cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 -DOPENCV_ROOT="...\opencv"`
   - `cmake --build build_win --config Release --target win_camera_face_recognition win_unit_tests win_face_eval_cli`
   - `ctest --test-dir build_win -C Release`
+
+#### 2.3.6 Windows 本地服务 + 浏览器 SPA（推荐路径）
+- Spec：`.trae/specs/migrate-win32-to-web-spa/`
+- 二进制（CMake target）：
+  - `win_local_service`：本地服务进程（无 Win32 UI），只监听 `127.0.0.1`
+  - `win_camera_face_recognition`：旧版 Win32 UI（仅回滚用途；默认不构建）
+- 配置文件（支持热重载与回滚）：
+  - `%APPDATA%\rk_wcfr\config.json`
+  - 密钥文件（DPAPI 保护）：`%APPDATA%\rk_wcfr\config.key.dpapi`
+  - 备份文件：`%APPDATA%\rk_wcfr\config.json.bak`
+- Web 前端：
+  - 源码：`web/`
+  - 构建产物输出目录：`src/win/app/webroot/`（Vite 直接输出；CMake POST_BUILD 会复制到 exe 同级 `webroot/`）
+  - 访问入口：`http://127.0.0.1:<port>/`（SPA）与 `http://127.0.0.1:<port>/api/v1/*`（REST）
 
 ##### 2.3.5.1 显示相关配置项（ini）
 修改入口：`config/windows_camera_face_recognition.ini` 的 `[display]` 段（或通过 UI“应用显示”持久化写回 ini）
