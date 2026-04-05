@@ -5,6 +5,7 @@ import {
   Divider,
   Form,
   Input,
+  Popconfirm,
   Select,
   Space,
   Switch,
@@ -38,6 +39,7 @@ export function PreviewPage() {
 
   useEffect(() => {
     let alive = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCams({ status: 'loading' })
     getCameras(prefs)
       .then((env) => {
@@ -48,9 +50,9 @@ export function PreviewPage() {
         }
         setCams({ status: 'ready', devices: env.data.devices })
       })
-      .catch((e: any) => {
+      .catch((e: unknown) => {
         if (!alive) return
-        setCams({ status: 'error', message: e?.message || '加载摄像头列表失败' })
+        setCams({ status: 'error', message: (e as Error)?.message || '加载摄像头列表失败' })
       })
     return () => {
       alive = false
@@ -183,14 +185,18 @@ export function PreviewPage() {
             >
               注册
             </Button>
-            <Button
-              danger
-              onClick={async () => {
+            <Popconfirm
+              title="清空库"
+              description="确定要清空所有人脸注册数据吗？此操作不可恢复。"
+              onConfirm={async () => {
                 await clearDb(prefs)
               }}
+              okText="确定清空"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
             >
-              清空库
-            </Button>
+              <Button danger>清空库</Button>
+            </Popconfirm>
             <Button
               onClick={async () => {
                 await openPrivacySettings(prefs)
