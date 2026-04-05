@@ -1,0 +1,23 @@
+:root {
+  /* 说明：
+     - 仅保留最小全局样式，避免与 Ant Design 的设计体系打架；
+     - layout 的主要视觉由 antd token + 组件自身负责。 */
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f5f5f5;
+}
+
+/* 让代码片段更易读（不影响 antd 组件） */
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+}

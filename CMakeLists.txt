@@ -327,69 +327,165 @@ if(WIN32)
 endif()
 
 option(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION "Build Windows Camera Face Recognition Test System" ON)
+option(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE "Build Windows Local Web Service (no Win32 UI)" ON)
+option(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI "Build legacy Win32 UI app (rollback only)" OFF)
 
 if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
-    add_executable(win_camera_face_recognition WIN32
-        "src/win/app/win_camera_face_recognition_main.cpp"
-        "src/win/src/WinConfig.cpp"
-        "src/win/src/StructuredLogger.cpp"
-        "src/win/src/MfCamera.cpp"
-        "src/win/src/FaceDetector.cpp"
-        "src/win/src/LbphEmbedder.cpp"
-        "src/win/src/FaceDatabase.cpp"
-        "src/win/src/FaceRecognizer.cpp"
-        "src/win/src/DnnSsdFaceDetector.cpp"
-        "src/win/src/OverlayRenderer.cpp"
-        "src/win/src/FacesJson.cpp"
-        "src/win/src/HttpFacesServer.cpp"
-        "src/win/src/HttpFacesPoster.cpp"
-        "src/win/src/AbcTestRunner.cpp"
-        "src/win/src/FramePipeline.cpp"
-        "src/win/src/DisplaySettings.cpp"
-        "src/win/src/D3D11Renderer.cpp"
-        "src/win/src/RenderMetricsLogger.cpp"
-        "src/win/src/EventLogger.cpp"
-    )
+    if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
+        add_executable(win_local_service
+            "src/win/app/win_local_service_main.cpp"
+            "src/win/src/WinConfig.cpp"
+            "src/win/src/JsonLite.cpp"
+            "src/win/src/WinCrypto.cpp"
+            "src/win/src/WinJsonConfig.cpp"
+            "src/win/src/StructuredLogger.cpp"
+            "src/win/src/MfCamera.cpp"
+            "src/win/src/FaceDetector.cpp"
+            "src/win/src/LbphEmbedder.cpp"
+            "src/win/src/FaceDatabase.cpp"
+            "src/win/src/FaceRecognizer.cpp"
+            "src/win/src/DnnSsdFaceDetector.cpp"
+            "src/win/src/OverlayRenderer.cpp"
+            "src/win/src/FacesJson.cpp"
+            "src/win/src/HttpFacesServer.cpp"
+            "src/win/src/HttpFacesPoster.cpp"
+            "src/win/src/FramePipeline.cpp"
+            "src/win/src/EventLogger.cpp"
+        )
 
-    target_include_directories(win_camera_face_recognition PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-    )
+        target_include_directories(win_local_service PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        )
 
-    target_compile_definitions(win_camera_face_recognition PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    if(MSVC)
-        target_compile_options(win_camera_face_recognition PRIVATE /utf-8)
+        target_compile_definitions(win_local_service PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(win_local_service PRIVATE /utf-8)
+        endif()
+
+        target_link_libraries(win_local_service
+            opencv_core
+            opencv_imgproc
+            opencv_objdetect
+            opencv_imgcodecs
+            opencv_dnn
+            mfplat
+            mfreadwrite
+            mfuuid
+            mf
+            ole32
+            oleaut32
+            shlwapi
+            shell32
+            psapi
+            ws2_32
+            winhttp
+            bcrypt
+            crypt32
+        )
+
+        add_custom_command(TARGET win_local_service POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/win/app/webroot
+                    $<TARGET_FILE_DIR:win_local_service>/webroot
+            COMMENT "Copy webroot for local HTTP static hosting"
+        )
+
+        add_custom_command(TARGET win_local_service POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:win_local_service>/assets
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/assets/lbpcascade_frontalface.xml
+                    $<TARGET_FILE_DIR:win_local_service>/assets/lbpcascade_frontalface.xml
+            COMMENT "Copy default cascade asset for Windows local service"
+        )
+
+        add_custom_command(TARGET win_local_service POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:win_local_service>/config
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${CMAKE_CURRENT_SOURCE_DIR}/config/windows_camera_face_recognition.ini
+                    $<TARGET_FILE_DIR:win_local_service>/config/windows_camera_face_recognition.ini
+            COMMENT "Copy default ini (migration source) for Windows local service"
+        )
     endif()
 
-    target_link_libraries(win_camera_face_recognition
-        opencv_core
-        opencv_imgproc
-        opencv_objdetect
-        opencv_imgcodecs
-        opencv_dnn
-        mfplat
-        mfreadwrite
-        mfuuid
-        mf
-        ole32
-        oleaut32
-        shlwapi
-        comctl32
-        user32
-        gdi32
-        shell32
-        d3d11
-        dxgi
-        dxguid
-        d3dcompiler
-        psapi
-        ws2_32
-        winhttp
-    )
+    if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
+        add_executable(win_camera_face_recognition WIN32
+            "src/win/app/win_camera_face_recognition_main.cpp"
+            "src/win/src/WinConfig.cpp"
+            "src/win/src/JsonLite.cpp"
+            "src/win/src/WinCrypto.cpp"
+            "src/win/src/WinJsonConfig.cpp"
+            "src/win/src/StructuredLogger.cpp"
+            "src/win/src/MfCamera.cpp"
+            "src/win/src/FaceDetector.cpp"
+            "src/win/src/LbphEmbedder.cpp"
+            "src/win/src/FaceDatabase.cpp"
+            "src/win/src/FaceRecognizer.cpp"
+            "src/win/src/DnnSsdFaceDetector.cpp"
+            "src/win/src/OverlayRenderer.cpp"
+            "src/win/src/FacesJson.cpp"
+            "src/win/src/HttpFacesServer.cpp"
+            "src/win/src/HttpFacesPoster.cpp"
+            "src/win/src/AbcTestRunner.cpp"
+            "src/win/src/FramePipeline.cpp"
+            "src/win/src/DisplaySettings.cpp"
+            "src/win/src/D3D11Renderer.cpp"
+            "src/win/src/RenderMetricsLogger.cpp"
+            "src/win/src/EventLogger.cpp"
+        )
+
+        target_include_directories(win_camera_face_recognition PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        )
+
+        target_compile_definitions(win_camera_face_recognition PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(win_camera_face_recognition PRIVATE /utf-8)
+        endif()
+
+        target_link_libraries(win_camera_face_recognition
+            opencv_core
+            opencv_imgproc
+            opencv_objdetect
+            opencv_imgcodecs
+            opencv_dnn
+            mfplat
+            mfreadwrite
+            mfuuid
+            mf
+            ole32
+            oleaut32
+            shlwapi
+            comctl32
+            user32
+            gdi32
+            shell32
+            d3d11
+            dxgi
+            dxguid
+            d3dcompiler
+            psapi
+            ws2_32
+            winhttp
+            bcrypt
+            crypt32
+        )
+
+        add_custom_command(TARGET win_camera_face_recognition POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/win/app/webroot
+                    $<TARGET_FILE_DIR:win_camera_face_recognition>/webroot
+            COMMENT "Copy webroot for local HTTP static hosting"
+        )
+    endif()
 
     add_executable(win_face_eval_cli
         "src/win/tools/win_face_eval_cli.cpp"
         "src/win/src/WinConfig.cpp"
+        "src/win/src/JsonLite.cpp"
+        "src/win/src/WinCrypto.cpp"
+        "src/win/src/WinJsonConfig.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/FaceDatabase.cpp"
@@ -411,11 +507,16 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         opencv_imgcodecs
         shlwapi
         shell32
+        bcrypt
+        crypt32
     )
 
     add_executable(win_face_bench_cli
         "src/win/tools/win_face_bench_cli.cpp"
         "src/win/src/WinConfig.cpp"
+        "src/win/src/JsonLite.cpp"
+        "src/win/src/WinCrypto.cpp"
+        "src/win/src/WinJsonConfig.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/FaceDatabase.cpp"
@@ -435,6 +536,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         opencv_objdetect
         opencv_imgcodecs
         psapi
+        bcrypt
+        crypt32
     )
 
     enable_testing()
@@ -447,6 +550,9 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "src/win/src/FaceDatabase.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/WinConfig.cpp"
+        "src/win/src/JsonLite.cpp"
+        "src/win/src/WinCrypto.cpp"
+        "src/win/src/WinJsonConfig.cpp"
     )
     target_include_directories(win_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
@@ -461,6 +567,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         opencv_imgproc
         opencv_objdetect
         opencv_imgcodecs
+        bcrypt
+        crypt32
     )
     add_test(NAME win_unit_tests COMMAND win_unit_tests)
 endif()

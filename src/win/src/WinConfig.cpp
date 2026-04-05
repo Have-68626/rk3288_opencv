@@ -163,7 +163,7 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.camera.height = readIniInt(cfg.configPath, L"camera", L"height", cfg.camera.height);
     cfg.camera.fps = readIniInt(cfg.configPath, L"camera", L"fps", cfg.camera.fps);
 
-    cfg.recognition.cascadePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"cascade_path", L"tests/data/lbpcascade_frontalface.xml")));
+    cfg.recognition.cascadePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"cascade_path", L"assets/lbpcascade_frontalface.xml")));
     cfg.recognition.databasePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"database_path", L"storage/win_face_db.yml")));
     cfg.recognition.minFaceSizePx = readIniInt(cfg.configPath, L"recognition", L"min_face_size_px", cfg.recognition.minFaceSizePx);
     cfg.recognition.identifyThreshold = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold", cfg.recognition.identifyThreshold);

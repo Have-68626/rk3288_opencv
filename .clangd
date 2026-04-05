@@ -1,5 +1,22 @@
 CompileFlags:
   Add:
     - -std=c++17
-    - -Isrc/cpp/include
+
+---
+If:
+  PathMatch: '.*[\\/]+src[\\/]+win[\\/]+.*'
+CompileFlags:
+  Add:
+    - -I../include
+    - -I../../cpp/include
     - -Isrc/win/include
+    - -Isrc/cpp/include
+    - -DNOMINMAX
+    - -DWIN32_LEAN_AND_MEAN
+
+---
+If:
+  PathMatch: '.*[\\/]+src[\\/]+cpp[\\/]+.*'
+CompileFlags:
+  Add:
+    - -Isrc/cpp/include

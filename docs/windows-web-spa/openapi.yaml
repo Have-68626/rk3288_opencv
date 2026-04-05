@@ -1,0 +1,153 @@
+openapi: 3.0.3
+info:
+  title: rk_wcfr Local API
+  version: "1.0"
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "8080"
+paths:
+  /api/v1/health:
+    get:
+      summary: 健康检查
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/v1/openapi:
+    get:
+      summary: OpenAPI（JSON）
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/v1/settings:
+    get:
+      summary: 获取配置（脱敏）
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+    put:
+      summary: 更新配置（局部更新；敏感字段会加密落盘）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          description: Schema 校验失败/请求不合法
+  /api/v1/cameras:
+    get:
+      summary: 枚举摄像头与能力
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+  /api/v1/preview.jpg:
+    get:
+      summary: 获取单帧预览 JPEG
+      responses:
+        "200":
+          description: OK
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+  /api/v1/preview.mjpeg:
+    get:
+      summary: 获取 MJPEG 预览流
+      responses:
+        "200":
+          description: OK
+          content:
+            multipart/x-mixed-replace:
+              schema:
+                type: string
+  /api/v1/actions/enroll:
+    post:
+      summary: 注册当前人脸到库
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [personId]
+              properties:
+                personId:
+                  type: string
+      responses:
+        "200":
+          description: OK
+  /api/v1/actions/db/clear:
+    post:
+      summary: 清空人脸库
+      responses:
+        "200":
+          description: OK
+  /api/v1/actions/privacy/open:
+    post:
+      summary: 打开 Windows 摄像头隐私设置
+      responses:
+        "200":
+          description: OK
+  /api/v1/actions/crypto/rotate:
+    post:
+      summary: 轮换敏感字段加密密钥并重新加密落盘
+      responses:
+        "200":
+          description: OK
+  /api/v1/camera/flip:
+    put:
+      summary: 设置画面翻转（运行时生效）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                flipX: { type: boolean }
+                flipY: { type: boolean }
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data: { type: object }
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: array
+              items: { type: string }
+

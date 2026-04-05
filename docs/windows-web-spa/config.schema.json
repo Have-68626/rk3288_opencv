@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rk_wcfr.config.schema.json",
+  "title": "rk_wcfr config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "camera",
+    "recognition",
+    "dnn",
+    "http",
+    "poster",
+    "log",
+    "ui",
+    "display"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "number", "minimum": 1, "maximum": 1 },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preferredDeviceId", "width", "height", "fps"],
+      "properties": {
+        "preferredDeviceId": { "type": "string" },
+        "width": { "type": "number", "minimum": 1, "maximum": 8192 },
+        "height": { "type": "number", "minimum": 1, "maximum": 8192 },
+        "fps": { "type": "number", "minimum": 1, "maximum": 240 }
+      }
+    },
+    "recognition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cascadePath", "databasePath", "minFaceSizePx", "identifyThreshold", "enrollSamples"],
+      "properties": {
+        "cascadePath": { "type": "string" },
+        "databasePath": { "type": "string" },
+        "minFaceSizePx": { "type": "number", "minimum": 10, "maximum": 10000 },
+        "identifyThreshold": { "type": "number", "minimum": 1, "maximum": 100000 },
+        "enrollSamples": { "type": "number", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "dnn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enable",
+        "modelPath",
+        "configPath",
+        "inputWidth",
+        "inputHeight",
+        "scale",
+        "meanB",
+        "meanG",
+        "meanR",
+        "swapRB",
+        "confThreshold",
+        "backend",
+        "target"
+      ],
+      "properties": {
+        "enable": { "type": "boolean" },
+        "modelPath": { "type": "string" },
+        "configPath": { "type": "string" },
+        "inputWidth": { "type": "number", "minimum": 1, "maximum": 8192 },
+        "inputHeight": { "type": "number", "minimum": 1, "maximum": 8192 },
+        "scale": { "type": "number" },
+        "meanB": { "type": "number" },
+        "meanG": { "type": "number" },
+        "meanR": { "type": "number" },
+        "swapRB": { "type": "boolean" },
+        "confThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "backend": { "type": "number" },
+        "target": { "type": "number" }
+      }
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enable", "port"],
+      "properties": {
+        "enable": { "type": "boolean" },
+        "port": { "type": "number", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "poster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enable", "postUrl", "throttleMs", "backoffMinMs", "backoffMaxMs"],
+      "properties": {
+        "enable": { "type": "boolean" },
+        "postUrl": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["v", "alg", "nonce", "ciphertext", "tag"],
+              "properties": {
+                "v": { "type": "number", "minimum": 1, "maximum": 1 },
+                "alg": { "type": "string" },
+                "nonce": { "type": "string" },
+                "ciphertext": { "type": "string" },
+                "tag": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "throttleMs": { "type": "number", "minimum": 0, "maximum": 600000 },
+        "backoffMinMs": { "type": "number", "minimum": 0, "maximum": 600000 },
+        "backoffMaxMs": { "type": "number", "minimum": 0, "maximum": 3600000 }
+      }
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logDir", "maxFileBytes", "maxRollFiles"],
+      "properties": {
+        "logDir": { "type": "string" },
+        "maxFileBytes": { "type": "number", "minimum": 1024, "maximum": 1073741824 },
+        "maxRollFiles": { "type": "number", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowWidth", "windowHeight", "previewScaleMode"],
+      "properties": {
+        "windowWidth": { "type": "number", "minimum": 320, "maximum": 7680 },
+        "windowHeight": { "type": "number", "minimum": 240, "maximum": 4320 },
+        "previewScaleMode": { "type": "number", "minimum": 0, "maximum": 10 }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outputIndex",
+        "width",
+        "height",
+        "refreshNumerator",
+        "refreshDenominator",
+        "vsync",
+        "swapchainBuffers",
+        "fullscreen",
+        "allowSystemModeSwitch",
+        "enableSRGB",
+        "gamma",
+        "colorTempK",
+        "aaSamples",
+        "anisoLevel"
+      ],
+      "properties": {
+        "outputIndex": { "type": "number", "minimum": 0, "maximum": 32 },
+        "width": { "type": "number", "minimum": 0, "maximum": 7680 },
+        "height": { "type": "number", "minimum": 0, "maximum": 4320 },
+        "refreshNumerator": { "type": "number", "minimum": 0, "maximum": 1000000 },
+        "refreshDenominator": { "type": "number", "minimum": 1, "maximum": 1000000 },
+        "vsync": { "type": "boolean" },
+        "swapchainBuffers": { "type": "number", "minimum": 1, "maximum": 8 },
+        "fullscreen": { "type": "boolean" },
+        "allowSystemModeSwitch": { "type": "boolean" },
+        "enableSRGB": { "type": "boolean" },
+        "gamma": { "type": "number", "minimum": 0.1, "maximum": 10 },
+        "colorTempK": { "type": "number", "minimum": 1000, "maximum": 20000 },
+        "aaSamples": { "type": "number", "minimum": 1, "maximum": 16 },
+        "anisoLevel": { "type": "number", "minimum": 1, "maximum": 16 }
+      }
+    }
+  }
+}
+

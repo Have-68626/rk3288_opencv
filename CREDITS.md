@@ -21,6 +21,21 @@
 - 来源：Tencent 开源项目 ncnn
 - 许可证：BSD 3-Clause License
 
+### CivetWeb
+- 用途：Windows 本地 HTTP 服务（localhost REST + 静态托管 + OpenAPI）
+- 来源：https://github.com/civetweb/civetweb（本仓库 vendor：`src/win/third_party/civetweb/`，版本：v1.16）
+- 许可证：MIT License
+
+### Web 前端（React + Ant Design + Vite）
+- 用途：浏览器 SPA（本地控制台 UI）
+- 目录：`web/`（构建产物输出到 `src/win/app/webroot/` 供本地服务托管）
+- 依赖与许可证（以各自仓库 LICENSE 为准）：
+  - React / ReactDOM：MIT License
+  - Ant Design：MIT License
+  - React Router：MIT License
+  - Vite：MIT License
+  - Cypress：MIT License
+
 ### 端侧模型（默认不入库，部署侧提供）
 - 用途：人脸检测（YOLO）与人脸识别（ArcFace）推理模型
 - 来源与许可证：模型文件默认不随仓库提交；由部署/交付环节提供并登记来源、版本号、用途范围与许可证

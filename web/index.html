@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RK3288 本地控制台</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!--
+      IE11 降级策略：
+      - Ant Design 5 + 现代构建产物不支持 IE11；
+      - IE11 仍会执行普通 <script>，因此用极小的同步检测做跳转；
+      - 现代浏览器不会受影响。
+    -->
+    <script>
+      ;(function () {
+        // document.documentMode 是 IE 特有属性：IE11 为数字，其他浏览器为 undefined
+        // 为什么不用 UA：UA 容易被兼容模式/伪装影响，documentMode 更可靠。
+        if (document.documentMode) {
+          window.location.href = './ie11.html'
+        }
+      })()
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

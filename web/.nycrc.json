@@ -1,0 +1,11 @@
+{
+  "extends": "@istanbuljs/nyc-config-typescript",
+  "reporter": ["text-summary", "lcov"],
+  "all": false,
+  "check-coverage": true,
+  "lines": 90,
+  "statements": 90,
+  "functions": 80,
+  "branches": 70
+}
+
