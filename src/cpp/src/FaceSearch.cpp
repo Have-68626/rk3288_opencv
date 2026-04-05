@@ -97,14 +97,9 @@ std::vector<FaceSearchHit> FaceSearchLinearIndex::searchTopK(const std::vector<f
     if (hits.size() > topK) {
         std::partial_sort(hits.begin(), hits.begin() + topK, hits.end(), comp);
         hits.resize(topK);
-        // Since original used stable_sort, and partial_sort is not stable,
-        // we might want to stable_sort the topK part just in case, but
-        // our comparator fully determines the order using index as tie-breaker,
-        // so partial_sort is perfectly fine.
     } else {
         std::sort(hits.begin(), hits.end(), comp);
     }
-
     return hits;
 }
 
