@@ -161,6 +161,7 @@ bool persistSettingsPatch(HWND hwnd, const std::string& patchJson, const wchar_t
     if (!g_app) return false;
     const auto res = g_app->settings.updateFromJsonBody(patchJson);
     if (!res.ok) {
+        g_app->cfg = g_app->settings.current();
         std::wstring msg = wFromUtf8(res.message);
         if (!res.details.empty()) msg += L"\n" + wFromUtf8(res.details.front());
         MessageBoxW(hwnd, msg.c_str(), failTitle ? failTitle : L"配置写入失败", MB_OK | MB_ICONERROR);
