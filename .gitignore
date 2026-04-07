@@ -91,6 +91,7 @@ Makefile
 .trae/
 .idea/
 .vs/
+.Jules/
 
 # Temp
 *.tmp
