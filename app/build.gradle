@@ -26,7 +26,9 @@ android {
             cmake {
                 cppFlags "-std=c++17"
                 // 传递 NDK 路径给 CMake 以便正确查找工具链
-                arguments "-DANDROID_STL=c++_shared"
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DOPENCV_ROOT=D:/ProgramData/OpenCV/opencv-4.10.0",
+                          "-DOPENCV_CONTRIB_ROOT=D:/ProgramData/OpenCV/opencv_contrib-4.10.0"
             }
         }
         

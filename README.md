@@ -180,11 +180,24 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 6.  ✅ **调试入口维护**
     *   持续维护 Native CLI 调试入口（`main.cpp` / `rk3288_cli`）：支持命令行参数传入 `cameraId`，并可选传入 `cascadePath` 与 `storagePath`，用于脱离 Android UI 进行算法验证与性能分析。
 
+7.  ⬜ **[P0] Android 真机相机采集改造（Camera2 / CameraX）**
+    *   **背景**
+        *   当前 `cv::VideoCapture(index)` 在 RK3288 Android + UVC 摄像头场景下存在“相机可枚举但 open 失败”的兼容性问题（见 `ErrorLog/` 复现记录）。
+        *   目标是以 Android 官方相机栈作为采集入口，避免依赖 OpenCV VideoIO 的设备差异。
+    *   **技术约束**
+        *   使用 `Camera2` 作为主路径（如引入 CameraX，则作为上层封装与可选方案，需明确新增依赖与体积影响）。
+        *   以 `ImageReader` 获取 `YUV_420_888` 帧（或兼容 NV21），在 Java 层完成旋转/镜像元数据归一化。
+        *   通过 JNI 将帧数据与 stride/格式信息传入 Native，转换为 `cv::Mat`，并接入现有 `Engine` 信息流转（替换/旁路 `VideoManager::open(cameraId)` 的相机路径）。
+        *   保留 Mock（文件/系统相机拍照）路径，用于离线验证与回归测试。
+    *   **验收标准**
+        *   RK3288（Android 7.x）+ UVC 摄像头：可稳定打开、持续出帧、连续运行 30 分钟无崩溃。
+        *   UI 可正常显示首帧并进入“监控运行”状态；权限缺失时进入 SAFE MODE，不触发 Native 相机初始化。
+        *   帧流转端到端延迟与 FPS 可观测（日志/状态栏），且与现有指标体系一致。
+
 
 8.  ✅ **[P0] FFMPEG 增强 Mock 模式与实时监控**
     *   **技术约束**
         *   引入移动版 FFMPEG v6.0（LGPL 版）
-        *   Mock 模式支持本地 MP4、HLS、RTSP 三种协议作为虚拟视频源
         *   真实监控场景：将相机输出 NV21 通过 FFMPEG 实时编码为 H.264/AAC，并以 RTMP 推流到服务端，同时提供 1 路本地回显 Surface
         *   提供 `arm64-v8a` 与 `armeabi-v7a` 双架构 `.so`，并支持灰度压缩策略
     *   **当前进度**
