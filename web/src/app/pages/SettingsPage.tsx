@@ -13,7 +13,7 @@ import {
   Typography,
   message,
 } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { rotateCryptoKey } from '../api/actions'
 import { useAppStore } from '../state/AppStore'
@@ -41,7 +41,8 @@ type ServerFormModel = {
   ui: { windowWidth: number; windowHeight: number; previewScaleMode: number }
 }
 
-function buildServerFormModelFromDoc(doc: any): { model: ServerFormModel; postUrlMasked: boolean } {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildServerFormModelFromDoc(doc: Record<string, any>): { model: ServerFormModel; postUrlMasked: boolean } {
   const masked = doc?.poster?.postUrl === '***'
   return {
     postUrlMasked: masked,
@@ -91,6 +92,7 @@ export function SettingsPage() {
   useEffect(() => {
     if (!serverSettings.data) return
     const { model, postUrlMasked } = buildServerFormModelFromDoc(serverSettings.data)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setServerBaseline(model)
     setPostUrlMasked(postUrlMasked)
     serverForm.setFieldsValue(model)
@@ -255,8 +257,8 @@ export function SettingsPage() {
               await updateServerSettings(patch)
               message.success('保存成功')
               setServerBaseline(normalized) // 作为新的 baseline
-            } catch (e: any) {
-              message.error(e?.message || '保存失败')
+            } catch (e: unknown) {
+              message.error((e as Error)?.message || '保存失败')
             }
           }}
         >
@@ -364,8 +366,8 @@ export function SettingsPage() {
                     await rotateCryptoKey(prefs)
                     message.success('已触发密钥轮换（敏感字段已重新加密）')
                     refreshServerSettings()
-                  } catch (e: any) {
-                    message.error(e?.message || '密钥轮换失败')
+                  } catch (e: unknown) {
+                    message.error((e as Error)?.message || '密钥轮换失败')
                   }
                 }}
                 disabled={!serverSettings.data}
@@ -401,13 +403,10 @@ export function SettingsPage() {
     </Space>
   )
 
-  const items = useMemo(
-    () => [
-      { key: 'local', label: '应用（本地）', children: localTab },
-      { key: 'server', label: '后端（API）', children: serverTab },
-    ],
-    [localTab, serverTab],
-  )
+  const items = [
+    { key: 'local', label: '应用（本地）', children: localTab },
+    { key: 'server', label: '后端（API）', children: serverTab },
+  ]
 
   return (
     <Tabs

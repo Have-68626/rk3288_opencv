@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useMemo, useState } from 'react'
+/* eslint-disable react-refresh/only-export-components */
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react'
 
 import type { ServerSettingsDoc } from '../api/types'
 import { getServerSettings, putServerSettings } from '../api/settings'
@@ -42,7 +43,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     })
   }
 
-  const refreshServerSettings = async (opts?: { silent?: boolean }) => {
+  const refreshServerSettings = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent
     setServerSettings((prev) =>
       silent
@@ -61,14 +62,14 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       }
       setServerSettings({ status: 'ready', data: env.data })
       return true
-    } catch (e: any) {
-      const err = e instanceof ApiError ? e : new ApiError('unknown', e?.message || '未知错误')
+    } catch (e: unknown) {
+      const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
       return false
     }
-  }
+  }, [prefs])
 
-  const updateServerSettings = async (patch: unknown) => {
+  const updateServerSettings = useCallback(async (patch: unknown) => {
     setServerSettings((prev) => ({
       status: 'loading',
       data: prev.data,
@@ -81,12 +82,12 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
-    } catch (e: any) {
-      const err = e instanceof ApiError ? e : new ApiError('unknown', e?.message || '未知错误')
+    } catch (e: unknown) {
+      const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
       throw err
     }
-  }
+  }, [prefs])
 
   const value = useMemo<AppStore>(
     () => ({
@@ -96,7 +97,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       refreshServerSettings,
       updateServerSettings,
     }),
-    [prefs, serverSettings],
+    [prefs, serverSettings, refreshServerSettings, updateServerSettings],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
