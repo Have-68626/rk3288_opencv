@@ -5,10 +5,13 @@ import {
   Divider,
   Form,
   Input,
+  Popconfirm,
   Select,
   Space,
   Switch,
   Typography,
+  Popconfirm,
+  message,
 } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -38,6 +41,7 @@ export function PreviewPage() {
 
   useEffect(() => {
     let alive = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCams({ status: 'loading' })
     getCameras(prefs)
       .then((env) => {
@@ -48,9 +52,9 @@ export function PreviewPage() {
         }
         setCams({ status: 'ready', devices: env.data.devices })
       })
-      .catch((e: any) => {
+      .catch((e: unknown) => {
         if (!alive) return
-        setCams({ status: 'error', message: e?.message || '加载摄像头列表失败' })
+        setCams({ status: 'error', message: (e as Error)?.message || '加载摄像头列表失败' })
       })
     return () => {
       alive = false
@@ -177,23 +181,45 @@ export function PreviewPage() {
             <Button
               type="primary"
               onClick={async () => {
-                await enroll(prefs, { personId })
+                try {
+                  await enroll(prefs, { personId })
+                  message.success('注册指令已发送')
+                  setPersonId('')
+                } catch (e: any) {
+                  message.error(e?.message || '注册失败')
+                }
               }}
               disabled={!personId.trim()}
             >
               注册
             </Button>
-            <Button
-              danger
-              onClick={async () => {
-                await clearDb(prefs)
+            <Popconfirm
+              title="警告：此操作不可恢复"
+              description="确认清空所有人脸库数据？"
+              onConfirm={async () => {
+                try {
+                  await clearDb(prefs)
+                  message.success('清空指令已发送')
+                } catch (e: any) {
+                  message.error(e?.message || '清空失败')
+                }
               }}
+              okText="确认清空"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
             >
-              清空库
-            </Button>
+              <Button danger>
+                清空库
+              </Button>
+            </Popconfirm>
             <Button
               onClick={async () => {
-                await openPrivacySettings(prefs)
+                try {
+                  await openPrivacySettings(prefs)
+                  message.success('已尝试打开隐私设置窗口')
+                } catch (e: any) {
+                  message.error(e?.message || '打开失败')
+                }
               }}
             >
               打开隐私设置
