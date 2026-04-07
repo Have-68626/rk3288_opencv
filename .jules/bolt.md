@@ -8,3 +8,6 @@
 ## 2026-04-05 - Use float for embedding distance metrics
 **Learning:** Using `double` for accumulation inside tight loops (like `l2Norm` and `cosineSimilarity` in FaceSearch.cpp) on arrays of `float` creates an unnecessary performance bottleneck due to continuous type promotion and reduced SIMD utilization, especially on ARM Cortex-A17.
 **Action:** Always use `float` accumulation variables when processing `float` arrays in performance-critical loops unless exact double-precision is mathematically required.
+## 2024-05-24 - Vector L2 Normalization Loop Optimization
+**Learning:** Using `double` for accumulation inside tight loops (like `l2NormalizeInplace` in ArcFaceEmbedder.cpp and FaceInferencePipeline.cpp) on arrays of `float` creates an unnecessary performance bottleneck due to continuous type promotion and reduced SIMD utilization, especially on ARM Cortex-A17.
+**Action:** Always use `float` accumulation variables when processing `float` arrays in performance-critical loops unless exact double-precision is mathematically required.
