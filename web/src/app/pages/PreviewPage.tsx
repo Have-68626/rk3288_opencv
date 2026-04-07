@@ -5,6 +5,7 @@ import {
   Divider,
   Form,
   Input,
+  Popconfirm,
   Select,
   Space,
   Switch,
@@ -40,6 +41,7 @@ export function PreviewPage() {
 
   useEffect(() => {
     let alive = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCams({ status: 'loading' })
     getCameras(prefs)
       .then((env) => {
@@ -50,9 +52,9 @@ export function PreviewPage() {
         }
         setCams({ status: 'ready', devices: env.data.devices })
       })
-      .catch((e: any) => {
+      .catch((e: unknown) => {
         if (!alive) return
-        setCams({ status: 'error', message: e?.message || '加载摄像头列表失败' })
+        setCams({ status: 'error', message: (e as Error)?.message || '加载摄像头列表失败' })
       })
     return () => {
       alive = false

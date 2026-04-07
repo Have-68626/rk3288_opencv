@@ -223,6 +223,7 @@ public final class FeatureTemplateEncryptedStore {
     private static final class Api23 {
         private Api23() {}
 
+        @android.annotation.TargetApi(23)
         private static SecretKey getOrCreateKeyV1() throws Exception {
             KeyStore ks = KeyStore.getInstance(KEYSTORE);
             ks.load(null);
