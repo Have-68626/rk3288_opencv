@@ -25,7 +25,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++17"
-                // 传递 NDK 路径给 CMake 以便正确查找工具链
+                // 传递 NDK 路径给 CMake 以便正确查找工具链，指定 OpenCV 路径要求根据设备实际安装路径修改
                 arguments "-DANDROID_STL=c++_shared",
                           "-DOPENCV_ROOT=D:/ProgramData/OpenCV/opencv-4.10.0",
                           "-DOPENCV_CONTRIB_ROOT=D:/ProgramData/OpenCV/opencv_contrib-4.10.0"
