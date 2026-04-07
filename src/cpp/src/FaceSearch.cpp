@@ -5,6 +5,8 @@
 
 namespace {
 
+// Optimized to use float instead of double to maximize SIMD vectorization
+// and improve execution speed on the RK3288 (ARM Cortex-A17) platform.
 static float l2Norm(const float* v, std::size_t dim) {
     float s = 0.0f;
     for (std::size_t i = 0; i < dim; i++) {
@@ -16,6 +18,8 @@ static float l2Norm(const float* v, std::size_t dim) {
     return n;
 }
 
+// Optimized to use float instead of double to maximize SIMD vectorization
+// and improve execution speed on the RK3288 (ARM Cortex-A17) platform.
 static float cosineSimilarity(const float* a, float aNorm, const float* b, float bNorm, std::size_t dim, bool assumeL2Normalized) {
     float dot = 0.0f;
     for (std::size_t i = 0; i < dim; i++) {
