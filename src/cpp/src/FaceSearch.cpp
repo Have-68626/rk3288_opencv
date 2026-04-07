@@ -6,25 +6,25 @@
 namespace {
 
 static float l2Norm(const float* v, std::size_t dim) {
-    double s = 0.0;
+    float s = 0.0f;
     for (std::size_t i = 0; i < dim; i++) {
-        const double x = static_cast<double>(v[i]);
+        const float x = v[i];
         s += x * x;
     }
-    const double n = std::sqrt(s);
-    if (!(n > 0.0)) return 0.0f;
-    return static_cast<float>(n);
+    const float n = std::sqrt(s);
+    if (!(n > 0.0f)) return 0.0f;
+    return n;
 }
 
 static float cosineSimilarity(const float* a, float aNorm, const float* b, float bNorm, std::size_t dim, bool assumeL2Normalized) {
-    double dot = 0.0;
+    float dot = 0.0f;
     for (std::size_t i = 0; i < dim; i++) {
-        dot += static_cast<double>(a[i]) * static_cast<double>(b[i]);
+        dot += a[i] * b[i];
     }
-    if (assumeL2Normalized) return static_cast<float>(dot);
-    const double denom = static_cast<double>(aNorm) * static_cast<double>(bNorm);
-    if (!(denom > 0.0)) return -1.0f;
-    return static_cast<float>(dot / denom);
+    if (assumeL2Normalized) return dot;
+    const float denom = aNorm * bNorm;
+    if (!(denom > 0.0f)) return -1.0f;
+    return dot / denom;
 }
 
 }  // namespace
