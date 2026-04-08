@@ -1,4 +1,4 @@
-﻿﻿#include "FrameInputChannel.h"
+#include "FrameInputChannel.h"
 
 
 namespace {
@@ -55,4 +55,3 @@ bool test_frame_input_bounded_queue_drops_oldest() {
 
     return true;
 }
-
