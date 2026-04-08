@@ -51,27 +51,37 @@ void BioAuth::train(const std::vector<cv::Mat>& images, const std::vector<int>& 
 
 bool BioAuth::verify(const cv::Mat& frame, PersonIdentity& outIdentity) {
     std::vector<cv::Rect> faces;
+    cv::Rect mainFace;
+    return verify(frame, outIdentity, faces, mainFace);
+}
+
+bool BioAuth::verify(const cv::Mat& frame,
+                     PersonIdentity& outIdentity,
+                     std::vector<cv::Rect>& outFaces,
+                     cv::Rect& outMainFace) {
+    outFaces.clear();
+    outMainFace = cv::Rect();
+
+    std::vector<cv::Rect> faces;
     cv::Mat gray;
-    
+
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
     cv::equalizeHist(gray, gray);
 
-    // Detect faces
-    // ScaleFactor=1.1, MinNeighbors=3 (lower for better recall, higher for precision)
-    // Flags=0, MinSize=(30, 30)
     faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
 
     if (faces.empty()) {
         return false;
     }
 
-    // Process the largest face found (assuming single user auth for now)
     cv::Rect largestFace = faces[0];
     for (const auto& face : faces) {
         if (face.area() > largestFace.area()) {
             largestFace = face;
         }
     }
+    outFaces = faces;
+    outMainFace = largestFace;
 
     if (isModelLoaded) {
 #ifdef HAS_OPENCV_FACE

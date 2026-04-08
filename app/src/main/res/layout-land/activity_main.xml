@@ -49,7 +49,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/ui_cache"
+            android:text="@string/ui_latency"
             android:textColor="#FFFFFF"
             android:textSize="16sp" />
     </LinearLayout>
@@ -68,9 +68,15 @@
             android:padding="2dp">
 
             <FrameLayout
+                android:id="@+id/video_wrapper"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1">
+
+                <SurfaceView
+                    android:id="@+id/preview_surface"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
 
                 <ImageView
                     android:id="@+id/monitor_view"
@@ -78,11 +84,6 @@
                     android:layout_height="match_parent"
                     android:scaleType="fitCenter"
                     android:contentDescription="@string/ui_video_monitor" />
-
-                <com.example.rk3288_opencv.OsdOverlayView
-                    android:id="@+id/osd_view"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent" />
 
                 <TextView
                     android:id="@+id/tv_overlay_status"
@@ -179,6 +180,58 @@
                     android:layout_height="48dp"
                     android:background="#333333"
                     android:layout_marginBottom="16dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_capture_strategy"
+                    android:textColor="#AAAAAA"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <Switch
+                    android:id="@+id/switch_capture_auto"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_capture_auto"
+                    android:textColor="#FFFFFF"
+                    android:thumbTint="#00FF00"
+                    android:trackTint="#444444"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_capture_scheme"
+                    android:textColor="#AAAAAA"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/rg_capture_scheme"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp">
+
+                    <RadioButton
+                        android:id="@+id/rb_capture_camera2"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ui_settings_capture_scheme_camera2"
+                        android:textColor="#FFFFFF"
+                        android:buttonTint="#00FF00"
+                        android:checked="true"
+                        android:padding="8dp"/>
+
+                    <RadioButton
+                        android:id="@+id/rb_capture_camerax"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ui_settings_capture_scheme_camerax"
+                        android:textColor="#FFFFFF"
+                        android:buttonTint="#00FF00"
+                        android:padding="8dp"/>
+                </RadioGroup>
 
                 <TextView
                     android:layout_width="match_parent"
@@ -321,6 +374,15 @@
                     android:layout_height="56dp"
                     android:text="@string/ui_view_logs"
                     android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginBottom="16dp" />
+
+                <Button
+                    android:id="@+id/btn_exit"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:text="退出"
+                    android:backgroundTint="#8B0000"
                     android:textColor="#FFFFFF"
                     android:layout_marginBottom="16dp" />
 

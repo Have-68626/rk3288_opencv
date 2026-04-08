@@ -29,6 +29,8 @@ bool runAll(const TestCase* cases, int n) {
 }  // namespace rk_core_test
 
 bool test_face_search_stable_topk();
+bool test_frame_input_latest_only_keeps_newest();
+bool test_frame_input_bounded_queue_drops_oldest();
 bool test_threshold_policy_version_and_consecutive();
 bool test_threshold_policy_rollback_empty_history();
 
@@ -36,6 +38,8 @@ int main() {
     using namespace rk_core_test;
     const TestCase cases[] = {
         {"face_search_stable_topk", test_face_search_stable_topk},
+        {"frame_input_latest_only_keeps_newest", test_frame_input_latest_only_keeps_newest},
+        {"frame_input_bounded_queue_drops_oldest", test_frame_input_bounded_queue_drops_oldest},
         {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
         {"threshold_policy_rollback_empty_history", test_threshold_policy_rollback_empty_history},
     };

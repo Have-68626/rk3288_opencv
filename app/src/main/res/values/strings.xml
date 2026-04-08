@@ -24,6 +24,11 @@
     <string name="ui_settings_mode_selection">模式选择</string>
     <string name="ui_settings_mode_continuous">连续模式</string>
     <string name="ui_settings_mode_motion">运动触发</string>
+    <string name="ui_settings_capture_strategy">采集策略</string>
+    <string name="ui_settings_capture_auto">自动模式（默认开）</string>
+    <string name="ui_settings_capture_scheme">采集方案</string>
+    <string name="ui_settings_capture_scheme_camera2">Camera2</string>
+    <string name="ui_settings_capture_scheme_camerax">CameraX</string>
 
     <string name="ui_settings_mock_url">虚拟源地址 (MP4/HLS/RTSP)</string>
     <string name="ui_settings_mock_url_hint">rtsp:// 或 https:// 或 file://</string>
@@ -37,4 +42,5 @@
     <string name="ui_register_face">人脸注册</string>
     <string name="ui_view_logs">查看日志</string>
     <string name="ui_status_idle">状态: 空闲</string>
+    <string name="ui_latency">延迟: --ms</string>
 </resources>

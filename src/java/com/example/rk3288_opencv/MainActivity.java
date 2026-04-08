@@ -2,16 +2,21 @@ package com.example.rk3288_opencv;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.hardware.usb.UsbManager;
 import android.net.Uri;
 import android.os.Build;
@@ -19,17 +24,23 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.animation.ValueAnimator;
 import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.view.animation.LinearInterpolator;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.Button;
+import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -51,7 +62,11 @@ import androidx.recyclerview.widget.RecyclerView;
 import androidx.window.layout.WindowMetrics;
 import androidx.window.layout.WindowMetricsCalculator;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop;
 import android.provider.MediaStore;
+import android.media.MediaMetadataRetriever;
+import android.util.Range;
+import android.util.Size;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.io.File;
@@ -60,8 +75,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.nio.ByteBuffer;
 
-public class MainActivity extends AppCompatActivity {
+@ExperimentalCamera2Interop
+public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     // Load native library
     static {
@@ -71,15 +88,26 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "RK3288_Prefs";
     private static final String PREF_CAMERA_ID = "pref_camera_id";
     private static final String PREF_EVENTS_VISIBLE = "pref_events_visible";
+    private static final String PREF_CAPTURE_AUTO = "pref_capture_auto";
+    private static final String PREF_CAPTURE_SCHEME = "pref_capture_scheme";
+    private static final String PREF_LAST_PREFLIGHT = "pref_last_preflight";
+    private static final String PREF_OVERLAY_ENABLED = "pref_overlay_enabled";
+    private static final String PREF_OVERLAY_RUNNING = "pref_overlay_running";
     private static final String TAG = "MainActivity";
+    private static final int CAPTURE_RECOVERY_MAX_RETRIES = 2;
+    private static final long[] CAPTURE_RECOVERY_BACKOFF_MS = new long[]{800L, 1600L};
 
     private ImageView monitorView;
-    private OsdOverlayView osdView;
+    private SurfaceView previewSurface;
     private TextView tvFps, tvCpu, tvMemory, tvStatus, tvOverlayStatus;
+    private TextView tvLatency;
     private View recognitionTitle;
     private Button btnStartStop, btnViewLogs;
     private Button btnNavPlayback, btnNavSettings, btnNavAbout;
+    private Button btnExit;
     private RadioGroup rgMode;
+    private Switch switchCaptureAuto;
+    private RadioGroup rgCaptureScheme;
     private Spinner spinnerCameras;
     private Switch switchOverlay;
     private View panelSettings;
@@ -101,6 +129,8 @@ public class MainActivity extends AppCompatActivity {
     
     private boolean isRunning = false;
     private boolean engineInitialized = false;
+    private volatile boolean pendingStartAfterInit = false;
+    private volatile boolean cancelInitMock = false;
     private boolean firstFrameReceived = false;
     private boolean lastReadyVisible = false;
     private boolean restartMonitoringOnStart = false;
@@ -108,16 +138,62 @@ public class MainActivity extends AppCompatActivity {
     private Bitmap frameBitmap;
     private Bitmap backBitmap;
     private final Object bitmapSwapLock = new Object();
+    private volatile boolean previewSurfaceReady = false;
+    private final SurfaceHolder.Callback previewSurfaceCallback = new SurfaceHolder.Callback() {
+        @Override
+        public void surfaceCreated(@NonNull SurfaceHolder holder) {
+            try {
+                nativeSetPreviewSurface(holder.getSurface());
+                previewSurfaceReady = true;
+                if (monitorView != null) monitorView.setVisibility(View.GONE);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        @Override
+        public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {
+        }
+
+        @Override
+        public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+            previewSurfaceReady = false;
+            try {
+                nativeSetPreviewSurface(null);
+            } catch (Throwable ignored) {
+            }
+            if (monitorView != null) monitorView.setVisibility(View.VISIBLE);
+        }
+    };
+
+    private final CompoundButton.OnCheckedChangeListener overlaySwitchListener = (buttonView, isChecked) -> {
+        handleOverlayToggle(isChecked);
+    };
     private Handler handler = new Handler(Looper.getMainLooper());
     private HandlerThread frameThread;
     private Handler frameHandler;
     private Runnable frameUpdater;
     private Runnable statsUpdater;
+    private Runnable captureWatchdog;
     
     private int selectedCameraId = 0;
     private List<CameraInfo> availableCameras = new ArrayList<>();
     private ArrayAdapter<String> cameraAdapter;
     private boolean isSpinnerInitialized = false;
+
+    private boolean captureAutoEnabled = true;
+    private CaptureScheme preferredCaptureScheme = CaptureScheme.CAMERA2;
+    private CaptureScheme activeCaptureScheme = CaptureScheme.CAMERA2;
+    private CaptureScheme forcedNextScheme = null;
+    private boolean autoSwitchedThisRun = false;
+    private int captureRecoveryRetries = 0;
+
+    private CaptureController camera2Capture;
+    private CaptureController cameraXCapture;
+    private CaptureController activeCapture;
+
+    private volatile boolean captureEverPushed = false;
+    private volatile long lastPushOkRealtimeMs = 0L;
+    private volatile int pushFailStreak = 0;
 
     // Camera Info Wrapper
     private static class CameraInfo {
@@ -159,6 +235,35 @@ public class MainActivity extends AppCompatActivity {
     public native void nativeStop();
     public native void nativeSetMode(int mode);
     public native boolean nativeGetFrame(Bitmap bitmap);
+    public native void nativeSetPreviewSurface(Surface surface);
+    public native boolean nativeRenderFrameToSurface();
+    public native void nativeConfigureExternalInput(boolean enabled, int backpressureMode, int queueCapacity);
+    public native boolean nativePushFrameYuv420888(ByteBuffer yBuffer,
+                                                   int yRowStride,
+                                                   ByteBuffer uBuffer,
+                                                   int uRowStride,
+                                                   int uPixelStride,
+                                                   ByteBuffer vBuffer,
+                                                   int vRowStride,
+                                                   int vPixelStride,
+                                                   int width,
+                                                   int height,
+                                                   long timestampNs,
+                                                   int rotationDegrees,
+                                                   boolean mirrored);
+    public native boolean nativePushFrameYuv420888Bytes(byte[] yBytes,
+                                                        int yRowStride,
+                                                        byte[] uBytes,
+                                                        int uRowStride,
+                                                        int uPixelStride,
+                                                        byte[] vBytes,
+                                                        int vRowStride,
+                                                        int vPixelStride,
+                                                        int width,
+                                                        int height,
+                                                        long timestampNs,
+                                                        int rotationDegrees,
+                                                        boolean mirrored);
 
     private static final int REQUEST_CODE_PICK_MEDIA = 2001;
     private static final int REQUEST_CODE_TAKE_PHOTO = 1003;
@@ -181,11 +286,12 @@ public class MainActivity extends AppCompatActivity {
 
         // Initialize Views
         monitorView = findViewById(R.id.monitor_view);
+        previewSurface = findViewById(R.id.preview_surface);
         videoWrapper = findViewById(R.id.video_wrapper);
-        osdView = findViewById(R.id.osd_view);
         tvFps = findViewById(R.id.tv_fps);
         tvCpu = findViewById(R.id.tv_cpu);
         tvMemory = findViewById(R.id.tv_memory);
+        tvLatency = findViewById(R.id.tv_storage);
         tvStatus = findViewById(R.id.tv_app_status);
         tvOverlayStatus = findViewById(R.id.tv_overlay_status);
         recognitionTitle = findViewById(R.id.recognition_title);
@@ -194,7 +300,10 @@ public class MainActivity extends AppCompatActivity {
         btnNavPlayback = findViewById(R.id.btn_nav_playback);
         btnNavSettings = findViewById(R.id.btn_nav_settings);
         btnNavAbout = findViewById(R.id.btn_nav_about);
+        btnExit = findViewById(R.id.btn_exit);
         rgMode = findViewById(R.id.rg_mode);
+        rgCaptureScheme = findViewById(R.id.rg_capture_scheme);
+        switchCaptureAuto = findViewById(R.id.switch_capture_auto);
         spinnerCameras = findViewById(R.id.spinner_cameras);
         switchOverlay = findViewById(R.id.switch_overlay);
         panelSettings = findViewById(R.id.panel_settings);
@@ -207,19 +316,25 @@ public class MainActivity extends AppCompatActivity {
         rvRecognitionEvents = findViewById(R.id.rv_recognition_events);
         fabToggleEvents = findViewById(R.id.fab_toggle_events);
         tvOverlayStatus.setVisibility(View.GONE);
-
-        if (osdView != null) {
-            osdView.setWatermark("RK3288");
-        }
+        
 
         frameThread = new HandlerThread("FrameWorker");
         frameThread.start();
         frameHandler = new Handler(frameThread.getLooper());
+        ExternalFrameSink sink = this::pushExternalYuv420888;
+        camera2Capture = new Camera2CaptureController(this, sink, this, () -> getDeviceRotationDegrees());
+        cameraXCapture = new CameraXCaptureController(this, this, sink, this, () -> getDeviceRotationDegrees());
 
-        // Initialize Bitmap (VGA)
-        frameBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
-        backBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
-        monitorView.setImageBitmap(frameBitmap);
+        if (previewSurface == null) {
+            frameBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
+            backBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
+            monitorView.setImageBitmap(frameBitmap);
+        } else {
+            try {
+                previewSurface.getHolder().addCallback(previewSurfaceCallback);
+            } catch (Throwable ignored) {
+            }
+        }
         monitorGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onDoubleTap(MotionEvent e) {
@@ -227,12 +342,49 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
         });
+        if (previewSurface != null) {
+            previewSurface.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
+        }
         monitorView.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
 
         // Load Preferences
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         selectedCameraId = prefs.getInt(PREF_CAMERA_ID, 0);
         recognitionEventsVisible = prefs.getBoolean(PREF_EVENTS_VISIBLE, true);
+        captureAutoEnabled = prefs.getBoolean(PREF_CAPTURE_AUTO, true);
+        String schemeRaw = prefs.getString(PREF_CAPTURE_SCHEME, CaptureScheme.CAMERA2.name());
+        preferredCaptureScheme = parseCaptureScheme(schemeRaw, CaptureScheme.CAMERA2);
+
+        if (switchCaptureAuto != null) {
+            switchCaptureAuto.setChecked(captureAutoEnabled);
+            switchCaptureAuto.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                captureAutoEnabled = isChecked;
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit()
+                        .putBoolean(PREF_CAPTURE_AUTO, captureAutoEnabled)
+                        .apply();
+                applyCaptureUiState();
+                if (isRunning) {
+                    restartMonitoring("切换自动模式");
+                }
+            });
+        }
+        if (rgCaptureScheme != null) {
+            rgCaptureScheme.check(preferredCaptureScheme == CaptureScheme.CAMERAX ? R.id.rb_capture_camerax : R.id.rb_capture_camera2);
+            rgCaptureScheme.setOnCheckedChangeListener((group, checkedId) -> {
+                CaptureScheme next = (checkedId == R.id.rb_capture_camerax) ? CaptureScheme.CAMERAX : CaptureScheme.CAMERA2;
+                if (next == preferredCaptureScheme) return;
+                preferredCaptureScheme = next;
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit()
+                        .putString(PREF_CAPTURE_SCHEME, preferredCaptureScheme.name())
+                        .apply();
+                if (!captureAutoEnabled && isRunning) {
+                    restartMonitoring("切换采集方案");
+                }
+            });
+        }
+        applyCaptureUiState();
 
         rvRecognitionEvents.setLayoutManager(new LinearLayoutManager(this));
         recognitionEventAdapter = new RecognitionEventAdapter();
@@ -309,30 +461,10 @@ public class MainActivity extends AppCompatActivity {
         registerReceiver(usbReceiver, filter);
         
         // Setup Overlay Switch
-        switchOverlay.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (isChecked) {
-                boolean granted = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
-                if (granted) {
-                    startService(new Intent(this, StatusService.class));
-                } else {
-                    if (Build.VERSION.SDK_INT < 23) {
-                        Toast.makeText(this, "当前系统版本不支持悬浮窗权限设置入口", Toast.LENGTH_SHORT).show();
-                        buttonView.setChecked(false);
-                        return;
-                    }
-                    Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
-                    new AlertDialog.Builder(this)
-                            .setTitle("需要悬浮窗权限")
-                            .setMessage("开启悬浮窗将显示 FPS/CPU/MEM 指标，需要在系统设置授予“在其他应用上层显示”。")
-                            .setPositiveButton("打开设置", (d, w) -> startActivityForResult(intent, 1002))
-                            .setNegativeButton("取消", null)
-                            .show();
-                    buttonView.setChecked(false);
-                }
-            } else {
-                stopService(new Intent(this, StatusService.class));
-            }
-        });
+        if (switchOverlay != null) {
+            switchOverlay.setOnCheckedChangeListener(overlaySwitchListener);
+            syncOverlaySwitchState();
+        }
 
         // Discover Cameras
         discoverCameras();
@@ -361,6 +493,9 @@ public class MainActivity extends AppCompatActivity {
         if (btnNavAbout != null) {
             btnNavAbout.setOnClickListener(v -> showAboutDialog());
         }
+        if (btnExit != null) {
+            btnExit.setOnClickListener(v -> exitApp());
+        }
 
         if (btnSetMockUrl != null) {
             btnSetMockUrl.setOnClickListener(v -> applyMockUrl());
@@ -387,36 +522,37 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 if (!isRunning) return;
-                Bitmap target;
-                synchronized (bitmapSwapLock) {
-                    target = backBitmap;
+                boolean ok;
+                if (previewSurfaceReady) {
+                    ok = nativeRenderFrameToSurface();
+                } else {
+                    Bitmap target;
+                    synchronized (bitmapSwapLock) {
+                        target = backBitmap;
+                    }
+                    ok = nativeGetFrame(target);
                 }
-                boolean ok = nativeGetFrame(target);
                 if (!ok) {
                     if (frameHandler != null) {
                         frameHandler.postDelayed(this, 33);
                     }
                     return;
                 }
+                StatsRepository.getInstance().reportRenderTimeNs(System.nanoTime());
 
                 handler.post(() -> {
                     if (!isRunning) return;
-                    synchronized (bitmapSwapLock) {
-                        Bitmap tmp = frameBitmap;
-                        frameBitmap = backBitmap;
-                        backBitmap = tmp;
-                    }
-                    if (monitorView != null) {
-                        monitorView.setImageBitmap(frameBitmap);
-                        monitorView.invalidate();
-                    }
                     if (!firstFrameReceived) {
                         firstFrameReceived = true;
-                        applyMonitorLayoutRule(frameBitmap.getWidth(), frameBitmap.getHeight());
+                        if (frameBitmap != null) {
+                            applyMonitorLayoutRule(frameBitmap.getWidth(), frameBitmap.getHeight());
+                        } else {
+                            applyMonitorLayoutRule(640, 480);
+                        }
                         updateSystemReadyUi("首帧到达");
                     }
                     if (frameHandler != null) {
-                        frameHandler.postDelayed(frameUpdater, 33);
+                        frameHandler.postDelayed(frameUpdater, 16);
                     }
                 });
             }
@@ -426,11 +562,9 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 StatsSnapshot s = StatsRepository.getInstance().getSnapshot();
-                if (s.fps == null) {
-                    tvFps.setText("FPS: --");
-                } else {
-                    tvFps.setText(String.format(Locale.US, "FPS: %.1f", s.fps));
-                }
+                String fpsText = (s.fps == null) ? "--" : String.format(Locale.US, "%.1f", s.fps);
+                String capText = (s.captureFps == null) ? "--" : String.format(Locale.US, "%.1f", s.captureFps);
+                tvFps.setText(String.format(Locale.US, "FPS: %s | CAP: %s", fpsText, capText));
                 if (s.cpuPercent == null) {
                     tvCpu.setText("CPU: --");
                 } else {
@@ -440,6 +574,13 @@ public class MainActivity extends AppCompatActivity {
                     tvMemory.setText("MEM: --");
                 } else {
                     tvMemory.setText(String.format(Locale.US, "MEM: %.0fMB", s.memPssMb));
+                }
+                if (tvLatency != null) {
+                    if (s.latencyMs == null) {
+                        tvLatency.setText("LAT: --ms");
+                    } else {
+                        tvLatency.setText(String.format(Locale.US, "LAT: %.0fms", s.latencyMs));
+                    }
                 }
                 handler.postDelayed(this, 500);
             }
@@ -462,11 +603,12 @@ public class MainActivity extends AppCompatActivity {
 
     private void rebindViewsAfterConfigChange() {
         monitorView = findViewById(R.id.monitor_view);
+        previewSurface = findViewById(R.id.preview_surface);
         videoWrapper = findViewById(R.id.video_wrapper);
-        osdView = findViewById(R.id.osd_view);
         tvFps = findViewById(R.id.tv_fps);
         tvCpu = findViewById(R.id.tv_cpu);
         tvMemory = findViewById(R.id.tv_memory);
+        tvLatency = findViewById(R.id.tv_storage);
         tvStatus = findViewById(R.id.tv_app_status);
         tvOverlayStatus = findViewById(R.id.tv_overlay_status);
         recognitionTitle = findViewById(R.id.recognition_title);
@@ -475,7 +617,10 @@ public class MainActivity extends AppCompatActivity {
         btnNavPlayback = findViewById(R.id.btn_nav_playback);
         btnNavSettings = findViewById(R.id.btn_nav_settings);
         btnNavAbout = findViewById(R.id.btn_nav_about);
+        btnExit = findViewById(R.id.btn_exit);
         rgMode = findViewById(R.id.rg_mode);
+        rgCaptureScheme = findViewById(R.id.rg_capture_scheme);
+        switchCaptureAuto = findViewById(R.id.switch_capture_auto);
         spinnerCameras = findViewById(R.id.spinner_cameras);
         switchOverlay = findViewById(R.id.switch_overlay);
         panelSettings = findViewById(R.id.panel_settings);
@@ -488,12 +633,20 @@ public class MainActivity extends AppCompatActivity {
         rvRecognitionEvents = findViewById(R.id.rv_recognition_events);
         fabToggleEvents = findViewById(R.id.fab_toggle_events);
         tvOverlayStatus.setVisibility(View.GONE);
-        if (osdView != null) {
-            osdView.setWatermark("RK3288");
-        }
+        
 
         if (frameBitmap != null) {
             monitorView.setImageBitmap(frameBitmap);
+        }
+        if (previewSurface != null) {
+            try {
+                previewSurface.getHolder().removeCallback(previewSurfaceCallback);
+            } catch (Throwable ignored) {
+            }
+            try {
+                previewSurface.getHolder().addCallback(previewSurfaceCallback);
+            } catch (Throwable ignored) {
+            }
         }
         monitorGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
@@ -502,6 +655,9 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
         });
+        if (previewSurface != null) {
+            previewSurface.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
+        }
         monitorView.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
 
         if (rvRecognitionEvents != null) {
@@ -568,31 +724,40 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
-        if (switchOverlay != null) {
-            switchOverlay.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                if (isChecked) {
-                    boolean granted = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
-                    if (granted) {
-                        startService(new Intent(this, StatusService.class));
-                    } else {
-                        if (Build.VERSION.SDK_INT < 23) {
-                            Toast.makeText(this, "当前系统版本不支持悬浮窗权限设置入口", Toast.LENGTH_SHORT).show();
-                            buttonView.setChecked(false);
-                            return;
-                        }
-                        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
-                        new AlertDialog.Builder(this)
-                                .setTitle("需要悬浮窗权限")
-                                .setMessage("开启悬浮窗将显示 FPS/CPU/MEM 指标，需要在系统设置授予“在其他应用上层显示”。")
-                                .setPositiveButton("打开设置", (d, w) -> startActivityForResult(intent, 1002))
-                                .setNegativeButton("取消", null)
-                                .show();
-                        buttonView.setChecked(false);
-                    }
-                } else {
-                    stopService(new Intent(this, StatusService.class));
+        if (switchCaptureAuto != null) {
+            switchCaptureAuto.setChecked(captureAutoEnabled);
+            switchCaptureAuto.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                captureAutoEnabled = isChecked;
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit()
+                        .putBoolean(PREF_CAPTURE_AUTO, captureAutoEnabled)
+                        .apply();
+                applyCaptureUiState();
+                if (isRunning) {
+                    restartMonitoring("切换自动模式");
                 }
             });
+        }
+        if (rgCaptureScheme != null) {
+            rgCaptureScheme.check(preferredCaptureScheme == CaptureScheme.CAMERAX ? R.id.rb_capture_camerax : R.id.rb_capture_camera2);
+            rgCaptureScheme.setOnCheckedChangeListener((group, checkedId) -> {
+                CaptureScheme next = (checkedId == R.id.rb_capture_camerax) ? CaptureScheme.CAMERAX : CaptureScheme.CAMERA2;
+                if (next == preferredCaptureScheme) return;
+                preferredCaptureScheme = next;
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .edit()
+                        .putString(PREF_CAPTURE_SCHEME, preferredCaptureScheme.name())
+                        .apply();
+                if (!captureAutoEnabled && isRunning) {
+                    restartMonitoring("切换采集方案");
+                }
+            });
+        }
+        applyCaptureUiState();
+
+        if (switchOverlay != null) {
+            switchOverlay.setOnCheckedChangeListener(overlaySwitchListener);
+            syncOverlaySwitchState();
         }
 
         if (btnStartStop != null) {
@@ -619,6 +784,9 @@ public class MainActivity extends AppCompatActivity {
         if (btnNavAbout != null) {
             btnNavAbout.setOnClickListener(v -> showAboutDialog());
         }
+        if (btnExit != null) {
+            btnExit.setOnClickListener(v -> exitApp());
+        }
         if (btnSetMockUrl != null) {
             btnSetMockUrl.setOnClickListener(v -> applyMockUrl());
         }
@@ -627,6 +795,26 @@ public class MainActivity extends AppCompatActivity {
         }
         if (btnStopRtmp != null) {
             btnStopRtmp.setOnClickListener(v -> stopRtmpPush());
+        }
+
+        if (isFullscreen) {
+            if (recognitionTitle != null) recognitionTitle.setVisibility(View.GONE);
+            if (panelSettings != null) panelSettings.setVisibility(View.GONE);
+            if (panelRecognitionEvents != null) panelRecognitionEvents.setVisibility(View.GONE);
+            if (videoWrapper != null) {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) videoWrapper.getLayoutParams();
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                videoWrapper.setLayoutParams(lp);
+            }
+            if (monitorView != null) monitorView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        } else {
+            if (recognitionTitle != null) recognitionTitle.setVisibility(View.VISIBLE);
+            setRecognitionPanelVisible(recognitionEventsVisible, false);
+            if (monitorView != null) monitorView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            if (videoWrapper != null && frameBitmap != null) {
+                videoWrapper.post(() -> applyMonitorLayoutRule(frameBitmap.getWidth(), frameBitmap.getHeight()));
+            }
         }
 
         discoverCameras();
@@ -653,6 +841,8 @@ public class MainActivity extends AppCompatActivity {
             }
         } else if (requestCode == REQUEST_CODE_TAKE_PHOTO && resultCode == RESULT_OK) {
              handleSystemCameraResult();
+        } else if (requestCode == 1002) {
+            syncOverlaySwitchState();
         }
     }
 
@@ -806,16 +996,62 @@ public class MainActivity extends AppCompatActivity {
 
     private void startMonitoring() {
         AppLog.enter("MainActivity", "startMonitoring");
-        if (permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
+        boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
+        boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
+        if (!wantCamera && !wantMock) {
+            Toast.makeText(this, "请先选择摄像头或 Mock 源", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (wantCamera && permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
             Toast.makeText(this, "权限不足：已进入安全模式", Toast.LENGTH_LONG).show();
             permissionStateMachine.requestWithUserConfirmation();
             return;
         }
 
+        String preflight = runInputPreflight(wantCamera, wantMock);
+        if (preflight != null && !preflight.isEmpty()) {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_LAST_PREFLIGHT, preflight).apply();
+            AppLog.i("MainActivity", "preflight", preflight.replace('\n', ' '));
+            if (tvStatus != null) {
+                String first = preflight.contains("\n") ? preflight.substring(0, preflight.indexOf('\n')) : preflight;
+                tvStatus.setText("Preflight: " + first);
+            }
+        }
+
         if (!engineInitialized) {
+            if (wantMock) {
+                pendingStartAfterInit = true;
+            }
             initEngine();
-            if (!engineInitialized) {
+            if (!wantMock && !engineInitialized) {
                 Toast.makeText(this, "引擎初始化失败，无法启动监控", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (wantMock && !engineInitialized) {
+                Toast.makeText(this, "正在初始化 Mock 引擎，请稍候…", Toast.LENGTH_SHORT).show();
+                return;
+            }
+        }
+        if (wantCamera) {
+            boolean comingFromAutoSwitch = (forcedNextScheme != null && captureAutoEnabled);
+            CaptureScheme scheme = forcedNextScheme != null ? forcedNextScheme : (captureAutoEnabled ? CaptureScheme.CAMERA2 : preferredCaptureScheme);
+            forcedNextScheme = null;
+            activeCaptureScheme = scheme;
+            autoSwitchedThisRun = comingFromAutoSwitch;
+            captureEverPushed = false;
+            pushFailStreak = 0;
+            lastPushOkRealtimeMs = 0L;
+            captureRecoveryRetries = 0;
+
+            nativeConfigureExternalInput(true, 0, 1);
+            activeCapture = (scheme == CaptureScheme.CAMERAX) ? cameraXCapture : camera2Capture;
+            boolean started = activeCapture != null && activeCapture.start(String.valueOf(selectedCameraId));
+            if (!started) {
+                Toast.makeText(this, "启动采集失败: " + (activeCapture == null ? "N/A" : activeCapture.name()), Toast.LENGTH_LONG).show();
+                updateSystemReadyUi("采集启动失败");
+                nativeConfigureExternalInput(false, 0, 1);
+                activeCapture = null;
                 return;
             }
         }
@@ -828,17 +1064,312 @@ public class MainActivity extends AppCompatActivity {
             btnStartStop.setBackgroundColor(0xFFFF0000); // Red
         }
         if (tvStatus != null) {
-            tvStatus.setText("Status: Running");
+            if (wantCamera && activeCapture != null) {
+                tvStatus.setText("Status: Running (" + activeCapture.name() + " / Cam " + selectedCameraId + ")");
+            } else {
+                tvStatus.setText("Status: Running");
+            }
         }
         if (frameHandler != null) {
             frameHandler.post(frameUpdater);
         }
+        if (wantCamera) {
+            startCaptureWatchdog();
+        }
         updateSystemReadyUi("已启动监控");
+    }
+
+    private String runInputPreflight(boolean wantCamera, boolean wantMock) {
+        if (wantCamera) {
+            return runCameraPreflight();
+        }
+        if (wantMock) {
+            return runMockPreflight();
+        }
+        return "";
+    }
+
+    private String runCameraPreflight() {
+        try {
+            CameraManager mgr = (CameraManager) getSystemService(CAMERA_SERVICE);
+            if (mgr == null) return "相机预检失败：CameraManager 不可用";
+            CameraCharacteristics chars = mgr.getCameraCharacteristics(String.valueOf(selectedCameraId));
+            StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            Size[] sizes = map != null ? map.getOutputSizes(ImageFormat.YUV_420_888) : null;
+            Range<Integer>[] fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+
+            Size chosen = chooseBestSizeNoMoreThan1080p(sizes);
+            Range<Integer> fps = chooseBestFpsNoMoreThan60(fpsRanges);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("相机预检: Cam ").append(selectedCameraId);
+            sb.append("\n输出: ").append(chosen == null ? "未知" : (chosen.getWidth() + "x" + chosen.getHeight()));
+            sb.append("\n帧率: ").append(fps == null ? "未知" : (fps.getLower() + "-" + fps.getUpper()));
+            sb.append("\n策略: 输入≤1080p60；推理固定640x480");
+            return sb.toString();
+        } catch (Throwable t) {
+            return "相机预检失败: " + t.getMessage();
+        }
+    }
+
+    private String runMockPreflight() {
+        try {
+            String path = mockFilePath;
+            if (path == null || path.isEmpty()) return "Mock预检失败：未选择输入";
+            if (path.startsWith("http://") || path.startsWith("https://")) {
+                return "Mock预检: URL 源（无法预读元数据，运行时将自动降档到≤1080p60，推理640x480）";
+            }
+
+            File f = new File(path);
+            if (!f.exists()) return "Mock预检: 文件不存在";
+
+            Integer w = null;
+            Integer h = null;
+            Integer rot = null;
+            Integer bitrate = null;
+            Float fps = null;
+
+            try {
+                MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+                mmr.setDataSource(f.getAbsolutePath());
+                String sw = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                String sh = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                String sr = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+                String sb = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
+                String sfps = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE);
+                if (sw != null) w = Integer.parseInt(sw);
+                if (sh != null) h = Integer.parseInt(sh);
+                if (sr != null) rot = Integer.parseInt(sr);
+                if (sb != null) bitrate = Integer.parseInt(sb);
+                if (sfps != null) fps = Float.parseFloat(sfps);
+                mmr.release();
+            } catch (Throwable ignored) {
+            }
+
+            if (w == null || h == null) {
+                try {
+                    BitmapFactory.Options opt = new BitmapFactory.Options();
+                    opt.inJustDecodeBounds = true;
+                    BitmapFactory.decodeFile(f.getAbsolutePath(), opt);
+                    if (opt.outWidth > 0 && opt.outHeight > 0) {
+                        w = opt.outWidth;
+                        h = opt.outHeight;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+
+            boolean oversize = (w != null && h != null) && (Math.max(w, h) > 1920 || Math.min(w, h) > 1080);
+            boolean overFps = fps != null && fps > 60.5f;
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("Mock预检: ").append(f.getName());
+            sb.append("\n尺寸: ").append(w == null ? "未知" : (w + "x" + h));
+            if (rot != null) sb.append(" rot=").append(rot);
+            if (fps != null) sb.append("\n帧率: ").append(String.format(Locale.US, "%.2f", fps));
+            if (bitrate != null) sb.append("\n码率: ").append(bitrate);
+            if (oversize || overFps) {
+                sb.append("\n提示: 输入超规格，将自动降档到≤1080p60，推理640x480");
+            } else {
+                sb.append("\n策略: 输入≤1080p60；推理固定640x480");
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "Mock预检失败: " + t.getMessage();
+        }
+    }
+
+    private static Size chooseBestSizeNoMoreThan1080p(Size[] sizes) {
+        if (sizes == null || sizes.length == 0) return null;
+        Size best = null;
+        long bestArea = -1;
+        for (Size s : sizes) {
+            if (s == null) continue;
+            int w = s.getWidth();
+            int h = s.getHeight();
+            boolean ok = (w <= 1920 && h <= 1080) || (w <= 1080 && h <= 1920);
+            if (!ok) continue;
+            long area = (long) w * (long) h;
+            if (area > bestArea) {
+                bestArea = area;
+                best = s;
+            }
+        }
+        if (best != null) return best;
+        for (Size s : sizes) {
+            if (s == null) continue;
+            int w = s.getWidth();
+            int h = s.getHeight();
+            long area = (long) w * (long) h;
+            if (area > bestArea) {
+                bestArea = area;
+                best = s;
+            }
+        }
+        return best;
+    }
+
+    private static Range<Integer> chooseBestFpsNoMoreThan60(Range<Integer>[] ranges) {
+        if (ranges == null || ranges.length == 0) return null;
+        Range<Integer> best = null;
+        for (Range<Integer> r : ranges) {
+            if (r == null) continue;
+            Integer lower = r.getLower();
+            Integer upper = r.getUpper();
+            if (lower == null || upper == null) continue;
+            if (upper > 60) continue;
+            if (best == null) {
+                best = r;
+                continue;
+            }
+            int bestUpper = best.getUpper();
+            int bestLower = best.getLower();
+            if (upper > bestUpper) {
+                best = r;
+            } else if (upper == bestUpper && lower < bestLower) {
+                best = r;
+            }
+        }
+        if (best != null) return best;
+        for (Range<Integer> r : ranges) {
+            if (r == null) continue;
+            Integer upper = r.getUpper();
+            if (upper != null && upper <= 60) return r;
+        }
+        return ranges[0];
+    }
+
+    private void handleOverlayToggle(boolean enabled) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(PREF_OVERLAY_ENABLED, enabled).apply();
+        if (enabled) {
+            boolean granted = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
+            if (granted) {
+                startService(new Intent(this, StatusService.class));
+            } else {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(PREF_OVERLAY_ENABLED, false).apply();
+                if (Build.VERSION.SDK_INT < 23) {
+                    Toast.makeText(this, "当前系统版本不支持悬浮窗权限设置入口", Toast.LENGTH_SHORT).show();
+                    setOverlaySwitchCheckedSilently(false);
+                    return;
+                }
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
+                new AlertDialog.Builder(this)
+                        .setTitle("需要悬浮窗权限")
+                        .setMessage("开启悬浮窗将显示 FPS/CPU/MEM 指标，需要在系统设置授予“在其他应用上层显示”。")
+                        .setPositiveButton("打开设置", (d, w) -> startActivityForResult(intent, 1002))
+                        .setNegativeButton("取消", null)
+                        .show();
+                setOverlaySwitchCheckedSilently(false);
+                return;
+            }
+        } else {
+            stopService(new Intent(this, StatusService.class));
+        }
+        handler.postDelayed(this::syncOverlaySwitchState, 200);
+    }
+
+    private void syncOverlaySwitchState() {
+        if (switchOverlay == null) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        boolean desired = prefs.getBoolean(PREF_OVERLAY_ENABLED, false);
+        boolean granted = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
+        boolean running = isServiceRunning(StatusService.class);
+
+        if (!running && prefs.getBoolean(PREF_OVERLAY_RUNNING, false)) {
+            prefs.edit().putBoolean(PREF_OVERLAY_RUNNING, false).apply();
+        }
+        if (running && !desired) {
+            desired = true;
+            prefs.edit().putBoolean(PREF_OVERLAY_ENABLED, true).apply();
+        }
+
+        if (!granted) {
+            if (running) {
+                stopService(new Intent(this, StatusService.class));
+                running = false;
+            }
+            if (desired) {
+                prefs.edit().putBoolean(PREF_OVERLAY_ENABLED, false).apply();
+                desired = false;
+            }
+        } else {
+            if (desired && !running) {
+                startService(new Intent(this, StatusService.class));
+                handler.postDelayed(this::syncOverlaySwitchState, 200);
+            } else if (!desired && running) {
+                stopService(new Intent(this, StatusService.class));
+                running = false;
+            }
+        }
+
+        setOverlaySwitchCheckedSilently(running);
+    }
+
+    private void setOverlaySwitchCheckedSilently(boolean checked) {
+        if (switchOverlay == null) return;
+        switchOverlay.setOnCheckedChangeListener(null);
+        switchOverlay.setChecked(checked);
+        switchOverlay.setOnCheckedChangeListener(overlaySwitchListener);
+    }
+
+    private boolean isServiceRunning(Class<?> serviceClass) {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return false;
+            List<ActivityManager.RunningServiceInfo> services = am.getRunningServices(Integer.MAX_VALUE);
+            if (services == null) return false;
+            String target = serviceClass.getName();
+            for (ActivityManager.RunningServiceInfo s : services) {
+                ComponentName cn = s.service;
+                if (cn != null && target.equals(cn.getClassName())) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private void exitApp() {
+        try {
+            if (isRunning) {
+                stopMonitoring();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(PREF_OVERLAY_ENABLED, false).apply();
+            stopService(new Intent(this, StatusService.class));
+        } catch (Throwable ignored) {
+        }
+        try {
+            finishAndRemoveTask();
+        } catch (Throwable ignored) {
+            try {
+                finishAffinity();
+            } catch (Throwable ignored2) {
+                finish();
+            }
+        }
     }
 
     private void stopMonitoring() {
         AppLog.enter("MainActivity", "stopMonitoring");
         isRunning = false;
+        stopCaptureWatchdog();
+        if (activeCapture != null) {
+            try {
+                activeCapture.stop();
+            } catch (Exception ignored) {
+            }
+            activeCapture = null;
+        }
+        if (engineInitialized) {
+            try {
+                nativeConfigureExternalInput(false, 0, 1);
+            } catch (Exception ignored) {
+            }
+        }
         if (frameHandler != null) {
             frameHandler.removeCallbacks(frameUpdater);
         }
@@ -856,9 +1387,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void initEngine() {
         AppLog.enter("MainActivity", "initEngine");
-        if (permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
+        boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
+        boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
+        if (wantCamera && permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
             engineInitialized = false;
-            tvStatus.setText("Status: SAFE MODE (Permissions Missing)");
+            if (tvStatus != null) {
+                tvStatus.setText("Status: SAFE MODE (Permissions Missing)");
+            }
             updateSystemReadyUi("权限不足，禁止初始化引擎");
             return;
         }
@@ -866,24 +1401,51 @@ public class MainActivity extends AppCompatActivity {
         String cascadePath = copyAssetToCache("lbpcascade_frontalface.xml");
         String storagePath = getAppStoragePath();
         
-        if (selectedCameraId == -1 && mockFilePath != null) {
-            engineInitialized = nativeInitFile(mockFilePath, cascadePath, storagePath);
+        if (wantMock) {
+            ProgressDialog dialog = new ProgressDialog(this);
+            dialog.setMessage("正在初始化 Mock 源…");
+            dialog.setCancelable(true);
+            dialog.show();
+            cancelInitMock = false;
+            dialog.setOnCancelListener(d -> cancelInitMock = true);
+            new Thread(() -> {
+                boolean ok = false;
+                try {
+                    ok = !cancelInitMock && nativeInitFile(mockFilePath, cascadePath, storagePath);
+                } catch (Throwable t) {
+                    AppLog.e("MainActivity", "initEngine", "nativeInitFile 异常", t);
+                }
+                final boolean result = ok && !cancelInitMock;
+                runOnUiThread(() -> {
+                    try { dialog.dismiss(); } catch (Throwable ignored) {}
+                    engineInitialized = result;
+                    if (engineInitialized) {
+                        tvStatus.setText("Status: Engine Initialized (Mock Mode)");
+                        updateSystemReadyUi("引擎初始化成功 (Mock)");
+                        if (pendingStartAfterInit && !isRunning) {
+                            pendingStartAfterInit = false;
+                            startMonitoring();
+                        }
+                    } else {
+                        pendingStartAfterInit = false;
+                        tvStatus.setText("Status: Engine Init FAILED (Mock)");
+                        updateSystemReadyUi("引擎初始化失败 (Mock)");
+                        Toast.makeText(MainActivity.this, "Mock 引擎初始化失败或已取消", Toast.LENGTH_LONG).show();
+                    }
+                });
+            }).start();
+        } else if (wantCamera) {
+            engineInitialized = nativeInit(-1, cascadePath, storagePath);
             if (engineInitialized) {
-                tvStatus.setText("Status: Engine Initialized (Mock Mode)");
-                updateSystemReadyUi("引擎初始化成功 (Mock)");
-            } else {
-                tvStatus.setText("Status: Engine Init FAILED (Mock)");
-                updateSystemReadyUi("引擎初始化失败 (Mock)");
-            }
-        } else {
-            engineInitialized = nativeInit(selectedCameraId, cascadePath, storagePath);
-            if (engineInitialized) {
-                tvStatus.setText("Status: Engine Initialized (Cam " + selectedCameraId + ")");
-                updateSystemReadyUi("引擎初始化成功");
+                tvStatus.setText("Status: Engine Initialized (External Capture / Cam " + selectedCameraId + ")");
+                updateSystemReadyUi("引擎初始化成功 (外部采集)");
             } else {
                 tvStatus.setText("Status: Engine Init FAILED");
                 updateSystemReadyUi("引擎初始化失败");
             }
+        } else {
+            engineInitialized = false;
+            updateSystemReadyUi("未选择输入源");
         }
     }
 
@@ -911,12 +1473,208 @@ public class MainActivity extends AppCompatActivity {
         return cacheFile.getAbsolutePath();
     }
 
+    private static CaptureScheme parseCaptureScheme(String raw, CaptureScheme fallback) {
+        if (raw == null || raw.trim().isEmpty()) return fallback;
+        try {
+            return CaptureScheme.valueOf(raw.trim());
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private void applyCaptureUiState() {
+        if (rgCaptureScheme == null) return;
+        boolean enabled = !captureAutoEnabled;
+        rgCaptureScheme.setEnabled(enabled);
+        for (int i = 0; i < rgCaptureScheme.getChildCount(); i++) {
+            View c = rgCaptureScheme.getChildAt(i);
+            if (c != null) c.setEnabled(enabled);
+        }
+    }
+
+    private int getDeviceRotationDegrees() {
+        try {
+            int rot = getWindowManager().getDefaultDisplay().getRotation();
+            if (rot == android.view.Surface.ROTATION_90) return 90;
+            if (rot == android.view.Surface.ROTATION_180) return 180;
+            if (rot == android.view.Surface.ROTATION_270) return 270;
+            return 0;
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private boolean pushExternalYuv420888(ByteBuffer yBuffer,
+                                          int yRowStride,
+                                          ByteBuffer uBuffer,
+                                          int uRowStride,
+                                          int uPixelStride,
+                                          ByteBuffer vBuffer,
+                                          int vRowStride,
+                                          int vPixelStride,
+                                          int width,
+                                          int height,
+                                          long timestampNs,
+                                          int rotationDegrees,
+                                          boolean mirrored) {
+        if (!engineInitialized) return false;
+        long ts = timestampNs > 0 ? timestampNs : System.nanoTime();
+        int chromaW = (width + 1) / 2;
+        int chromaH = (height + 1) / 2;
+        int yNeed = (yRowStride > 0 && height > 0) ? (yRowStride * (height - 1) + width) : 0;
+        int uNeed = (uRowStride > 0 && uPixelStride > 0 && chromaW > 0 && chromaH > 0)
+                ? (uRowStride * (chromaH - 1) + (chromaW - 1) * uPixelStride + 1)
+                : 0;
+        int vNeed = (vRowStride > 0 && vPixelStride > 0 && chromaW > 0 && chromaH > 0)
+                ? (vRowStride * (chromaH - 1) + (chromaW - 1) * vPixelStride + 1)
+                : 0;
+        try {
+            if (yBuffer != null) yBuffer.rewind();
+            if (uBuffer != null) uBuffer.rewind();
+            if (vBuffer != null) vBuffer.rewind();
+            if (yBuffer != null && yBuffer.isDirect()
+                    && uBuffer != null && uBuffer.isDirect()
+                    && vBuffer != null && vBuffer.isDirect()) {
+                if (yNeed > 0 && yBuffer.remaining() < yNeed) throw new IllegalStateException("Y缓冲区不足");
+                if (uNeed > 0 && uBuffer.remaining() < uNeed) throw new IllegalStateException("U缓冲区不足");
+                if (vNeed > 0 && vBuffer.remaining() < vNeed) throw new IllegalStateException("V缓冲区不足");
+                boolean ok = nativePushFrameYuv420888(
+                        yBuffer, yRowStride,
+                        uBuffer, uRowStride, uPixelStride,
+                        vBuffer, vRowStride, vPixelStride,
+                        width, height,
+                        ts, rotationDegrees, mirrored);
+                if (ok) return true;
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            byte[] yBytes = copyPlaneBytes(yBuffer, yNeed);
+            byte[] uBytes = (uNeed > 0) ? copyPlaneBytes(uBuffer, uNeed) : null;
+            byte[] vBytes = (vNeed > 0) ? copyPlaneBytes(vBuffer, vNeed) : null;
+            if (yBytes == null) return false;
+            return nativePushFrameYuv420888Bytes(
+                    yBytes, yRowStride,
+                    uBytes, uRowStride, uPixelStride,
+                    vBytes, vRowStride, vPixelStride,
+                    width, height,
+                    ts, rotationDegrees, mirrored);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static byte[] copyPlaneBytes(ByteBuffer buffer, int need) {
+        if (buffer == null) return null;
+        if (need <= 0) return new byte[0];
+        ByteBuffer dup = buffer.duplicate();
+        dup.rewind();
+        if (dup.remaining() < need) return null;
+        byte[] out = new byte[need];
+        dup.get(out, 0, need);
+        return out;
+    }
+
+    @Override
+    public void onFramePushed(boolean ok, long timestampNs) {
+        if (!ok) {
+            pushFailStreak = Math.min(10_000, pushFailStreak + 1);
+            return;
+        }
+        boolean first = !captureEverPushed;
+        pushFailStreak = 0;
+        captureEverPushed = true;
+        lastPushOkRealtimeMs = SystemClock.elapsedRealtime();
+        long ts = timestampNs > 0 ? timestampNs : System.nanoTime();
+        StatsRepository.getInstance().reportCaptureFrameTimestampNs(ts);
+        if (first) {
+            String src = activeCapture != null ? activeCapture.name() : "N/A";
+            AppLog.i("MainActivity", "capture", "首帧推入 ok tsNs=" + ts + " src=" + src + " camId=" + selectedCameraId);
+        }
+    }
+
+    @Override
+    public void onError(String stage, String message) {
+        AppLog.e("MainActivity", "captureError", stage + ": " + message);
+        handler.post(() -> handleCaptureFailure(stage + ": " + message));
+    }
+
+    private void startCaptureWatchdog() {
+        stopCaptureWatchdog();
+        long startMs = SystemClock.elapsedRealtime();
+        lastPushOkRealtimeMs = startMs;
+        captureEverPushed = false;
+        captureWatchdog = new Runnable() {
+            @Override
+            public void run() {
+                if (!isRunning) return;
+                if (activeCapture == null) return;
+                long now = SystemClock.elapsedRealtime();
+                if (!captureEverPushed && now - startMs > 2500) {
+                    handleCaptureFailure("首帧超时");
+                    return;
+                }
+                if (captureEverPushed && now - lastPushOkRealtimeMs > 2000) {
+                    handleCaptureFailure("出帧停滞");
+                    return;
+                }
+                if (pushFailStreak >= 30) {
+                    handleCaptureFailure("推帧失败过多");
+                    return;
+                }
+                handler.postDelayed(this, 300);
+            }
+        };
+        handler.postDelayed(captureWatchdog, 300);
+    }
+
+    private void stopCaptureWatchdog() {
+        if (captureWatchdog != null) {
+            handler.removeCallbacks(captureWatchdog);
+            captureWatchdog = null;
+        }
+    }
+
+    private void handleCaptureFailure(String reason) {
+        if (!isRunning) return;
+        updateSystemReadyUi("采集异常: " + reason);
+        if (captureRecoveryRetries < CAPTURE_RECOVERY_MAX_RETRIES) {
+            int next = captureRecoveryRetries + 1;
+            captureRecoveryRetries = next;
+            long delay = CAPTURE_RECOVERY_BACKOFF_MS[Math.min(next - 1, CAPTURE_RECOVERY_BACKOFF_MS.length - 1)];
+            forcedNextScheme = activeCaptureScheme;
+            restartMonitoring("恢复重试" + next + "/" + CAPTURE_RECOVERY_MAX_RETRIES + "(" + reason + ")", delay);
+            return;
+        }
+        if (captureAutoEnabled && !autoSwitchedThisRun) {
+            autoSwitchedThisRun = true;
+            forcedNextScheme = (activeCaptureScheme == CaptureScheme.CAMERA2) ? CaptureScheme.CAMERAX : CaptureScheme.CAMERA2;
+            restartMonitoring("自动降级(" + reason + ")");
+            return;
+        }
+        Toast.makeText(this, "采集失败: " + reason, Toast.LENGTH_LONG).show();
+        stopMonitoring();
+    }
+
+    private void restartMonitoring(String reason) {
+        restartMonitoring(reason, 450);
+    }
+
+    private void restartMonitoring(String reason, long delayMs) {
+        if (!isRunning) return;
+        Toast.makeText(this, reason, Toast.LENGTH_SHORT).show();
+        stopMonitoring();
+        handler.postDelayed(this::startMonitoring, Math.max(0, delayMs));
+    }
+
     private void updateSystemReadyUi(String reason) {
         boolean runtimeGranted = permissionStateMachine != null && permissionStateMachine.isRuntimeGranted();
-        boolean ready = runtimeGranted && engineInitialized && isRunning && firstFrameReceived;
+        boolean permissionOk = runtimeGranted || (selectedCameraId == -1 && mockFilePath != null);
+        boolean ready = permissionOk && engineInitialized && isRunning && firstFrameReceived;
         if (ready) {
             if (!lastReadyVisible) {
-                AppLog.i("MainActivity", "updateSystemReadyUi", "SYSTEM READY runtimeGranted=" + runtimeGranted + " engineInitialized=" + engineInitialized + " firstFrameReceived=" + firstFrameReceived);
+                AppLog.i("MainActivity", "updateSystemReadyUi", "SYSTEM READY permissionOk=" + permissionOk + " engineInitialized=" + engineInitialized + " firstFrameReceived=" + firstFrameReceived);
             }
             tvOverlayStatus.setVisibility(View.VISIBLE);
             lastReadyVisible = true;
@@ -1131,18 +1889,32 @@ public class MainActivity extends AppCompatActivity {
     private void onPermissionStateChanged(@NonNull PermissionStateMachine.State state, @NonNull List<String> missingRuntimePermissions) {
         AppLog.enter("MainActivity", "onPermissionStateChanged");
         boolean granted = (state == PermissionStateMachine.State.GRANTED);
-        btnStartStop.setEnabled(granted);
+        boolean allowMock = (selectedCameraId == -1 && mockFilePath != null);
+        if (btnStartStop != null) {
+            btnStartStop.setEnabled(granted || allowMock);
+        }
         if (!granted) {
-            if (isRunning) {
+            if (isRunning && selectedCameraId >= 0) {
                 stopMonitoring();
             }
-            engineInitialized = false;
-            firstFrameReceived = false;
-            tvStatus.setText("Status: SAFE MODE (Missing Permissions)");
-            updateSystemReadyUi("安全模式: " + state + " missing=" + missingRuntimePermissions);
+            if (selectedCameraId >= 0) {
+                engineInitialized = false;
+                firstFrameReceived = false;
+                if (tvStatus != null) {
+                    tvStatus.setText("Status: SAFE MODE (Missing Permissions)");
+                }
+                updateSystemReadyUi("安全模式: " + state + " missing=" + missingRuntimePermissions);
+            } else {
+                if (tvStatus != null) {
+                    tvStatus.setText("Status: SAFE MODE (Missing Permissions)");
+                }
+                updateSystemReadyUi("安全模式(仍可使用 Mock): " + state);
+            }
             permissionStateMachine.showGoToSettingsDialogIfNeeded();
         } else {
-            tvStatus.setText("Status: Permissions Granted");
+            if (tvStatus != null) {
+                tvStatus.setText("Status: Permissions Granted");
+            }
             // 延迟初始化以确保权限已广播至系统服务
             handler.postDelayed(() -> {
                 if (!isFinishing()) {
@@ -1234,19 +2006,14 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (osdView != null) {
-            osdView.onResume();
-        }
         if (permissionStateMachine != null) {
             permissionStateMachine.evaluate();
         }
+        syncOverlaySwitchState();
     }
 
     @Override
     protected void onPause() {
-        if (osdView != null) {
-            osdView.onPause();
-        }
         super.onPause();
     }
 
