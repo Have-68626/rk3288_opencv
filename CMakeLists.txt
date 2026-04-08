@@ -42,8 +42,10 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     enable_testing()
     add_executable(core_unit_tests
         "tests/cpp/core_unit_tests_main.cpp"
+        "tests/cpp/test_frame_input_channel.cpp"
         "tests/cpp/test_face_search.cpp"
         "tests/cpp/test_threshold_policy.cpp"
+        "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
     )

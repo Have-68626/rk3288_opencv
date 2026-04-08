@@ -115,6 +115,9 @@ bool VideoManager::open(const std::string& filePath) {
                 std::cerr << "Failed to open video file: " << filePath << std::endl;
                 return false;
             }
+            cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
+            cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
+            cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
         }
     }
     

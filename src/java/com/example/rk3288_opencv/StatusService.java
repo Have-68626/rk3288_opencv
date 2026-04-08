@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -20,6 +21,8 @@ import androidx.annotation.Nullable;
 import java.util.Locale;
 
 public class StatusService extends Service {
+    private static final String PREFS_NAME = "RK3288_Prefs";
+    private static final String PREF_OVERLAY_RUNNING = "pref_overlay_running";
 
     private WindowManager windowManager;
     private View statusView;
@@ -33,8 +36,18 @@ public class StatusService extends Service {
     public void onCreate() {
         AppLog.enter("StatusService", "onCreate");
         super.onCreate();
+        setOverlayRunning(true);
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         createStatusView();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        return START_STICKY;
     }
 
     private void createStatusView() {
@@ -61,7 +74,9 @@ public class StatusService extends Service {
         params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         params.y = 0; // Top of screen
 
-        windowManager.addView(statusView, params);
+        if (windowManager != null) {
+            windowManager.addView(statusView, params);
+        }
 
         // Start Update Loop
         isRunning = true;
@@ -73,11 +88,19 @@ public class StatusService extends Service {
 
         StatsSnapshot s = StatsRepository.getInstance().getSnapshot();
         String fps = s.fps == null ? "--" : String.format(Locale.US, "%.1f", s.fps);
+        String cap = s.captureFps == null ? "--" : String.format(Locale.US, "%.1f", s.captureFps);
+        String lat = s.latencyMs == null ? "--" : String.format(Locale.US, "%.0fms", s.latencyMs);
         String cpu = s.cpuPercent == null ? "--" : String.format(Locale.US, "%.1f%%", s.cpuPercent);
         String mem = s.memPssMb == null ? "--" : String.format(Locale.US, "%.0fMB", s.memPssMb);
 
         if (s.fps == null && s.fpsError != null) {
             AppLog.e("StatusService", "updateStats", "FPS采集失败: " + s.fpsError);
+        }
+        if (s.captureFps == null && s.captureError != null) {
+            AppLog.e("StatusService", "updateStats", "CAP采集失败: " + s.captureError);
+        }
+        if (s.latencyMs == null && s.latencyError != null) {
+            AppLog.e("StatusService", "updateStats", "LAT采集失败: " + s.latencyError);
         }
         if (s.cpuPercent == null && s.cpuError != null) {
             AppLog.e("StatusService", "updateStats", "CPU采集失败: " + s.cpuError);
@@ -86,7 +109,7 @@ public class StatusService extends Service {
             AppLog.e("StatusService", "updateStats", "MEM采集失败: " + s.memError);
         }
 
-        String text = String.format(Locale.US, "FPS: %s | CPU: %s | MEM: %s", fps, cpu, mem);
+        String text = String.format(Locale.US, "FPS: %s | CAP: %s | LAT: %s | CPU: %s | MEM: %s", fps, cap, lat, cpu, mem);
         tvInfo.setText(text);
 
         handler.postDelayed(this::updateStats, refreshInterval);
@@ -97,8 +120,20 @@ public class StatusService extends Service {
         AppLog.enter("StatusService", "onDestroy");
         super.onDestroy();
         isRunning = false;
+        handler.removeCallbacksAndMessages(null);
         if (statusView != null) {
-            windowManager.removeView(statusView);
+            try {
+                if (windowManager != null) windowManager.removeView(statusView);
+            } catch (Throwable ignored) {
+            }
+        }
+        setOverlayRunning(false);
+    }
+
+    private void setOverlayRunning(boolean running) {
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(PREF_OVERLAY_RUNNING, running).apply();
+        } catch (Throwable ignored) {
         }
     }
 

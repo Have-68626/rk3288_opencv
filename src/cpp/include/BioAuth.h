@@ -22,6 +22,11 @@ class BioAuth {
 public:
     BioAuth();
     
+    enum class FaceSelectMode {
+        MAIN_FACE = 0,
+        MULTI_FACES = 1
+    };
+
     /**
      * @brief Initializes the authentication models.
      * @param cascadePath Path to the XML cascade file for detection.
@@ -35,6 +40,8 @@ public:
      */
     void train(const std::vector<cv::Mat>& images, const std::vector<int>& labels);
 
+    void setFaceSelectMode(FaceSelectMode mode) { faceMode = mode; }
+
     /**
      * @brief Verifies the identity of persons in the frame.
      * @param frame Input video frame.
@@ -43,10 +50,16 @@ public:
      */
     bool verify(const cv::Mat& frame, PersonIdentity& outIdentity);
 
+    bool verify(const cv::Mat& frame,
+                PersonIdentity& outIdentity,
+                std::vector<cv::Rect>& outFaces,
+                cv::Rect& outMainFace);
+
 private:
     cv::CascadeClassifier faceCascade;
 #ifdef HAS_OPENCV_FACE
     cv::Ptr<cv::face::FaceRecognizer> faceRecognizer;
 #endif
     bool isModelLoaded;
+    FaceSelectMode faceMode = FaceSelectMode::MAIN_FACE;
 };

@@ -1,7 +1,7 @@
 # RK3288 AI Engine - 开发指南 (Development Guide)
 
 **版本**: 2.0.0-rc8  
-**日期**: 2026-03-23  
+**日期**: 2026-04-07  
 **状态**: 草案 (Draft)  
 
 ---
@@ -252,6 +252,24 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
   - BSP Release Note（最新）：`docs/bsp/BSP_RELEASE_NOTES.md`
   - defconfig（作为对齐基准）：`docs/bsp/defconfig/rk3288_defconfig`
   - 运行内核配置快照（建议从设备导出）：`docs/bsp/kernel-config/kernel.config`
+
+#### 2.3.7 Android Camera2/CameraX（UVC）采集改造复现与验收入口
+
+- Spec：`.trae/specs/fix-android-camera2-uvc-open-failure/`
+- 验收 Runbook：`docs/runbooks/rk3288-android-uvc-camera2-camerax-acceptance.md`
+- 关键代码入口（变更路径）：
+  - UI 与状态机（自动/手动切换、热重启、SAFE MODE）：`src/java/com/example/rk3288_opencv/MainActivity.java`
+  - Camera2 采集（ImageReader YUV_420_888）：`src/java/com/example/rk3288_opencv/Camera2CaptureController.java`
+  - CameraX 采集（ImageAnalysis YUV_420_888）：`src/java/com/example/rk3288_opencv/CameraXCaptureController.java`
+  - Native 外部帧输入与转换：`src/cpp/src/Engine.cpp`（外部帧通道、YUV_420_888/NV21 转换）
+- 最短验收路径（摘要，完整步骤以 Runbook 为准）：
+  1) RK3288 + UVC：运行 30 分钟无崩溃；日志需出现 `SYSTEM READY` 与 `首帧推入 ok`
+  2) Mock 回归：`Mock Source (File Picker)` 与 `Mock Camera (System App)` 均可启动监控并出帧（静态图最稳）
+  3) 权限拒绝：稳定进入 SAFE MODE，且不触发 Native 相机初始化（日志不应出现 `Engine initialize` / `外部帧输入通道 已启用`）
+- 已知限制（当前实现口径）：
+  - Camera2 默认优先 640×480；未提供 UI 分辨率配置入口（修改入口：`Camera2CaptureController.chooseYuvSize`）。
+  - CameraX 绑定为异步：可能先“启动”，后续失败由 `captureError` 与 watchdog 触发降级（修改入口：`CameraXCaptureController.start` 与 `MainActivity.startCaptureWatchdog`）。
+  - 自动切换为“单次运行最多切换一次”，避免无限抖动；若两条路径都失败，会停止监控并提示失败（修改入口：`MainActivity.handleCaptureFailure`）。
 
 ### 2.4 最短验收路径（Windows + Android）
 目标是用最少步骤确认：仓库能构建、核心单测能跑、Android 工程配置不崩。
@@ -2168,16 +2186,3 @@ if __name__ == "__main__":
     https://github.com/ReactiveCircus/android-emulator-runner
 
 ---
-
-## 12. 修订记录
-
-| 日期 | 版本 | 修订来源 | 变更摘要 |
-| :--- | :--- | :--- | :--- |
-| 2026-03-03 | 2.0.0-rc1 | 项目初始化 | 建立基础开发指南、目录映射与核心模块说明 |
-| 2026-03-22 | 2.0.0-rc2 | document-camera-face-research spec | 新增两大研究章节、图表索引、基准与脚本模板入口、风险清单与参考文献；调整章节编号以保持连续 |
-| 2026-03-22 | 2.0.0-rc3 | 文档补齐 | 补充第三方库对比、Android 13+ 权限与后台限制、相机能力报告/拍照录像时序与格式、CameraService 重启检测；补齐人脸方案集成清单/PAD 指标/CI 门禁，并扩展参考文献与图表索引 |
-| 2026-03-22 | 2.0.0-rc4 | 文档补齐 | 在第 5/6 章补充 Fotoapparat/CAMKit 对比；补齐 ML Kit/MediaPipe/ArcFace/Dlib/百度/优图 及 阿里/AWS/Azure 表格与集成模板；更新图表索引与参考文献编号 |
-| 2026-03-22 | 2.0.0-rc5 | 文档补齐 | 5.3 增加广角/长焦/TOF/红外枚举方法与能力查询（闪光/对焦/曝光补偿等）；6.x 增加特征维度/模板大小/阈值/延迟对比表与逐方案集成模板；修正 ArcFace 表述并扩展参考文献与表索引 |
-| 2026-03-22 | 2.0.0-rc6 | 文档补齐 | 6.5.1 补齐 AES-256-GCM+Keystore 关键代码模板与异常处理；6.6 补齐 Gradle7.5+NDK25 demo 构建脚本、JUnit+Robolectric 与 Espresso+MockCamera 模板、GitHub Actions 门禁（识别率≥97% 与 泄漏≤5MB）；更新表索引与参考文献 |
-| 2026-03-22 | 2.0.0-rc7 | 文档补齐 | 6.5.1 增补 Java 版 AES/GCM/Keystore 示例（含 KeyStore/KeyGenerator/GCMParameterSpec）；6.6.3 增补 android-emulator-runner 模板以跑 connectedAndroidTest；更新参考文献与示例 build_id 口径 |
-| 2026-03-23 | 2.0.0-rc8 | audit-camera-pipeline spec | 相机链路审计与最小修复：权限最小化、退后台释放与回前台恢复、拉帧背压与主线程卸载、Native 引擎线程 join；补齐审计报告与回归测试计划入口 |
