@@ -232,7 +232,7 @@ final class CameraXCaptureController implements CaptureController {
         }
         if (capped.isEmpty()) capped = sizes;
 
-        capped.sort((a, b) -> Integer.compare(b.getWidth() * b.getHeight(), a.getWidth() * a.getHeight()));
+        Collections.sort(capped, (a, b) -> Integer.compare(b.getWidth() * b.getHeight(), a.getWidth() * a.getHeight()));
         return capped.get(0);
     }
 
@@ -251,7 +251,7 @@ final class CameraXCaptureController implements CaptureController {
         if (ranges == null || ranges.length == 0) return null;
 
         List<Range<Integer>> list = new ArrayList<>(Arrays.asList(ranges));
-        list.sort(new Comparator<Range<Integer>>() {
+        Collections.sort(list, new Comparator<Range<Integer>>() {
             @Override
             public int compare(Range<Integer> a, Range<Integer> b) {
                 int au = a.getUpper();
