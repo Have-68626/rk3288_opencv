@@ -341,6 +341,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::jsonOk(const std::string& bodyJso
     r.reason = "OK";
     r.contentType = "application/json; charset=utf-8";
     r.body = bodyJson;
+    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+    r.headers.push_back({"X-Frame-Options", "DENY"});
+    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
     return r;
 }
 
@@ -363,6 +366,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::jsonErr(int httpStatus, const std
     r.reason = statusReason(httpStatus);
     r.contentType = "application/json; charset=utf-8";
     r.body = toJsonString(root, false);
+    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+    r.headers.push_back({"X-Frame-Options", "DENY"});
+    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
     return r;
 }
 
@@ -587,6 +593,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         r.reason = "OK";
         r.contentType = "image/jpeg";
         r.headers.push_back({"Cache-Control", "no-cache"});
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
         r.body.assign(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
         return r;
 #else
@@ -602,6 +611,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         r.contentType = "multipart/x-mixed-replace; boundary=rk_boundary";
         r.close = false;
         r.headers.push_back({"Cache-Control", "no-cache"});
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
         r.headers.push_back({"Connection", "close"});
         r.body.clear();
         return r;
@@ -677,6 +689,9 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
         os << "HTTP/1.1 200 OK\r\n"
            << "Content-Type: multipart/x-mixed-replace; boundary=" << boundary << "\r\n"
            << "Cache-Control: no-cache\r\n"
+           << "X-Content-Type-Options: nosniff\r\n"
+           << "X-Frame-Options: DENY\r\n"
+           << "Content-Security-Policy: default-src 'none'\r\n"
            << "Connection: close\r\n"
            << "\r\n";
         const std::string head = os.str();
