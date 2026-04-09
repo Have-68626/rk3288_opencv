@@ -10,7 +10,6 @@ import {
   Space,
   Switch,
   Typography,
-  Popconfirm,
   message,
 } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
@@ -33,6 +32,9 @@ export function PreviewPage() {
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
   const [personId, setPersonId] = useState('')
+  const [isEnrolling, setIsEnrolling] = useState(false)
+  const [isClearing, setIsClearing] = useState(false)
+  const [isOpeningPrivacy, setIsOpeningPrivacy] = useState(false)
 
   const currentDeviceId = serverSettings.data?.camera?.preferredDeviceId ?? ''
   const currentW = serverSettings.data?.camera?.width ?? 640
@@ -41,7 +43,6 @@ export function PreviewPage() {
 
   useEffect(() => {
     let alive = true
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCams({ status: 'loading' })
     getCameras(prefs)
       .then((env) => {
@@ -148,6 +149,7 @@ export function PreviewPage() {
             <Space>
               <Switch
                 checked={flipX}
+                aria-label="翻转 X"
                 onChange={(v) => {
                   setFlipX(v)
                   setFlip(prefs, { flipX: v, flipY })
@@ -158,6 +160,7 @@ export function PreviewPage() {
             <Space>
               <Switch
                 checked={flipY}
+                aria-label="翻转 Y"
                 onChange={(v) => {
                   setFlipY(v)
                   setFlip(prefs, { flipX, flipY: v })
@@ -182,14 +185,18 @@ export function PreviewPage() {
               type="primary"
               onClick={async () => {
                 try {
+                  setIsEnrolling(true)
                   await enroll(prefs, { personId })
                   message.success('注册指令已发送')
                   setPersonId('')
-                } catch (e: any) {
-                  message.error(e?.message || '注册失败')
+                } catch (e: unknown) {
+                  message.error((e as Error)?.message || '注册失败')
+                } finally {
+                  setIsEnrolling(false)
                 }
               }}
               disabled={!personId.trim()}
+              loading={isEnrolling}
             >
               注册
             </Button>
@@ -198,29 +205,36 @@ export function PreviewPage() {
               description="确认清空所有人脸库数据？"
               onConfirm={async () => {
                 try {
+                  setIsClearing(true)
                   await clearDb(prefs)
                   message.success('清空指令已发送')
-                } catch (e: any) {
-                  message.error(e?.message || '清空失败')
+                } catch (e: unknown) {
+                  message.error((e as Error)?.message || '清空失败')
+                } finally {
+                  setIsClearing(false)
                 }
               }}
               okText="确认清空"
               cancelText="取消"
-              okButtonProps={{ danger: true }}
+              okButtonProps={{ danger: true, loading: isClearing }}
             >
-              <Button danger>
+              <Button danger loading={isClearing}>
                 清空库
               </Button>
             </Popconfirm>
             <Button
               onClick={async () => {
                 try {
+                  setIsOpeningPrivacy(true)
                   await openPrivacySettings(prefs)
                   message.success('已尝试打开隐私设置窗口')
-                } catch (e: any) {
-                  message.error(e?.message || '打开失败')
+                } catch (e: unknown) {
+                  message.error((e as Error)?.message || '打开失败')
+                } finally {
+                  setIsOpeningPrivacy(false)
                 }
               }}
+              loading={isOpeningPrivacy}
             >
               打开隐私设置
             </Button>

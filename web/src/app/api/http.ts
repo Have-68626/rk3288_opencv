@@ -33,7 +33,6 @@ function log(
     debug: 4,
   }
   if (order[level] < order[want]) return
-  // eslint-disable-next-line no-console
   console[want](...args)
 }
 
@@ -123,11 +122,12 @@ export async function fetchJson<T>(
     const json = text ? (JSON.parse(text) as unknown) : null
     if (!res.ok) {
       // 后端使用统一 envelope：{ok:false,error:{code,message,details?}}
-      const errObj = json as any
-      const code = errObj?.error?.code ?? 'http_error'
-      const message = errObj?.error?.message ?? `HTTP ${res.status}`
-      const details: string[] | undefined = Array.isArray(errObj?.error?.details)
-        ? errObj.error.details
+      const errObj = json as Record<string, unknown>
+      const errorField = errObj?.error as Record<string, unknown> | undefined
+      const code = typeof errorField?.code === 'string' ? errorField.code : 'http_error'
+      const message = typeof errorField?.message === 'string' ? errorField.message : `HTTP ${res.status}`
+      const details: string[] | undefined = Array.isArray(errorField?.details)
+        ? (errorField.details as string[])
         : undefined
       throw new ApiError(code, message, { httpStatus: res.status, details })
     }
@@ -137,14 +137,15 @@ export async function fetchJson<T>(
     }
 
     return json as T
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
+  } catch (e: unknown) {
+    const err = e as Error
+    if (err?.name === 'AbortError') {
       throw new ApiError('timeout', `请求超时（>${init.timeoutMs}ms）`, {
         httpStatus: 0,
       })
     }
-    if (e instanceof ApiError) throw e
-    throw new ApiError('network_error', e?.message || '网络错误/解析失败')
+    if (err instanceof ApiError) throw err
+    throw new ApiError('network_error', err?.message || '网络错误/解析失败')
   } finally {
     window.clearTimeout(timeoutId)
   }
