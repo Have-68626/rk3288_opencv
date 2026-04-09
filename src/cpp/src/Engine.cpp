@@ -10,6 +10,13 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <algorithm>
+#include <sstream>
+
+#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
+#include <libyuv/convert_argb.h>
+#include <libyuv/convert_from.h>
+#endif
 
 namespace {
 static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, std::string& err) {
@@ -152,6 +159,25 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 
     outBgr.create(h, w, CV_8UC3);
 
+#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
+    const uint8_t* srcY = f.nv21.data();
+    const uint8_t* srcVu = f.nv21.data() + needY;
+    const int r = libyuv::NV21ToRGB24(
+        srcY,
+        stride,
+        srcVu,
+        stride,
+        outBgr.data,
+        static_cast<int>(outBgr.step),
+        w,
+        h
+    );
+    if (r != 0) {
+        err = "libyuv NV21ToRGB24 失败";
+        return false;
+    }
+    return true;
+#else
     if (stride == w) {
         cv::Mat yuv(h + uvH, w, CV_8UC1, const_cast<uint8_t*>(f.nv21.data()));
         cv::cvtColor(yuv, outBgr, cv::COLOR_YUV2BGR_NV21);
@@ -177,6 +203,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 
     cv::cvtColor(packedYuv, outBgr, cv::COLOR_YUV2BGR_NV21);
     return true;
+#endif
 }
 
 static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std::string& err) {
@@ -206,12 +233,37 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
             return false;
         }
         outBgr.create(f.height, f.width, CV_8UC3);
+#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
+        const int w = f.width;
+        const int h = f.height;
+        const int w2 = w / 2;
+        const int h2 = h / 2;
+        const std::size_t ySize = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+        const std::size_t uvSize = static_cast<std::size_t>(w2) * static_cast<std::size_t>(h2);
+        const uint8_t* y = yuvI420.data;
+        const uint8_t* u = yuvI420.data + ySize;
+        const uint8_t* v = yuvI420.data + ySize + uvSize;
+        const int r = libyuv::I420ToRGB24(
+            y,
+            w,
+            u,
+            w2,
+            v,
+            w2,
+            outBgr.data,
+            static_cast<int>(outBgr.step),
+            w,
+            h
+        );
+        if (r != 0) {
+            err = "libyuv I420ToRGB24 失败";
+            return false;
+        }
+#else
         cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
+#endif
     }
 
-    if (f.meta.mirrored) {
-        cv::flip(outBgr, outBgr, 1);
-    }
     if (rot == 90) {
         cv::rotate(outBgr, outBgr, cv::ROTATE_90_CLOCKWISE);
     } else if (rot == 180) {
@@ -220,6 +272,23 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
         cv::rotate(outBgr, outBgr, cv::ROTATE_90_COUNTERCLOCKWISE);
     }
     return true;
+}
+
+static long long nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+static float iou(const cv::Rect& a, const cv::Rect& b) {
+    const int x1 = std::max(a.x, b.x);
+    const int y1 = std::max(a.y, b.y);
+    const int x2 = std::min(a.x + a.width, b.x + b.width);
+    const int y2 = std::min(a.y + a.height, b.y + b.height);
+    const int w = std::max(0, x2 - x1);
+    const int h = std::max(0, y2 - y1);
+    const float inter = static_cast<float>(w * h);
+    const float uni = static_cast<float>(a.area() + b.area()) - inter;
+    return (uni <= 0.0f) ? 0.0f : (inter / uni);
 }
 }  // namespace
 
@@ -243,6 +312,8 @@ Engine::~Engine() {
 
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
     RKLOG_ENTER("Engine");
+    initCancelRequested.store(false);
+    videoManager->setCancelToken(&initCancelRequested);
     std::string base = storagePath;
     if (!base.empty() && base.back() != '/' && base.back() != '\\') {
         base.append("/");
@@ -265,6 +336,9 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
     }
 
     if (cameraId >= 0) {
+        if (initCancelRequested.load()) {
+            return false;
+        }
         if (!videoManager->open(cameraId)) {
             std::cerr << "Failed to open camera " << cameraId << "." << std::endl;
             rklog::logError("Engine", __func__, "Failed to open camera");
@@ -279,6 +353,8 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
     RKLOG_ENTER("Engine");
+    initCancelRequested.store(false);
+    videoManager->setCancelToken(&initCancelRequested);
     std::string base = storagePath;
     if (!base.empty() && base.back() != '/' && base.back() != '\\') {
         base.append("/");
@@ -301,13 +377,28 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
     }
 
     // 4. Init Mock Source
+    if (initCancelRequested.load()) {
+        return false;
+    }
     if (!videoManager->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file");
         return false;
     }
+    if (initCancelRequested.load()) {
+        videoManager->close();
+        return false;
+    }
 
     return true;
+}
+
+void Engine::requestCancelInit() {
+    initCancelRequested.store(true);
+}
+
+void Engine::clearCancelInit() {
+    initCancelRequested.store(false);
 }
 
 void Engine::run() {
@@ -412,6 +503,16 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
     }
 
     cv::Mat debugFrame = frame.clone();
+    const bool fx = flipXEnabled.load();
+    const bool fy = flipYEnabled.load();
+    if (fx || fy) {
+        int code = 1;
+        if (fx && fy) code = -1;
+        else if (fy) code = 0;
+        else code = 1;
+        cv::flip(debugFrame, debugFrame, code);
+    }
+    frame = debugFrame;
 
     // 1. Motion Detection check for Non-Continuous mode
     if (currentMode == MonitoringMode::MOTION_TRIGGERED) {
@@ -419,6 +520,7 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
             // Even if no motion, we update render frame
             std::lock_guard<std::mutex> lock(renderMutex);
             renderFrame = debugFrame;
+            renderFrameSeq++;
             return; 
         }
         // Visualize motion (optional: draw contours)
@@ -426,38 +528,144 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
             cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
     }
 
-    // 2. Biometric Authentication
-    PersonIdentity identity;
-    std::vector<cv::Rect> faces;
-    cv::Rect mainFace;
-    bool faceDetected = bioAuth->verify(frame, identity, faces, mainFace);
-    long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    // 2. Multi-face authentication + tracking
+    std::vector<BioAuth::FaceAuthResult> results;
+    bool faceDetected = bioAuth->verifyMulti(frame, results, 4);
+    long long now = nowMs();
 
-    if (faceDetected) {
-        cv::Scalar color = identity.isAuthenticated ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-        for (const auto& r : faces) {
-            const bool isMain = (r.x == mainFace.x && r.y == mainFace.y && r.width == mainFace.width && r.height == mainFace.height);
-            cv::Scalar c = isMain ? color : cv::Scalar(0, 255, 255);
-            int thickness = isMain ? 3 : 2;
-            cv::rectangle(debugFrame, r, c, thickness);
+    const long long trackTtlMs = 1200;
+    const float matchIouThreshold = 0.3f;
+    const int stableFrames = 3;
+
+    for (auto& t : faceTracks) {
+        if (now - t.lastSeenMs > trackTtlMs) {
+            t.lastSeenMs = 0;
         }
-        
-        std::string statusText = identity.isAuthenticated ? 
-            "Verified: " + identity.id : "Unknown";
-        
-        cv::putText(debugFrame, statusText, cv::Point(20, 80), 
-            cv::FONT_HERSHEY_SIMPLEX, 0.8, color, 2);
+    }
+    faceTracks.erase(
+        std::remove_if(faceTracks.begin(), faceTracks.end(), [](const FaceTrack& t) { return t.lastSeenMs == 0; }),
+        faceTracks.end()
+    );
 
-        if (identity.isAuthenticated) {
-            std::cout << "User Verified: " << identity.id << " (" << identity.confidence << ")" << std::endl;
+    std::vector<int> detOrder(results.size());
+    for (int i = 0; i < static_cast<int>(results.size()); i++) detOrder[i] = i;
+    std::sort(detOrder.begin(), detOrder.end(), [&](int a, int b) {
+        return results[a].face.area() > results[b].face.area();
+    });
+
+    std::vector<bool> trackUsed(faceTracks.size(), false);
+    std::vector<int> detToTrack(results.size(), -1);
+
+    for (int idx : detOrder) {
+        float best = 0.0f;
+        int bestTrack = -1;
+        for (int ti = 0; ti < static_cast<int>(faceTracks.size()); ti++) {
+            if (trackUsed[ti]) continue;
+            float s = iou(faceTracks[ti].bbox, results[idx].face);
+            if (s > best) {
+                best = s;
+                bestTrack = ti;
+            }
+        }
+        if (bestTrack >= 0 && best >= matchIouThreshold) {
+            trackUsed[bestTrack] = true;
+            detToTrack[idx] = bestTrack;
+        }
+    }
+
+    for (int i = 0; i < static_cast<int>(results.size()); i++) {
+        if (detToTrack[i] >= 0) continue;
+        FaceTrack t;
+        t.trackId = nextTrackId++;
+        t.bbox = results[i].face;
+        t.lastSeenMs = now;
+        t.lastId = "";
+        t.lastIdStreak = 0;
+        t.stableId = "";
+        t.stableConfidence = 0.0f;
+        faceTracks.push_back(std::move(t));
+        detToTrack[i] = static_cast<int>(faceTracks.size()) - 1;
+    }
+
+    std::vector<FaceTrack*> activeTracks;
+    activeTracks.reserve(results.size());
+
+    for (int i = 0; i < static_cast<int>(results.size()); i++) {
+        const int ti = detToTrack[i];
+        if (ti < 0 || ti >= static_cast<int>(faceTracks.size())) continue;
+        FaceTrack& t = faceTracks[ti];
+        t.bbox = results[i].face;
+        t.lastSeenMs = now;
+
+        const std::string rawId = results[i].identity.isAuthenticated ? results[i].identity.id : "Unknown";
+        const float rawConf = results[i].identity.confidence;
+
+        if (rawId == t.lastId) {
+            t.lastIdStreak++;
+        } else {
+            t.lastId = rawId;
+            t.lastIdStreak = 1;
+        }
+
+        if (t.lastIdStreak >= stableFrames) {
+            t.stableId = rawId;
+            t.stableConfidence = rawConf;
+        } else if (t.stableId.empty()) {
+            t.stableId = rawId;
+            t.stableConfidence = rawConf;
+        }
+
+        activeTracks.push_back(&t);
+    }
+
+    if (!activeTracks.empty()) {
+        std::sort(activeTracks.begin(), activeTracks.end(), [](const FaceTrack* a, const FaceTrack* b) {
+            return a->trackId < b->trackId;
+        });
+
+        FaceTrack* bestAuth = nullptr;
+        for (FaceTrack* t : activeTracks) {
+            if (t->stableId == "Unknown") continue;
+            if (!bestAuth || t->stableConfidence > bestAuth->stableConfidence) {
+                bestAuth = t;
+            }
+        }
+
+        for (FaceTrack* t : activeTracks) {
+            const bool authed = (t->stableId != "Unknown");
+            cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+            int thickness = (bestAuth && t->trackId == bestAuth->trackId) ? 3 : 2;
+            cv::rectangle(debugFrame, t->bbox, color, thickness);
+
+            std::ostringstream label;
+            label << "T" << t->trackId << " " << t->stableId;
+            if (authed) {
+                label << " " << static_cast<int>(t->stableConfidence * 100) << "%";
+            }
+            const cv::Point origin(std::max(0, t->bbox.x), std::max(0, t->bbox.y - 8));
+            cv::putText(debugFrame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+        }
+
+        if (onResultCallback && (now - lastMultiMs > 650)) {
+            lastMultiMs = now;
+            std::ostringstream msg;
+            msg << "FACES " << activeTracks.size();
+            for (FaceTrack* t : activeTracks) {
+                msg << " T" << t->trackId << "=" << t->stableId;
+                if (t->stableId != "Unknown") {
+                    msg << "(" << static_cast<int>(t->stableConfidence * 100) << "%)";
+                }
+            }
+            onResultCallback(msg.str());
+        }
+
+        if (bestAuth) {
             if (onResultCallback && (now - lastVerifiedMs > 800)) {
                 lastVerifiedMs = now;
-                std::string msg = "VERIFIED " + identity.id + " " + std::to_string((int)(identity.confidence * 100)) + "%";
+                std::string msg = "VERIFIED " + bestAuth->stableId + " " + std::to_string(static_cast<int>(bestAuth->stableConfidence * 100)) + "%";
                 onResultCallback(msg);
             }
         } else {
-            // 3. Abnormal Event: Unknown person
             handleAbnormalEvent("AUTH_FAIL", "Unknown person detected", frame);
             if (onResultCallback && (now - lastUnknownMs > 1200)) {
                 lastUnknownMs = now;
@@ -475,14 +683,26 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
     {
         std::lock_guard<std::mutex> lock(renderMutex);
         renderFrame = debugFrame;
+        renderFrameSeq++;
     }
 }
 
 bool Engine::getRenderFrame(cv::Mat& outFrame) {
+    uint64_t seq = 0;
+    return getRenderFrame(outFrame, seq);
+}
+
+bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& outSeq) {
     std::lock_guard<std::mutex> lock(renderMutex);
     if (renderFrame.empty()) return false;
     renderFrame.copyTo(outFrame);
+    outSeq = renderFrameSeq;
     return true;
+}
+
+void Engine::setFlip(bool flipX, bool flipY) {
+    flipXEnabled.store(flipX);
+    flipYEnabled.store(flipY);
 }
 
 void Engine::handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence) {

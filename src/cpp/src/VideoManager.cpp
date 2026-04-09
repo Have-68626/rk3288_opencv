@@ -9,9 +9,9 @@
 #ifdef __linux__
 #include <sys/resource.h>
 #endif
-#include <future>
 #include <chrono>
 #include <algorithm>
+#include <vector>
 
 VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
     // Enable OpenCL transparently if available (Mali-T764)
@@ -20,6 +20,15 @@ VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
 
 VideoManager::~VideoManager() {
     close();
+}
+
+void VideoManager::setCancelToken(std::atomic<bool>* token) {
+    cancelToken = token;
+}
+
+void VideoManager::setTimeoutsMs(int openTimeoutMs, int readTimeoutMs) {
+    if (openTimeoutMs > 0) this->openTimeoutMs = openTimeoutMs;
+    if (readTimeoutMs > 0) this->readTimeoutMs = readTimeoutMs;
 }
 
 bool VideoManager::open(int deviceId) {
@@ -51,6 +60,10 @@ bool VideoManager::open(const std::string& filePath) {
     RKLOG_ENTER("VideoManager");
     if (isRunning) return true;
 
+    if (cancelToken && cancelToken->load()) {
+        return false;
+    }
+
     isMockMode = true;
     isStaticImage = false;
 
@@ -74,8 +87,25 @@ bool VideoManager::open(const std::string& filePath) {
             cv::resize(staticFrame, staticFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
         }
     } else {
-        // Network Stream Logic with Timeout/Downgrade
-        if (filePath.find("http") == 0) {
+        auto tryOpen = [&](const std::string& pathOrUrl) -> bool {
+            if (cancelToken && cancelToken->load()) {
+                return false;
+            }
+            cv::VideoCapture tmp;
+            std::vector<int> params;
+            params.push_back(cv::CAP_PROP_OPEN_TIMEOUT_MSEC);
+            params.push_back(openTimeoutMs);
+            params.push_back(cv::CAP_PROP_READ_TIMEOUT_MSEC);
+            params.push_back(readTimeoutMs);
+            tmp.open(pathOrUrl, cv::CAP_ANY, params);
+            if (!tmp.isOpened()) {
+                return false;
+            }
+            cap = std::move(tmp);
+            return true;
+        };
+
+        if (filePath.find("http") == 0 || filePath.find("rtsp") == 0 || filePath.find("rtmp") == 0) {
             std::string primary = filePath;
             std::string backup = "";
             size_t sep = filePath.find("|");
@@ -83,21 +113,7 @@ bool VideoManager::open(const std::string& filePath) {
                 primary = filePath.substr(0, sep);
                 backup = filePath.substr(sep + 1);
             }
-
-            auto tryOpen = [&](const std::string& url) -> bool {
-                rklog::logInfo("VideoManager", "open", "Connecting to: " + url);
-                auto future = std::async(std::launch::async, [&]() {
-                    return cap.open(url);
-                });
-                
-                // Wait 3 seconds
-                if (future.wait_for(std::chrono::seconds(3)) == std::future_status::timeout) {
-                    rklog::logError("VideoManager", "open", "Connection timed out (3s): " + url);
-                    return false; 
-                }
-                return future.get();
-            };
-
+            rklog::logInfo("VideoManager", "open", "Connecting to: " + primary);
             if (!tryOpen(primary)) {
                 if (!backup.empty()) {
                     rklog::logInfo("VideoManager", "open", "Downgrading to backup: " + backup);
@@ -110,8 +126,7 @@ bool VideoManager::open(const std::string& filePath) {
             }
         } else {
             // Local file
-            cap.open(filePath);
-            if (!cap.isOpened()) {
+            if (!tryOpen(filePath)) {
                 std::cerr << "Failed to open video file: " << filePath << std::endl;
                 return false;
             }
@@ -121,6 +136,11 @@ bool VideoManager::open(const std::string& filePath) {
         }
     }
     
+    if (cancelToken && cancelToken->load()) {
+        if (cap.isOpened()) cap.release();
+        return false;
+    }
+
     isRunning = true;
     captureThread = std::thread(&VideoManager::captureLoop, this);
     return true;

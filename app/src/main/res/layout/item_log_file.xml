@@ -8,11 +8,21 @@
     android:background="?attr/selectableItemBackground"
     android:gravity="center_vertical">
 
-    <CheckBox
-        android:id="@+id/cb_select"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:buttonTint="#00FF00" />
+    <FrameLayout
+        android:id="@+id/hit_select"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:foreground="?attr/selectableItemBackgroundBorderless"
+        android:clickable="true"
+        android:focusable="true">
+
+        <CheckBox
+            android:id="@+id/cb_select"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:buttonTint="#00FF00" />
+    </FrameLayout>
 
     <LinearLayout
         android:layout_width="0dp"

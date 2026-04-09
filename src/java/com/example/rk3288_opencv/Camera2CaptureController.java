@@ -14,6 +14,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Range;
 import android.util.Size;
 import android.view.Surface;
@@ -45,6 +46,14 @@ final class Camera2CaptureController implements CaptureController {
     private int sensorOrientation;
     private boolean mirrored;
     private CameraCharacteristics chars;
+    private long lastStatsRealtimeMs;
+    private long lastFrameTsNs;
+    private int statsFrames;
+    private int statsPushOk;
+    private int statsPushFail;
+    private long statsAnalyzeNsSum;
+    private long statsAnalyzeNsMax;
+    private int statsApproxDropped;
 
     Camera2CaptureController(@NonNull Context context,
                              @NonNull ExternalFrameSink sink,
@@ -85,6 +94,14 @@ final class Camera2CaptureController implements CaptureController {
             Size size = chooseYuvSize(chars);
             imageReader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
             imageReader.setOnImageAvailableListener(this::onImageAvailable, handler);
+            lastStatsRealtimeMs = SystemClock.elapsedRealtime();
+            lastFrameTsNs = 0L;
+            statsFrames = 0;
+            statsPushOk = 0;
+            statsPushFail = 0;
+            statsAnalyzeNsSum = 0L;
+            statsAnalyzeNsMax = 0L;
+            statsApproxDropped = 0;
 
             mgr.openCamera(cameraId, stateCallback, handler);
             return true;
@@ -143,6 +160,7 @@ final class Camera2CaptureController implements CaptureController {
 
     private void onImageAvailable(ImageReader reader) {
         Image image = null;
+        long startNs = SystemClock.elapsedRealtimeNanos();
         try {
             image = reader.acquireLatestImage();
             if (image == null) return;
@@ -161,10 +179,47 @@ final class Camera2CaptureController implements CaptureController {
                     image.getWidth(), image.getHeight(),
                     image.getTimestamp(), rotation, mirrored);
             observer.onFramePushed(ok, image.getTimestamp());
+            statsPushOk += ok ? 1 : 0;
+            statsPushFail += ok ? 0 : 1;
+            long ts = image.getTimestamp();
+            if (lastFrameTsNs > 0 && ts > lastFrameTsNs) {
+                long deltaNs = ts - lastFrameTsNs;
+                if (deltaNs >= 50_000_000L) {
+                    int approx = (int) Math.max(0L, (deltaNs / 16_666_666L) - 1L);
+                    statsApproxDropped = Math.min(1_000_000, statsApproxDropped + approx);
+                }
+            }
+            lastFrameTsNs = ts;
         } catch (Exception e) {
             long ts = image != null ? image.getTimestamp() : 0L;
             observer.onFramePushed(false, ts);
         } finally {
+            long costNs = SystemClock.elapsedRealtimeNanos() - startNs;
+            statsFrames++;
+            statsAnalyzeNsSum += costNs;
+            statsAnalyzeNsMax = Math.max(statsAnalyzeNsMax, costNs);
+            long nowMs = SystemClock.elapsedRealtime();
+            if (nowMs - lastStatsRealtimeMs >= 1000) {
+                long avgUs = statsFrames <= 0 ? 0L : (statsAnalyzeNsSum / statsFrames) / 1000L;
+                long maxUs = statsAnalyzeNsMax / 1000L;
+                AppLog.i(
+                        "Camera2Capture",
+                        "stats",
+                        "acquire=LATEST fmt=YUV_420_888 frames=" + statsFrames +
+                                " pushOk=" + statsPushOk +
+                                " pushFail=" + statsPushFail +
+                                " approxDrop=" + statsApproxDropped +
+                                " analyzeAvg=" + avgUs + "us" +
+                                " analyzeMax=" + maxUs + "us"
+                );
+                lastStatsRealtimeMs = nowMs;
+                statsFrames = 0;
+                statsPushOk = 0;
+                statsPushFail = 0;
+                statsAnalyzeNsSum = 0L;
+                statsAnalyzeNsMax = 0L;
+                statsApproxDropped = 0;
+            }
             if (image != null) {
                 try {
                     image.close();

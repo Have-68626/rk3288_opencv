@@ -5,10 +5,12 @@ import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.os.SystemClock;
 import android.util.Range;
 import android.util.Size;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
 import androidx.camera.camera2.interop.Camera2CameraInfo;
 import androidx.camera.camera2.interop.Camera2Interop;
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop;
@@ -16,6 +18,8 @@ import androidx.camera.core.Camera;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
+import androidx.camera.core.resolutionselector.ResolutionSelector;
+import androidx.camera.core.resolutionselector.ResolutionStrategy;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.core.content.ContextCompat;
 import androidx.lifecycle.LifecycleOwner;
@@ -32,7 +36,6 @@ import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-@ExperimentalCamera2Interop
 final class CameraXCaptureController implements CaptureController {
     private static final int MAX_W = 1920;
     private static final int MAX_H = 1080;
@@ -49,6 +52,15 @@ final class CameraXCaptureController implements CaptureController {
 
     private int sensorOrientation;
     private boolean mirrored;
+    private volatile boolean outputResolutionLogged;
+    private long lastStatsRealtimeMs;
+    private long lastFrameTsNs;
+    private int statsFrames;
+    private int statsPushOk;
+    private int statsPushFail;
+    private long statsAnalyzeNsSum;
+    private long statsAnalyzeNsMax;
+    private int statsApproxDropped;
 
     CameraXCaptureController(@NonNull Context context,
                              @NonNull LifecycleOwner lifecycleOwner,
@@ -86,25 +98,50 @@ final class CameraXCaptureController implements CaptureController {
                 sensorOrientation = so == null ? 0 : so;
                 Integer facing = chars != null ? chars.get(CameraCharacteristics.LENS_FACING) : null;
                 mirrored = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
-                Size size = chooseAnalysisSize(chars);
+                Size preferred1080OrBest = choosePreferred1080OrBest(chars);
+                Size preferred720OrBest = choosePreferred720OrBest(chars);
 
-                ImageAnalysis.Builder builder = new ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .setTargetResolution(size);
+                ImageAnalysis.Builder builder = createAnalysisBuilderWithResolutionSelector(preferred1080OrBest);
 
                 Range<Integer> fps = chooseFpsRange(chars);
                 if (fps != null) {
-                    try {
-                        Camera2Interop.Extender<ImageAnalysis> ext = new Camera2Interop.Extender<>(builder);
-                        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps);
-                    } catch (Exception ignored) {
-                    }
+                    applyCamera2Fps(builder, fps);
                 }
 
                 analysis = builder.build();
 
                 analysis.setAnalyzer(analyzerExecutor, this::analyze);
-                camera = provider.bindToLifecycle(lifecycleOwner, selector, analysis);
+                outputResolutionLogged = false;
+                lastStatsRealtimeMs = SystemClock.elapsedRealtime();
+                lastFrameTsNs = 0L;
+                statsFrames = 0;
+                statsPushOk = 0;
+                statsPushFail = 0;
+                statsAnalyzeNsSum = 0L;
+                statsAnalyzeNsMax = 0L;
+                statsApproxDropped = 0;
+                try {
+                    camera = provider.bindToLifecycle(lifecycleOwner, selector, analysis);
+                } catch (Exception bind1080) {
+                    AppLog.w("CameraXCapture", "start", "绑定失败(1080策略)，回退到 720 策略: " + bind1080.getMessage());
+                    provider.unbindAll();
+                    ImageAnalysis.Builder builder720 = createAnalysisBuilderWithResolutionSelector(preferred720OrBest);
+                    if (fps != null) {
+                        applyCamera2Fps(builder720, fps);
+                    }
+                    analysis = builder720.build();
+                    analysis.setAnalyzer(analyzerExecutor, this::analyze);
+                    camera = provider.bindToLifecycle(lifecycleOwner, selector, analysis);
+                }
+
+                try {
+                    androidx.camera.core.ResolutionInfo info = analysis.getResolutionInfo();
+                    Size out = info == null ? null : info.getResolution();
+                    if (out != null) {
+                        AppLog.i("CameraXCapture", "start", "ResolutionInfo=" + out.getWidth() + "x" + out.getHeight());
+                    }
+                } catch (Throwable ignored) {
+                }
             } catch (Exception e) {
                 observer.onError("camerax", "绑定失败: " + e.getMessage());
             }
@@ -139,9 +176,14 @@ final class CameraXCaptureController implements CaptureController {
     }
 
     private void analyze(@NonNull ImageProxy image) {
+        long startNs = SystemClock.elapsedRealtimeNanos();
         try {
             int w = image.getWidth();
             int h = image.getHeight();
+            if (!outputResolutionLogged) {
+                outputResolutionLogged = true;
+                AppLog.i("CameraXCapture", "analyze", "输出分辨率=" + w + "x" + h);
+            }
             if (w > MAX_W || h > MAX_H) {
                 observer.onError("camerax", "超规格分辨率: " + w + "x" + h + " (上限 " + MAX_W + "x" + MAX_H + ")");
                 observer.onFramePushed(false, image.getImageInfo().getTimestamp());
@@ -164,10 +206,47 @@ final class CameraXCaptureController implements CaptureController {
                     w, h,
                     ts, rot, mirrored);
             observer.onFramePushed(ok, ts);
+            statsPushOk += ok ? 1 : 0;
+            statsPushFail += ok ? 0 : 1;
+
+            if (lastFrameTsNs > 0 && ts > lastFrameTsNs) {
+                long deltaNs = ts - lastFrameTsNs;
+                if (deltaNs >= 50_000_000L) {
+                    int approx = (int) Math.max(0L, (deltaNs / 16_666_666L) - 1L);
+                    statsApproxDropped = Math.min(1_000_000, statsApproxDropped + approx);
+                }
+            }
+            lastFrameTsNs = ts;
         } catch (Exception e) {
             long ts = image.getImageInfo().getTimestamp();
             observer.onFramePushed(false, ts);
         } finally {
+            long costNs = SystemClock.elapsedRealtimeNanos() - startNs;
+            statsFrames++;
+            statsAnalyzeNsSum += costNs;
+            statsAnalyzeNsMax = Math.max(statsAnalyzeNsMax, costNs);
+            long nowMs = SystemClock.elapsedRealtime();
+            if (nowMs - lastStatsRealtimeMs >= 1000) {
+                long avgUs = statsFrames <= 0 ? 0L : (statsAnalyzeNsSum / statsFrames) / 1000L;
+                long maxUs = statsAnalyzeNsMax / 1000L;
+                AppLog.i(
+                        "CameraXCapture",
+                        "stats",
+                        "backpressure=KEEP_ONLY_LATEST fmt=YUV_420_888 frames=" + statsFrames +
+                                " pushOk=" + statsPushOk +
+                                " pushFail=" + statsPushFail +
+                                " approxDrop=" + statsApproxDropped +
+                                " analyzeAvg=" + avgUs + "us" +
+                                " analyzeMax=" + maxUs + "us"
+                );
+                lastStatsRealtimeMs = nowMs;
+                statsFrames = 0;
+                statsPushOk = 0;
+                statsPushFail = 0;
+                statsAnalyzeNsSum = 0L;
+                statsAnalyzeNsMax = 0L;
+                statsApproxDropped = 0;
+            }
             try {
                 image.close();
             } catch (Exception ignored) {
@@ -187,6 +266,7 @@ final class CameraXCaptureController implements CaptureController {
         return rot;
     }
 
+    @OptIn(markerClass = ExperimentalCamera2Interop.class)
     private static List<androidx.camera.core.CameraInfo> filterByCameraId(List<androidx.camera.core.CameraInfo> infos, String cameraId) {
         for (androidx.camera.core.CameraInfo info : infos) {
             try {
@@ -234,6 +314,42 @@ final class CameraXCaptureController implements CaptureController {
 
         Collections.sort(capped, (a, b) -> Integer.compare(b.getWidth() * b.getHeight(), a.getWidth() * a.getHeight()));
         return capped.get(0);
+    }
+
+    private static ImageAnalysis.Builder createAnalysisBuilderWithResolutionSelector(@NonNull Size preferred) {
+        ResolutionStrategy strategy =
+                new ResolutionStrategy(preferred, ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER);
+        ResolutionSelector selector = new ResolutionSelector.Builder().setResolutionStrategy(strategy).build();
+        AppLog.i("CameraXCapture", "createAnalysis", "ResolutionSelector preferred=" + preferred.getWidth() + "x" + preferred.getHeight());
+        return new ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .setResolutionSelector(selector);
+    }
+
+    @OptIn(markerClass = ExperimentalCamera2Interop.class)
+    private static void applyCamera2Fps(@NonNull ImageAnalysis.Builder builder, @NonNull Range<Integer> fps) {
+        try {
+            Camera2Interop.Extender<ImageAnalysis> ext = new Camera2Interop.Extender<>(builder);
+            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static Size choosePreferred1080OrBest(CameraCharacteristics chars) {
+        List<Size> sizes = getYuvSizes(chars);
+        for (Size s : sizes) {
+            if (s.getWidth() == 1920 && s.getHeight() == 1080) return s;
+        }
+        return chooseAnalysisSize(chars);
+    }
+
+    private static Size choosePreferred720OrBest(CameraCharacteristics chars) {
+        List<Size> sizes = getYuvSizes(chars);
+        for (Size s : sizes) {
+            if (s.getWidth() == 1280 && s.getHeight() == 720) return s;
+        }
+        return chooseAnalysisSize(chars);
     }
 
     private static List<Size> getYuvSizes(CameraCharacteristics chars) {

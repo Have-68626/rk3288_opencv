@@ -1,4 +1,6 @@
 #include <jni.h>
+#include <cstdint>
+#include <atomic>
 #include <string>
 #include <thread>
 #include <mutex>
@@ -23,6 +25,8 @@ static JavaVM* g_vm = nullptr;
 static jobject g_activity = nullptr;
 static std::mutex g_previewMutex;
 static ANativeWindow* g_previewWindow = nullptr;
+static std::atomic<uint64_t> g_previewGeneration{0};
+static std::atomic<bool> g_cancelInit{false};
 
 static void stopAndJoinEngineThreadIfRunning() {
     std::thread t;
@@ -122,6 +126,8 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
         g_engine = std::make_unique<Engine>();
     }
 
+    g_cancelInit.store(false);
+    g_engine->clearCancelInit();
     g_engine->setOnResultCallback(sendRecognitionResult);
     return g_engine->initialize(pathStr, cascadeStr, storageStr);
 }
@@ -254,6 +260,16 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeStop(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeRequestCancelInit(
+        JNIEnv*,
+        jobject) {
+    g_cancelInit.store(true);
+    if (g_engine) {
+        g_engine->requestCancelInit();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeSetMode(
         JNIEnv* env,
         jobject /* this */,
@@ -262,6 +278,16 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeSetMode(
     if (g_engine) {
         g_engine->setMode(static_cast<MonitoringMode>(mode));
     }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeSetFlip(
+        JNIEnv*,
+        jobject,
+        jboolean flipX,
+        jboolean flipY) {
+    if (!g_engine) return;
+    g_engine->setFlip(flipX == JNI_TRUE, flipY == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -547,9 +573,15 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(
     if (!g_engine) return false;
 
     cv::Mat frame;
-    if (!g_engine->getRenderFrame(frame)) {
+    uint64_t seq = 0;
+    if (!g_engine->getRenderFrame(frame, seq)) {
         return false;
     }
+    thread_local uint64_t lastSeq = static_cast<uint64_t>(-1);
+    if (seq == lastSeq) {
+        return false;
+    }
+    lastSeq = seq;
 
     // Lock Bitmap pixels
     AndroidBitmapInfo info;
@@ -585,6 +617,7 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeSetPreviewSurface(
         ANativeWindow_release(g_previewWindow);
         g_previewWindow = nullptr;
     }
+    g_previewGeneration.fetch_add(1, std::memory_order_relaxed);
     if (!surface) return;
     g_previewWindow = ANativeWindow_fromSurface(env, surface);
 }
@@ -596,36 +629,74 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
     if (!g_engine) return JNI_FALSE;
 
     ANativeWindow* win = nullptr;
+    uint64_t gen = 0;
     {
         std::lock_guard<std::mutex> lock(g_previewMutex);
         win = g_previewWindow;
+        gen = g_previewGeneration.load(std::memory_order_relaxed);
     }
     if (!win) return JNI_FALSE;
 
     cv::Mat frame;
-    if (!g_engine->getRenderFrame(frame)) {
+    uint64_t seq = 0;
+    if (!g_engine->getRenderFrame(frame, seq)) {
         return JNI_FALSE;
     }
     if (frame.empty()) return JNI_FALSE;
 
-    thread_local cv::Mat rgba;
-    cv::cvtColor(frame, rgba, cv::COLOR_BGR2RGBA);
+    thread_local uint64_t lastGen = static_cast<uint64_t>(-1);
+    thread_local uint64_t lastSeq = static_cast<uint64_t>(-1);
+    thread_local int lastW = 0;
+    thread_local int lastH = 0;
+    thread_local int lastFormat = 0;
+    if (gen != lastGen) {
+        lastGen = gen;
+        lastSeq = static_cast<uint64_t>(-1);
+        lastW = 0;
+        lastH = 0;
+        lastFormat = 0;
+    }
+    if (seq == lastSeq) {
+        return JNI_TRUE;
+    }
+    lastSeq = seq;
 
-    ANativeWindow_setBuffersGeometry(win, rgba.cols, rgba.rows, WINDOW_FORMAT_RGBA_8888);
+    const int w = frame.cols;
+    const int h = frame.rows;
+    if (w <= 0 || h <= 0) return JNI_FALSE;
+
+    if (w != lastW || h != lastH || lastFormat != WINDOW_FORMAT_RGBA_8888) {
+        if (ANativeWindow_setBuffersGeometry(win, w, h, WINDOW_FORMAT_RGBA_8888) != 0) {
+            return JNI_FALSE;
+        }
+        lastW = w;
+        lastH = h;
+        lastFormat = WINDOW_FORMAT_RGBA_8888;
+    }
 
     ANativeWindow_Buffer buffer;
     if (ANativeWindow_lock(win, &buffer, nullptr) != 0) {
         return JNI_FALSE;
     }
 
-    const int w = rgba.cols;
-    const int h = rgba.rows;
-    const int dstStrideBytes = buffer.stride * 4;
-    for (int row = 0; row < h; row++) {
-        uint8_t* dst = reinterpret_cast<uint8_t*>(buffer.bits) + row * dstStrideBytes;
-        const uint8_t* src = rgba.ptr<uint8_t>(row);
-        std::memcpy(dst, src, static_cast<std::size_t>(w) * 4U);
+    const int dstStridePixels = buffer.stride;
+    if (dstStridePixels < w || buffer.bits == nullptr || buffer.format != WINDOW_FORMAT_RGBA_8888) {
+        const int dstStrideBytes = dstStridePixels * 4;
+        if (buffer.bits != nullptr && dstStrideBytes > 0) {
+            for (int row = 0; row < h; row++) {
+                std::memset(reinterpret_cast<uint8_t*>(buffer.bits) + row * dstStrideBytes, 0, static_cast<std::size_t>(w) * 4U);
+            }
+        }
+        ANativeWindow_unlockAndPost(win);
+        lastW = 0;
+        lastH = 0;
+        lastFormat = 0;
+        return JNI_FALSE;
     }
+
+    cv::Mat dst(h, dstStridePixels, CV_8UC4, buffer.bits);
+    cv::Mat dstRoi = dst(cv::Rect(0, 0, w, h));
+    cv::cvtColor(frame, dstRoi, cv::COLOR_BGR2RGBA);
 
     ANativeWindow_unlockAndPost(win);
     return JNI_TRUE;

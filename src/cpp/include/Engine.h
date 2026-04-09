@@ -14,9 +14,11 @@
 #include "FrameInputChannel.h"
 #include "Types.h"
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <functional>
 #include <mutex>
+#include <vector>
 
 class Engine {
 public:
@@ -85,6 +87,10 @@ public:
      * @return true if a new frame is available.
      */
     bool getRenderFrame(cv::Mat& outFrame);
+    bool getRenderFrame(cv::Mat& outFrame, uint64_t& outSeq);
+    void requestCancelInit();
+    void clearCancelInit();
+    void setFlip(bool flipX, bool flipY);
 
 private:
     void processFrame(const cv::Mat& frame);
@@ -98,9 +104,13 @@ private:
     std::atomic<bool> isRunning;
     std::atomic<MonitoringMode> currentMode;
     std::atomic<bool> externalInputEnabled;
+    std::atomic<bool> initCancelRequested{false};
+    std::atomic<bool> flipXEnabled{false};
+    std::atomic<bool> flipYEnabled{false};
     
     // Rendering
     cv::Mat renderFrame;
+    uint64_t renderFrameSeq = 0;
     std::mutex renderMutex;
 
     // Performance stats
@@ -117,6 +127,22 @@ private:
     long long lastNoFaceMs = 0;
     long long lastUnknownMs = 0;
     long long lastVerifiedMs = 0;
+    long long lastMultiMs = 0;
+
+    struct FaceTrack {
+        int trackId = 0;
+        cv::Rect bbox;
+        long long lastSeenMs = 0;
+
+        std::string lastId;
+        int lastIdStreak = 0;
+
+        std::string stableId;
+        float stableConfidence = 0.0f;
+    };
+
+    std::vector<FaceTrack> faceTracks;
+    int nextTrackId = 1;
 
 public:
     void setMaxFrames(int max) { maxFrames = max; }

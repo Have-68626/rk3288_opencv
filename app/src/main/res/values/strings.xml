@@ -29,6 +29,8 @@
     <string name="ui_settings_capture_scheme">采集方案</string>
     <string name="ui_settings_capture_scheme_camera2">Camera2</string>
     <string name="ui_settings_capture_scheme_camerax">CameraX</string>
+    <string name="ui_settings_flip_x">镜像/翻转 X（左右）</string>
+    <string name="ui_settings_flip_y">翻转 Y（上下）</string>
 
     <string name="ui_settings_mock_url">虚拟源地址 (MP4/HLS/RTSP)</string>
     <string name="ui_settings_mock_url_hint">rtsp:// 或 https:// 或 file://</string>

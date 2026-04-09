@@ -16,6 +16,13 @@ option(RK_NCNN_FETCHCONTENT "当 ncnn 未安装时，允许通过 FetchContent �
 set(RK_NCNN_GIT_REPOSITORY "https://github.com/Tencent/ncnn.git" CACHE STRING "ncnn 仓库地址（仅 FetchContent 时使用）")
 set(RK_NCNN_GIT_TAG "master" CACHE STRING "ncnn 版本（tag/commit，默认 master；仅 FetchContent 时使用）")
 
+if(ANDROID)
+    set(_rk_enable_libyuv_default ON)
+else()
+    set(_rk_enable_libyuv_default OFF)
+endif()
+option(RK_ENABLE_LIBYUV "启用 libyuv（用于 YUV->BGR 等像素转换加速；缺省 Android=ON / Host=OFF）" ${_rk_enable_libyuv_default})
+
 # Optimization flags
 # -mcpu=cortex-a17 and -mfpu=neon-vfpv4 are specific to the RK3288 (armeabi-v7a)
 # We only apply them when targeting that architecture to avoid errors on x86_64 or arm64-v8a.
@@ -160,6 +167,33 @@ if(RK_ENABLE_NCNN)
     endif()
 endif()
 
+set(RK_HAVE_LIBYUV OFF)
+set(RK_LIBYUV_TARGET "")
+if(RK_ENABLE_LIBYUV)
+    include(FetchContent)
+    FetchContent_Declare(
+        libyuv
+        GIT_REPOSITORY https://chromium.googlesource.com/libyuv/libyuv
+        GIT_TAG        d9681c53b3af633ab3c64655fcb9625e364b8f9c
+    )
+    FetchContent_GetProperties(libyuv)
+    if(NOT libyuv_POPULATED)
+        FetchContent_Populate(libyuv)
+    endif()
+
+    if(libyuv_SOURCE_DIR)
+        file(GLOB libyuv_sources CONFIGURE_DEPENDS "${libyuv_SOURCE_DIR}/source/*.cc")
+        add_library(rk_libyuv STATIC ${libyuv_sources})
+        target_include_directories(rk_libyuv PUBLIC ${libyuv_SOURCE_DIR}/include)
+        if(MSVC)
+            target_compile_options(rk_libyuv PRIVATE /utf-8)
+        endif()
+
+        set(RK_HAVE_LIBYUV ON)
+        set(RK_LIBYUV_TARGET rk_libyuv)
+    endif()
+endif()
+
 # Collect Core Source Files (excluding entry points)
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
     "src/cpp/src/*.cpp"
@@ -187,6 +221,7 @@ if(ANDROID)
         opencv_videoio
         opencv_highgui
         opencv_stitching
+        $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
         ${log-lib}
         ${jnigraphics-lib}
         android
@@ -198,6 +233,10 @@ if(ANDROID)
     )
 
     target_compile_definitions(native-lib PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
+    target_compile_definitions(native-lib PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
+    if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
+        target_include_directories(native-lib PRIVATE ${libyuv_SOURCE_DIR}/include)
+    endif()
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(native-lib ${RK_NCNN_TARGET})
     endif()
@@ -212,6 +251,10 @@ target_include_directories(rk3288_cli PRIVATE
 )
 
 target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
+target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
+if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
+    target_include_directories(rk3288_cli PRIVATE ${libyuv_SOURCE_DIR}/include)
+endif()
 
 # Link Libraries for CLI
 if(ANDROID)
@@ -231,6 +274,7 @@ if(ANDROID)
         opencv_videoio
         opencv_highgui
         opencv_stitching
+        $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
         ${log-lib}
         ${jnigraphics-lib}
         android
@@ -253,6 +297,7 @@ else()
         opencv_videoio
         opencv_highgui
         opencv_stitching
+        $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
         # No android/log libs on host
     )
 endif()

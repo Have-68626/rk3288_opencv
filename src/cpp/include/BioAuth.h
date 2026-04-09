@@ -17,6 +17,7 @@
 #endif
 
 #include <memory>
+#include <vector>
 
 class BioAuth {
 public:
@@ -54,6 +55,14 @@ public:
                 PersonIdentity& outIdentity,
                 std::vector<cv::Rect>& outFaces,
                 cv::Rect& outMainFace);
+
+    struct FaceAuthResult {
+        cv::Rect face;
+        PersonIdentity identity;
+        bool isMain = false;
+    };
+
+    bool verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces = 3);
 
 private:
     cv::CascadeClassifier faceCascade;

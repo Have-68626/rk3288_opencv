@@ -20,6 +20,9 @@ public:
     VideoManager();
     ~VideoManager();
 
+    void setCancelToken(std::atomic<bool>* token);
+    void setTimeoutsMs(int openTimeoutMs, int readTimeoutMs);
+
     /**
      * @brief Opens the camera device.
      * @param deviceId Camera index (default 0).
@@ -57,6 +60,9 @@ private:
     cv::VideoCapture cap;
     std::thread captureThread;
     std::atomic<bool> isRunning;
+    std::atomic<bool>* cancelToken = nullptr;
+    int openTimeoutMs = 5000;
+    int readTimeoutMs = 5000;
     
     cv::Mat latestFrame;
     std::mutex frameMutex;

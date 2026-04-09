@@ -21,6 +21,11 @@
 - 来源：Tencent 开源项目 ncnn
 - 许可证：BSD 3-Clause License
 
+### libyuv
+- 用途：YUV/RGB 像素格式转换与缩放（用于外部帧/JNI 通道性能优化）
+- 来源：https://chromium.googlesource.com/libyuv/libyuv
+- 许可证：BSD 3-Clause License
+
 ### CivetWeb
 - 用途：Windows 本地 HTTP 服务（localhost REST + 静态托管 + OpenAPI）
 - 来源：https://github.com/civetweb/civetweb（本仓库 vendor：`src/win/third_party/civetweb/`，版本：v1.16）
