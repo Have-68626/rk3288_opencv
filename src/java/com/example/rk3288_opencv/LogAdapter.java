@@ -4,6 +4,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CheckBox;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -27,6 +28,7 @@ public class LogAdapter extends RecyclerView.Adapter<LogAdapter.LogViewHolder> {
 
     public interface OnLogClickListener {
         void onLogClick(File file);
+        void onSelectionChanged(int selectedCount, int totalCount);
     }
 
     public LogAdapter(OnLogClickListener listener) {
@@ -42,21 +44,66 @@ public class LogAdapter extends RecyclerView.Adapter<LogAdapter.LogViewHolder> {
                 return Long.compare(o2.lastModified(), o1.lastModified());
             }
         });
+        Set<File> nextSelected = new HashSet<>();
+        for (File f : this.logFiles) {
+            if (selectedFiles.contains(f)) nextSelected.add(f);
+        }
+        selectedFiles = nextSelected;
         notifyDataSetChanged();
+        notifySelectionChanged();
     }
 
     public List<File> getSelectedFiles() {
         return new ArrayList<>(selectedFiles);
     }
+
+    public int getSelectedCount() {
+        return selectedFiles.size();
+    }
+
+    public int getTotalCount() {
+        return logFiles.size();
+    }
+
+    public boolean hasSelection() {
+        return !selectedFiles.isEmpty();
+    }
     
     public void selectAll() {
         selectedFiles.addAll(logFiles);
         notifyDataSetChanged();
+        notifySelectionChanged();
+    }
+
+    public void invertSelection() {
+        Set<File> next = new HashSet<>();
+        for (File f : logFiles) {
+            if (!selectedFiles.contains(f)) {
+                next.add(f);
+            }
+        }
+        selectedFiles = next;
+        notifyDataSetChanged();
+        notifySelectionChanged();
     }
     
     public void clearSelection() {
         selectedFiles.clear();
         notifyDataSetChanged();
+        notifySelectionChanged();
+    }
+
+    private void notifySelectionChanged() {
+        if (listener != null) {
+            listener.onSelectionChanged(selectedFiles.size(), logFiles.size());
+        }
+    }
+
+    private void toggleSelected(File file) {
+        if (file == null) return;
+        if (selectedFiles.contains(file)) selectedFiles.remove(file);
+        else selectedFiles.add(file);
+        notifySelectionChanged();
     }
 
     @NonNull
@@ -81,12 +128,14 @@ public class LogAdapter extends RecyclerView.Adapter<LogAdapter.LogViewHolder> {
         TextView tvFilename;
         TextView tvFileInfo;
         CheckBox cbSelect;
+        FrameLayout hitSelect;
 
         public LogViewHolder(@NonNull View itemView) {
             super(itemView);
             tvFilename = itemView.findViewById(R.id.tv_filename);
             tvFileInfo = itemView.findViewById(R.id.tv_file_info);
             cbSelect = itemView.findViewById(R.id.cb_select);
+            hitSelect = itemView.findViewById(R.id.hit_select);
         }
 
         public void bind(final File file) {
@@ -107,10 +156,31 @@ public class LogAdapter extends RecyclerView.Adapter<LogAdapter.LogViewHolder> {
                 } else {
                     selectedFiles.remove(file);
                 }
+                notifySelectionChanged();
             });
 
-            // Handle Click
+            if (hitSelect != null) {
+                hitSelect.setOnClickListener(v -> cbSelect.toggle());
+                hitSelect.setOnLongClickListener(v -> {
+                    cbSelect.toggle();
+                    return true;
+                });
+            }
+
+            itemView.setOnLongClickListener(v -> {
+                toggleSelected(file);
+                int pos = getBindingAdapterPosition();
+                if (pos != RecyclerView.NO_POSITION) notifyItemChanged(pos);
+                return true;
+            });
+
             itemView.setOnClickListener(v -> {
+                if (hasSelection()) {
+                    toggleSelected(file);
+                    int pos = getBindingAdapterPosition();
+                    if (pos != RecyclerView.NO_POSITION) notifyItemChanged(pos);
+                    return;
+                }
                 if (listener != null) {
                     listener.onLogClick(file);
                 }

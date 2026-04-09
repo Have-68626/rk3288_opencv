@@ -5,6 +5,7 @@
 #include "BioAuth.h"
 #include "Config.h"
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <iostream>
 
 BioAuth::BioAuth() : isModelLoaded(false) {
@@ -51,27 +52,37 @@ void BioAuth::train(const std::vector<cv::Mat>& images, const std::vector<int>& 
 
 bool BioAuth::verify(const cv::Mat& frame, PersonIdentity& outIdentity) {
     std::vector<cv::Rect> faces;
+    cv::Rect mainFace;
+    return verify(frame, outIdentity, faces, mainFace);
+}
+
+bool BioAuth::verify(const cv::Mat& frame,
+                     PersonIdentity& outIdentity,
+                     std::vector<cv::Rect>& outFaces,
+                     cv::Rect& outMainFace) {
+    outFaces.clear();
+    outMainFace = cv::Rect();
+
+    std::vector<cv::Rect> faces;
     cv::Mat gray;
-    
+
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
     cv::equalizeHist(gray, gray);
 
-    // Detect faces
-    // ScaleFactor=1.1, MinNeighbors=3 (lower for better recall, higher for precision)
-    // Flags=0, MinSize=(30, 30)
     faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
 
     if (faces.empty()) {
         return false;
     }
 
-    // Process the largest face found (assuming single user auth for now)
     cv::Rect largestFace = faces[0];
     for (const auto& face : faces) {
         if (face.area() > largestFace.area()) {
             largestFace = face;
         }
     }
+    outFaces = faces;
+    outMainFace = largestFace;
 
     if (isModelLoaded) {
 #ifdef HAS_OPENCV_FACE
@@ -101,6 +112,70 @@ bool BioAuth::verify(const cv::Mat& frame, PersonIdentity& outIdentity) {
         outIdentity.id = "unknown";
         outIdentity.confidence = 0.0f;
         outIdentity.isAuthenticated = false;
+    }
+
+    return true;
+}
+
+bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces) {
+    outResults.clear();
+
+    std::vector<cv::Rect> faces;
+    cv::Mat gray;
+
+    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+    cv::equalizeHist(gray, gray);
+
+    faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
+
+    if (faces.empty()) {
+        return false;
+    }
+
+    cv::Rect largestFace = faces[0];
+    for (const auto& face : faces) {
+        if (face.area() > largestFace.area()) {
+            largestFace = face;
+        }
+    }
+
+    std::sort(faces.begin(), faces.end(), [](const cv::Rect& a, const cv::Rect& b) {
+        return a.area() > b.area();
+    });
+
+    int clampedMaxFaces = std::max(1, maxFaces);
+    if (static_cast<int>(faces.size()) > clampedMaxFaces) {
+        faces.resize(clampedMaxFaces);
+    }
+
+    outResults.reserve(faces.size());
+    for (const auto& face : faces) {
+        FaceAuthResult r;
+        r.face = face;
+        r.isMain = (face == largestFace);
+
+        if (isModelLoaded) {
+#ifdef HAS_OPENCV_FACE
+            int label = -1;
+            double distance = 0.0;
+            faceRecognizer->predict(gray(face), label, distance);
+
+            r.identity.id = (label >= 0) ? std::to_string(label) : "unknown";
+            float normConf = std::max(0.0f, static_cast<float>((100.0 - distance) / 100.0));
+            r.identity.confidence = normConf;
+            r.identity.isAuthenticated = (normConf >= Config::BIO_AUTH_THRESHOLD);
+#else
+            r.identity.id = "unknown_no_module";
+            r.identity.confidence = 0.0f;
+            r.identity.isAuthenticated = false;
+#endif
+        } else {
+            r.identity.id = "unknown";
+            r.identity.confidence = 0.0f;
+            r.identity.isAuthenticated = false;
+        }
+
+        outResults.push_back(std::move(r));
     }
 
     return true;

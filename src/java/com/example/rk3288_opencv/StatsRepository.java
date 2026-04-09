@@ -43,8 +43,21 @@ final class StatsRepository {
     private Handler samplerHandler;
 
     private final FpsTracker fpsTracker = new FpsTracker();
+    private final CaptureTracker captureTracker = new CaptureTracker();
+    private final LatencyTracker latencyTracker = new LatencyTracker();
     private final CpuSampler cpuSampler = new CpuSampler();
     private final MemSampler memSampler = new MemSampler();
+
+    void reportCaptureFrameTimestampNs(long timestampNs) {
+        if (timestampNs <= 0) return;
+        captureTracker.onFrame(timestampNs);
+        latencyTracker.onCapture(timestampNs);
+    }
+
+    void reportRenderTimeNs(long renderTimeNs) {
+        if (renderTimeNs <= 0) return;
+        latencyTracker.onRender(renderTimeNs);
+    }
 
     void start(@NonNull Context context) {
         if (started) return;
@@ -103,6 +116,26 @@ final class StatsRepository {
             AppLog.e("StatsRepository", "sampleOnce", "FPS采集失败", e);
         }
 
+        Double capFps = null;
+        String capErr = null;
+        try {
+            capFps = captureTracker.getFps();
+            if (capFps == null) capErr = "CAP不足样本";
+        } catch (Exception e) {
+            capErr = e.getMessage();
+            AppLog.e("StatsRepository", "sampleOnce", "CAP采集失败", e);
+        }
+
+        Double latMs = null;
+        String latErr = null;
+        try {
+            latMs = latencyTracker.getLatencyMs();
+            if (latMs == null) latErr = "LAT不足样本";
+        } catch (Exception e) {
+            latErr = e.getMessage();
+            AppLog.e("StatsRepository", "sampleOnce", "LAT采集失败", e);
+        }
+
         CpuSampler.Result cpuRes = cpuSampler.sample();
         Double cpu = cpuRes.cpuPercent;
         String cpuErr = cpuRes.error;
@@ -113,12 +146,86 @@ final class StatsRepository {
         Double memGfx = memRes.graphicsMb;
         String memErr = memRes.error;
 
-        StatsSnapshot next = new StatsSnapshot(fps, cpu, memPss, memPriv, memGfx, fpsErr, cpuErr, memErr);
+        StatsSnapshot next = new StatsSnapshot(fps, capFps, latMs, cpu, memPss, memPriv, memGfx, fpsErr, capErr, latErr, cpuErr, memErr);
         lock.writeLock().lock();
         try {
             snapshot = next;
         } finally {
             lock.writeLock().unlock();
+        }
+    }
+
+    private static final class CaptureTracker {
+        private final Object guard = new Object();
+        private final ArrayDeque<Long> intervalsMs = new ArrayDeque<>();
+        private static final int MAX_SAMPLES = 180;
+        private long lastTsNs;
+
+        void onFrame(long tsNs) {
+            if (tsNs <= 0) return;
+            if (lastTsNs != 0) {
+                long deltaMs = (tsNs - lastTsNs) / 1_000_000L;
+                synchronized (guard) {
+                    intervalsMs.addLast(deltaMs);
+                    while (intervalsMs.size() > MAX_SAMPLES) intervalsMs.removeFirst();
+                }
+            }
+            lastTsNs = tsNs;
+        }
+
+        @Nullable
+        Double getFps() {
+            synchronized (guard) {
+                if (intervalsMs.size() < 10) return null;
+                long sum = 0;
+                int n = 0;
+                for (long v : intervalsMs) {
+                    if (v < 5 || v > 500) continue;
+                    sum += v;
+                    n++;
+                }
+                if (n < 5) return null;
+                double avg = sum / (double) n;
+                return 1000.0 / avg;
+            }
+        }
+    }
+
+    private static final class LatencyTracker {
+        private final Object guard = new Object();
+        private final ArrayDeque<Long> samplesMs = new ArrayDeque<>();
+        private static final int MAX_SAMPLES = 120;
+        private long lastCaptureTsNs;
+
+        void onCapture(long tsNs) {
+            lastCaptureTsNs = tsNs;
+        }
+
+        void onRender(long renderNs) {
+            long cap = lastCaptureTsNs;
+            if (cap <= 0) return;
+            long deltaMs = (renderNs - cap) / 1_000_000L;
+            if (deltaMs < 0 || deltaMs > 60_000) return;
+            synchronized (guard) {
+                samplesMs.addLast(deltaMs);
+                while (samplesMs.size() > MAX_SAMPLES) samplesMs.removeFirst();
+            }
+        }
+
+        @Nullable
+        Double getLatencyMs() {
+            synchronized (guard) {
+                if (samplesMs.size() < 5) return null;
+                long sum = 0;
+                int n = 0;
+                for (long v : samplesMs) {
+                    if (v < 0 || v > 60_000) continue;
+                    sum += v;
+                    n++;
+                }
+                if (n < 3) return null;
+                return sum / (double) n;
+            }
         }
     }
 

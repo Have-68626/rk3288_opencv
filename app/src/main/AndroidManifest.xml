@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Hardware features set to optional for compatibility -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -40,7 +42,7 @@
             android:label="Log Details"
             android:parentActivityName=".LogViewerActivity" />
 
-        <service android:name=".StatusService" android:enabled="true" android:exported="false"/>
+        <service android:name=".StatusService" android:enabled="true" android:exported="false" android:foregroundServiceType="dataSync"/>
 
         <provider
             android:name="androidx.core.content.FileProvider"

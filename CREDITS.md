@@ -21,6 +21,11 @@
 - 来源：Tencent 开源项目 ncnn
 - 许可证：BSD 3-Clause License
 
+### libyuv
+- 用途：YUV/RGB 像素格式转换与缩放（用于外部帧/JNI 通道性能优化）
+- 来源：https://chromium.googlesource.com/libyuv/libyuv
+- 许可证：BSD 3-Clause License
+
 ### CivetWeb
 - 用途：Windows 本地 HTTP 服务（localhost REST + 静态托管 + OpenAPI）
 - 来源：https://github.com/civetweb/civetweb（本仓库 vendor：`src/win/third_party/civetweb/`，版本：v1.16）
@@ -55,6 +60,23 @@
 - 用途：布局系统
 - 组件：`androidx.constraintlayout:constraintlayout`
 - 许可证：Apache License 2.0
+
+### AndroidX CameraX
+- 用途：Android 相机采集（CameraX ImageAnalysis，可作为 Camera2 的替代/降级路径）
+- 发布渠道：Google Maven（`https://maven.google.com/`）
+- 上游来源：
+  - AndroidX（Jetpack）CameraX Release Notes：`https://developer.android.com/jetpack/androidx/releases/camera`
+  - 源码仓库（镜像）：`https://github.com/androidx/androidx`（CameraX 位于 `camera/` 目录）
+- 组件（本项目当前版本：`1.3.4`，见 `app/build.gradle`）：
+  - `androidx.camera:camera-core:1.3.4`
+  - `androidx.camera:camera-camera2:1.3.4`
+  - `androidx.camera:camera-lifecycle:1.3.4`
+- 许可证：Apache License 2.0
+- CameraX 相关传递依赖（基于本项目 `debugRuntimeClasspath` 解析结果）：
+  - `androidx.concurrent:concurrent-futures:1.1.0`：Apache License 2.0
+  - `com.google.guava:listenablefuture:1.0`：Apache License 2.0
+  - `androidx.lifecycle:lifecycle-*:2.6.1`：Apache License 2.0
+  - 说明：传递依赖可能随版本升级变化；如需精确复核，请运行 `.\gradlew.bat :app:dependencyInsight --configuration debugRuntimeClasspath --dependency <artifact>`。
 
 ## 工具与构建
 

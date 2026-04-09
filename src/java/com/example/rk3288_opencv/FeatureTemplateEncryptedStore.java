@@ -95,7 +95,12 @@ public final class FeatureTemplateEncryptedStore {
             RNG.nextBytes(iv);
 
             byte[] aad = buildAad(userId, modelVersion, templateSchemaVersion);
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            Cipher cipher;
+            try {
+                cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            } catch (java.security.NoSuchAlgorithmException | javax.crypto.NoSuchPaddingException e) {
+                throw new IllegalStateException("KEYSTORE_ERROR: AES/GCM/NoPadding not found", e);
+            }
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, iv));
             cipher.updateAAD(aad);
             byte[] ciphertextAndTag = cipher.doFinal(plaintextTemplate);
@@ -183,7 +188,12 @@ public final class FeatureTemplateEncryptedStore {
                 return new ReadResult(Code.CORRUPTED, null);
             }
 
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            Cipher cipher;
+            try {
+                cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            } catch (java.security.NoSuchAlgorithmException | javax.crypto.NoSuchPaddingException e) {
+                throw new IllegalStateException("KEYSTORE_ERROR: AES/GCM/NoPadding not found", e);
+            }
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, env.iv));
             cipher.updateAAD(env.aad);
             byte[] pt = cipher.doFinal(env.ciphertextAndTag);
@@ -223,14 +233,25 @@ public final class FeatureTemplateEncryptedStore {
     private static final class Api23 {
         private Api23() {}
 
+        @android.annotation.TargetApi(23)
         private static SecretKey getOrCreateKeyV1() throws Exception {
-            KeyStore ks = KeyStore.getInstance(KEYSTORE);
+            KeyStore ks;
+            try {
+                ks = KeyStore.getInstance(KEYSTORE);
+            } catch (java.security.KeyStoreException e) {
+                throw new IllegalStateException("KEYSTORE_ERROR: KeyStore not found", e);
+            }
             ks.load(null);
 
             java.security.Key existing = ks.getKey(KEY_ALIAS_V1, null);
             if (existing instanceof SecretKey) return (SecretKey) existing;
 
-            javax.crypto.KeyGenerator kg = javax.crypto.KeyGenerator.getInstance(android.security.keystore.KeyProperties.KEY_ALGORITHM_AES, KEYSTORE);
+            javax.crypto.KeyGenerator kg;
+            try {
+                kg = javax.crypto.KeyGenerator.getInstance(android.security.keystore.KeyProperties.KEY_ALGORITHM_AES, KEYSTORE);
+            } catch (java.security.NoSuchAlgorithmException | java.security.NoSuchProviderException e) {
+                throw new IllegalStateException("KEYSTORE_ERROR: AES KeyGenerator not found", e);
+            }
             android.security.keystore.KeyGenParameterSpec.Builder b = new android.security.keystore.KeyGenParameterSpec.Builder(
                     KEY_ALIAS_V1,
                     android.security.keystore.KeyProperties.PURPOSE_ENCRYPT | android.security.keystore.KeyProperties.PURPOSE_DECRYPT

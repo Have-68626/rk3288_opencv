@@ -11,10 +11,14 @@
 #include "MotionDetector.h"
 #include "BioAuth.h"
 #include "EventManager.h"
+#include "FrameInputChannel.h"
 #include "Types.h"
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <functional>
+#include <mutex>
+#include <vector>
 
 class Engine {
 public:
@@ -56,11 +60,37 @@ public:
     void setMode(MonitoringMode mode);
 
     /**
+     * @brief 启用/禁用外部帧输入通道（旁路 VideoManager）。
+     *
+     * 说明（JNI 边界/生命周期）：
+     * - 启用后，Engine 的主循环会优先消费外部帧通道里的帧；
+     * - 外部帧的数据应由 Native 持有（例如 JNI 层做拷贝后 push），避免 Java 侧复用 Buffer 造成悬挂指针。
+     */
+    void setExternalInputEnabled(bool enabled);
+
+    /**
+     * @brief 配置外部帧通道背压策略。
+     * @param mode LatestOnly=仅保留最新帧；BoundedQueue=有限队列丢最旧。
+     * @param capacity 队列上限（LatestOnly 下会被强制为 1）。
+     */
+    void configureExternalInput(FrameBackpressureMode mode, std::size_t capacity);
+
+    /**
+     * @brief 推入一帧外部输入（通常由 JNI 线程调用）。
+     * @return true 表示已进入通道；false 表示 Engine 未初始化或未启用外部输入。
+     */
+    bool pushExternalFrame(ExternalFrame frame);
+
+    /**
      * @brief Get the latest processed frame for rendering.
      * @param outFrame Output matrix.
      * @return true if a new frame is available.
      */
     bool getRenderFrame(cv::Mat& outFrame);
+    bool getRenderFrame(cv::Mat& outFrame, uint64_t& outSeq);
+    void requestCancelInit();
+    void clearCancelInit();
+    void setFlip(bool flipX, bool flipY);
 
 private:
     void processFrame(const cv::Mat& frame);
@@ -73,9 +103,14 @@ private:
 
     std::atomic<bool> isRunning;
     std::atomic<MonitoringMode> currentMode;
+    std::atomic<bool> externalInputEnabled;
+    std::atomic<bool> initCancelRequested{false};
+    std::atomic<bool> flipXEnabled{false};
+    std::atomic<bool> flipYEnabled{false};
     
     // Rendering
     cv::Mat renderFrame;
+    uint64_t renderFrameSeq = 0;
     std::mutex renderMutex;
 
     // Performance stats
@@ -86,6 +121,28 @@ private:
 
     std::string storagePath;
     std::function<void(std::string)> onResultCallback;
+
+    std::unique_ptr<FrameInputChannel> externalInput;
+
+    long long lastNoFaceMs = 0;
+    long long lastUnknownMs = 0;
+    long long lastVerifiedMs = 0;
+    long long lastMultiMs = 0;
+
+    struct FaceTrack {
+        int trackId = 0;
+        cv::Rect bbox;
+        long long lastSeenMs = 0;
+
+        std::string lastId;
+        int lastIdStreak = 0;
+
+        std::string stableId;
+        float stableConfidence = 0.0f;
+    };
+
+    std::vector<FaceTrack> faceTracks;
+    int nextTrackId = 1;
 
 public:
     void setMaxFrames(int max) { maxFrames = max; }

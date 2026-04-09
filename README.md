@@ -103,6 +103,32 @@ cmake --build build_win --config Release --target win_camera_face_recognition
 #### 方式 B: Android APK (推荐用于最终产品)
 使用 Android Studio 打开项目，直接运行 `Run 'app'`。
 
+## 🎥 Android 采集方案（Camera2/CameraX）复现与验证
+
+本节用于复现并验证“采集方案：自动/手动切换、热重启、已知限制”。更完整的验收步骤与排障见：[验收 Runbook](docs/runbooks/rk3288-android-uvc-camera2-camerax-acceptance.md)。
+
+### 复现与验证路径（最短闭环）
+
+1) 连接 UVC 摄像头到 RK3288（USB Host），打开 App 并授予相机权限。  
+2) 在主界面相机下拉框选择对应 cameraId（不要选 Mock）。  
+3) 验证自动模式（默认开启）：
+   - 保持“采集方案：自动”开启 → 点击 `START MONITORING`。
+   - 预期：状态显示 `Running (Camera2 / Cam <id>)` 或 `Running (CameraX / Cam <id>)`，日志出现 `SYSTEM READY` 与 `首帧推入 ok`。
+4) 验证手动模式（固定方案）：
+   - 进入“设置”面板 → 关闭“采集方案：自动” → 手动选择 `Camera2` 或 `CameraX`。
+   - 点击 `START MONITORING`（或先 `STOP` 再 `START`）。
+   - 预期：状态明确显示当前方案（Camera2/CameraX）。
+5) 验证热重启（切换立即生效）：
+   - 监控运行中，切换采集方案（Camera2 ↔ CameraX）或切换 cameraId。
+   - 预期：应用走 stop→start 的热重启流程，画面恢复且日志不出现崩溃/ANR；若自动模式开启，异常时日志可见 `自动降级(`。
+
+### 已知限制（当前实现口径）
+
+- Camera2 默认优先 640×480；未提供 UI 分辨率配置入口。
+- CameraX 绑定流程为异步：可能先返回“启动”，若后续绑定失败会触发 `captureError` 与 watchdog 降级。
+- 自动恢复策略：同一采集方案先做最多 2 次重试（退避 0.8s/1.6s，重建会话）；仍失败再做一次跨方案自动降级切换，避免无限抖动；若两条路径都失败，会停止监控并提示失败。
+- 稳定性验收默认要求前台运行；切后台/锁屏可能触发系统回收相机资源，需重新启动监控。
+
 ## ⚠️ 日志免责声明 (Disclaimer)
 
 本项目为个人学习与研究用途。默认日志策略在 `DEBUG` 或 `VERBOSE` 级别下可能会输出包含内存地址、线程 ID、请求/响应明文等调试信息。
@@ -135,127 +161,52 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
 ## 待办列表 (Todo List)
 
-> ✅ 表示已完成
+> ⬜ 表示待办（按优先级排序）
 
-1.  ✅ **非工控机安卓设备兼容性优化**
-    *   支持 Android API 21–34（minSdk=21，targetSdk=34）
-    *   在清单中将相机/USB Host 等硬件特性声明为可选（required=false），避免部分设备安装失败
-    *   当关键运行时权限缺失时进入安全模式（SAFE MODE），阻断监控与引擎初始化并给出提示
-    *   适配 Android 13+ 媒体权限（READ_MEDIA_IMAGES/READ_MEDIA_VIDEO）与旧版分区存储差异
+> ✅ 已完成代办 1–34 已迁移归档至 [CHANGELOG.md](CHANGELOG.md)（见 `[Unreleased]` → `Documented`）。此处仅保留未完成待办（从 35 开始编号）。
 
-2.  ✅ **必要权限申请与检查机制优化**
-    *   最小必要权限门控：相机（CAMERA）、麦克风（RECORD_AUDIO）、媒体读取（Android 13+）/外部存储读取（旧版）
-    *   统一权限说明（rationale）对话框：用户拒绝后进入安全模式，允许继续浏览界面与日志
-    *   支持“永久拒绝”场景：引导跳转系统设置页手动授权
-    *   在监控启动入口与引擎初始化入口执行权限缺失检查，缺失时直接阻断敏感调用
-    *   悬浮窗（在其他应用上层显示）权限与运行时权限分离处理：仅在开启悬浮窗功能时引导授权
+35. ⬜ **[P1] 加速方案研究与落地：CPU/CPU+GPU（OpenCL）/专用硬件加速，优先适配 ARM（RK3288 与 Qualcomm）**
+    *   **现状核对**：当前已在 `VideoManager` 启用 OpenCL（`cv::ocl::setUseOpenCL(true)`），但缺少“哪些算子实际走 OpenCL/收益多少/失败如何回退”的可量化结论；文档已提到 RK MPP 解码与端侧推理后端，但尚未形成可执行的对比矩阵与验收口径。
+    *   **资料依据**：OpenCV OpenCL/UMat 透明加速机制（算子覆盖与回退需实测）：https://docs.opencv.ac.cn/4.x/d7/d45/classcv_1_1UMat.html ；Rockchip MPP 开发指南（解码/零拷贝等）：https://github.com/rockchip-linux/mpp/blob/develop/doc/Rockchip_Developer_Guide_MPP_EN.md ；Qualcomm Neural Processing SDK（CPU/GPU/DSP 运行时）：https://developer.qualcomm.com/software/qualcomm-neural-processing-SDK ；TFLite Hexagon delegate（DSP 加速路径参考）：https://blog.tensorflow.org/2019/12/accelerating-tensorflow-lite-on-qualcomm.html
+    *   **目标**：输出“端到端链路分段”的加速选型与开关：解码（CPU vs MPP）、预处理（NEON vs OpenCL vs libyuv）、检测/特征（ncnn/OpenCV DNN/TFLite/Qualcomm SDK 可选）；建立统一的基准测量脚本与报告格式（FPS、P95 延迟、功耗/温度可选、内存峰值）。
+    *   **验收**：在 RK3288 与至少 1 台 Qualcomm 设备上产出可复现报告；每个加速开关都有明确回退路径与失败原因输出；默认配置在稳定性不退化的前提下获得可观收益。
 
-3.  ✅ **日志输出能力优化与日志导出功能**
-    *   **3.1 日志格式、命名与落盘**
-        *   会话级文件名：`rk3288_yyyyMMdd_HHmmss.log`
-        *   Java（AppLog）与 Native（NativeLog）写入同一会话文件
-        *   双路径落盘：内部 `files/logs/` + 外部 `Android/data/<package>/logs/`（可用时）
-        *   启动时清理旧会话：超过 7 天或超过 20 个的日志文件将被删除
-        *   单文件超过 5MB 自动滚动：生成 `.1`–`.9` 备份文件
-    *   **3.2 日志查看与导出**
-        *   日志列表在后台线程加载并按修改时间倒序显示，支持通过勾选框进行多选
-        *   详情页预览最多 100KB，超出部分截断，并对敏感信息执行脱敏展示
-        *   导出使用 Storage Access Framework 创建目标 ZIP 文件：`logs_yyyyMMdd_HHmmss.zip`
-        *   导出时为每个文件计算 CRC32，并写入 ZIP 内的 `manifest.txt`
-    *   **3.3 隐私**
-        *   敏感字段（身份证号、手机号、GPS 坐标）统一脱敏为 `***`，脱敏逻辑封装为 `SensitiveDataUtil`
+36. ⬜ **[P1] 人脸注册功能拓展与完善：多样本、质量门槛、管理能力与导入导出**
+    *   **现状核对**：Windows SPA 已具备 `Enroll personId` 与“清空库”入口（见 `docs/windows-web-spa/feature_parity.md`），但缺少“查看/删除单个人/多样本覆盖策略/导入导出/冲突处理/质量门槛”等完整的注册管理闭环；Android 侧也缺少对等的可审计注册流程与 UI 管理入口。
+    *   **目标**：补齐注册全生命周期：注册前质量检查（清晰度/遮挡/角度/亮度阈值）、同一 personId 多样本累积与版本化、人员列表/删除/重命名、库文件导入导出与备份恢复；所有操作输出结构化日志并落盘。
+    *   **验收**：多人重复注册/覆盖/删除行为可解释且可回滚；导入导出在不同设备/不同版本之间兼容；在弱光/遮挡条件下不会把低质量样本写入库导致整体识别率下降。
 
-4.  ✅ **摄像机检测能力优化**
-    *   启动时通过 `CameraManager.getCameraIdList()` 枚举摄像头并展示镜头朝向信息（前置/后置/外接）
-    *   在主界面 Spinner 中支持手动切换摄像头，并将 Camera ID 持久化到 `SharedPreferences`
-    *   监听 USB 设备插拔广播，插拔时刷新摄像头列表并提示用户
-    *   提供两类 Mock 入口：系统相机拍照回传（System Camera Mock）与文件选择（Mock Source）
+37. ⬜ **[P0] 文档全量校准：修订 README/CHANGELOG/DEVELOP/CREDITS 与 `docs/`，确保与当前项目一致**
+    *   **现状核对**：当前文档中存在版本号口径不一致（`DEVELOP.md` vs Android `versionName` vs Changelog），以及“默认模型路径/是否入库/如何获取”的信息分散在 README/DEVELOP/CREDITS/config 中，容易造成误用与排障困难。[README.md](README.md)、[CHANGELOG.md](CHANGELOG.md)、[DEVELOP.md](DEVELOP.md)、[CREDITS.md](CREDITS.md)、[windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)
+    *   **目标**：以“可复现/可审计”为标准统一文档：更新目录树与关键入口；补齐模型台账与许可证登记；校准 CI 与本地复现命令；修订 `docs/windows-web-spa/*` 与 runbook 的现状描述；确保所有链接可用并与代码一致。
+    *   **验收**：新手按 README/README_BUILD/DEVELOP/docs 能从零跑通（Windows/Android 至少一条路径）；所有文档链接与脚本可执行；CREDITS 对第三方依赖与模型来源/许可证完整可审计。
 
-5.  ✅ **应用状态栏显示功能优化**
-    *   通过 `StatusService` 在屏幕顶部显示悬浮层（Android O+ 使用 `TYPE_APPLICATION_OVERLAY`，需悬浮窗权限）
-    *   悬浮层实时显示 FPS、CPU、MEM 三项指标，刷新频率 500ms
-    *   FPS 基于 `Choreographer`；MEM 基于 `Debug.MemoryInfo`；CPU 优先读取 `/proc`，失败时自动回退到标准 API 计算应用 CPU 使用率
-    *   主界面提供悬浮窗开关，关闭时停止 `StatusService` 并移除悬浮层
+38. ⬜ **[P0] 版本号升级到 `v0.1beta1`：统一代码/构建/文档口径**
+    *   **现状核对**：Android `app/build.gradle` 当前 `versionName "v0.1beta0"`；而 `DEVELOP.md` 顶部版本口径为 `2.0.0-rc8`，文档与构建产物版本存在明显漂移风险。[app/build.gradle](app/build.gradle)、[DEVELOP.md](DEVELOP.md)
+    *   **目标**：明确并固化“发布版本号”的唯一来源（Android versionName/versionCode、Windows/CLI build_id、Docs/Changelog 口径一致）；升级到 `v0.1beta1` 并同步更新 `CHANGELOG.md`（新增条目、对外口径、兼容性说明）与 README 关键入口。
+    *   **验收**：任意构建产物（APK/Windows exe/CLI）与日志/导出证据链都能展示同一 build_id；Changelog 可追溯版本改动与破坏性变更；标签命名与分支策略一致（例如 `v0.1beta1`）。
 
-6.  ✅ **调试入口维护**
-    *   持续维护 Native CLI 调试入口（`main.cpp` / `rk3288_cli`）：支持命令行参数传入 `cameraId`，并可选传入 `cascadePath` 与 `storagePath`，用于脱离 Android UI 进行算法验证与性能分析。
+39. ⬜ **[P0] 完善自动化测试与 CI：扩展并加固 `.github/workflows/ci.yml`（Windows + Linux + Android + Web）**
+    *   **现状核对**：当前 CI 已包含 repo-hygiene（clean-repo-junk）+ Linux core 单测（跳过 OpenCV）+ Windows 构建/单测（下载 OpenCV 源码），但缺少：Android 的 assemble/lint/unit test（以及可选 emulator connected test）、Web 前端 build/lint/test、docs-sync-audit、以及关键产物归档（测试报告/日志/可执行文件）。[ci.yml](.github/workflows/ci.yml)
+    *   **资料依据**：Gradle 官方 `setup-gradle`（缓存与 wrapper 校验）：https://github.com/gradle/actions/blob/main/docs/setup-gradle.md ；GitHub Actions 缓存机制说明：https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/caching-dependencies-to-speed-up-workflows
+    *   **目标**：把 CI 做成“可解释、可回归、可复现”：新增 Android job（`./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`，必要时补齐环境变量/OPENCV_ROOT 处理）、Web job（Node 20 + `web/` build/lint/test）、Docs job（`node scripts/docs-sync-audit.js`）、并统一上传 artifacts（报告与日志）；对 PR 与 push 的触发条件、并发、缓存 key 做精细化治理。
+    *   **验收**：PR 打开即可看到 Android/Windows/Linux/Web/Docs 全部绿灯；失败时日志能直指“缺依赖/编译失败/测试失败/文档链接断裂”的具体原因；CI 用时在可接受范围内且命中缓存后显著加速。
 
+40. ⬜ **[P0] 模型清单与在用模型可视化：列出“当前正在使用的模型”与“工程支持的全部模型”**
+    *   **现状核对（仓库内实际文件）**：仓库内可直接定位到的模型/资源主要是级联文件 `app/src/main/assets/lbpcascade_frontalface.xml`（Android/Windows 识别链路均可引用）；Windows DNN 默认路径指向 `storage/models/opencv_face_detector_uint8.pb` 与 `opencv_face_detector.pbtxt`，但该目录不随仓库提交，易造成“到底用的是什么模型/版本”的不可追溯。[windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)、[CMakeLists](CMakeLists.txt)
+    *   **现状核对（代码支持但依赖外部交付）**：工程内已具备“可切换后端/模型路径”的能力（YOLO 人脸检测：OpenCV DNN 或 ncnn；ArcFace 特征：OpenCV DNN 或 ncnn；并包含 `modelVersion/preprocessVersion` 字段用于版本化），但缺少统一的“模型登记表/加载自检/运行时查询 API/日志口径”。[YoloFaceDetector](src/cpp/src/YoloFaceDetector.cpp)、[ArcFaceEmbedder](src/cpp/src/ArcFaceEmbedder.cpp)、[FaceInferencePipeline](src/cpp/src/FaceInferencePipeline.cpp)
+    *   **目标**：输出一份“模型台账（Model Inventory）”：按功能（人脸检测/人脸识别/物体检测/物体识别）列出模型名称、路径来源（仓库/部署侧/环境变量）、格式、输入输出、版本号、hash、许可证、运行后端；并提供运行时查询入口（例如 Windows `/api/v1/settings` 扩展或新增 `/api/v1/models`）与启动自检日志（缺失/维度不匹配/模型损坏）。
+    *   **验收**：用户无需读代码即可确定“当前在用模型 + 版本 + hash”；模型文件缺失或被替换时启动自检能明确报错并给出修复指引；CREDITS 里能追溯每个模型来源与许可证。
 
-8.  ✅ **[P0] FFMPEG 增强 Mock 模式与实时监控**
-    *   **技术约束**
-        *   引入移动版 FFMPEG v6.0（LGPL 版）
-        *   Mock 模式支持本地 MP4、HLS、RTSP 三种协议作为虚拟视频源
-        *   真实监控场景：将相机输出 NV21 通过 FFMPEG 实时编码为 H.264/AAC，并以 RTMP 推流到服务端，同时提供 1 路本地回显 Surface
-        *   提供 `arm64-v8a` 与 `armeabi-v7a` 双架构 `.so`，并支持灰度压缩策略
-    *   **当前进度**
-        *   已支持在设置中输入 Mock URL（MP4/HLS/RTSP）作为虚拟视频源
-        *   已提供 RTMP 推流入口（从 Mock 源执行推流命令）；FFmpeg 以可选 AAR 方式集成：放置 `app/libs/ffmpeg-kit.aar`
-        *   Mock 模式已支持无限循环播放 (`-stream_loop -1`)
-    *   **验收标准**
-        *   Mock 模式可循环播放 1080p@30fps 视频无花屏
-        *   实时监控端到端延迟 ≤ 400 ms（局域网）
-        *   APK 增量 ≤ 12 MB
+41. ⬜ **[P0] 人员管理与权限管理（注册系统升级）：人员信息/权限/安全/导入导出一体化**
+    *   **现状核对**：Windows 侧当前“注册”本质为 `personId -> embedding 均值 + 样本数` 的轻量库（`FaceDatabase`/`FaceRecognizer`），UI 仅暴露“注册/清空库”（`/api/v1/actions/enroll`、`/api/v1/actions/db/clear`）；缺少人员信息字段（姓名/工号/角色/有效期等）、权限模型（门禁点/时间段/设备范围）、审计与可撤销操作。[FaceDatabase](src/win/include/rk_win/FaceDatabase.h)、[FaceRecognizer](src/win/src/FaceRecognizer.cpp)、[HttpFacesServer](src/win/src/HttpFacesServer.cpp)、[PreviewPage](web/src/app/pages/PreviewPage.tsx)
+    *   **现状核对（安全）**：Windows 已有 DPAPI 保护密钥/配置的实现基础（`WinCrypto.cpp`），Android 已有基于 Keystore 的 AES-GCM 加密模板落盘（`FeatureTemplateEncryptedStore.java`），但尚未形成“人员数据/模板/权限/导入导出”统一的安全与合规口径。[WinCrypto](src/win/src/WinCrypto.cpp)、[FeatureTemplateEncryptedStore](src/java/com/example/rk3288_opencv/FeatureTemplateEncryptedStore.java)
+    *   **资料依据**：Windows DPAPI（CryptProtectData/CryptUnprotectData）官方文档：https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata ；Android 加密与 Keystore 建议：https://developer.android.com/guide/topics/security/cryptography
+    *   **目标**：建立人员实体（personId + profile + role/permissions + 状态机），支持增删改查、批量导入导出（加密 ZIP/签名可选）、权限校验与审计日志；定义最小化存储字段与脱敏策略；导入导出兼容版本演进（schema version）并可回滚。
+    *   **验收**：可在 UI 中完成“新增/禁用/删除/导入/导出/权限变更”全流程；导入导出文件被篡改/版本不兼容时可识别并拒绝；默认不把敏感字段明文落盘/落日志。
 
-9.  ✅ **[P1] 主界面横竖屏自适应**
-    *   **技术约束**
-        *   使用 Jetpack WindowManager + ConstraintLayout 提供横竖屏两套布局资源
-        *   竖屏：底部 5 个功能按钮（监控、回放、设置、日志、关于）+ 顶部状态栏；横屏：左侧抽屉式导航 + 右侧监控区域占 70% 宽度
-        *   AndroidManifest 声明 `configChanges="orientation|screenSize|screenLayout"`，Activity 内重写 `onConfigurationChanged`，禁止重启
-        *   切换动画 300 ms 线性插值
-    *   **验收标准**
-        *   旋转 200 次无内存泄漏（Profiler 检测）
-        *   切换过程无黑闪
-        *   支持 180° 反向横屏
-
-10. ✅ **[P1] 监控区域媒体自适应**
-    *   **技术约束**
-        *   SurfaceView / TextureView 使用动态 LayoutParams 自适应：分辨率 ≥ 16:9 按宽度铺满等比缩放；< 16:9 按高度铺满等比缩放
-        *   支持双击放大到全屏，再次双击恢复
-        *   边缘暗角、水印、时间戳 OSD 通过 OpenGL 着色器叠加，且帧率不降低
-        *   引入 `video_wrapper` 容器确保 OSD 与视频画面始终对齐
-    *   **验收标准**
-        *   4K 视频下 GPU 占用 ≤ 25%（Adreno 530 测试）
-        *   缩放等级切换耗时 ≤ 150 ms
-        *   无绿边、拉伸、裁剪异常
-
-11. ✅ **[P2] “Recognition Events” 面板手动显隐**
-    *   **技术约束**
-        *   监控区域下方新增高度 180dp 的 RecyclerView 面板，默认可见
-        *   提供全局悬浮按钮（FAB）切换显示状态，状态持久化到 SharedPreferences
-        *   隐藏时高度动画收缩至 0，同时监控区域等速扩展
-    *   **验收标准**
-        *   动画 60fps 无掉帧
-        *   状态在应用重启后保持
-        *   无障碍朗读正确
-
-12. ✅ **[P1] UI 文案一致性走查**
-    *   **技术约束**
-        *   遍历所有 layout、`strings.xml`、Jetpack Compose 文本节点，建立“文案-功能”映射表并与 PRD 做 diff
-        *   统一中英文标点、空格、大小写；动态拼接字符串使用 Android plural
-        *   输出走查报告（Excel）并附加截图前后对比
-    *   **验收标准**
-        *   零 P0 文案错误上线
-        *   走查报告需产品经理二次确认签字
-
-13. ✅ **[P1] 退出应用时自动清理缓存**
-    *   **技术约束**
-        *   仅清理应用缓存目录（`getCacheDir()` 与 `getExternalCacheDir()`），不得删除日志目录（`files/logs/` 与 `Android/data/<package>/logs/`）
-        *   清理由主线程触发、后台线程执行，不阻塞退出流程
-    *   **验收标准**
-        *   退出应用后缓存目录文件数归零（允许系统保留的占位文件除外）
-        *   `Android/data/<package>/logs/` 下日志与 `security.log` 不被清理
-        *   清理结果在日志中可追溯（deletedFiles/deletedBytes/errors）
-
-14. ✅ **[P1] 系统稳定性与性能优化 (New)**
-    *   **技术约束**
-        *   **日志逻辑修复**: 区分“进度通知”与“错误警告”，消除误导性的 "SYSTEM NOT READY" 日志。
-        *   **UI 自适应增强**: 弃用 16:9 硬编码阈值，改为基于容器实际宽高比的 Letterbox/Pillarbox 自适应算法。
-        *   **OpenCV 优化**: Native 层启用 NEON 指令集加速，并重构 `VideoManager` 减少 `Mat` 内存拷贝。
-        *   **权限容错**: 修复 `/proc/stat` 访问权限拒绝导致的 CPU 采样异常。
-    *   **验收标准**
-        *   日志中不再出现“引擎初始化成功”被标记为错误的情况。
-        *   非 16:9 屏幕下监控画面无裁剪、无拉伸。
-        *   1080p 视频流 CPU 占用率降低 10%。
-
+42.预览画面依旧存在应用返回桌面后，再打开应用后画面卡死的问题，热重启没有解决问题。
+43.使用mock模式，依旧加载文件后闪退。
+44.需要详细分析软件日志。
 ## 📄 许可证
 MIT License

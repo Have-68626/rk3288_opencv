@@ -17,6 +17,10 @@ import java.util.Locale;
 import java.util.Set;
 
 final class AppLog {
+    private static final String PREFS_NAME = "RK3288_Prefs";
+    private static final String PREF_LOG_RETENTION_DAYS = "pref_log_retention_days";
+    private static final int LOG_MAX_FILES = 20;
+    private static final int[] RETENTION_CHOICES_DAYS = new int[]{1, 7, 14, 30};
     enum Level {
         V(Log.VERBOSE),
         D(Log.DEBUG),
@@ -64,7 +68,7 @@ final class AppLog {
 
         // Cleanup old logs
         for (File dir : dirs) {
-            cleanupOldLogs(dir);
+            cleanupOldLogs(dir, context);
         }
 
         String internalPath = internalLogs.getAbsolutePath();
@@ -75,21 +79,58 @@ final class AppLog {
         }
     }
 
-    private static void cleanupOldLogs(File dir) {
+    static int getLogRetentionDays(@NonNull Context context) {
+        int v = 7;
+        try {
+            v = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getInt(PREF_LOG_RETENTION_DAYS, 7);
+        } catch (Throwable ignored) {
+        }
+        for (int allowed : RETENTION_CHOICES_DAYS) {
+            if (allowed == v) return v;
+        }
+        return 7;
+    }
+
+    static void setLogRetentionDays(@NonNull Context context, int days) {
+        int v = 7;
+        for (int allowed : RETENTION_CHOICES_DAYS) {
+            if (allowed == days) {
+                v = days;
+                break;
+            }
+        }
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putInt(PREF_LOG_RETENTION_DAYS, v).apply();
+        } catch (Throwable ignored) {
+        }
+        cleanupLogsNow(context);
+    }
+
+    static void cleanupLogsNow(@NonNull Context context) {
+        File internalLogs = new File(context.getFilesDir(), "logs");
+        File externalLogs = resolveExternalLogsDir(context);
+        List<File> dirs = new ArrayList<>();
+        dirs.add(internalLogs);
+        if (externalLogs != null) dirs.add(externalLogs);
+        for (File dir : dirs) {
+            cleanupOldLogs(dir, context);
+        }
+    }
+
+    private static void cleanupOldLogs(File dir, @NonNull Context context) {
         if (dir == null || !dir.exists()) return;
-        File[] files = dir.listFiles((d, name) -> name.startsWith("rk3288_") && name.endsWith(".log"));
+        File[] files = dir.listFiles((d, name) -> name != null && name.endsWith(".log"));
         if (files == null || files.length == 0) return;
 
-        // Sort by name (timestamp) desc
-        java.util.Arrays.sort(files, (f1, f2) -> f2.getName().compareTo(f1.getName()));
+        java.util.Arrays.sort(files, (f1, f2) -> Long.compare(f2.lastModified(), f1.lastModified()));
 
         long now = System.currentTimeMillis();
-        long maxAge = 7L * 24L * 3600L * 1000L; // 7 days
+        long maxAge = (long) getLogRetentionDays(context) * 24L * 3600L * 1000L;
 
-        // Keep max 20 files
+        // Keep max files
         for (int i = 0; i < files.length; i++) {
             boolean delete = false;
-            if (i >= 20) {
+            if (i >= LOG_MAX_FILES) {
                 delete = true;
             } else if (now - files[i].lastModified() > maxAge) {
                 delete = true;

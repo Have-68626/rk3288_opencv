@@ -49,7 +49,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/ui_cache"
+            android:text="@string/ui_latency"
             android:textColor="#FFFFFF"
             android:textSize="16sp" />
     </LinearLayout>
@@ -68,9 +68,15 @@
             android:padding="2dp">
 
             <FrameLayout
+                android:id="@+id/video_wrapper"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1">
+
+                <SurfaceView
+                    android:id="@+id/preview_surface"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
 
                 <ImageView
                     android:id="@+id/monitor_view"
@@ -78,11 +84,6 @@
                     android:layout_height="match_parent"
                     android:scaleType="fitCenter"
                     android:contentDescription="@string/ui_video_monitor" />
-
-                <com.example.rk3288_opencv.OsdOverlayView
-                    android:id="@+id/osd_view"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent" />
 
                 <TextView
                     android:id="@+id/tv_overlay_status"
@@ -96,6 +97,34 @@
                     android:textStyle="bold"
                     android:visibility="gone" />
 
+                <LinearLayout
+                    android:id="@+id/panel_recognition_events"
+                    android:layout_width="match_parent"
+                    android:layout_height="180dp"
+                    android:layout_gravity="bottom"
+                    android:orientation="vertical"
+                    android:background="#AA111111"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/recognition_title"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ui_recognition_events"
+                        android:textColor="#FFFFFF"
+                        android:background="#333333"
+                        android:padding="4dp"
+                        android:textStyle="bold"/>
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rv_recognition_events"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:clipToPadding="false"
+                        android:padding="4dp" />
+                </LinearLayout>
+
                 <com.google.android.material.floatingactionbutton.FloatingActionButton
                     android:id="@+id/fab_toggle_events"
                     android:layout_width="wrap_content"
@@ -106,30 +135,6 @@
                     android:src="@android:drawable/ic_menu_view"
                     app:backgroundTint="#333333"
                     app:tint="#FFFFFF" />
-            </FrameLayout>
-
-            <TextView
-                android:id="@+id/recognition_title"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/ui_recognition_events"
-                android:textColor="#FFFFFF"
-                android:background="#333333"
-                android:padding="4dp"
-                android:textStyle="bold"/>
-
-            <FrameLayout
-                android:id="@+id/panel_recognition_events"
-                android:layout_width="match_parent"
-                android:layout_height="180dp"
-                android:background="#111111">
-
-                <androidx.recyclerview.widget.RecyclerView
-                    android:id="@+id/rv_recognition_events"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:clipToPadding="false"
-                    android:padding="4dp" />
             </FrameLayout>
 
         </LinearLayout>
@@ -178,6 +183,95 @@
                     android:layout_width="match_parent"
                     android:layout_height="48dp"
                     android:background="#333333"
+                    android:layout_marginBottom="16dp" />
+
+                <Switch
+                    android:id="@+id/switch_flip_x"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_flip_x"
+                    android:textColor="#FFFFFF"
+                    android:thumbTint="#00FF00"
+                    android:trackTint="#444444"
+                    android:layout_marginBottom="8dp" />
+
+                <Switch
+                    android:id="@+id/switch_flip_y"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_flip_y"
+                    android:textColor="#FFFFFF"
+                    android:thumbTint="#00FF00"
+                    android:trackTint="#444444"
+                    android:layout_marginBottom="16dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_capture_strategy"
+                    android:textColor="#AAAAAA"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <Switch
+                    android:id="@+id/switch_capture_auto"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_capture_auto"
+                    android:textColor="#FFFFFF"
+                    android:thumbTint="#00FF00"
+                    android:trackTint="#444444"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_capture_scheme"
+                    android:textColor="#AAAAAA"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/rg_capture_scheme"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="16dp">
+
+                    <RadioButton
+                        android:id="@+id/rb_capture_camera2"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ui_settings_capture_scheme_camera2"
+                        android:textColor="#FFFFFF"
+                        android:buttonTint="#00FF00"
+                        android:checked="true"
+                        android:padding="8dp"/>
+
+                    <RadioButton
+                        android:id="@+id/rb_capture_camerax"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ui_settings_capture_scheme_camerax"
+                        android:textColor="#FFFFFF"
+                        android:buttonTint="#00FF00"
+                        android:padding="8dp"/>
+                </RadioGroup>
+
+                <TextView
+                    android:id="@+id/tv_capture_strategy_info"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#AAAAAA"
+                    android:textSize="12sp"
+                    android:layout_marginBottom="16dp" />
+
+                <Button
+                    android:id="@+id/btn_hot_restart"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="热重启"
+                    android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF"
                     android:layout_marginBottom="16dp" />
 
                 <TextView
@@ -321,6 +415,15 @@
                     android:layout_height="56dp"
                     android:text="@string/ui_view_logs"
                     android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginBottom="16dp" />
+
+                <Button
+                    android:id="@+id/btn_exit"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:text="退出"
+                    android:backgroundTint="#8B0000"
                     android:textColor="#FFFFFF"
                     android:layout_marginBottom="16dp" />
 
