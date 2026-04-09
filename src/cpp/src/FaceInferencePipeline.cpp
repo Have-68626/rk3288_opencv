@@ -170,14 +170,16 @@ private:
 };
 
 #if RK_CPP_HAS_OPENCV
+// Optimized to use float instead of double to maximize SIMD vectorization
+// and improve execution speed on the RK3288 (ARM Cortex-A17) platform.
 static bool l2NormalizeInplace(std::vector<float>& v) {
     if (v.empty()) return false;
-    double s = 0.0;
-    for (float x : v) s += static_cast<double>(x) * static_cast<double>(x);
-    if (!(s > 0.0) || !std::isfinite(s)) return false;
-    const double n = std::sqrt(s);
-    if (!(n > 0.0) || !std::isfinite(n)) return false;
-    const float inv = static_cast<float>(1.0 / n);
+    float s = 0.0f;
+    for (float x : v) s += x * x;
+    if (!(s > 0.0f) || !std::isfinite(s)) return false;
+    const float n = std::sqrt(s);
+    if (!(n > 0.0f) || !std::isfinite(n)) return false;
+    const float inv = 1.0f / n;
     for (float& x : v) x *= inv;
     return true;
 }
