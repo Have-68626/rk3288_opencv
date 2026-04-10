@@ -108,6 +108,8 @@ static bool isSafeRelativePath(const std::string& urlPath) {
     if (urlPath.empty() || urlPath[0] != '/') return false;
     if (urlPath.find("..") != std::string::npos) return false;
     if (urlPath.find('\\') != std::string::npos) return false;
+    if (urlPath.find("//") != std::string::npos) return false;
+    if (urlPath.find(':') != std::string::npos) return false;
     return true;
 }
 
