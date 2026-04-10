@@ -453,12 +453,12 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     float normVals[3] = {args.scale, args.scale, args.scale};
     in.substract_mean_normalize(meanVals, normVals);
 
+    ncnn::Extractor ex_warmup = net.create_extractor();
+    ex_warmup.set_num_threads(std::max(1, args.ncnnThreads));
     for (int i = 0; i < std::max(0, args.warmup); i++) {
-        ncnn::Extractor ex = net.create_extractor();
-        ex.set_num_threads(std::max(1, args.ncnnThreads));
-        if (ex.input(args.ncnnInput.c_str(), in) != 0) continue;
+        if (ex_warmup.input(args.ncnnInput.c_str(), in) != 0) continue;
         ncnn::Mat out;
-        (void)ex.extract(args.ncnnOutput.c_str(), out);
+        (void)ex_warmup.extract(args.ncnnOutput.c_str(), out);
     }
 
     std::vector<double> samples;
@@ -472,10 +472,11 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     int okIters = 0;
     int errIters = 0;
 
+    ncnn::Extractor ex = net.create_extractor();
+    ex.set_num_threads(std::max(1, args.ncnnThreads));
+
     for (int i = 0; i < std::max(0, args.iters); i++) {
         const auto t0 = clock::now();
-        ncnn::Extractor ex = net.create_extractor();
-        ex.set_num_threads(std::max(1, args.ncnnThreads));
         if (ex.input(args.ncnnInput.c_str(), in) == 0) {
             ncnn::Mat out;
             if (ex.extract(args.ncnnOutput.c_str(), out) == 0) {
