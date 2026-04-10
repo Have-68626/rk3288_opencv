@@ -105,7 +105,13 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
 }
 
 static bool isSafeRelativePath(const std::string& urlPath) {
+    // 威胁模型: 攻击者利用 URL 路径传递给 std::filesystem::path 进行绝对路径逃逸，读取本地任意文件。
+    // 为什么这样改: 拦截双斜杠 (//) 和冒号 (:) 避免由于 C++ filesystem::path 的特殊拼接逻辑导致的 Windows 绝对路径 / 驱动器盘符 / UNC 路径遍历。
+    // 影响范围: 限制 HTTP 访问仅限于合法的单斜线开头的相对路径，不会影响合法资源文件读取。
+    // 回滚方式: 如果误杀合法路径，可以直接删除对 // 和 : 的判断这两行。
     if (urlPath.empty() || urlPath[0] != '/') return false;
+    if (urlPath.length() > 1 && urlPath[1] == '/') return false;
+    if (urlPath.find(':') != std::string::npos) return false;
     if (urlPath.find("..") != std::string::npos) return false;
     if (urlPath.find('\\') != std::string::npos) return false;
     return true;
