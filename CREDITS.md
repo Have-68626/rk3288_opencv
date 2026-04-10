@@ -12,7 +12,7 @@
 ### OpenCV 人脸检测模型与级联文件
 - 用途：Windows 摄像头人脸检测（DNN）与测试数据（级联）
 - 文件与来源：
-  - `tests/data/lbpcascade_frontalface.xml`：来源于 OpenCV 数据集（随 OpenCV 发布）
+  - `app/src/main/assets/lbpcascade_frontalface.xml`（原 `tests/data/lbpcascade_frontalface.xml`）：来源于 OpenCV 数据集（随 OpenCV 发布）
   - `opencv_face_detector_uint8.pb` + `opencv_face_detector.pbtxt`：来源于 OpenCV DNN 示例/模型包（随 OpenCV 发布；用户自行下载并在 ini/env 配置路径）
 - 许可证：Apache License 2.0（随 OpenCV 发布）
 
