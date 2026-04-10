@@ -6,6 +6,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Popconfirm,
   Select,
   Switch,
   Space,
@@ -75,6 +76,7 @@ export function SettingsPage() {
   const [serverForm] = Form.useForm<ServerFormModel>()
   const [serverBaseline, setServerBaseline] = useState<ServerFormModel | null>(null)
   const [postUrlMasked, setPostUrlMasked] = useState(false)
+  const [isRotatingKey, setIsRotatingKey] = useState(false)
 
   // 本地设置：用 onValuesChange 实时生效（减少“点保存但忘了”的坑）
   useEffect(() => {
@@ -92,7 +94,6 @@ export function SettingsPage() {
   useEffect(() => {
     if (!serverSettings.data) return
     const { model, postUrlMasked } = buildServerFormModelFromDoc(serverSettings.data)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setServerBaseline(model)
     setPostUrlMasked(postUrlMasked)
     serverForm.setFieldsValue(model)
@@ -360,20 +361,30 @@ export function SettingsPage() {
               >
                 保存到后端
               </Button>
-              <Button
-                onClick={async () => {
+              <Popconfirm
+                title="高危操作：确认轮换密钥？"
+                description="旧密钥将立即失效，所有包含敏感信息的字段会被重新加密。"
+                okText="确认轮换"
+                cancelText="取消"
+                okButtonProps={{ danger: true, loading: isRotatingKey }}
+                onConfirm={async () => {
                   try {
+                    setIsRotatingKey(true)
                     await rotateCryptoKey(prefs)
                     message.success('已触发密钥轮换（敏感字段已重新加密）')
                     refreshServerSettings()
                   } catch (e: unknown) {
                     message.error((e as Error)?.message || '密钥轮换失败')
+                  } finally {
+                    setIsRotatingKey(false)
                   }
                 }}
                 disabled={!serverSettings.data}
               >
-                轮换密钥
-              </Button>
+                <Button loading={isRotatingKey} disabled={!serverSettings.data} danger>
+                  轮换密钥
+                </Button>
+              </Popconfirm>
               <Button
                 onClick={() => {
                   if (serverBaseline) serverForm.setFieldsValue(serverBaseline)
