@@ -9,7 +9,12 @@
 
 #include <string>
 #include <vector>
+
+#ifndef RK_SKIP_OPENCV
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
 
 class Storage {
 public:
