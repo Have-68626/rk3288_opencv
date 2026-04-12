@@ -9,6 +9,7 @@ import {
   Select,
   Space,
   Switch,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -113,8 +114,28 @@ export function PreviewPage() {
         ) : null}
 
         <Form layout="vertical">
-          <Form.Item label="摄像头设备">
+          <Form.Item
+            label={
+              <Space>
+                <span>摄像头设备</span>
+                {cams.status === 'ready' && cams.devices.length === 0 ? (
+                  <Tooltip title="未检测到设备。请检查摄像头是否连接、驱动是否正常，或本地服务是否已启动并拥有访问权限。">
+                    <Typography.Text type="secondary" style={{ cursor: 'help' }}>
+                      (帮助)
+                    </Typography.Text>
+                  </Tooltip>
+                ) : null}
+              </Space>
+            }
+          >
             <Select
+              loading={cams.status === 'loading'}
+              placeholder={cams.status === 'loading' ? '正在加载摄像头...' : '请选择摄像头'}
+              notFoundContent={
+                cams.status === 'loading'
+                  ? '加载中...'
+                  : '未发现摄像头，请检查权限或本地服务'
+              }
               options={deviceOptions}
               value={selectedDevice?.deviceId}
               onChange={(deviceId) => {
@@ -126,6 +147,8 @@ export function PreviewPage() {
 
           <Form.Item label="分辨率 / FPS">
             <Select
+              placeholder="请先选择摄像头"
+              notFoundContent="该设备无可用分辨率"
               options={formatOptions}
               value={currentFormatKey}
               onChange={(k) => {
