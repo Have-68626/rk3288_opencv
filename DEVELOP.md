@@ -2318,7 +2318,7 @@ if __name__ == "__main__":
 17. 腾讯云：人脸识别/优图（按产品线）  
     https://cloud.tencent.com/product/facerecognition
 18. Dlib 官方项目  
-    https://dlib.net/
+    http://dlib.net/
 19. 阿里云：视觉智能开放平台（Facebody）  
     https://help.aliyun.com/product/135949.html
 20. AWS Rekognition  

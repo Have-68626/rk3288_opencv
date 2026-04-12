@@ -128,7 +128,7 @@
       "properties": {
         "windowWidth": { "type": "number", "minimum": 320, "maximum": 7680 },
         "windowHeight": { "type": "number", "minimum": 240, "maximum": 4320 },
-        "previewScaleMode": { "type": "number", "minimum": 0, "maximum": 1 }
+        "previewScaleMode": { "type": "number", "minimum": 0, "maximum": 10 }
       }
     },
     "display": {

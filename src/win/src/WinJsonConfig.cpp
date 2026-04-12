@@ -369,8 +369,8 @@ static JsonValue schemaSettingsDoc() {
         req.a.push_back(JsonValue::makeString("previewScaleMode"));
         u.o["required"] = std::move(req);
         JsonValue up = JsonValue::makeObject();
-        up.o["windowWidth"] = objBoolInt(true, 320, 7680);
-        up.o["windowHeight"] = objBoolInt(true, 240, 4320);
+        up.o["windowWidth"] = objBoolInt(true, 200, 20000);
+        up.o["windowHeight"] = objBoolInt(true, 200, 20000);
         up.o["previewScaleMode"] = objBoolInt(true, 0, 1);
         u.o["properties"] = std::move(up);
         props.o["ui"] = std::move(u);

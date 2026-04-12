@@ -30,6 +30,5 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
-    friend bool test_event_manager_unique_id();
     std::string generateUniqueId();
 };
