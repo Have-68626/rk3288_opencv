@@ -113,8 +113,9 @@ export function PreviewPage() {
         ) : null}
 
         <Form layout="vertical">
-          <Form.Item label="摄像头设备">
+          <Form.Item label="摄像头设备" htmlFor="preview-device-select">
             <Select
+              id="preview-device-select"
               options={deviceOptions}
               value={selectedDevice?.deviceId}
               onChange={(deviceId) => {
@@ -124,8 +125,9 @@ export function PreviewPage() {
             />
           </Form.Item>
 
-          <Form.Item label="分辨率 / FPS">
+          <Form.Item label="分辨率 / FPS" htmlFor="preview-format-select">
             <Select
+              id="preview-format-select"
               options={formatOptions}
               value={currentFormatKey}
               onChange={(k) => {
@@ -148,6 +150,7 @@ export function PreviewPage() {
           <Space wrap>
             <Space>
               <Switch
+                id="preview-flip-x"
                 checked={flipX}
                 aria-label="翻转 X"
                 onChange={(v) => {
@@ -155,10 +158,13 @@ export function PreviewPage() {
                   setFlip(prefs, { flipX: v, flipY })
                 }}
               />
-              <Typography.Text>翻转 X</Typography.Text>
+              <label htmlFor="preview-flip-x" style={{ cursor: 'pointer' }}>
+                <Typography.Text>翻转 X</Typography.Text>
+              </label>
             </Space>
             <Space>
               <Switch
+                id="preview-flip-y"
                 checked={flipY}
                 aria-label="翻转 Y"
                 onChange={(v) => {
@@ -166,14 +172,17 @@ export function PreviewPage() {
                   setFlip(prefs, { flipX, flipY: v })
                 }}
               />
-              <Typography.Text>翻转 Y</Typography.Text>
+              <label htmlFor="preview-flip-y" style={{ cursor: 'pointer' }}>
+                <Typography.Text>翻转 Y</Typography.Text>
+              </label>
             </Space>
           </Space>
 
           <Divider style={{ margin: '12px 0' }} />
 
-          <Form.Item label="注册 personId">
+          <Form.Item label="注册 personId" htmlFor="preview-person-id">
             <Input
+              id="preview-person-id"
               value={personId}
               onChange={(e) => setPersonId(e.target.value)}
               placeholder="例如：alice"
