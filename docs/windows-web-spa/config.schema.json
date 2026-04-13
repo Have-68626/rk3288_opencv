@@ -106,9 +106,9 @@
             }
           ]
         },
-        "throttleMs": { "type": "number", "minimum": 0, "maximum": 600000 },
-        "backoffMinMs": { "type": "number", "minimum": 0, "maximum": 600000 },
-        "backoffMaxMs": { "type": "number", "minimum": 0, "maximum": 3600000 }
+        "throttleMs": { "type": "number", "minimum": 0, "maximum": 3600000 },
+        "backoffMinMs": { "type": "number", "minimum": 50, "maximum": 3600000 },
+        "backoffMaxMs": { "type": "number", "minimum": 50, "maximum": 3600000 }
       }
     },
     "log": {
