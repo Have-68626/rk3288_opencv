@@ -343,9 +343,9 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     int errIters = 0;
 
     for (int i = 0; i < std::max(0, args.iters); i++) {
-        const auto t0 = clock::now();
         try {
             net.setInput(blob);
+            const auto t0 = clock::now();
             if (args.opencvOutput.empty()) (void)net.forward();
             else (void)net.forward(args.opencvOutput);
             const auto t1 = clock::now();
@@ -476,9 +476,9 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     ex.set_num_threads(std::max(1, args.ncnnThreads));
 
     for (int i = 0; i < std::max(0, args.iters); i++) {
-        const auto t0 = clock::now();
         if (ex.input(args.ncnnInput.c_str(), in) == 0) {
             ncnn::Mat out;
+            const auto t0 = clock::now();
             if (ex.extract(args.ncnnOutput.c_str(), out) == 0) {
                 const auto t1 = clock::now();
                 const double ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();

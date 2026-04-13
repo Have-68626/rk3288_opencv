@@ -139,13 +139,35 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
         }
     }
 
-    std::sort(faces.begin(), faces.end(), [](const cv::Rect& a, const cv::Rect& b) {
-        return a.area() > b.area();
-    });
-
     int clampedMaxFaces = std::max(1, maxFaces);
-    if (static_cast<int>(faces.size()) > clampedMaxFaces) {
-        faces.resize(clampedMaxFaces);
+    struct IndexedRect {
+        cv::Rect rect;
+        int index;
+    };
+    std::vector<IndexedRect> indexedFaces;
+    indexedFaces.reserve(faces.size());
+    for (size_t i = 0; i < faces.size(); ++i) {
+        indexedFaces.push_back({faces[i], static_cast<int>(i)});
+    }
+
+    auto comp = [](const IndexedRect& a, const IndexedRect& b) {
+        int areaA = a.rect.area();
+        int areaB = b.rect.area();
+        if (areaA != areaB) return areaA > areaB;
+        return a.index < b.index;
+    };
+
+    if (static_cast<int>(indexedFaces.size()) > clampedMaxFaces) {
+        std::partial_sort(indexedFaces.begin(), indexedFaces.begin() + clampedMaxFaces, indexedFaces.end(), comp);
+        indexedFaces.resize(clampedMaxFaces);
+    } else {
+        std::sort(indexedFaces.begin(), indexedFaces.end(), comp);
+    }
+
+    faces.clear();
+    faces.reserve(indexedFaces.size());
+    for (const auto& ir : indexedFaces) {
+        faces.push_back(ir.rect);
     }
 
     outResults.reserve(faces.size());
