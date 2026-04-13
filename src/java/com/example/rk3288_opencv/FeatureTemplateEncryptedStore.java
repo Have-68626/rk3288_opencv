@@ -370,8 +370,8 @@ public final class FeatureTemplateEncryptedStore {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             return md.digest(input);
-        } catch (Exception e) {
-            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("KEYSTORE_ERROR: SHA-256 algorithm not available", e);
         }
     }
 
