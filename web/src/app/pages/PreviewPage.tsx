@@ -145,7 +145,7 @@ export function PreviewPage() {
             />
           </Form.Item>
 
-          <Form.Item label="分辨率 / FPS">
+          <Form.Item label="分辨率 / FPS" htmlFor="preview-format-select">
             <Select
               placeholder="请先选择摄像头"
               notFoundContent="该设备无可用分辨率"
@@ -171,6 +171,7 @@ export function PreviewPage() {
           <Space wrap>
             <Space>
               <Switch
+                id="preview-flip-x"
                 checked={flipX}
                 aria-label="翻转 X"
                 onChange={(v) => {
@@ -178,10 +179,13 @@ export function PreviewPage() {
                   setFlip(prefs, { flipX: v, flipY })
                 }}
               />
-              <Typography.Text>翻转 X</Typography.Text>
+              <label htmlFor="preview-flip-x" style={{ cursor: 'pointer' }}>
+                <Typography.Text>翻转 X</Typography.Text>
+              </label>
             </Space>
             <Space>
               <Switch
+                id="preview-flip-y"
                 checked={flipY}
                 aria-label="翻转 Y"
                 onChange={(v) => {
@@ -189,14 +193,17 @@ export function PreviewPage() {
                   setFlip(prefs, { flipX, flipY: v })
                 }}
               />
-              <Typography.Text>翻转 Y</Typography.Text>
+              <label htmlFor="preview-flip-y" style={{ cursor: 'pointer' }}>
+                <Typography.Text>翻转 Y</Typography.Text>
+              </label>
             </Space>
           </Space>
 
           <Divider style={{ margin: '12px 0' }} />
 
-          <Form.Item label="注册 personId">
+          <Form.Item label="注册 personId" htmlFor="preview-person-id">
             <Input
+              id="preview-person-id"
               value={personId}
               onChange={(e) => setPersonId(e.target.value)}
               placeholder="例如：alice"
