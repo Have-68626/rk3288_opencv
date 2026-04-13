@@ -49,6 +49,8 @@ bool VideoManager::open(int deviceId) {
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
     cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
 
+    rklog::logInfo("VideoManager", "open", "OpenCL requested via setUseOpenCL");
+
     // Start capture thread
     isRunning = true;
     captureThread = std::thread(&VideoManager::captureLoop, this);
@@ -104,6 +106,8 @@ bool VideoManager::open(const std::string& filePath) {
             cap = std::move(tmp);
             return true;
         };
+
+        rklog::logInfo("VideoManager", "open", "OpenCL requested via setUseOpenCL");
 
         if (filePath.find("http") == 0 || filePath.find("rtsp") == 0 || filePath.find("rtmp") == 0) {
             std::string primary = filePath;
