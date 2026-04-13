@@ -98,3 +98,7 @@ Makefile
 *.log
 工作流建议_本地备忘_勿提交.txt
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class

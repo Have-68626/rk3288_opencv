@@ -1,4 +1,5 @@
 #include "rk_win/HttpFacesServer.h"
+#include "rk_win/HttpFacesServerPath.h"
 
 #include "rk_win/EventLogger.h"
 #include "rk_win/FacesJson.h"
@@ -104,12 +105,6 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
     return true;
 }
 
-static bool isSafeRelativePath(const std::string& urlPath) {
-    if (urlPath.empty() || urlPath[0] != '/') return false;
-    if (urlPath.find("..") != std::string::npos) return false;
-    if (urlPath.find('\\') != std::string::npos) return false;
-    return true;
-}
 
 static std::string escapeJsonString(std::string_view s) {
     std::string out;
@@ -380,14 +375,11 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& 
 HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const HttpRequest& req) {
     if (req.method != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
 
-    if (!isSafeRelativePath(req.path)) return jsonErr(400, "invalid_path", "路径不合法");
-
     std::string rel = req.path;
     if (rel == "/") rel = "/index.html";
 
-    std::filesystem::path p = docRoot_;
-    const std::string relNoSlash = (rel.size() && rel[0] == '/') ? rel.substr(1) : rel;
-    p /= std::filesystem::path(relNoSlash).make_preferred();
+    std::filesystem::path p;
+    if (!rk_win::isSafeRelativePath(docRoot_, rel, p)) return jsonErr(400, "invalid_path", "路径不合法");
 
     std::string body;
     if (!readFileBinary(p, body)) {

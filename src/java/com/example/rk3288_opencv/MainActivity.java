@@ -2091,6 +2091,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         lastCaptureSchemeReason = reason == null ? "" : reason;
         applyCaptureUiState();
         Toast.makeText(this, reason, Toast.LENGTH_SHORT).show();
+        if (tvStatus != null) {
+            tvStatus.setText("状态: 正在热重启...");
+        }
         stopMonitoring();
         handler.postDelayed(this::startMonitoring, Math.max(0, delayMs));
     }

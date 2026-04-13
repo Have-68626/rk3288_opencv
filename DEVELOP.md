@@ -2294,7 +2294,7 @@ if __name__ == "__main__":
 5. ISO/IEC 30107-3:2017 Biometric presentation attack detection（PAD）测试与评估  
    https://www.iso.org/standard/67381.html
 6. Android Developers: CameraX VideoCapture（录像管线）  
-   https://developer.android.com/media/camera/camerax/video
+   https://developer.android.com/media/camera/camerax/video-capture
 7. Android Developers: Android 13 行为变更（权限/通知等）  
    https://developer.android.com/about/versions/13/behavior-changes-13
 8. Android Developers: Android 14 行为变更（前台服务类型等）  
@@ -2310,7 +2310,7 @@ if __name__ == "__main__":
 13. Google ML Kit: Face Detection  
     https://developers.google.com/ml-kit/vision/face-detection
 14. MediaPipe Tasks: Vision（Face Detector / Face Landmarker）  
-    https://ai.google.dev/edge/mediapipe/solutions/vision
+    https://ai.google.dev/edge/mediapipe/solutions/guide#vision
 15. ArcSoft（虹软）人脸识别 SDK（ArcFace）  
     https://www.arcsoft.com.cn/
 16. 百度智能云：人脸识别  
@@ -2318,7 +2318,7 @@ if __name__ == "__main__":
 17. 腾讯云：人脸识别/优图（按产品线）  
     https://cloud.tencent.com/product/facerecognition
 18. Dlib 官方项目  
-    http://dlib.net/
+    https://dlib.net/
 19. 阿里云：视觉智能开放平台（Facebody）  
     https://help.aliyun.com/product/135949.html
 20. AWS Rekognition  
@@ -2350,7 +2350,7 @@ if __name__ == "__main__":
 33. AndroidX Test: Espresso  
     https://developer.android.com/training/testing/espresso
 34. AndroidX CameraX: Testing（camera-testing）  
-    https://developer.android.com/media/camera/camerax/testing
+    https://developer.android.com/media/camera/camerax/architecture
 35. GitHub Actions: Workflow syntax for GitHub Actions  
     https://docs.github.com/actions/writing-workflows/workflow-syntax-for-github-actions
 36. reactivecircus/android-emulator-runner（GitHub Actions Android 模拟器运行器）  

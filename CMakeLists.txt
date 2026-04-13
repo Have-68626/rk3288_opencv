@@ -52,13 +52,16 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_frame_input_channel.cpp"
         "tests/cpp/test_face_search.cpp"
         "tests/cpp/test_threshold_policy.cpp"
+        "tests/cpp/test_event_manager.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
+        "src/cpp/src/EventManager.cpp"
     )
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )
+    target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
@@ -406,6 +409,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/OverlayRenderer.cpp"
             "src/win/src/FacesJson.cpp"
             "src/win/src/HttpFacesServer.cpp"
+            "src/win/src/HttpFacesServerPath.cpp"
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/FramePipeline.cpp"
             "src/win/src/EventLogger.cpp"
@@ -483,6 +487,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/OverlayRenderer.cpp"
             "src/win/src/FacesJson.cpp"
             "src/win/src/HttpFacesServer.cpp"
+            "src/win/src/HttpFacesServerPath.cpp"
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/AbcTestRunner.cpp"
             "src/win/src/FramePipeline.cpp"
@@ -603,6 +608,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "tests/win/win_unit_tests_main.cpp"
         "tests/win/test_face_metrics.cpp"
         "tests/win/test_lbph_embedder.cpp"
+        "tests/win/test_http_faces_server.cpp"
+        "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/FaceRecognizer.cpp"
         "src/win/src/FaceDatabase.cpp"
