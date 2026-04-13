@@ -278,33 +278,42 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
                 byte[] buffer = new byte[8192];
 
                 for (File file : filesToExport) {
+                    boolean isText = false;
+                    try (java.io.InputStream in = new FileInputStream(file)) {
+                        java.nio.charset.CharsetDecoder decoder = java.nio.charset.StandardCharsets.UTF_8.newDecoder();
+                        decoder.onMalformedInput(java.nio.charset.CodingErrorAction.REPORT);
+                        decoder.onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+                        java.io.InputStreamReader isr = new java.io.InputStreamReader(in, decoder);
+                        char[] cbuf = new char[1024];
+                        int read = isr.read(cbuf);
+                        isText = true; // Read successful without CharacterCodingException
+                    } catch (java.nio.charset.CharacterCodingException e) {
+                        isText = false;
+                    } catch (Exception ignored) {
+                        isText = false;
+                    }
+
+                    if (!isText) {
+                        manifestBuilder.append(file.getName())
+                                .append(" | [SKIPPED] 非 UTF-8 文本或二进制文件，已跳过导出以防隐私泄露\n");
+                        continue;
+                    }
+
                     ZipEntry entry = new ZipEntry(file.getName());
                     zos.putNextEntry(entry);
 
                     CRC32 crc = new CRC32();
                     long written = 0;
 
-                    if (isTextLogFile(file)) {
-                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8))) {
-                            String line;
-                            while ((line = reader.readLine()) != null) {
-                                String redacted = redactSensitive(line);
-                                byte[] bytes = (redacted + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                                zos.write(bytes);
-                                crc.update(bytes);
-                                written += bytes.length;
-                            }
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            String redacted = redactSensitive(line);
+                            byte[] bytes = (redacted + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                            zos.write(bytes);
+                            crc.update(bytes);
+                            written += bytes.length;
                         }
-                    } else {
-                        FileInputStream fis = new FileInputStream(file);
-                        BufferedInputStream bis = new BufferedInputStream(fis);
-                        int len;
-                        while ((len = bis.read(buffer)) > 0) {
-                            zos.write(buffer, 0, len);
-                            crc.update(buffer, 0, len);
-                            written += len;
-                        }
-                        bis.close();
                     }
                     zos.closeEntry();
                     
@@ -495,11 +504,6 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
             });
         }
         b.show();
-    }
-
-    private static boolean isTextLogFile(File file) {
-        String name = file == null ? "" : file.getName().toLowerCase(Locale.ROOT);
-        return name.endsWith(".log") || name.endsWith(".txt");
     }
 
     private static String buildLogcatHeader(String timeStamp, int pid, String scope, String note) {
