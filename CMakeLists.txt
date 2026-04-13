@@ -201,26 +201,33 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
 
 if(ANDROID)
     # 1. Android JNI Shared Library
-    add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib.cpp")
+    if(NOT RK_SKIP_OPENCV)
+        add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib.cpp")
+        # Link Libraries for JNI
+        target_link_libraries(
+            native-lib
+            opencv_core
+            opencv_imgproc
+            opencv_video
+            opencv_objdetect
+            opencv_face
+            opencv_imgcodecs
+            opencv_calib3d
+            opencv_features2d
+            opencv_flann
+            opencv_dnn
+            opencv_ml
+            opencv_photo
+            opencv_videoio
+            opencv_highgui
+            opencv_stitching
+        )
+    else()
+        add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib-stub.cpp")
+    endif()
 
-    # Link Libraries for JNI
     target_link_libraries(
         native-lib
-        opencv_core
-        opencv_imgproc
-        opencv_video
-        opencv_objdetect
-        opencv_face
-        opencv_imgcodecs
-        opencv_calib3d
-        opencv_features2d
-        opencv_flann
-        opencv_dnn
-        opencv_ml
-        opencv_photo
-        opencv_videoio
-        opencv_highgui
-        opencv_stitching
         $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
         ${log-lib}
         ${jnigraphics-lib}
@@ -242,135 +249,139 @@ if(ANDROID)
     endif()
 endif()
 
-# 2. Native Executable (CLI) for RK3288 (and Host Testing)
-add_executable(rk3288_cli "src/cpp/main.cpp" ${CORE_SOURCES})
+if(NOT RK_SKIP_OPENCV)
+    # 2. Native Executable (CLI) for RK3288 (and Host Testing)
+    add_executable(rk3288_cli "src/cpp/main.cpp" ${CORE_SOURCES})
 
-# Explicitly set include directories for rk3288_cli
-target_include_directories(rk3288_cli PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-)
-
-target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
-target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
-if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
-    target_include_directories(rk3288_cli PRIVATE ${libyuv_SOURCE_DIR}/include)
-endif()
-
-# Link Libraries for CLI
-if(ANDROID)
-    target_link_libraries(
-        rk3288_cli
-        opencv_core
-        opencv_imgproc
-        opencv_video
-        opencv_objdetect
-        opencv_imgcodecs
-        opencv_calib3d
-        opencv_features2d
-        opencv_flann
-        opencv_dnn
-        opencv_ml
-        opencv_photo
-        opencv_videoio
-        opencv_highgui
-        opencv_stitching
-        $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
-        ${log-lib}
-        ${jnigraphics-lib}
-        android
+    # Explicitly set include directories for rk3288_cli
+    target_include_directories(rk3288_cli PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )
-else()
-    # Host Build (Windows/Linux)
-    target_link_libraries(
-        rk3288_cli
-        opencv_core
-        opencv_imgproc
-        opencv_video
-        opencv_objdetect
-        opencv_imgcodecs
-        opencv_calib3d
-        opencv_features2d
-        opencv_flann
-        opencv_dnn
-        opencv_ml
-        opencv_photo
-        opencv_videoio
-        opencv_highgui
-        opencv_stitching
-        $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
-        # No android/log libs on host
+
+    target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
+    target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
+    if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
+        target_include_directories(rk3288_cli PRIVATE ${libyuv_SOURCE_DIR}/include)
+    endif()
+
+    # Link Libraries for CLI
+    if(ANDROID)
+        target_link_libraries(
+            rk3288_cli
+            opencv_core
+            opencv_imgproc
+            opencv_video
+            opencv_objdetect
+            opencv_imgcodecs
+            opencv_calib3d
+            opencv_features2d
+            opencv_flann
+            opencv_dnn
+            opencv_ml
+            opencv_photo
+            opencv_videoio
+            opencv_highgui
+            opencv_stitching
+            $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
+            ${log-lib}
+            ${jnigraphics-lib}
+            android
+        )
+    else()
+        # Host Build (Windows/Linux)
+        target_link_libraries(
+            rk3288_cli
+            opencv_core
+            opencv_imgproc
+            opencv_video
+            opencv_objdetect
+            opencv_imgcodecs
+            opencv_calib3d
+            opencv_features2d
+            opencv_flann
+            opencv_dnn
+            opencv_ml
+            opencv_photo
+            opencv_videoio
+            opencv_highgui
+            opencv_stitching
+            $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
+            # No android/log libs on host
+        )
+    endif()
+
+    if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
+        target_link_libraries(rk3288_cli ${RK_NCNN_TARGET})
+    endif()
+
+    if(TARGET opencv_face)
+        target_link_libraries(rk3288_cli opencv_face)
+    endif()
+
+    # 3. OpenCV Verification CLI (static image validation)
+    add_executable(opencv_verify_cli "src/cpp/opencv_verify_cli.cpp")
+
+    if(ANDROID)
+        target_link_libraries(
+            opencv_verify_cli
+            opencv_core
+            opencv_imgproc
+            opencv_imgcodecs
+            opencv_objdetect
+            opencv_features2d
+            ${log-lib}
+            android
+        )
+    else()
+        target_link_libraries(
+            opencv_verify_cli
+            opencv_core
+            opencv_imgproc
+            opencv_imgcodecs
+            opencv_objdetect
+            opencv_features2d
+        )
+    endif()
+endif()
+
+if(NOT RK_SKIP_OPENCV)
+    add_executable(inference_bench_cli "src/cpp/tools/inference_bench_cli.cpp")
+    target_include_directories(inference_bench_cli PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )
-endif()
+    if(MSVC)
+        target_compile_options(inference_bench_cli PRIVATE /utf-8)
+    endif()
+    if(WIN32)
+        target_compile_definitions(inference_bench_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+    target_compile_definitions(inference_bench_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
 
-if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
-    target_link_libraries(rk3288_cli ${RK_NCNN_TARGET})
-endif()
+    if(ANDROID)
+        target_link_libraries(
+            inference_bench_cli
+            opencv_core
+            opencv_imgproc
+            opencv_dnn
+            ${log-lib}
+            android
+        )
+    else()
+        target_link_libraries(
+            inference_bench_cli
+            opencv_core
+            opencv_imgproc
+            opencv_dnn
+        )
+    endif()
 
-if(TARGET opencv_face)
-    target_link_libraries(rk3288_cli opencv_face)
-endif()
+    if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
+        target_link_libraries(inference_bench_cli ${RK_NCNN_TARGET})
+    endif()
 
-# 3. OpenCV Verification CLI (static image validation)
-add_executable(opencv_verify_cli "src/cpp/opencv_verify_cli.cpp")
-
-if(ANDROID)
-    target_link_libraries(
-        opencv_verify_cli
-        opencv_core
-        opencv_imgproc
-        opencv_imgcodecs
-        opencv_objdetect
-        opencv_features2d
-        ${log-lib}
-        android
-    )
-else()
-    target_link_libraries(
-        opencv_verify_cli
-        opencv_core
-        opencv_imgproc
-        opencv_imgcodecs
-        opencv_objdetect
-        opencv_features2d
-    )
-endif()
-
-add_executable(inference_bench_cli "src/cpp/tools/inference_bench_cli.cpp")
-target_include_directories(inference_bench_cli PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-)
-if(MSVC)
-    target_compile_options(inference_bench_cli PRIVATE /utf-8)
-endif()
-if(WIN32)
-    target_compile_definitions(inference_bench_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-endif()
-target_compile_definitions(inference_bench_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
-
-if(ANDROID)
-    target_link_libraries(
-        inference_bench_cli
-        opencv_core
-        opencv_imgproc
-        opencv_dnn
-        ${log-lib}
-        android
-    )
-else()
-    target_link_libraries(
-        inference_bench_cli
-        opencv_core
-        opencv_imgproc
-        opencv_dnn
-    )
-endif()
-
-if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
-    target_link_libraries(inference_bench_cli ${RK_NCNN_TARGET})
-endif()
-
-if(WIN32)
-    target_link_libraries(inference_bench_cli psapi)
+    if(WIN32)
+        target_link_libraries(inference_bench_cli psapi)
+    endif()
 endif()
 
 option(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION "Build Windows Camera Face Recognition Test System" ON)
