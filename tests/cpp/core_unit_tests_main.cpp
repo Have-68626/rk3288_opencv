@@ -33,6 +33,8 @@ bool test_frame_input_latest_only_keeps_newest();
 bool test_frame_input_bounded_queue_drops_oldest();
 bool test_threshold_policy_version_and_consecutive();
 bool test_threshold_policy_rollback_empty_history();
+bool test_event_manager_format_json();
+bool test_event_manager_unique_id();
 
 int main() {
     using namespace rk_core_test;
@@ -42,6 +44,8 @@ int main() {
         {"frame_input_bounded_queue_drops_oldest", test_frame_input_bounded_queue_drops_oldest},
         {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
         {"threshold_policy_rollback_empty_history", test_threshold_policy_rollback_empty_history},
+        {"event_manager_format_json", test_event_manager_format_json},
+        {"event_manager_unique_id", test_event_manager_unique_id},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

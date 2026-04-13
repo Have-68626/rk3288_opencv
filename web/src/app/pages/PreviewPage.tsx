@@ -9,6 +9,7 @@ import {
   Select,
   Space,
   Switch,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -113,8 +114,28 @@ export function PreviewPage() {
         ) : null}
 
         <Form layout="vertical">
-          <Form.Item label="摄像头设备">
+          <Form.Item
+            label={
+              <Space>
+                <span>摄像头设备</span>
+                {cams.status === 'ready' && cams.devices.length === 0 ? (
+                  <Tooltip title="未检测到设备。请检查摄像头是否连接、驱动是否正常，或本地服务是否已启动并拥有访问权限。">
+                    <Typography.Text type="secondary" style={{ cursor: 'help' }}>
+                      (帮助)
+                    </Typography.Text>
+                  </Tooltip>
+                ) : null}
+              </Space>
+            }
+          >
             <Select
+              loading={cams.status === 'loading'}
+              placeholder={cams.status === 'loading' ? '正在加载摄像头...' : '请选择摄像头'}
+              notFoundContent={
+                cams.status === 'loading'
+                  ? '加载中...'
+                  : '未发现摄像头，请检查权限或本地服务'
+              }
               options={deviceOptions}
               value={selectedDevice?.deviceId}
               onChange={(deviceId) => {
@@ -124,8 +145,10 @@ export function PreviewPage() {
             />
           </Form.Item>
 
-          <Form.Item label="分辨率 / FPS">
+          <Form.Item label="分辨率 / FPS" htmlFor="preview-format-select">
             <Select
+              placeholder="请先选择摄像头"
+              notFoundContent="该设备无可用分辨率"
               options={formatOptions}
               value={currentFormatKey}
               onChange={(k) => {
@@ -148,6 +171,7 @@ export function PreviewPage() {
           <Space wrap>
             <Space>
               <Switch
+                id="preview-flip-x"
                 checked={flipX}
                 aria-label="翻转 X"
                 onChange={(v) => {
@@ -155,10 +179,13 @@ export function PreviewPage() {
                   setFlip(prefs, { flipX: v, flipY })
                 }}
               />
-              <Typography.Text>翻转 X</Typography.Text>
+              <label htmlFor="preview-flip-x" style={{ cursor: 'pointer' }}>
+                <Typography.Text>翻转 X</Typography.Text>
+              </label>
             </Space>
             <Space>
               <Switch
+                id="preview-flip-y"
                 checked={flipY}
                 aria-label="翻转 Y"
                 onChange={(v) => {
@@ -166,14 +193,17 @@ export function PreviewPage() {
                   setFlip(prefs, { flipX, flipY: v })
                 }}
               />
-              <Typography.Text>翻转 Y</Typography.Text>
+              <label htmlFor="preview-flip-y" style={{ cursor: 'pointer' }}>
+                <Typography.Text>翻转 Y</Typography.Text>
+              </label>
             </Space>
           </Space>
 
           <Divider style={{ margin: '12px 0' }} />
 
-          <Form.Item label="注册 personId">
+          <Form.Item label="注册 personId" htmlFor="preview-person-id">
             <Input
+              id="preview-person-id"
               value={personId}
               onChange={(e) => setPersonId(e.target.value)}
               placeholder="例如：alice"

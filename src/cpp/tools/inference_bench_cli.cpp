@@ -359,7 +359,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     const auto w1 = clock::now();
     const std::uint64_t cpu1 = processCpuNanos();
     const std::uint64_t after = rssBytes();
-    peak = std::max(before, after); // use after instead of checking inside the loop
+    peak = std::max(peak, after);
 
     Record r;
     r.backend = "opencv_dnn";
@@ -494,7 +494,7 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     const auto w1 = clock::now();
     const std::uint64_t cpu1 = processCpuNanos();
     const std::uint64_t after = rssBytes();
-    peak = std::max(before, after); // use after instead of checking inside the loop
+    peak = std::max(peak, after);
 
     Record r;
     r.backend = "ncnn";
