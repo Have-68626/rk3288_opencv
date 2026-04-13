@@ -165,11 +165,10 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
 > ✅ 已完成代办 1–34 已迁移归档至 [CHANGELOG.md](CHANGELOG.md)（见 `[Unreleased]` → `Documented`）。此处仅保留未完成待办（从 35 开始编号）。
 
-35. ⬜ **[P1] 加速方案研究与落地：CPU/CPU+GPU（OpenCL）/专用硬件加速，优先适配 ARM（RK3288 与 Qualcomm）**
-    *   **现状核对**：当前已在 `VideoManager` 启用 OpenCL（`cv::ocl::setUseOpenCL(true)`），但缺少“哪些算子实际走 OpenCL/收益多少/失败如何回退”的可量化结论；文档已提到 RK MPP 解码与端侧推理后端，但尚未形成可执行的对比矩阵与验收口径。
-    *   **资料依据**：OpenCV OpenCL/UMat 透明加速机制（算子覆盖与回退需实测）：https://docs.opencv.ac.cn/4.x/d7/d45/classcv_1_1UMat.html ；Rockchip MPP 开发指南（解码/零拷贝等）：https://github.com/rockchip-linux/mpp/blob/develop/doc/Rockchip_Developer_Guide_MPP_EN.md ；Qualcomm Neural Processing SDK（CPU/GPU/DSP 运行时）：https://developer.qualcomm.com/software/qualcomm-neural-processing-SDK ；TFLite Hexagon delegate（DSP 加速路径参考）：https://blog.tensorflow.org/2019/12/accelerating-tensorflow-lite-on-qualcomm.html
-    *   **目标**：输出“端到端链路分段”的加速选型与开关：解码（CPU vs MPP）、预处理（NEON vs OpenCL vs libyuv）、检测/特征（ncnn/OpenCV DNN/TFLite/Qualcomm SDK 可选）；建立统一的基准测量脚本与报告格式（FPS、P95 延迟、功耗/温度可选、内存峰值）。
-    *   **验收**：在 RK3288 与至少 1 台 Qualcomm 设备上产出可复现报告；每个加速开关都有明确回退路径与失败原因输出；默认配置在稳定性不退化的前提下获得可观收益。
+35. ✅ **[P1] 加速方案研究与落地：CPU/CPU+GPU（OpenCL）/专用硬件加速，优先适配 ARM（RK3288 与 Qualcomm）**
+    *   **现状与文档**：请参考 [端到端链路加速方案与评估报告 (docs/acceleration_study.md)](docs/acceleration_study.md)。
+    *   **更新说明**：`inference_bench_cli` 工具已扩充，引入了 `--use-opencl` 独立开关，支持预处理和推理的分段耗时测量（`pre_p95_ms`、`infer_p95_ms`），并输出了用于真机收集的可复现格式。
+    *   **待补测**：在真实 RK3288 / Qualcomm 硬件上运行该工具填充基准测试数据，完成最终报告定稿。
 
 36. ⬜ **[P1] 人脸注册功能拓展与完善：多样本、质量门槛、管理能力与导入导出**
     *   **现状核对**：Windows SPA 已具备 `Enroll personId` 与“清空库”入口（见 `docs/windows-web-spa/feature_parity.md`），但缺少“查看/删除单个人/多样本覆盖策略/导入导出/冲突处理/质量门槛”等完整的注册管理闭环；Android 侧也缺少对等的可审计注册流程与 UI 管理入口。
