@@ -6,9 +6,10 @@ android {
     namespace 'com.example.rk3288_opencv'
     compileSdk 34
 
+    def skipOpencv = (project.findProperty("RK_SKIP_OPENCV") ?: System.getenv("RK_SKIP_OPENCV"))?.toString()?.toBoolean() ?: false
     def opencvRoot = (project.findProperty("OPENCV_ROOT") ?: System.getenv("OPENCV_ROOT"))
     def opencvContribRoot = (project.findProperty("OPENCV_CONTRIB_ROOT") ?: System.getenv("OPENCV_CONTRIB_ROOT"))
-    if (!opencvRoot) {
+    if (!skipOpencv && !opencvRoot) {
         throw new GradleException("缺少 OPENCV_ROOT：请在环境变量中设置 OPENCV_ROOT（OpenCV 源码根目录），或在 gradle.properties/命令行中传入 -DOPENCV_ROOT=...")
     }
 
@@ -33,11 +34,15 @@ android {
                 cppFlags "-std=c++17"
                 // 传递 NDK 路径给 CMake 以便正确查找工具链
                 def cmakeArgs = [
-                        "-DANDROID_STL=c++_shared",
-                        "-DOPENCV_ROOT=${opencvRoot}"
+                        "-DANDROID_STL=c++_shared"
                 ]
-                if (opencvContribRoot) {
-                    cmakeArgs.add("-DOPENCV_CONTRIB_ROOT=${opencvContribRoot}")
+                if (skipOpencv) {
+                    cmakeArgs.add("-DRK_SKIP_OPENCV=ON")
+                } else {
+                    cmakeArgs.add("-DOPENCV_ROOT=${opencvRoot}")
+                    if (opencvContribRoot) {
+                        cmakeArgs.add("-DOPENCV_CONTRIB_ROOT=${opencvContribRoot}")
+                    }
                 }
                 arguments(*cmakeArgs)
             }
