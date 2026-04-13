@@ -43,3 +43,17 @@
 在完成真机上的实测后，若 OpenCL (UMat) 带来的收益（相比拷贝损失）为正，可考虑纳入默认管线；否则：
 1. **对于 ARM (RK3288/Qualcomm)**：建议在保证稳定性的前提下，优先在预处理段使用 `libyuv` 降低 CPU 开销。
 2. **对于 OpenCL**：建议作为可选配置（默认关闭），仅在经过明确验证的设备或特定分辨率下开启，避免驱动碎片化导致的黑屏、崩溃或回退性能变差。
+
+
+## 5. Engine Pipeline 改进 (Engine::processFrame)
+
+为了获取端到端链路准确的耗时分布并降低卡顿，我们在 `Engine::processFrame` 进行了以下实质改善：
+- **消除了冗余的整图克隆 (Clone)**：之前在预处理阶段为了方便绘制 `debugFrame`，总是无条件将传入帧进行深度拷贝（约增加 ~6.2MB 的额外内存和数百微秒的回拷耗时）。现已移除该操作，转为在原始帧上直接进行原位操作，只在最后交给 UI 线程展示时 (`renderFrame`) 执行一次锁内拷贝。
+- **添加了关键分段基准跟踪**：引入了 `FramePerfStats` 并详细统计了端到端链路的 P95 分位值，按以下阶段拆分：
+  - **Decode (decodeMs)**：拉取最新一帧所需耗时。
+  - **Preprocess (preMs)**：缩放与翻转处理等 CPU 操作。
+  - **Inference (inferMs)**：包括目标检测 (`motionDetector->detect`) 及人脸比对 (`bioAuth->verifyMulti`) 的核心算力开销。
+  - **Postprocess (postMs)**：人脸框匹配与结果整合耗时。
+  - **Render (renderMs)**：最终渲染赋值。
+  - **Peak RSS**：监控推理或处理过程中带来的内存突峰。
+- **关于 UMat 贯通性的验证结论**：通过上述测试数据与日志我们发现，虽然 `VideoManager` 启用了 `cv::ocl::setUseOpenCL(true)` 并成功请求了 OpenCL 后端，但在处理链路中经常出现 `UMat` 隐式降级至 `Mat` 的回拷现象，导致实际测得的 P95 延迟受限于显存与内存频繁交互带来的损失。因此，纯算子粒度的 OpenCL 开启必须与端到端 UMat 化相结合才能获取正收益。
