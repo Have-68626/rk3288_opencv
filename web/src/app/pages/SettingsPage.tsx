@@ -300,13 +300,13 @@ export function SettingsPage() {
                       <Input placeholder={postUrlMasked ? '（已脱敏）如需修改请填写' : 'http://...'} />
                     </Form.Item>
                     <Form.Item label="节流（ms）" name={['poster', 'throttleMs']}>
-                      <InputNumber min={0} max={600000} style={{ width: '100%' }} />
+                      <InputNumber min={0} max={3600000} style={{ width: '100%' }} />
                     </Form.Item>
                     <Form.Item label="退避最小（ms）" name={['poster', 'backoffMinMs']}>
-                      <InputNumber min={0} max={600000} style={{ width: '100%' }} />
+                      <InputNumber min={50} max={3600000} style={{ width: '100%' }} />
                     </Form.Item>
                     <Form.Item label="退避最大（ms）" name={['poster', 'backoffMaxMs']}>
-                      <InputNumber min={0} max={600000} style={{ width: '100%' }} />
+                      <InputNumber min={50} max={3600000} style={{ width: '100%' }} />
                     </Form.Item>
                   </Space>
                 ),
