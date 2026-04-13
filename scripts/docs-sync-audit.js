@@ -413,7 +413,7 @@ async function headFetch(url) {
   const timer = setTimeout(() => controller.abort(), 12000);
   try {
     const r = await fetch(url, { method: "HEAD", redirect: "follow", signal: controller.signal });
-    return { ok: r.status === 200 || r.status === 301, status: r.status, finalUrl: r.url };
+    return { ok: r.status >= 200 && r.status < 400, status: r.status, finalUrl: r.url };
   } catch (e) {
     return { ok: false, status: 0, finalUrl: url, error: String(e && e.message ? e.message : e), unverifiable: true };
   } finally {
@@ -431,7 +431,7 @@ async function getFetchFallback(url) {
       headers: { Range: "bytes=0-0" },
       signal: controller.signal,
     });
-    return { ok: r.status === 200 || r.status === 206 || r.status === 301, status: r.status, finalUrl: r.url };
+    return { ok: r.status >= 200 && r.status < 400, status: r.status, finalUrl: r.url };
   } catch (e) {
     return { ok: false, status: 0, finalUrl: url, error: String(e && e.message ? e.message : e), unverifiable: true };
   } finally {
