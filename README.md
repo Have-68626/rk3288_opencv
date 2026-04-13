@@ -4,160 +4,95 @@
 ![Language](https://img.shields.io/badge/Language-C%2B%2B17-green)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.10.0-orange)
 
-## 📖 项目简介
+## 📖 项目简介与运行模式
 
-本项目是一个专为 **Rockchip RK3288** 平台（Cortex-A17 架构 + Mali-T764 GPU）深度优化的嵌入式机器视觉应用，目标设备以 **ARMv7（armeabi-v7a）** 为基线，同时提供 **x86_64（Windows/Host 工具链）** 支持。
-
-核心目标是在资源受限的旧设备上（<512MB 可用内存）实现稳定、低延迟的视频监控与生物识别功能。项目核心逻辑采用纯 C++ 开发，支持两种运行模式：**Android APK**（带 UI）和 **Native Executable**（无头模式，极低资源占用）。
-
-## ✨ 核心功能
-
-*   **双模式监控**:
-    *   **连续模式**: 实时全帧率处理。
-    *   **运动触发模式**: 基于轻量级帧差法，仅在画面变动时激活，大幅降低 CPU 功耗。
-*   **边缘生物识别**:
-    *   集成 OpenCV **LBPH (局部二值模式直方图)** 算法。
-    *   针对 ARM NEON 指令集优化，识别准确率 ≥92%。
-*   **结构化事件记录**:
-    *   自动捕获异常事件（如未授权人员、运动侦测）。
-    *   生成 JSON 格式报告并保存现场快照。
-*   **离线数据管理**:
-    *   内置 **7天滚动缓存** 机制，自动清理过期数据。
-    *   完全离线运行，无需网络连接。
-*   **Windows 摄像头人脸识别测试系统（新增）**:
-    *   基于 Media Foundation 的设备枚举/打开/分辨率配置。
-    *   Win32 原生窗口实时预览：相机切换、分辨率、翻转、FPS。
-    *   OpenCV 检测 + 特征 + 比对：支持 enroll/identify、多人人脸。
-    *   结构化日志落盘：`storage/win_logs/recognition.csv` 与 `recognition.jsonl`。
+本项目是一个跨平台机器视觉应用，支持在资源受限设备上进行稳定的视频监控与边缘生物识别，包含以下部分：
+*   **Android App (Gradle)**: 位于 `app/`，提供带 UI 的 Android 监控界面与业务。
+*   **通用 C++ 核心与工具 (CMake/CLI)**: 位于 `src/cpp/`，实现跨平台视觉算法与无头 CLI。
+*   **Windows 摄像头人脸识别系统**: 位于 `src/win/`，提供本地服务、设备打开与识别链路，以及静态资源的 HTTP 分发服务。
+*   **Web SPA 源码 (Vite/React)**: 位于 `web/`，为 Windows 本地系统提供基于浏览器的前端页面。
 
 ## 📂 项目结构
 
 ```text
 rk3288_opencv/
-├── app/
-│   ├── src/
-│   │   ├── main/
-│   │   │   ├── cpp/                # 核心 C++ 源码
-│   │   │   │   ├── include/        # 头文件 (Engine, BioAuth, etc.)
-│   │   │   │   ├── src/            # 实现文件
-│   │   │   │   ├── native-lib.cpp  # JNI 接口 (供 APK 使用)
-│   │   │   │   └── main.cpp        # 命令行入口 (供 Native Executable 使用)
-│   │   │   └── java/               # Android UI 层 (仅 APK 模式需要)
-│   └── build.gradle                # Android 构建配置
-├── build_android.bat               # Native Executable 构建脚本 (Windows)
-├── CMakeLists.txt                  # CMake 构建配置
-├── config/                         # 配置文件（ini）
+├── app/                  # Android 应用目录
+│   ├── src/main/java/    # Android UI 代码
+│   └── build.gradle      # Android 构建配置
+├── config/               # 配置文件
 │   └── windows_camera_face_recognition.ini
-├── README.md                       # 项目概览
-├── README_BUILD.md                 # 详细构建指南
-└── DEVELOP.md                      # 详细开发设计书
+├── docs/                 # 开发设计文档与运维手册
+├── src/                  # 核心源码
+│   ├── cpp/              # C++ 核心算法、工具与头文件
+│   │   ├── src/          # C++ 源文件
+│   │   ├── native-lib.cpp # JNI 入口
+│   │   ├── main.cpp      # Native CLI 主循环入口
+│   │   └── tools/inference_bench_cli.cpp # 推理基准测试工具
+│   ├── java/             # 核心 Java 层源码
+│   └── win/              # Windows 特定代码
+│       ├── app/
+│       │   ├── win_local_service_main.cpp # Windows 本地服务入口
+│       │   └── webroot/  # Windows 静态资源落盘目录
+│       └── src/          # Windows 侧代码
+├── web/                  # Web SPA 前端源码
+└── tests/                # 测试脚本、配置与输出目录
+    ├── metrics/          # 基准 / 性能报告输出目录
+    └── reports/          # CI 报告与审查日志输出目录
 ```
 
-## 🪟 Windows 摄像头人脸识别测试系统（快速开始）
+## 🛠️ 依赖列表
 
-### 运行目标
-- GUI 预览程序：`win_camera_face_recognition`
-- 离线评估工具：`win_face_eval_cli`
-
-### 配置文件
-- 默认读取：`config/windows_camera_face_recognition.ini`
-- 可通过环境变量覆盖：`RK_WCFR_CONFIG=<ini 路径>`
-
-### 编译（Windows 10/11 x64）
-本仓库使用 CMake；需准备 OpenCV 源码（可由环境变量/参数指定）：
-- `OPENCV_ROOT`：OpenCV 源码根目录
-- `OPENCV_CONTRIB_ROOT`：可选（如需构建 contrib 模块）
-
-示例（PowerShell）：
-```powershell
-cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 -DOPENCV_ROOT="...\opencv"
-cmake --build build_win --config Release --target win_camera_face_recognition
-.\build_win\Release\win_camera_face_recognition.exe
-```
-
-更完整说明见：[USER_MANUAL.md](docs/windows-camera-face-recognition/USER_MANUAL.md) 与 [DEVELOP.md](DEVELOP.md)。
-
-## 🛠️ 技术架构
-
-项目采用模块化分层设计，确保高内聚低耦合：
-
-*   **Infrastructure**: `Config.h`, `Storage` (资源管理与持久化)
-*   **Hardware**: `VideoManager` (OpenCL 加速的视频采集)
-*   **Algorithm**: `MotionDetector`, `BioAuth` (核心视觉算法)
-*   **Orchestration**: `Engine` (业务状态机与主循环)
-
-## 🚀 快速开始
-
-### 环境要求
 *   Windows / Linux 开发环境
 *   Android NDK (推荐 r23c)
 *   OpenCV 4.10.0 Android SDK
 
-### 编译与部署
+## 🚀 快速开始
 
-本项目支持两种部署方式，详细步骤请参考 **[构建与部署指南 (README_BUILD.md)](README_BUILD.md)**。
+### 构建命令与测试命令 (Windows CMake)
+本仓库使用 CMake，请使用 Visual Studio 生成器进行构建（需预配置 OpenCV）：
+```powershell
+cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 -DOPENCV_ROOT="...\opencv"
+cmake --build build_win --config Release --target win_unit_tests
+cmake --build build_win --config Release --target win_face_eval_cli
+cmake --build build_win --config Release --target win_face_bench_cli
+cmake --build build_win --config Release --target win_local_service
+ctest --test-dir build_win -C Release
+```
 
-#### 方式 A: Native Executable (推荐用于调试/无头设备)
-通过 `build_android.bat` 脚本直接编译生成可执行文件，通过 `adb shell` 运行，无需安装 APK。
+### 构建命令与测试命令 (Android Gradle)
+通过 Gradle Wrapper 编译与测试：
+```powershell
+.\gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+```
 
-#### 方式 B: Android APK (推荐用于最终产品)
-使用 Android Studio 打开项目，直接运行 `Run 'app'`。
+### 构建命令与测试命令 (Web Vite)
+Web 前端通过 `pnpm` 构建。执行构建后，产物会被输出，并放入 `src/win/app/webroot`：
+```powershell
+pnpm -C web install
+pnpm -C web lint
+pnpm -C web build
+```
 
-## 🎥 Android 采集方案（Camera2/CameraX）复现与验证
+## ⚙️ 配置与接口入口
 
-本节用于复现并验证“采集方案：自动/手动切换、热重启、已知限制”。更完整的验收步骤与排障见：[验收 Runbook](docs/runbooks/rk3288-android-uvc-camera2-camerax-acceptance.md)。
+### Windows 配置
+- 配置文件入口：`config/windows_camera_face_recognition.ini`
+- 本地 HTTP 默认监听仅 `127.0.0.1` 保障安全，实现位于 `src/win/src/HttpFacesServer.cpp`。
 
-### 复现与验证路径（最短闭环）
+### Windows Web SPA 配置
+- 配置文档位于：`docs/windows-web-spa/config.md`
+- JSON Schema 位于：`docs/windows-web-spa/config.schema.json`
 
-1) 连接 UVC 摄像头到 RK3288（USB Host），打开 App 并授予相机权限。  
-2) 在主界面相机下拉框选择对应 cameraId（不要选 Mock）。  
-3) 验证自动模式（默认开启）：
-   - 保持“采集方案：自动”开启 → 点击 `START MONITORING`。
-   - 预期：状态显示 `Running (Camera2 / Cam <id>)` 或 `Running (CameraX / Cam <id>)`，日志出现 `SYSTEM READY` 与 `首帧推入 ok`。
-4) 验证手动模式（固定方案）：
-   - 进入“设置”面板 → 关闭“采集方案：自动” → 手动选择 `Camera2` 或 `CameraX`。
-   - 点击 `START MONITORING`（或先 `STOP` 再 `START`）。
-   - 预期：状态明确显示当前方案（Camera2/CameraX）。
-5) 验证热重启（切换立即生效）：
-   - 监控运行中，切换采集方案（Camera2 ↔ CameraX）或切换 cameraId。
-   - 预期：应用走 stop→start 的热重启流程，画面恢复且日志不出现崩溃/ANR；若自动模式开启，异常时日志可见 `自动降级(`。
+## 📊 验证与报告输出路径
 
-### 已知限制（当前实现口径）
+基准测试和验证报告生成后均存储于被版本控制忽略的专属目录：
+- 基准与性能报告目录：`tests/metrics/`
+- CI 报告与验证日志目录：`tests/reports/`
 
-- Camera2 默认优先 640×480；未提供 UI 分辨率配置入口。
-- CameraX 绑定流程为异步：可能先返回“启动”，若后续绑定失败会触发 `captureError` 与 watchdog 降级。
-- 自动恢复策略：同一采集方案先做最多 2 次重试（退避 0.8s/1.6s，重建会话）；仍失败再做一次跨方案自动降级切换，避免无限抖动；若两条路径都失败，会停止监控并提示失败。
-- 稳定性验收默认要求前台运行；切后台/锁屏可能触发系统回收相机资源，需重新启动监控。
-
-## ⚠️ 日志免责声明 (Disclaimer)
-
-本项目为个人学习与研究用途。默认日志策略在 `DEBUG` 或 `VERBOSE` 级别下可能会输出包含内存地址、线程 ID、请求/响应明文等调试信息。
-
-**严禁将本项目直接用于生产环境或处理敏感数据**，除非您已自行对日志输出逻辑进行脱敏处理。使用者需自行承担因日志泄露导致的安全风险。
-
-## 📚 开发文档
-
-为保障项目的可维护性与可持续性，我们提供了详细的 **[程序开发设计书 (DEVELOP.md)](DEVELOP.md)**，其中包含：
-*   系统架构图解
-*   核心模块详细设计
-*   数据流转逻辑
-*   扩展与维护指南
-
-### 文档同步审计（可量化）
-运行脚本会对 `README.md` / `DEVELOP.md` / `docs/RK3288_CONSTRAINTS.md` 做版本滞后、链接可用性、章节完整性、交叉引用与（可选）BSP/defconfig 同步性检查，并输出报告到 `tests/reports/docs-sync-audit/`：
-
+可以使用以下命令审计文档同步状态：
 ```powershell
 node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 ```
-
-## 📊 性能指标
-
-| 指标 | 目标值 | 实测表现 (预估) |
-| :--- | :--- | :--- |
-| **内存占用** | < 512 MB | ~80-120 MB |
-| **CPU 使用率** | < 60% | ~25-40% (运动模式) |
-| **视频延迟** | < 300 ms | ~150 ms |
-| **启动时间** | < 2 s | < 1 s |
 
 ## 待办列表 (Todo List)
 
