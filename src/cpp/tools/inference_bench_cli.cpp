@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include <opencv2/core/ocl.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -61,6 +62,8 @@ struct Args {
     int warmup = 5;
     int iters = 50;
     int seed = 123;
+
+    bool useOpenCL = false;
 
     std::filesystem::path outDir = "tests/metrics";
     std::string outPrefix = "infer_bench";
@@ -117,6 +120,7 @@ static Args parseArgs(int argc, char** argv) {
         else if (k == "--warmup") nextInt(a.warmup);
         else if (k == "--iters") nextInt(a.iters);
         else if (k == "--seed") nextInt(a.seed);
+        else if (k == "--use-opencl") nextBool(a.useOpenCL);
         else if (k == "--out-dir") nextPath(a.outDir);
         else if (k == "--out-prefix") nextStr(a.outPrefix);
         else if (k == "--format") nextStr(a.format);
@@ -273,6 +277,8 @@ struct Record {
     int seed = 0;
 
     Stats stats;
+    Stats preprocessStats;
+    Stats inferStats;
     std::uint64_t wallMs = 0;
     std::uint64_t cpuMs = 0;
     double cpuUtilPercent = 0.0;
@@ -291,6 +297,8 @@ static cv::Mat makeRandomBgr(int w, int h, int seed) {
 }
 
 static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& err) {
+    cv::ocl::setUseOpenCL(args.useOpenCL);
+
     if (args.opencvModel.empty()) {
         err = "缺少 --opencv-model";
         return std::nullopt;
@@ -320,11 +328,28 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     const int h = std::max(1, args.inputH);
     cv::Mat bgr = makeRandomBgr(w, h, args.seed);
     const cv::Scalar mean(args.meanB, args.meanG, args.meanR);
-    cv::Mat blob = cv::dnn::blobFromImage(bgr, args.scale, cv::Size(w, h), mean, args.swapRB, false);
+
+    cv::UMat ubgr;
+    if (args.useOpenCL) {
+        bgr.copyTo(ubgr);
+    }
+
+    auto doPreprocess = [&]() -> cv::Mat {
+        if (args.useOpenCL) {
+            cv::UMat blob;
+            cv::dnn::blobFromImage(ubgr, blob, args.scale, cv::Size(w, h), mean, args.swapRB, false);
+            return blob.getMat(cv::ACCESS_READ);
+        } else {
+            return cv::dnn::blobFromImage(bgr, args.scale, cv::Size(w, h), mean, args.swapRB, false);
+        }
+    };
+
+    cv::Mat blob = doPreprocess();
 
     for (int i = 0; i < std::max(0, args.warmup); i++) {
         try {
-            net.setInput(blob);
+            cv::Mat wBlob = doPreprocess();
+            net.setInput(wBlob);
             if (args.opencvOutput.empty()) (void)net.forward();
             else (void)net.forward(args.opencvOutput);
         } catch (const cv::Exception&) {
@@ -332,7 +357,11 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     }
 
     std::vector<double> samples;
+    std::vector<double> preSamples;
+    std::vector<double> inferSamples;
     samples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+    preSamples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+    inferSamples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
 
     using clock = std::chrono::steady_clock;
     std::uint64_t peak = rssBytes();
@@ -344,13 +373,21 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
 
     for (int i = 0; i < std::max(0, args.iters); i++) {
         try {
-            net.setInput(blob);
             const auto t0 = clock::now();
+            cv::Mat iterBlob = doPreprocess();
+            const auto t1 = clock::now();
+            net.setInput(iterBlob);
             if (args.opencvOutput.empty()) (void)net.forward();
             else (void)net.forward(args.opencvOutput);
-            const auto t1 = clock::now();
-            const double ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
-            samples.push_back(ms);
+            const auto t2 = clock::now();
+
+            const double preMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
+            const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1).count();
+            const double totalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t0).count();
+
+            preSamples.push_back(preMs);
+            inferSamples.push_back(inferMs);
+            samples.push_back(totalMs);
             okIters++;
         } catch (const cv::Exception&) {
             errIters++;
@@ -380,6 +417,8 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     r.iters = args.iters;
     r.seed = args.seed;
     r.stats = computeStats(samples);
+    r.preprocessStats = computeStats(preSamples);
+    r.inferStats = computeStats(inferSamples);
     r.wallMs = static_cast<std::uint64_t>(std::max(0.0, std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(w1 - w0).count()));
     r.cpuMs = static_cast<std::uint64_t>((cpu1 >= cpu0) ? ((cpu1 - cpu0) / 1000000ULL) : 0ULL);
     r.cpuUtilPercent = (r.wallMs > 0) ? (100.0 * static_cast<double>(r.cpuMs) / static_cast<double>(r.wallMs)) : 0.0;
@@ -431,37 +470,47 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     const int h = std::max(1, args.inputH);
     cv::Mat bgr = makeRandomBgr(w, h, args.seed);
 
-    cv::Mat src = bgr;
-    if (args.swapRB) {
-        cv::Mat rgb;
-        cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
-        src = std::move(rgb);
-    }
+    auto doPreprocess = [&]() -> ncnn::Mat {
+        cv::Mat src = bgr;
+        if (args.swapRB) {
+            cv::Mat rgb;
+            cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+            src = std::move(rgb);
+        }
 
-    ncnn::Mat in = ncnn::Mat::from_pixels(src.data, args.swapRB ? ncnn::Mat::PIXEL_RGB : ncnn::Mat::PIXEL_BGR, w, h);
-    float meanVals[3];
-    if (args.swapRB) {
-        meanVals[0] = static_cast<float>(args.meanR);
-        meanVals[1] = static_cast<float>(args.meanG);
-        meanVals[2] = static_cast<float>(args.meanB);
-    } else {
-        meanVals[0] = static_cast<float>(args.meanB);
-        meanVals[1] = static_cast<float>(args.meanG);
-        meanVals[2] = static_cast<float>(args.meanR);
-    }
+        ncnn::Mat in = ncnn::Mat::from_pixels(src.data, args.swapRB ? ncnn::Mat::PIXEL_RGB : ncnn::Mat::PIXEL_BGR, w, h);
+        float meanVals[3];
+        if (args.swapRB) {
+            meanVals[0] = static_cast<float>(args.meanR);
+            meanVals[1] = static_cast<float>(args.meanG);
+            meanVals[2] = static_cast<float>(args.meanB);
+        } else {
+            meanVals[0] = static_cast<float>(args.meanB);
+            meanVals[1] = static_cast<float>(args.meanG);
+            meanVals[2] = static_cast<float>(args.meanR);
+        }
 
-    float normVals[3] = {args.scale, args.scale, args.scale};
-    in.substract_mean_normalize(meanVals, normVals);
+        float normVals[3] = {args.scale, args.scale, args.scale};
+        in.substract_mean_normalize(meanVals, normVals);
+        return in;
+    };
+
+    ncnn::Mat in = doPreprocess();
 
     ncnn::Extractor ex_warmup = net.create_extractor();
     for (int i = 0; i < std::max(0, args.warmup); i++) {
-        if (ex_warmup.input(args.ncnnInput.c_str(), in) != 0) continue;
+        ncnn::Mat wIn = doPreprocess();
+        if (ex_warmup.input(args.ncnnInput.c_str(), wIn) != 0) continue;
         ncnn::Mat out;
         (void)ex_warmup.extract(args.ncnnOutput.c_str(), out);
     }
 
     std::vector<double> samples;
+    std::vector<double> preSamples;
+    std::vector<double> inferSamples;
     samples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+    preSamples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+    inferSamples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
 
     using clock = std::chrono::steady_clock;
     std::uint64_t peak = rssBytes();
@@ -474,13 +523,21 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     ncnn::Extractor ex = net.create_extractor();
 
     for (int i = 0; i < std::max(0, args.iters); i++) {
-        if (ex.input(args.ncnnInput.c_str(), in) == 0) {
+        const auto t0 = clock::now();
+        ncnn::Mat iterIn = doPreprocess();
+        const auto t1 = clock::now();
+
+        if (ex.input(args.ncnnInput.c_str(), iterIn) == 0) {
             ncnn::Mat out;
-            const auto t0 = clock::now();
             if (ex.extract(args.ncnnOutput.c_str(), out) == 0) {
-                const auto t1 = clock::now();
-                const double ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
-                samples.push_back(ms);
+                const auto t2 = clock::now();
+                const double preMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
+                const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1).count();
+                const double totalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t0).count();
+
+                preSamples.push_back(preMs);
+                inferSamples.push_back(inferMs);
+                samples.push_back(totalMs);
                 okIters++;
             } else {
                 errIters++;
@@ -513,6 +570,8 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     r.iters = args.iters;
     r.seed = args.seed;
     r.stats = computeStats(samples);
+    r.preprocessStats = computeStats(preSamples);
+    r.inferStats = computeStats(inferSamples);
     r.wallMs = static_cast<std::uint64_t>(std::max(0.0, std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(w1 - w0).count()));
     r.cpuMs = static_cast<std::uint64_t>((cpu1 >= cpu0) ? ((cpu1 - cpu0) / 1000000ULL) : 0ULL);
     r.cpuUtilPercent = (r.wallMs > 0) ? (100.0 * static_cast<double>(r.cpuMs) / static_cast<double>(r.wallMs)) : 0.0;
@@ -525,12 +584,13 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
 #endif
 }
 
-static bool writeCsv(const std::filesystem::path& path, std::uint64_t ts, const std::vector<Record>& recs) {
+static bool writeCsv(const std::filesystem::path& path, std::uint64_t ts, const Args& args, const std::vector<Record>& recs) {
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (!out.is_open()) return false;
-    out << "ts,backend,opencv_model,opencv_config,opencv_framework,opencv_output,opencv_backend,opencv_target,ncnn_param,ncnn_bin,ncnn_input,ncnn_output,ncnn_threads,ncnn_lightmode,input_w,input_h,scale,mean_b,mean_g,mean_r,swap_rb,warmup,iters,seed,ok_iters,err_iters,wall_ms,cpu_ms,cpu_util_percent,mean_ms,p50_ms,p95_ms,min_ms,max_ms,rss_before_bytes,rss_after_bytes,rss_peak_bytes\n";
+    out << "ts,use_opencl,backend,opencv_model,opencv_config,opencv_framework,opencv_output,opencv_backend,opencv_target,ncnn_param,ncnn_bin,ncnn_input,ncnn_output,ncnn_threads,ncnn_lightmode,input_w,input_h,scale,mean_b,mean_g,mean_r,swap_rb,warmup,iters,seed,ok_iters,err_iters,wall_ms,cpu_ms,cpu_util_percent,mean_ms,p50_ms,p95_ms,min_ms,max_ms,pre_mean_ms,pre_p50_ms,pre_p95_ms,infer_mean_ms,infer_p50_ms,infer_p95_ms,rss_before_bytes,rss_after_bytes,rss_peak_bytes\n";
     for (const auto& r : recs) {
         out << ts << ","
+            << (args.useOpenCL ? 1 : 0) << ","
             << r.backend << ","
             << r.opencvModel << ","
             << r.opencvConfig << ","
@@ -564,6 +624,12 @@ static bool writeCsv(const std::filesystem::path& path, std::uint64_t ts, const 
             << r.stats.p95Ms << ","
             << r.stats.minMs << ","
             << r.stats.maxMs << ","
+            << r.preprocessStats.meanMs << ","
+            << r.preprocessStats.p50Ms << ","
+            << r.preprocessStats.p95Ms << ","
+            << r.inferStats.meanMs << ","
+            << r.inferStats.p50Ms << ","
+            << r.inferStats.p95Ms << ","
             << r.rssBeforeBytes << ","
             << r.rssAfterBytes << ","
             << r.rssPeakBytes
@@ -604,6 +670,7 @@ static bool writeJson(const std::filesystem::path& path, std::uint64_t ts, const
     out << "\"seed\":" << args.seed << ",";
     out << "\"out_dir\":\"" << jsonEscape(args.outDir.string()) << "\",";
     out << "\"out_prefix\":\"" << jsonEscape(args.outPrefix) << "\",";
+    out << "\"use_opencl\":" << (args.useOpenCL ? "true" : "false") << ",";
     out << "\"format\":\"" << jsonEscape(args.format) << "\"";
     out << "},";
 
@@ -644,6 +711,12 @@ static bool writeJson(const std::filesystem::path& path, std::uint64_t ts, const
         out << "\"p95_ms\":" << r.stats.p95Ms << ",";
         out << "\"min_ms\":" << r.stats.minMs << ",";
         out << "\"max_ms\":" << r.stats.maxMs << ",";
+        out << "\"pre_mean_ms\":" << r.preprocessStats.meanMs << ",";
+        out << "\"pre_p50_ms\":" << r.preprocessStats.p50Ms << ",";
+        out << "\"pre_p95_ms\":" << r.preprocessStats.p95Ms << ",";
+        out << "\"infer_mean_ms\":" << r.inferStats.meanMs << ",";
+        out << "\"infer_p50_ms\":" << r.inferStats.p50Ms << ",";
+        out << "\"infer_p95_ms\":" << r.inferStats.p95Ms << ",";
         out << "\"rss_before_bytes\":" << r.rssBeforeBytes << ",";
         out << "\"rss_after_bytes\":" << r.rssAfterBytes << ",";
         out << "\"rss_peak_bytes\":" << r.rssPeakBytes;
@@ -722,7 +795,7 @@ int main(int argc, char** argv) {
     const auto jsonPath = args.outDir / (stem + ".json");
 
     bool ok = true;
-    if (formatHasCsv(args.format)) ok = ok && writeCsv(csvPath, ts, records);
+    if (formatHasCsv(args.format)) ok = ok && writeCsv(csvPath, ts, args, records);
     if (formatHasJson(args.format)) ok = ok && writeJson(jsonPath, ts, args, records);
     if (!ok) {
         std::cerr << "BENCH_ERROR write_failed out_dir=" << args.outDir.string() << std::endl;
@@ -731,9 +804,9 @@ int main(int argc, char** argv) {
 
     for (const auto& r : records) {
         std::cout << "BENCH_RESULT backend=" << r.backend
-                  << " mean_ms=" << r.stats.meanMs
-                  << " p50_ms=" << r.stats.p50Ms
-                  << " p95_ms=" << r.stats.p95Ms
+                  << " total_p95_ms=" << r.stats.p95Ms
+                  << " pre_p95_ms=" << r.preprocessStats.p95Ms
+                  << " infer_p95_ms=" << r.inferStats.p95Ms
                   << " rss_peak_bytes=" << r.rssPeakBytes
                   << std::endl;
     }
