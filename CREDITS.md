@@ -30,6 +30,7 @@
 - 用途：Windows 本地 HTTP 服务（localhost REST + 静态托管 + OpenAPI）
 - 来源：https://github.com/civetweb/civetweb（本仓库 vendor：`src/win/third_party/civetweb/`，版本：v1.16）
 - 许可证：MIT License
+  - *注意*：附带的 MD5 实现文件 `src/win/third_party/civetweb/src/md5.inl`（由 L. Peter Deutsch 编写）使用 **zlib License**。
 
 ### Web 前端（React + Ant Design + Vite）
 - 用途：浏览器 SPA（本地控制台 UI）
