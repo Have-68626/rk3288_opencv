@@ -52,13 +52,16 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_frame_input_channel.cpp"
         "tests/cpp/test_face_search.cpp"
         "tests/cpp/test_threshold_policy.cpp"
+        "tests/cpp/test_event_manager.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
+        "src/cpp/src/EventManager.cpp"
     )
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )
+    target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
