@@ -1,7 +1,18 @@
 import os
 from playwright.sync_api import sync_playwright
 
-def run_cuj(page, screenshots_dir):
+def get_artifact_dirs():
+    base_dir = os.environ.get(
+        "RK_VERIFY_ARTIFACTS_DIR",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "reports", "playwright"))
+    )
+    screenshot_dir = os.path.join(base_dir, "screenshots")
+    video_dir = os.path.join(base_dir, "videos")
+    os.makedirs(screenshot_dir, exist_ok=True)
+    os.makedirs(video_dir, exist_ok=True)
+    return screenshot_dir, video_dir
+
+def run_cuj(page, screenshot_dir):
     page.goto("http://localhost:5173/#/")
     page.wait_for_timeout(1000)
 
@@ -22,7 +33,7 @@ def run_cuj(page, screenshots_dir):
     page.wait_for_timeout(1000)
 
     # Take screenshot at the key moment (showing the Popconfirm and the loading state of the button)
-    screenshot_path = os.path.join(screenshots_dir, "verification2.png")
+    screenshot_path = os.path.join(screenshot_dir, "verification2.png")
     page.screenshot(path=screenshot_path)
     page.wait_for_timeout(1000)
 
