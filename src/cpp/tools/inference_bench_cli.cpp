@@ -454,7 +454,6 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     in.substract_mean_normalize(meanVals, normVals);
 
     ncnn::Extractor ex_warmup = net.create_extractor();
-    ex_warmup.set_num_threads(std::max(1, args.ncnnThreads));
     for (int i = 0; i < std::max(0, args.warmup); i++) {
         if (ex_warmup.input(args.ncnnInput.c_str(), in) != 0) continue;
         ncnn::Mat out;
@@ -473,7 +472,6 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     int errIters = 0;
 
     ncnn::Extractor ex = net.create_extractor();
-    ex.set_num_threads(std::max(1, args.ncnnThreads));
 
     for (int i = 0; i < std::max(0, args.iters); i++) {
         if (ex.input(args.ncnnInput.c_str(), in) == 0) {
