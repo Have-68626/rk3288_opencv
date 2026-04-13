@@ -12,6 +12,9 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
 
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
 #include <libyuv/convert_argb.h>
@@ -411,13 +414,18 @@ void Engine::run() {
     while (isRunning) {
         // 外部帧输入：优先消费外部通道，必要时再回退到 VideoManager（便于在采集失败时仍能跑通 UI/推理链路）。
         bool processed = false;
+        double decodeMs = 0.0;
+        long long t0 = nowMs();
+
         if (externalInputEnabled.load()) {
             ExternalFrame ef;
             if (externalInput && externalInput->waitPop(ef, 30)) {
+                long long t1 = nowMs();
+                decodeMs = static_cast<double>(t1 - t0);
                 cv::Mat bgr;
                 std::string err;
                 if (toBgrFromExternalFrame(ef, bgr, err)) {
-                    processFrame(bgr);
+                    processFrame(bgr, decodeMs);
                     processed = true;
                 } else {
                     rklog::logWarn("Engine", __func__, "外部帧转换失败: " + err + " / " + ef.brief());
@@ -425,9 +433,14 @@ void Engine::run() {
             }
         }
 
-        if (!processed && videoManager->getLatestFrame(frame)) {
-            processFrame(frame);
-            processed = true;
+        if (!processed) {
+            t0 = nowMs();
+            if (videoManager->getLatestFrame(frame)) {
+                long long t1 = nowMs();
+                decodeMs = static_cast<double>(t1 - t0);
+                processFrame(frame, decodeMs);
+                processed = true;
+            }
         }
 
         if (processed) {
@@ -436,6 +449,50 @@ void Engine::run() {
             long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             if (now - lastStatTime > 1000) {
+                if (perfHistory.size() >= 30) {
+                    std::vector<double> preMs, inferMs, totalMs;
+                    for (const auto& s : perfHistory) {
+                        preMs.push_back(s.preMs);
+                        inferMs.push_back(s.inferMs);
+                        totalMs.push_back(s.decodeMs + s.preMs + s.inferMs + s.postMs + s.renderMs);
+                    }
+                    auto pct = [](std::vector<double>& v, double p) {
+                        if(v.empty()) return 0.0;
+                        std::sort(v.begin(), v.end());
+                        int idx = static_cast<int>(p * v.size());
+                        return v[std::min(idx, (int)v.size()-1)];
+                    };
+                    auto avg = [](std::vector<double>& v) {
+                        if(v.empty()) return 0.0;
+                        double sum = 0;
+                        for(auto& val : v) sum += val;
+                        return sum / v.size();
+                    };
+                    auto max_v = [](std::vector<double>& v) {
+                        if(v.empty()) return 0.0;
+                        return *std::max_element(v.begin(), v.end());
+                    };
+
+                    double totalMean = avg(totalMs);
+                    double total50 = pct(totalMs, 0.50);
+                    double total95 = pct(totalMs, 0.95);
+                    double totalMax = max_v(totalMs);
+
+                    std::cout << "Perf Total: Mean=" << totalMean << "ms, P50=" << total50 << "ms, P95=" << total95 << "ms, Max=" << totalMax << "ms | Peak RSS: " << (perfHistory.back().rssBytes / 1024 / 1024) << "MB" << std::endl;
+
+                    const char* envOutDir = std::getenv("RK_BENCH_OUT_DIR");
+                    std::string outDir = envOutDir ? envOutDir : "tests/metrics";
+                    std::string outPath = outDir + "/engine_perf.csv";
+
+                    FILE* f = fopen(outPath.c_str(), "a");
+                    if (f) {
+                        for (const auto& s : perfHistory) {
+                            fprintf(f, "%f,%f,%f,%f,%f,%lld\n", s.decodeMs, s.preMs, s.inferMs, s.postMs, s.renderMs, s.rssBytes);
+                        }
+                        fclose(f);
+                    }
+                    perfHistory.clear();
+                }
                 frameCount = 0;
                 lastStatTime = now;
             }
@@ -494,7 +551,18 @@ bool Engine::pushExternalFrame(ExternalFrame frame) {
     return true;
 }
 
-void Engine::processFrame(const cv::Mat& inputFrame) {
+void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
+    FramePerfStats stats;
+    stats.decodeMs = decodeMs;
+
+#ifdef __linux__
+    struct rusage r_usage;
+    getrusage(RUSAGE_SELF, &r_usage);
+    stats.rssBytes = r_usage.ru_maxrss * 1024LL;
+#endif
+
+    long long preStart = nowMs();
+
     cv::Mat frame;
     if (inputFrame.cols != Config::FRAME_WIDTH || inputFrame.rows != Config::FRAME_HEIGHT) {
         cv::resize(inputFrame, frame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT), 0.0, 0.0, cv::INTER_AREA);
@@ -502,7 +570,6 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
         frame = inputFrame;
     }
 
-    cv::Mat debugFrame = frame.clone();
     const bool fx = flipXEnabled.load();
     const bool fy = flipYEnabled.load();
     if (fx || fy) {
@@ -510,27 +577,32 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
         if (fx && fy) code = -1;
         else if (fy) code = 0;
         else code = 1;
-        cv::flip(debugFrame, debugFrame, code);
+        cv::flip(frame, frame, code);
     }
-    frame = debugFrame;
+
+    stats.preMs = static_cast<double>(nowMs() - preStart);
+    long long inferStart = nowMs();
 
     // 1. Motion Detection check for Non-Continuous mode
     if (currentMode == MonitoringMode::MOTION_TRIGGERED) {
         if (!motionDetector->detect(frame)) {
             // Even if no motion, we update render frame
             std::lock_guard<std::mutex> lock(renderMutex);
-            renderFrame = debugFrame;
+            renderFrame = frame.clone();
             renderFrameSeq++;
             return; 
         }
         // Visualize motion (optional: draw contours)
-        cv::putText(debugFrame, "MOTION DETECTED", cv::Point(20, 40), 
+        cv::putText(frame, "MOTION DETECTED", cv::Point(20, 40),
             cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
     }
 
     // 2. Multi-face authentication + tracking
     std::vector<BioAuth::FaceAuthResult> results;
     bool faceDetected = bioAuth->verifyMulti(frame, results, 4);
+    stats.inferMs = static_cast<double>(nowMs() - inferStart);
+    long long postStart = nowMs();
+
     long long now = nowMs();
 
     const long long trackTtlMs = 1200;
@@ -635,7 +707,7 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
             const bool authed = (t->stableId != "Unknown");
             cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
             int thickness = (bestAuth && t->trackId == bestAuth->trackId) ? 3 : 2;
-            cv::rectangle(debugFrame, t->bbox, color, thickness);
+            cv::rectangle(frame, t->bbox, color, thickness);
 
             std::ostringstream label;
             label << "T" << t->trackId << " " << t->stableId;
@@ -643,7 +715,7 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
                 label << " " << static_cast<int>(t->stableConfidence * 100) << "%";
             }
             const cv::Point origin(std::max(0, t->bbox.x), std::max(0, t->bbox.y - 8));
-            cv::putText(debugFrame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+            cv::putText(frame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
         }
 
         if (onResultCallback && (now - lastMultiMs > 650)) {
@@ -680,11 +752,17 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
     }
 
     // Update the render frame safely
+    stats.postMs = static_cast<double>(nowMs() - postStart);
+    long long renderStart = nowMs();
     {
         std::lock_guard<std::mutex> lock(renderMutex);
-        renderFrame = debugFrame;
+        renderFrame = frame.clone();
         renderFrameSeq++;
     }
+    stats.renderMs = static_cast<double>(nowMs() - renderStart);
+
+    // Save to history
+    perfHistory.push_back(stats);
 }
 
 bool Engine::getRenderFrame(cv::Mat& outFrame) {

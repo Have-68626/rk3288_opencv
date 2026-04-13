@@ -93,7 +93,7 @@ public:
     void setFlip(bool flipX, bool flipY);
 
 private:
-    void processFrame(const cv::Mat& frame);
+    void processFrame(cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
 
     std::unique_ptr<VideoManager> videoManager;
@@ -118,6 +118,16 @@ private:
     long long lastStatTime;
     int totalFrames = 0;
     int maxFrames = 0;
+
+    struct FramePerfStats {
+        double decodeMs = 0.0;
+        double preMs = 0.0;
+        double inferMs = 0.0;
+        double postMs = 0.0;
+        double renderMs = 0.0;
+        long long rssBytes = 0;
+    };
+    std::vector<FramePerfStats> perfHistory;
 
     std::string storagePath;
     std::function<void(std::string)> onResultCallback;
