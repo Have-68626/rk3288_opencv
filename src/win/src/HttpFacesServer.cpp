@@ -1,4 +1,5 @@
 #include "rk_win/HttpFacesServer.h"
+#include "rk_win/HttpFacesServerPath.h"
 
 #include "rk_win/EventLogger.h"
 #include "rk_win/FacesJson.h"
@@ -104,20 +105,6 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
     return true;
 }
 
-static bool isSafeRelativePath(const std::string& urlPath) {
-    // 威胁模型: 攻击者利用 URL 路径传递给 std::filesystem::path 进行绝对路径逃逸，读取本地任意文件。
-    // 为什么这样改: 拦截双斜杠 (//) 和冒号 (:) 避免由于 C++ filesystem::path 的特殊拼接逻辑导致的 Windows 绝对路径 / 驱动器盘符 / UNC 路径遍历。
-    // 影响范围: 限制 HTTP 访问仅限于合法的单斜线开头的相对路径，不会影响合法资源文件读取。
-    // 回滚方式: 如果误杀合法路径，可以直接删除对 // 和 : 的判断这两行。
-    if (urlPath.empty() || urlPath[0] != '/') return false;
-    if (urlPath.length() > 1 && urlPath[1] == '/') return false;
-    if (urlPath.find(':') != std::string::npos) return false;
-    if (urlPath.find("..") != std::string::npos) return false;
-    if (urlPath.find('\\') != std::string::npos) return false;
-    if (urlPath.find("//") != std::string::npos) return false;
-    if (urlPath.find(':') != std::string::npos) return false;
-    return true;
-}
 
 static std::string escapeJsonString(std::string_view s) {
     std::string out;
@@ -388,14 +375,11 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& 
 HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const HttpRequest& req) {
     if (req.method != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
 
-    if (!isSafeRelativePath(req.path)) return jsonErr(400, "invalid_path", "路径不合法");
-
     std::string rel = req.path;
     if (rel == "/") rel = "/index.html";
 
-    std::filesystem::path p = docRoot_;
-    const std::string relNoSlash = (rel.size() && rel[0] == '/') ? rel.substr(1) : rel;
-    p /= std::filesystem::path(relNoSlash).make_preferred();
+    std::filesystem::path p;
+    if (!rk_win::isSafeRelativePath(docRoot_, rel, p)) return jsonErr(400, "invalid_path", "路径不合法");
 
     std::string body;
     if (!readFileBinary(p, body)) {

@@ -38,15 +38,30 @@ def run_cuj(page, screenshot_dir):
     page.wait_for_timeout(1000)
 
 if __name__ == "__main__":
-    screenshot_dir, video_dir = get_artifact_dirs()
+    # Determine the artifacts directory
+    # 1. Check for RK_VERIFY_ARTIFACTS_DIR environment variable
+    # 2. Fall back to {repo_root}/tests/reports/verification
+    artifacts_dir = os.environ.get("RK_VERIFY_ARTIFACTS_DIR")
+    if not artifacts_dir:
+        # __file__ is web/verify_playwright.py, so its grandparent is repo root
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        artifacts_dir = os.path.join(repo_root, "tests", "reports", "verification")
+
+    screenshots_dir = os.path.join(artifacts_dir, "screenshots")
+    videos_dir = os.path.join(artifacts_dir, "videos")
+
+    # Automatically create output directories
+    os.makedirs(screenshots_dir, exist_ok=True)
+    os.makedirs(videos_dir, exist_ok=True)
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            record_video_dir=video_dir
+            record_video_dir=videos_dir
         )
         page = context.new_page()
         try:
-            run_cuj(page, screenshot_dir)
+            run_cuj(page, screenshots_dir)
         finally:
             context.close()
             browser.close()
