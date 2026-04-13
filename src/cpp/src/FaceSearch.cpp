@@ -79,17 +79,22 @@ std::vector<FaceSearchHit> FaceSearchLinearIndex::searchTopK(const std::vector<f
 
     const float qn = opt.assumeL2Normalized ? 1.0f : l2Norm(query.data(), dim_);
 
-    std::vector<FaceSearchHit> hits;
-    hits.reserve(entries_.size());
+    struct FastHit {
+        std::size_t index;
+        float score;
+    };
+
+    std::vector<FastHit> fastHits;
+    fastHits.reserve(entries_.size());
     for (std::size_t i = 0; i < entries_.size(); i++) {
         const auto& e = entries_[i];
         const float score = cosineSimilarity(query.data(), qn, e.embedding.data(), norms_[i], dim_, opt.assumeL2Normalized);
         if (std::isnan(score)) continue;
-        hits.push_back(FaceSearchHit{e.id, i, score});
+        fastHits.push_back({i, score});
     }
 
     const float eps = opt.tieEpsilon >= 0.0f ? opt.tieEpsilon : 0.0f;
-    auto comp = [&](const FaceSearchHit& a, const FaceSearchHit& b) {
+    auto comp = [&](const FastHit& a, const FastHit& b) {
         const float da = a.score;
         const float db = b.score;
         const float diff = da - db;
@@ -98,11 +103,17 @@ std::vector<FaceSearchHit> FaceSearchLinearIndex::searchTopK(const std::vector<f
         return a.index < b.index;
     };
 
-    if (hits.size() > topK) {
-        std::partial_sort(hits.begin(), hits.begin() + topK, hits.end(), comp);
-        hits.resize(topK);
+    if (fastHits.size() > topK) {
+        std::partial_sort(fastHits.begin(), fastHits.begin() + topK, fastHits.end(), comp);
+        fastHits.resize(topK);
     } else {
-        std::sort(hits.begin(), hits.end(), comp);
+        std::sort(fastHits.begin(), fastHits.end(), comp);
+    }
+
+    std::vector<FaceSearchHit> hits;
+    hits.reserve(fastHits.size());
+    for (const auto& fh : fastHits) {
+        hits.push_back(FaceSearchHit{entries_[fh.index].id, fh.index, fh.score});
     }
     return hits;
 }

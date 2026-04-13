@@ -275,6 +275,10 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"poster", L"backoff_min_ms", toWStringInt(cfg.poster.backoffMinMs)) && ok;
     ok = writeIniW(cfg.configPath, L"poster", L"backoff_max_ms", toWStringInt(cfg.poster.backoffMaxMs)) && ok;
 
+    ok = writeIniW(cfg.configPath, L"log", L"log_dir", cfg.log.logDir.wstring()) && ok;
+    ok = writeIniW(cfg.configPath, L"log", L"max_file_bytes", toWStringInt(cfg.log.maxFileBytes)) && ok;
+    ok = writeIniW(cfg.configPath, L"log", L"max_roll_files", toWStringInt(cfg.log.maxRollFiles)) && ok;
+
     ok = writeIniW(cfg.configPath, L"ui", L"window_width", toWStringInt(cfg.ui.windowWidth)) && ok;
     ok = writeIniW(cfg.configPath, L"ui", L"window_height", toWStringInt(cfg.ui.windowHeight)) && ok;
     ok = writeIniW(cfg.configPath, L"ui", L"preview_scale_mode", toWStringInt(cfg.ui.previewScaleMode)) && ok;

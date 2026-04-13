@@ -12,7 +12,7 @@
 ### OpenCV 人脸检测模型与级联文件
 - 用途：Windows 摄像头人脸检测（DNN）与测试数据（级联）
 - 文件与来源：
-  - `tests/data/lbpcascade_frontalface.xml`：来源于 OpenCV 数据集（随 OpenCV 发布）
+  - `app/src/main/assets/lbpcascade_frontalface.xml`（原 `tests/data/lbpcascade_frontalface.xml`）：来源于 OpenCV 数据集（随 OpenCV 发布）
   - `opencv_face_detector_uint8.pb` + `opencv_face_detector.pbtxt`：来源于 OpenCV DNN 示例/模型包（随 OpenCV 发布；用户自行下载并在 ini/env 配置路径）
 - 许可证：Apache License 2.0（随 OpenCV 发布）
 
@@ -94,6 +94,16 @@
 - 用途：Windows 摄像头采集（Media Foundation）、Win32 原生窗口 UI、系统能力调用
 - 来源：Microsoft Windows SDK（随 Visual Studio / Windows SDK 安装）
 - 许可证：按 Microsoft Windows SDK 发布条款（系统组件与 SDK 许可）
+
+## 外部文档与模板
+
+### Linux Kernel 配置模板（RK3288 BSP）
+- 用途：记录设备运行态内核配置快照，仅用于合规审计与基准对齐参考，不参与实际编译。
+- 文件与来源：
+  - `docs/bsp/defconfig/rk3288_defconfig`
+  - `docs/bsp/kernel-config/kernel.config`
+  - 来源：设备运行态内核快照（基于 Linux Kernel 4.4.143 导出）。
+- 许可证：GPL-2.0 License（随 Linux Kernel 发布；仅作为文档存留，不造成衍生污染）。
 
 ## 备注
 - 如新增/升级/替换依赖，请同时更新本文件，并在 `DEVELOP.md` 中记录变更路径与影响面。
