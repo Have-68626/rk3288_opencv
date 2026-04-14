@@ -19,3 +19,6 @@
 ## 2026-04-12 - Benchmark Pure Inference Timing Boundary
 **Learning:** Including model input setup functions (like `net.setInput` or `ex.input`) and extractor creation inside the performance timing boundary introduces overhead and noise (jitter). This inflates measurements intended to capture purely the forward-pass or execution time of the network.
 **Action:** When measuring model inference latency, strictly bind the timer immediately before the actual forward execution (e.g., `net.forward()` or `ex.extract()`) and immediately after, excluding any state initialization or memory copying overhead from the measurement.
+## 2024-04-14 - Optimize redundant memory clone in OpenCV pipelines
+**Learning:** Using `cv::Mat::clone()` unconditionally per frame inside hot paths (e.g. `processFrame`) significantly inflates memory bandwidth and introduces stuttering, particularly on ARM devices where bandwidth is constrained.
+**Action:** Avoid full matrix clones during processing. Perform operations (like `cv::flip`) in place. Enforce a deep copy (`cv::Mat::clone()`) only when safety guarantees are necessary, such as right before drawing bounding boxes/text (if sharing a buffer) or before handing off the `renderFrame` to another thread for UI drawing, ensuring thread safety and preventing caller buffer corruption.

@@ -502,29 +502,37 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
         frame = inputFrame;
     }
 
-    cv::Mat debugFrame = frame.clone();
     const bool fx = flipXEnabled.load();
     const bool fy = flipYEnabled.load();
     if (fx || fy) {
+        // If we need to flip and it's the exact same data as inputFrame, we must clone
+        // to avoid modifying the caller's buffer.
+        if (frame.data == inputFrame.data) {
+            frame = frame.clone();
+        }
         int code = 1;
         if (fx && fy) code = -1;
         else if (fy) code = 0;
         else code = 1;
-        cv::flip(debugFrame, debugFrame, code);
+        cv::flip(frame, frame, code);
     }
-    frame = debugFrame;
+
+    // Clone frame if we didn't clone it yet, so we don't modify caller's buffer during drawing.
+    if (frame.data == inputFrame.data) {
+        frame = frame.clone();
+    }
 
     // 1. Motion Detection check for Non-Continuous mode
     if (currentMode == MonitoringMode::MOTION_TRIGGERED) {
         if (!motionDetector->detect(frame)) {
             // Even if no motion, we update render frame
             std::lock_guard<std::mutex> lock(renderMutex);
-            renderFrame = debugFrame;
+            renderFrame = frame;
             renderFrameSeq++;
             return; 
         }
         // Visualize motion (optional: draw contours)
-        cv::putText(debugFrame, "MOTION DETECTED", cv::Point(20, 40), 
+        cv::putText(frame, "MOTION DETECTED", cv::Point(20, 40),
             cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
     }
 
@@ -635,7 +643,7 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
             const bool authed = (t->stableId != "Unknown");
             cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
             int thickness = (bestAuth && t->trackId == bestAuth->trackId) ? 3 : 2;
-            cv::rectangle(debugFrame, t->bbox, color, thickness);
+            cv::rectangle(frame, t->bbox, color, thickness);
 
             std::ostringstream label;
             label << "T" << t->trackId << " " << t->stableId;
@@ -643,7 +651,7 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
                 label << " " << static_cast<int>(t->stableConfidence * 100) << "%";
             }
             const cv::Point origin(std::max(0, t->bbox.x), std::max(0, t->bbox.y - 8));
-            cv::putText(debugFrame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+            cv::putText(frame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
         }
 
         if (onResultCallback && (now - lastMultiMs > 650)) {
@@ -682,7 +690,7 @@ void Engine::processFrame(const cv::Mat& inputFrame) {
     // Update the render frame safely
     {
         std::lock_guard<std::mutex> lock(renderMutex);
-        renderFrame = debugFrame;
+        renderFrame = frame;
         renderFrameSeq++;
     }
 }
