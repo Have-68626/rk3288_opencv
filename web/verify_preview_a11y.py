@@ -28,20 +28,27 @@ def run_cuj(page):
     page.locator("#preview-person-id").fill("alice")
     page.wait_for_timeout(1000)
 
-    os.makedirs("/home/jules/verification/screenshots", exist_ok=True)
-    page.screenshot(path="/home/jules/verification/screenshots/verification.png")
+    # Determine output directory
+    base_dir = os.environ.get("RK_VERIFY_ARTIFACTS_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "reports", "verification"))
+    screenshots_dir = os.path.join(base_dir, "screenshots")
+
+    os.makedirs(screenshots_dir, exist_ok=True)
+    page.screenshot(path=os.path.join(screenshots_dir, "verification.png"))
     page.wait_for_timeout(1000)
 
 if __name__ == "__main__":
-    os.makedirs("/home/jules/verification/videos", exist_ok=True)
+    base_dir = os.environ.get("RK_VERIFY_ARTIFACTS_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "reports", "verification"))
+    videos_dir = os.path.join(base_dir, "videos")
+
+    os.makedirs(videos_dir, exist_ok=True)
     # clean up old videos
-    for f in glob.glob("/home/jules/verification/videos/*.webm"):
+    for f in glob.glob(os.path.join(videos_dir, "*.webm")):
         os.remove(f)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            record_video_dir="/home/jules/verification/videos",
+            record_video_dir=videos_dir,
             viewport={"width": 1280, "height": 800}
         )
         page = context.new_page()
