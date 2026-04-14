@@ -216,6 +216,19 @@ void HttpFacesServer::acceptLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
+
+#ifdef _WIN32
+        DWORD timeout = 5000;
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+        struct timeval tv;
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+#endif
+
         std::thread([this, cs]() { handleClient(static_cast<std::uintptr_t>(cs)); }).detach();
     }
 }
