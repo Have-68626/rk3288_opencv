@@ -115,6 +115,7 @@ export function PreviewPage() {
 
         <Form layout="vertical">
           <Form.Item
+            htmlFor="preview-device-select"
             label={
               <Space>
                 <span>摄像头设备</span>
@@ -129,6 +130,7 @@ export function PreviewPage() {
             }
           >
             <Select
+              id="preview-device-select"
               loading={cams.status === 'loading'}
               placeholder={cams.status === 'loading' ? '正在加载摄像头...' : '请选择摄像头'}
               notFoundContent={
@@ -147,6 +149,7 @@ export function PreviewPage() {
 
           <Form.Item label="分辨率 / FPS" htmlFor="preview-format-select">
             <Select
+              id="preview-format-select"
               placeholder="请先选择摄像头"
               notFoundContent="该设备无可用分辨率"
               options={formatOptions}
