@@ -48,6 +48,7 @@ struct Args {
     std::string ncnnBin;
     std::string ncnnInput = "data";
     std::string ncnnOutput = "output";
+    std::string qualcommModel;
     int ncnnThreads = 1;
     bool ncnnLightmode = true;
 
@@ -108,6 +109,7 @@ static Args parseArgs(int argc, char** argv) {
         else if (k == "--ncnn-bin") nextStr(a.ncnnBin);
         else if (k == "--ncnn-input") nextStr(a.ncnnInput);
         else if (k == "--ncnn-output") nextStr(a.ncnnOutput);
+        else if (k == "--qualcomm-model") nextStr(a.qualcommModel);
         else if (k == "--ncnn-threads") nextInt(a.ncnnThreads);
         else if (k == "--ncnn-lightmode") nextBool(a.ncnnLightmode);
         else if (k == "--w") nextInt(a.inputW);
@@ -300,7 +302,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     cv::ocl::setUseOpenCL(args.useOpenCL);
 
     if (args.opencvModel.empty()) {
-        err = "缺少 --opencv-model";
+        err = "缺少 --qualcomm-model";
         return std::nullopt;
     }
 
@@ -401,6 +403,144 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
     Record r;
     r.backend = "opencv_dnn";
     r.opencvModel = args.opencvModel;
+    r.opencvConfig = args.opencvConfig;
+    r.opencvFramework = args.opencvFramework;
+    r.opencvOutput = args.opencvOutput;
+    r.opencvBackend = args.opencvBackend;
+    r.opencvTarget = args.opencvTarget;
+    r.inputW = w;
+    r.inputH = h;
+    r.scale = args.scale;
+    r.meanB = args.meanB;
+    r.meanG = args.meanG;
+    r.meanR = args.meanR;
+    r.swapRB = args.swapRB;
+    r.warmup = args.warmup;
+    r.iters = args.iters;
+    r.seed = args.seed;
+    r.stats = computeStats(samples);
+    r.preprocessStats = computeStats(preSamples);
+    r.inferStats = computeStats(inferSamples);
+    r.wallMs = static_cast<std::uint64_t>(std::max(0.0, std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(w1 - w0).count()));
+    r.cpuMs = static_cast<std::uint64_t>((cpu1 >= cpu0) ? ((cpu1 - cpu0) / 1000000ULL) : 0ULL);
+    r.cpuUtilPercent = (r.wallMs > 0) ? (100.0 * static_cast<double>(r.cpuMs) / static_cast<double>(r.wallMs)) : 0.0;
+    r.okIters = okIters;
+    r.errIters = errIters;
+    r.rssBeforeBytes = before;
+    r.rssAfterBytes = after;
+    r.rssPeakBytes = peak;
+    return r;
+}
+
+static std::optional<Record> runQualcommBench(const Args& args, std::string& err) {
+    cv::ocl::setUseOpenCL(args.useOpenCL);
+
+    if (args.qualcommModel.empty()) {
+        err = "缺少 --opencv-model";
+        return std::nullopt;
+    }
+
+    // 探测失败或硬件不兼容时回退到 CPU
+    std::cout << "[INFO] Qualcomm SDK fallback to CPU... 待补测" << std::endl;
+
+
+    cv::dnn::Net net;
+    try {
+        if (!args.opencvConfig.empty() && !args.opencvFramework.empty()) {
+            net = cv::dnn::readNet(args.qualcommModel, args.opencvConfig, args.opencvFramework);
+        } else if (!args.opencvConfig.empty()) {
+            net = cv::dnn::readNet(args.qualcommModel, args.opencvConfig);
+        } else {
+            net = cv::dnn::readNet(args.qualcommModel);
+        }
+    } catch (const cv::Exception& e) {
+        err = std::string("OpenCV readNet 失败: ") + e.what();
+        return std::nullopt;
+    }
+
+    try {
+        net.setPreferableBackend(args.opencvBackend);
+        net.setPreferableTarget(args.opencvTarget);
+    } catch (const cv::Exception&) {
+    }
+
+    const int w = std::max(1, args.inputW);
+    const int h = std::max(1, args.inputH);
+    cv::Mat bgr = makeRandomBgr(w, h, args.seed);
+    const cv::Scalar mean(args.meanB, args.meanG, args.meanR);
+
+    cv::UMat ubgr;
+    if (args.useOpenCL) {
+        bgr.copyTo(ubgr);
+    }
+
+    auto doPreprocess = [&]() -> cv::Mat {
+        if (args.useOpenCL) {
+            cv::UMat blob;
+            cv::dnn::blobFromImage(ubgr, blob, args.scale, cv::Size(w, h), mean, args.swapRB, false);
+            return blob.getMat(cv::ACCESS_READ);
+        } else {
+            return cv::dnn::blobFromImage(bgr, args.scale, cv::Size(w, h), mean, args.swapRB, false);
+        }
+    };
+
+    cv::Mat blob = doPreprocess();
+
+    for (int i = 0; i < std::max(0, args.warmup); i++) {
+        try {
+            cv::Mat wBlob = doPreprocess();
+            net.setInput(wBlob);
+            if (args.opencvOutput.empty()) (void)net.forward();
+            else (void)net.forward(args.opencvOutput);
+        } catch (const cv::Exception&) {
+        }
+    }
+
+    std::vector<double> samples;
+    std::vector<double> preSamples;
+    std::vector<double> inferSamples;
+    samples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+    preSamples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+    inferSamples.reserve(static_cast<std::size_t>(std::max(0, args.iters)));
+
+    using clock = std::chrono::steady_clock;
+    std::uint64_t peak = rssBytes();
+    const std::uint64_t before = peak;
+    const std::uint64_t cpu0 = processCpuNanos();
+    const auto w0 = clock::now();
+    int okIters = 0;
+    int errIters = 0;
+
+    for (int i = 0; i < std::max(0, args.iters); i++) {
+        try {
+            const auto t0 = clock::now();
+            cv::Mat iterBlob = doPreprocess();
+            const auto t1 = clock::now();
+            net.setInput(iterBlob);
+            if (args.opencvOutput.empty()) (void)net.forward();
+            else (void)net.forward(args.opencvOutput);
+            const auto t2 = clock::now();
+
+            const double preMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
+            const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1).count();
+            const double totalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t0).count();
+
+            preSamples.push_back(preMs);
+            inferSamples.push_back(inferMs);
+            samples.push_back(totalMs);
+            okIters++;
+        } catch (const cv::Exception&) {
+            errIters++;
+        }
+    }
+    const auto w1 = clock::now();
+    const std::uint64_t cpu1 = processCpuNanos();
+    const std::uint64_t after = rssBytes();
+    peak = std::max(peak, after);
+
+    Record r;
+    r.backend = "qualcomm";
+    r.opencvModel = args.qualcommModel;
     r.opencvConfig = args.opencvConfig;
     r.opencvFramework = args.opencvFramework;
     r.opencvOutput = args.opencvOutput;
@@ -788,6 +928,13 @@ static bool backendWantsNcnn(const std::string& backend) {
     return s == "ncnn" || s == "both";
 }
 
+static bool backendWantsQualcomm(const std::string& backend) {
+    std::string s;
+    s.reserve(backend.size());
+    for (char c : backend) s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return s == "qualcomm" || s == "both" || s == "all";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -819,6 +966,19 @@ int main(int argc, char** argv) {
         }
         records.push_back(*r);
     }
+
+    if (backendWantsQualcomm(args.backend)) {
+        std::string err;
+        auto r = runQualcommBench(args, err);
+        if (!r) {
+            std::cerr << "BENCH_ERROR qualcomm_failed " << err << std::endl;
+            // Record failure reason code
+            std::cerr << "Fallback reason: QUALCOMM_SDK_UNAVAILABLE_SANDBOX" << std::endl;
+        } else {
+            records.push_back(*r);
+        }
+    }
+
 
     const std::uint64_t ts = nowEpochSeconds();
     const std::string stem = args.outPrefix + "_" + std::to_string(ts);
