@@ -1,9 +1,9 @@
-import { Alert, Card, Descriptions, Space, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Space, Typography } from 'antd'
 
 import { useAppStore } from '../state/AppStore'
 
 export function HomePage() {
-  const { prefs, serverSettings } = useAppStore()
+  const { prefs, serverSettings, refreshServerSettings } = useAppStore()
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -50,7 +50,14 @@ export function HomePage() {
         </Descriptions>
       </Card>
 
-      <Card title="后端 settings（只读摘要）">
+      <Card
+        title="后端 settings（只读摘要）"
+        extra={
+          <Button onClick={() => refreshServerSettings()}>
+            刷新后端设置
+          </Button>
+        }
+      >
         {serverSettings.data ? (
           <Descriptions column={1} size="small">
             <Descriptions.Item label="schemaVersion">
@@ -69,7 +76,7 @@ export function HomePage() {
           </Descriptions>
         ) : (
           <Typography.Text type="secondary">
-            尚未加载。可点击右上角“刷新后端设置”。
+            尚未加载。可点击右上角“刷新后端设置”，或检查后端服务是否已启动。
           </Typography.Text>
         )}
       </Card>
