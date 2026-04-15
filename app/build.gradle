@@ -9,6 +9,11 @@ android {
     def skipOpencv = (project.findProperty("RK_SKIP_OPENCV") ?: System.getenv("RK_SKIP_OPENCV"))?.toString()?.toBoolean() ?: false
     def opencvRoot = (project.findProperty("OPENCV_ROOT") ?: System.getenv("OPENCV_ROOT"))
     def opencvContribRoot = (project.findProperty("OPENCV_CONTRIB_ROOT") ?: System.getenv("OPENCV_CONTRIB_ROOT"))
+
+    if (!skipOpencv && opencvRoot && !file(opencvRoot).exists()) {
+        throw new GradleException("无效的 OPENCV_ROOT 路径: ${opencvRoot} 不存在。请修改环境变量，或通过 -PRK_SKIP_OPENCV=true 显式跳过 OpenCV。")
+    }
+
     if (!skipOpencv && !opencvRoot) {
         throw new GradleException("缺少 OPENCV_ROOT：请在环境变量中设置 OPENCV_ROOT（OpenCV 源码根目录），或在 gradle.properties/命令行中传入 -DOPENCV_ROOT=...")
     }

@@ -286,7 +286,7 @@ static JsonValue schemaSettingsDoc() {
         dp.o["meanG"] = objBoolInt(true, 0, 255);
         dp.o["meanR"] = objBoolInt(true, 0, 255);
         dp.o["swapRB"] = objBool();
-        dp.o["confThreshold"] = objBoolInt(false, 0, 0);
+        dp.o["confThreshold"] = objBoolInt(true, 0.0, 1.0);
         dp.o["backend"] = objBoolInt(true, 0, 999);
         dp.o["target"] = objBoolInt(true, 0, 999);
         d.o["properties"] = std::move(dp);
@@ -398,7 +398,7 @@ static JsonValue schemaSettingsDoc() {
         dp.o["fullscreen"] = objBool();
         dp.o["allowSystemModeSwitch"] = objBool();
         dp.o["enableSRGB"] = objBool();
-        dp.o["gamma"] = objBoolInt(false, 0, 0);
+        dp.o["gamma"] = objBoolInt(true, 0.1, 10.0);
         dp.o["colorTempK"] = objBoolInt(true, 1000, 20000);
         dp.o["aaSamples"] = objBoolInt(true, 1, 16);
         dp.o["anisoLevel"] = objBoolInt(true, 1, 16);
