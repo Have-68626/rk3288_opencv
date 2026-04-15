@@ -702,8 +702,7 @@ static bool writeJson(const std::filesystem::path& path, std::uint64_t ts, const
     out << "\"opencl_device_name\":\"" << jsonEscape(oclDeviceName) << "\",";
     out << "\"opencl_device_vendor\":\"" << jsonEscape(oclDeviceVendor) << "\",";
     out << "\"opencl_device_version\":\"" << jsonEscape(oclDeviceVersion) << "\",";
-    out << "\"opencl_device_type\":\"" << jsonEscape(oclDeviceType) << "\",";
-    out << "\"opencl_device_available\":" << (oclDeviceAvailable ? "true" : "false");
+    out << "\"opencl_device_type\":\"" << jsonEscape(oclDeviceType) << "\"";
     out << "},";
 
     out << "\"results\":[";
@@ -838,26 +837,35 @@ int main(int argc, char** argv) {
     bool oclEffective = cv::ocl::useOpenCL();
     bool haveOpenCL = cv::ocl::haveOpenCL();
     std::string oclDeviceName = "unknown";
+    std::string oclDeviceVendor = "unknown";
+    std::string oclDeviceVersion = "unknown";
     std::string oclDeviceType = "unknown";
+
     if (haveOpenCL) {
         try {
             cv::ocl::Device dev = cv::ocl::Device::getDefault();
             oclDeviceName = dev.name();
+            oclDeviceVendor = dev.vendorName();
+            oclDeviceVersion = dev.version();
             int t = dev.type();
             if (t == cv::ocl::Device::TYPE_DEFAULT) oclDeviceType = "DEFAULT";
             else if (t == cv::ocl::Device::TYPE_CPU) oclDeviceType = "CPU";
             else if (t == cv::ocl::Device::TYPE_GPU) oclDeviceType = "GPU";
             else if (t == cv::ocl::Device::TYPE_ACCELERATOR) oclDeviceType = "ACCELERATOR";
             else oclDeviceType = "OTHER";
-        } catch (...) {}
+        } catch (...) {
+            // keep unknown
+        }
     }
 
     std::cout << "BENCH_ENV"
-              << " opencl_req=" << (oclRequested ? 1 : 0)
-              << " opencl_eff=" << (oclEffective ? 1 : 0)
-              << " have_ocl=" << (haveOpenCL ? 1 : 0)
-              << " ocl_type=" << oclDeviceType
-              << " ocl_name=" << oclDeviceName
+              << " opencl_requested=" << (oclRequested ? "true" : "false")
+              << " opencl_effective=" << (oclEffective ? "true" : "false")
+              << " opencl_have_opencl=" << (haveOpenCL ? "true" : "false")
+              << " opencl_device_name=" << oclDeviceName
+              << " opencl_device_vendor=" << oclDeviceVendor
+              << " opencl_device_version=" << oclDeviceVersion
+              << " opencl_device_type=" << oclDeviceType
               << std::endl;
 
     for (const auto& r : records) {
