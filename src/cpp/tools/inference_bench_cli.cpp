@@ -469,16 +469,10 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
     const int w = std::max(1, args.inputW);
     const int h = std::max(1, args.inputH);
     cv::Mat bgr = makeRandomBgr(w, h, args.seed);
+    if (!bgr.isContinuous()) bgr = bgr.clone();
 
     auto doPreprocess = [&]() -> ncnn::Mat {
-        cv::Mat src = bgr;
-        if (args.swapRB) {
-            cv::Mat rgb;
-            cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
-            src = std::move(rgb);
-        }
-
-        ncnn::Mat in = ncnn::Mat::from_pixels(src.data, args.swapRB ? ncnn::Mat::PIXEL_RGB : ncnn::Mat::PIXEL_BGR, w, h);
+        ncnn::Mat in = ncnn::Mat::from_pixels(bgr.data, args.swapRB ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_BGR, w, h);
         float meanVals[3];
         if (args.swapRB) {
             meanVals[0] = static_cast<float>(args.meanR);
