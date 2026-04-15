@@ -23,8 +23,21 @@ VideoManager::~VideoManager() {
 void VideoManager::setUseOpenCL(bool requested) {
     cv::ocl::setUseOpenCL(requested);
     bool effective = cv::ocl::useOpenCL();
-    std::string msg = "Process-wide OpenCL flag requested=" + std::to_string(requested) +
-                      ", effective=" + std::to_string(effective);
+    bool haveOpenCL = cv::ocl::haveOpenCL();
+    std::string deviceName = "unknown";
+    if (haveOpenCL) {
+        try {
+            cv::ocl::Device dev = cv::ocl::Device::getDefault();
+            deviceName = dev.name();
+        } catch (...) {
+            // keep unknown
+        }
+    }
+
+    std::string msg = "OpenCL process-wide requested=" + std::to_string(requested) +
+                      " effective=" + std::to_string(effective) +
+                      " haveOpenCL=" + std::to_string(haveOpenCL) +
+                      " device=" + deviceName;
     rklog::logInfo("VideoManager", "setUseOpenCL", msg);
 }
 
