@@ -73,6 +73,7 @@ private:
     cv::Mat latestFrame;
     std::mutex frameMutex;
     bool hasNewFrame;
+    bool openCLRequested = false;
     
     // Mock Mode Support
     bool isMockMode = false;
