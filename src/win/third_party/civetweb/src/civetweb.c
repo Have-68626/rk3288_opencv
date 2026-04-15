@@ -4145,6 +4145,133 @@ send_additional_header(struct mg_connection *conn)
 }
 
 
+/* CORS origin matching helper
+ * Supports:
+ * 1. "*" - match all origins
+ * 2. Exact match - "https://example.com"
+ * 3. Left-side wildcard - "https://*.example.com"
+ * Returns: 1 if match, 0 if no match */
+static int
+cors_origin_matches(const char *origin, const char *allowed_pattern)
+{
+	const char *pat_ptr;
+
+	if (!origin || !allowed_pattern) {
+		return 0;
+	}
+
+	/* Pattern is "*" - allow all */
+	if (strcmp(allowed_pattern, "*") == 0) {
+		return 1;
+	}
+
+	/* Check if pattern contains wildcard */
+	pat_ptr = strchr(allowed_pattern, '*');
+	if (pat_ptr != NULL) {
+		/* Left-side wildcard matching: pattern is "https://*.example.com"
+		 * We need to match the suffix after the domain
+		 */
+		size_t pat_len = strlen(allowed_pattern);
+		size_t origin_len = strlen(origin);
+
+		/* Get the suffix to match (everything after "*") */
+		const char *suffix = pat_ptr + 1;
+		size_t suffix_len = strlen(suffix);
+
+		/* Origin must be at least as long as suffix */
+		if (origin_len < suffix_len) {
+			return 0;
+		}
+
+		/* Match the suffix exactly */
+		if (strcmp(&origin[origin_len - suffix_len], suffix) != 0) {
+			return 0;
+		}
+
+		/* Validate the prefix before the wildcard */
+		size_t prefix_len = (size_t)(pat_ptr - allowed_pattern);
+		if (strncmp(origin, allowed_pattern, prefix_len) != 0) {
+			return 0;
+		}
+
+		return 1;
+	}
+
+	/* Exact match */
+	return strcmp(origin, allowed_pattern) == 0;
+}
+
+
+/* Check if CORS origin is allowed
+ * allowed_origins: comma-separated list of allowed origins
+ * origin: the origin to check
+ * Returns: 1 if allowed, 0 if not */
+static int
+cors_origin_allowed(const char *allowed_origins, const char *origin)
+{
+	char *buffer, *ptr, *end;
+	size_t len;
+	int result = 0;
+
+	if (!allowed_origins || !origin) {
+		return 0;
+	}
+
+	/* Check for "*" first (quick path) */
+	if (strcmp(allowed_origins, "*") == 0) {
+		return 1;
+	}
+
+	/* Make a copy to avoid modifying the original */
+	len = strlen(allowed_origins);
+	buffer = (char *)mg_malloc(len + 1);
+	if (!buffer) {
+		return 0;
+	}
+	memcpy(buffer, allowed_origins, len + 1);
+
+	/* Process comma-separated list */
+	ptr = buffer;
+	while (*ptr) {
+		/* Find next comma or end of string */
+		end = strchr(ptr, ',');
+		if (end == NULL) {
+			end = ptr + strlen(ptr);
+		}
+
+		/* Trim whitespace */
+		while (ptr < end && isspace((unsigned char)*ptr)) {
+			ptr++;
+		}
+		while (end > ptr && isspace((unsigned char)*(end - 1))) {
+			end--;
+		}
+
+		/* Check length > 0 */
+		if (end > ptr) {
+			char saved_char = *end;
+			*end = '\0'; /* Null-terminate this entry */
+			if (cors_origin_matches(origin, ptr)) {
+				result = 1;
+				*end = saved_char;
+				break;
+			}
+			*end = saved_char;
+		}
+
+		/* Move to next entry */
+		if (*end == ',') {
+			ptr = end + 1;
+		} else {
+			ptr = end;
+		}
+	}
+
+	mg_free(buffer);
+	return result;
+}
+
+
 static void
 send_cors_header(struct mg_connection *conn)
 {
@@ -4157,10 +4284,12 @@ send_cors_header(struct mg_connection *conn)
 		 * http://www.html5rocks.com/en/tutorials/cors/,
 		 * http://www.html5rocks.com/static/images/cors_server_flowchart.png
 		 * CORS preflight is not supported for files. */
-		mg_response_header_add(conn,
-		                       "Access-Control-Allow-Origin",
-		                       cors_orig_cfg,
-		                       -1);
+		if (cors_origin_allowed(cors_orig_cfg, origin_hdr)) {
+			mg_response_header_add(conn,
+			                       "Access-Control-Allow-Origin",
+			                       ((cors_orig_cfg[0] == '*') ? "*" : origin_hdr),
+			                       -1);
+		}
 	}
 }
 
@@ -14839,12 +14968,12 @@ handle_request(struct mg_connection *conn)
 		                                   ri->num_headers,
 		                                   "Access-Control-Request-Method");
 
-		/* Todo: check if cors_origin is in cors_orig_cfg.
-		 * Or, let the client check this. */
-
+		/* Check if cors_origin is in cors_orig_cfg. */
 		if ((cors_meth_cfg != NULL) && (*cors_meth_cfg != 0)
 		    && (cors_orig_cfg != NULL) && (*cors_orig_cfg != 0)
-		    && (cors_origin != NULL) && (cors_acrm != NULL)) {
+		    && (cors_origin != NULL) && (cors_acrm != NULL)
+		    && cors_origin_allowed(cors_orig_cfg, cors_origin)) {
+
 			/* This is a valid CORS preflight, and the server is configured
 			 * to handle it automatically. */
 			const char *cors_acrh =
@@ -14861,7 +14990,7 @@ handle_request(struct mg_connection *conn)
 			          "Content-Length: 0\r\n"
 			          "Connection: %s\r\n",
 			          date,
-			          cors_orig_cfg,
+			          ((cors_orig_cfg[0] == '*') ? "*" : cors_origin),
 			          ((cors_meth_cfg[0] == '*') ? cors_acrm : cors_meth_cfg),
 			          suggest_connection_header(conn));
 
