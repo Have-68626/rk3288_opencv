@@ -22,6 +22,8 @@ rk3288_opencv/
 ├── config/               # 配置文件
 │   └── windows_camera_face_recognition.ini
 ├── docs/                 # 开发设计文档与运维手册
+│   ├── runbooks/         # 测试验收与排障流程
+│   └── windows-web-spa/  # Web SPA 架构与功能对照
 ├── src/                  # 核心源码
 │   ├── cpp/              # C++ 核心算法、工具与头文件
 │   │   ├── src/          # C++ 源文件
@@ -106,28 +108,28 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
     *   ⬜ **真机实测项**：后续在 RK3288/Qualcomm 真机运行 `inference_bench_cli` 填表定稿（**注：本次不做**）。
 
 36. ⬜ **[P1] 人脸注册功能拓展与完善：多样本、质量门槛、管理能力与导入导出**
-    *   **现状核对**：Windows SPA 已具备 `Enroll personId` 与“清空库”入口（见 `docs/windows-web-spa/feature_parity.md`），但缺少“查看/删除单个人/多样本覆盖策略/导入导出/冲突处理/质量门槛”等完整的注册管理闭环；Android 侧也缺少对等的可审计注册流程与 UI 管理入口。
+    *   **现状核对**：Windows SPA 已具备 `Enroll personId` 与“清空库”入口（见 `docs/windows-web-spa/feature_parity.md`），但缺少“查看/删除单个人/多样本覆盖策略/导入导出/冲突处理/质量门槛”等完整的注册管理闭环；Android 侧也缺少对等的可审计注册流程与 UI 管理入口。由于当前模型基于 OpenCV DNN，仅支持轻量注册与演示。
     *   **目标**：补齐注册全生命周期：注册前质量检查（清晰度/遮挡/角度/亮度阈值）、同一 personId 多样本累积与版本化、人员列表/删除/重命名、库文件导入导出与备份恢复；所有操作输出结构化日志并落盘。
     *   **验收**：多人重复注册/覆盖/删除行为可解释且可回滚；导入导出在不同设备/不同版本之间兼容；在弱光/遮挡条件下不会把低质量样本写入库导致整体识别率下降。
 
-37. ⬜ **[P0] 文档全量校准：修订 README/CHANGELOG/DEVELOP/CREDITS 与 `docs/`，确保与当前项目一致**
+37. ✅ **[P0] 文档全量校准：修订 README/CHANGELOG/DEVELOP/CREDITS 与 `docs/`，确保与当前项目一致**
     *   **现状核对**：当前文档中存在版本号口径不一致（`DEVELOP.md` vs Android `versionName` vs Changelog），以及“默认模型路径/是否入库/如何获取”的信息分散在 README/DEVELOP/CREDITS/config 中，容易造成误用与排障困难。[README.md](README.md)、[CHANGELOG.md](CHANGELOG.md)、[DEVELOP.md](DEVELOP.md)、[CREDITS.md](CREDITS.md)、[windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)
     *   **目标**：以“可复现/可审计”为标准统一文档：更新目录树与关键入口；补齐模型台账与许可证登记；校准 CI 与本地复现命令；修订 `docs/windows-web-spa/*` 与 runbook 的现状描述；确保所有链接可用并与代码一致。
     *   **验收**：新手按 README/README_BUILD/DEVELOP/docs 能从零跑通（Windows/Android 至少一条路径）；所有文档链接与脚本可执行；CREDITS 对第三方依赖与模型来源/许可证完整可审计。
 
 38. ⬜ **[P0] 版本号升级到 `v0.1beta1`：统一代码/构建/文档口径**
-    *   **现状核对**：Android `app/build.gradle` 当前 `versionName "v0.1beta0"`；而 `DEVELOP.md` 顶部版本口径为 `2.0.0-rc8`，文档与构建产物版本存在明显漂移风险。[app/build.gradle](app/build.gradle)、[DEVELOP.md](DEVELOP.md)
+    *   **现状核对**：Android `app/build.gradle` 当前 `versionName "v0.1beta0"`；而 `DEVELOP.md` 曾存在版本口径为 `2.0.0-rc8` 的问题，文档与构建产物版本存在明显漂移风险。[app/build.gradle](app/build.gradle)、[DEVELOP.md](DEVELOP.md)
     *   **目标**：明确并固化“发布版本号”的唯一来源（Android versionName/versionCode、Windows/CLI build_id、Docs/Changelog 口径一致）；升级到 `v0.1beta1` 并同步更新 `CHANGELOG.md`（新增条目、对外口径、兼容性说明）与 README 关键入口。
     *   **验收**：任意构建产物（APK/Windows exe/CLI）与日志/导出证据链都能展示同一 build_id；Changelog 可追溯版本改动与破坏性变更；标签命名与分支策略一致（例如 `v0.1beta1`）。
 
 39. ⬜ **[P0] 完善自动化测试与 CI：扩展并加固 `.github/workflows/ci.yml`（Windows + Linux + Android + Web）**
-    *   **现状核对**：当前 CI 已包含 repo-hygiene（clean-repo-junk）+ Linux core 单测（跳过 OpenCV）+ Windows 构建/单测（下载 OpenCV 源码），但缺少：Android 的 assemble/lint/unit test（以及可选 emulator connected test）、Web 前端 build/lint/test、docs-sync-audit、以及关键产物归档（测试报告/日志/可执行文件）。[ci.yml](.github/workflows/ci.yml)
+    *   **现状核对**：当前 CI 已包含 repo-hygiene（执行 `node scripts/clean-repo-junk.js scan --ci`）+ Linux core 单测（跳过 OpenCV）+ Windows 构建/单测（下载 OpenCV 源码），但缺少：Android 的 assemble/lint/unit test（以及可选 emulator connected test）、Web 前端 build/lint/test、docs-sync-audit（执行 `node scripts/docs-sync-audit.js`）、以及关键产物归档（测试报告/日志/可执行文件）。[ci.yml](.github/workflows/ci.yml)
     *   **资料依据**：Gradle 官方 `setup-gradle`（缓存与 wrapper 校验）：https://github.com/gradle/actions/blob/main/docs/setup-gradle.md ；GitHub Actions 缓存机制说明：https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/caching-dependencies-to-speed-up-workflows
     *   **目标**：把 CI 做成“可解释、可回归、可复现”：新增 Android job（`./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`，必要时补齐环境变量/OPENCV_ROOT 处理）、Web job（Node 20 + `web/` build/lint/test）、Docs job（`node scripts/docs-sync-audit.js`）、并统一上传 artifacts（报告与日志）；对 PR 与 push 的触发条件、并发、缓存 key 做精细化治理。
     *   **验收**：PR 打开即可看到 Android/Windows/Linux/Web/Docs 全部绿灯；失败时日志能直指“缺依赖/编译失败/测试失败/文档链接断裂”的具体原因；CI 用时在可接受范围内且命中缓存后显著加速。
 
 40. ⬜ **[P0] 模型清单与在用模型可视化：列出“当前正在使用的模型”与“工程支持的全部模型”**
-    *   **现状核对（仓库内实际文件）**：仓库内可直接定位到的模型/资源主要是级联文件 `app/src/main/assets/lbpcascade_frontalface.xml`（Android/Windows 识别链路均可引用）；Windows DNN 默认路径指向 `storage/models/opencv_face_detector_uint8.pb` 与 `opencv_face_detector.pbtxt`，但该目录不随仓库提交，易造成“到底用的是什么模型/版本”的不可追溯。[windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)、[CMakeLists](CMakeLists.txt)
+    *   **现状核对（仓库内实际文件）**：仓库内可直接定位到的模型/资源主要是级联文件 `app/src/main/assets/lbpcascade_frontalface.xml`（Android/Windows 识别链路均可引用）；Windows DNN 默认路径指向 `storage/models/opencv_face_detector_uint8.pb` 与 `opencv_face_detector.pbtxt`，但该目录不随仓库提交（需由部署环境提供），易造成“到底用的是什么模型/版本”的不可追溯。[windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)、[CMakeLists](CMakeLists.txt)
     *   **现状核对（代码支持但依赖外部交付）**：工程内已具备“可切换后端/模型路径”的能力（YOLO 人脸检测：OpenCV DNN 或 ncnn；ArcFace 特征：OpenCV DNN 或 ncnn；并包含 `modelVersion/preprocessVersion` 字段用于版本化），但缺少统一的“模型登记表/加载自检/运行时查询 API/日志口径”。[YoloFaceDetector](src/cpp/src/YoloFaceDetector.cpp)、[ArcFaceEmbedder](src/cpp/src/ArcFaceEmbedder.cpp)、[FaceInferencePipeline](src/cpp/src/FaceInferencePipeline.cpp)
     *   **目标**：输出一份“模型台账（Model Inventory）”：按功能（人脸检测/人脸识别/物体检测/物体识别）列出模型名称、路径来源（仓库/部署侧/环境变量）、格式、输入输出、版本号、hash、许可证、运行后端；并提供运行时查询入口（例如 Windows `/api/v1/settings` 扩展或新增 `/api/v1/models`）与启动自检日志（缺失/维度不匹配/模型损坏）。
     *   **验收**：用户无需读代码即可确定“当前在用模型 + 版本 + hash”；模型文件缺失或被替换时启动自检能明确报错并给出修复指引；CREDITS 里能追溯每个模型来源与许可证。
