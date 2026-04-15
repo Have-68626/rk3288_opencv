@@ -162,6 +162,34 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 
     outBgr.create(h, w, CV_8UC3);
 
+    auto fallbackOpencvNv21 = [&]() {
+        if (stride == w) {
+            cv::Mat yuv(h + uvH, w, CV_8UC1, const_cast<uint8_t*>(f.nv21.data()));
+            cv::cvtColor(yuv, outBgr, cv::COLOR_YUV2BGR_NV21);
+            return true;
+        }
+
+        thread_local cv::Mat packedYuv;
+        packedYuv.create(h + uvH, w, CV_8UC1);
+
+        for (int row = 0; row < h; row++) {
+            const std::size_t srcBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(stride);
+            const std::size_t dstBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(w);
+            std::memcpy(packedYuv.data + dstBase, f.nv21.data() + srcBase, static_cast<std::size_t>(w));
+        }
+
+        const std::size_t uvSrcStart = needY;
+        const std::size_t uvDstStart = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+        for (int row = 0; row < uvH; row++) {
+            const std::size_t srcBase = uvSrcStart + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride);
+            const std::size_t dstBase = uvDstStart + static_cast<std::size_t>(row) * static_cast<std::size_t>(w);
+            std::memcpy(packedYuv.data + dstBase, f.nv21.data() + srcBase, static_cast<std::size_t>(w));
+        }
+
+        cv::cvtColor(packedYuv, outBgr, cv::COLOR_YUV2BGR_NV21);
+        return true;
+    };
+
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
     const uint8_t* srcY = f.nv21.data();
     const uint8_t* srcVu = f.nv21.data() + needY;
@@ -176,36 +204,11 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
         h
     );
     if (r != 0) {
-        err = "libyuv NV21ToRGB24 失败";
-        return false;
+        return fallbackOpencvNv21();
     }
     return true;
 #else
-    if (stride == w) {
-        cv::Mat yuv(h + uvH, w, CV_8UC1, const_cast<uint8_t*>(f.nv21.data()));
-        cv::cvtColor(yuv, outBgr, cv::COLOR_YUV2BGR_NV21);
-        return true;
-    }
-
-    thread_local cv::Mat packedYuv;
-    packedYuv.create(h + uvH, w, CV_8UC1);
-
-    for (int row = 0; row < h; row++) {
-        const std::size_t srcBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(stride);
-        const std::size_t dstBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(w);
-        std::memcpy(packedYuv.data + dstBase, f.nv21.data() + srcBase, static_cast<std::size_t>(w));
-    }
-
-    const std::size_t uvSrcStart = needY;
-    const std::size_t uvDstStart = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
-    for (int row = 0; row < uvH; row++) {
-        const std::size_t srcBase = uvSrcStart + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride);
-        const std::size_t dstBase = uvDstStart + static_cast<std::size_t>(row) * static_cast<std::size_t>(w);
-        std::memcpy(packedYuv.data + dstBase, f.nv21.data() + srcBase, static_cast<std::size_t>(w));
-    }
-
-    cv::cvtColor(packedYuv, outBgr, cv::COLOR_YUV2BGR_NV21);
-    return true;
+    return fallbackOpencvNv21();
 #endif
 }
 
@@ -259,8 +262,7 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
             h
         );
         if (r != 0) {
-            err = "libyuv I420ToRGB24 失败";
-            return false;
+            cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
         }
 #else
         cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
@@ -302,6 +304,13 @@ Engine::Engine()
       frameCount(0),
       lastStatTime(0) {
     videoManager = std::make_unique<VideoManager>();
+
+    bool useOpencl = false;
+    if (const char* envOcl = std::getenv("RK_USE_OPENCL")) {
+        useOpencl = (std::string(envOcl) == "1");
+    }
+    videoManager->setUseOpenCL(useOpencl);
+
     motionDetector = std::make_unique<MotionDetector>();
     bioAuth = std::make_unique<BioAuth>();
     eventManager = std::make_unique<EventManager>();

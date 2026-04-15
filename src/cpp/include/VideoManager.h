@@ -24,6 +24,12 @@ public:
     void setTimeoutsMs(int openTimeoutMs, int readTimeoutMs);
 
     /**
+     * @brief Set whether to use OpenCL globally.
+     * @param requested true to request OpenCL enablement, false to disable.
+     */
+    void setUseOpenCL(bool requested);
+
+    /**
      * @brief Opens the camera device.
      * @param deviceId Camera index (default 0).
      * @return true if successful.
