@@ -1,6 +1,6 @@
 # RK3288 AI Engine - 开发指南 (Development Guide)
 
-**版本**: 2.0.0-rc8  
+**版本**: v0.1beta0
 **日期**: 2026-04-07  
 **状态**: 草案 (Draft)  
 

@@ -14,12 +14,18 @@
 #include <vector>
 
 VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
-    // Enable OpenCL transparently if available (Mali-T764)
-    cv::ocl::setUseOpenCL(true);
 }
 
 VideoManager::~VideoManager() {
     close();
+}
+
+void VideoManager::setUseOpenCL(bool requested) {
+    cv::ocl::setUseOpenCL(requested);
+    bool effective = cv::ocl::useOpenCL();
+    std::string msg = "Process-wide OpenCL flag requested=" + std::to_string(requested) +
+                      ", effective=" + std::to_string(effective);
+    rklog::logInfo("VideoManager", "setUseOpenCL", msg);
 }
 
 void VideoManager::setCancelToken(std::atomic<bool>* token) {
