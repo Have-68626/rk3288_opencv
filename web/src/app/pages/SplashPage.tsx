@@ -55,7 +55,11 @@ export function SplashPage() {
             subTitle={serverSettings.error.message}
             extra={
               <Space>
-                <Button type="primary" onClick={() => refreshServerSettings()}>
+                <Button
+                  type="primary"
+                  onClick={() => refreshServerSettings()}
+                  loading={(serverSettings.status as string) === 'loading'}
+                >
                   重试
                 </Button>
                 <Button onClick={() => nav(startPageToRoute(prefs.startPage), { replace: true })}>
