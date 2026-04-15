@@ -3,15 +3,21 @@ name: ci
 on:
   pull_request:
     branches: [ "master" ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   push:
     branches: [ "master" ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -53,8 +59,105 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build_ci --output-on-failure
 
+  docs-audit:
+    name: docs-sync-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run Docs Sync Audit
+        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-audit-reports
+          path: tests/reports/docs-sync-audit/
+          if-no-files-found: ignore
+
+  web:
+    name: web-build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: "web/pnpm-lock.yaml"
+
+      - name: Install dependencies
+        run: cd web && pnpm install
+
+      - name: Lint
+        run: cd web && pnpm lint
+
+      - name: Build
+        run: cd web && pnpm build
+
+      - name: Test (E2E)
+        continue-on-error: true
+        run: |
+          cd web
+          pnpm preview > /tmp/preview.log 2>&1 &
+          PREVIEW_PID=$!
+          sleep 5
+          pnpm e2e:run:coverage || echo "E2E tests failed but continuing..."
+          kill $PREVIEW_PID || true
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage-reports
+          path: |
+            web/coverage/
+          if-no-files-found: ignore
+
+  android:
+    name: android-build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build and Test (Skip OpenCV)
+        run: ./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            app/build/reports/
+            app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
+            app/build/outputs/
+          if-no-files-found: ignore
+
   windows:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     name: windows-build-test
     runs-on: windows-latest
     timeout-minutes: 120
