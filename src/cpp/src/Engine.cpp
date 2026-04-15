@@ -297,6 +297,20 @@ static float iou(const cv::Rect& a, const cv::Rect& b) {
 }
 }  // namespace
 
+
+// [Qualcomm/MPP Backend Feature Placeholder]
+// 待补充代码接入: Qualcomm SDK inference delegate initialization
+static bool initQualcommDelegate() {
+    rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... 待补测");
+    return false; // Fallback
+}
+
+// 待补充代码接入: MPP Hardware Decoding
+static bool initMppDecoder() {
+    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... 待补测");
+    return false; // Fallback
+}
+
 Engine::Engine() 
     : isRunning(false),
       currentMode(MonitoringMode::CONTINUOUS),
@@ -305,9 +319,17 @@ Engine::Engine()
       lastStatTime(0) {
     videoManager = std::make_unique<VideoManager>();
 
+    // 探测失败或硬件不兼容时回退到 CPU
+    initQualcommDelegate();
+    initMppDecoder();
+
     bool useOpencl = false;
     if (const char* envOcl = std::getenv("RK_USE_OPENCL")) {
-        useOpencl = (std::string(envOcl) == "1");
+        std::string s;
+        for (char c : std::string(envOcl)) {
+            s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        useOpencl = (s == "1" || s == "true" || s == "yes" || s == "on");
     }
     videoManager->setUseOpenCL(useOpencl);
 
