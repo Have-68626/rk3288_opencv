@@ -352,7 +352,7 @@ static JsonValue schemaSettingsDoc() {
         l.o["required"] = std::move(req);
         JsonValue lp = JsonValue::makeObject();
         lp.o["logDir"] = objStr();
-        lp.o["maxFileBytes"] = objBoolInt(true, 1024, 1024.0 * 1024.0 * 1024.0 * 1024.0);
+        lp.o["maxFileBytes"] = objBoolInt(true, 1024, 1073741824.0);
         lp.o["maxRollFiles"] = objBoolInt(true, 1, 1000);
         l.o["properties"] = std::move(lp);
         props.o["log"] = std::move(l);
