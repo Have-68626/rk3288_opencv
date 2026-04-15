@@ -668,6 +668,44 @@ static bool writeJson(const std::filesystem::path& path, std::uint64_t ts, const
     out << "\"format\":\"" << jsonEscape(args.format) << "\"";
     out << "},";
 
+    bool oclRequested = args.useOpenCL;
+    bool oclEffective = cv::ocl::useOpenCL();
+    bool haveOpenCL = cv::ocl::haveOpenCL();
+    std::string oclDeviceName = "unknown";
+    std::string oclDeviceVendor = "unknown";
+    std::string oclDeviceVersion = "unknown";
+    std::string oclDeviceType = "unknown";
+    bool oclDeviceAvailable = false;
+
+    if (haveOpenCL) {
+        try {
+            cv::ocl::Device dev = cv::ocl::Device::getDefault();
+            oclDeviceName = dev.name();
+            oclDeviceVendor = dev.vendorName();
+            oclDeviceVersion = dev.version();
+            int t = dev.type();
+            if (t == cv::ocl::Device::TYPE_DEFAULT) oclDeviceType = "DEFAULT";
+            else if (t == cv::ocl::Device::TYPE_CPU) oclDeviceType = "CPU";
+            else if (t == cv::ocl::Device::TYPE_GPU) oclDeviceType = "GPU";
+            else if (t == cv::ocl::Device::TYPE_ACCELERATOR) oclDeviceType = "ACCELERATOR";
+            else oclDeviceType = "OTHER";
+            oclDeviceAvailable = dev.available();
+        } catch (...) {
+            // keep unknown
+        }
+    }
+
+    out << "\"runtime\":{";
+    out << "\"opencl_requested\":" << (oclRequested ? "true" : "false") << ",";
+    out << "\"opencl_effective\":" << (oclEffective ? "true" : "false") << ",";
+    out << "\"opencl_have_opencl\":" << (haveOpenCL ? "true" : "false") << ",";
+    out << "\"opencl_device_name\":\"" << jsonEscape(oclDeviceName) << "\",";
+    out << "\"opencl_device_vendor\":\"" << jsonEscape(oclDeviceVendor) << "\",";
+    out << "\"opencl_device_version\":\"" << jsonEscape(oclDeviceVersion) << "\",";
+    out << "\"opencl_device_type\":\"" << jsonEscape(oclDeviceType) << "\",";
+    out << "\"opencl_device_available\":" << (oclDeviceAvailable ? "true" : "false");
+    out << "},";
+
     out << "\"results\":[";
     for (std::size_t i = 0; i < recs.size(); i++) {
         const auto& r = recs[i];
@@ -795,6 +833,32 @@ int main(int argc, char** argv) {
         std::cerr << "BENCH_ERROR write_failed out_dir=" << args.outDir.string() << std::endl;
         return 5;
     }
+
+    bool oclRequested = args.useOpenCL;
+    bool oclEffective = cv::ocl::useOpenCL();
+    bool haveOpenCL = cv::ocl::haveOpenCL();
+    std::string oclDeviceName = "unknown";
+    std::string oclDeviceType = "unknown";
+    if (haveOpenCL) {
+        try {
+            cv::ocl::Device dev = cv::ocl::Device::getDefault();
+            oclDeviceName = dev.name();
+            int t = dev.type();
+            if (t == cv::ocl::Device::TYPE_DEFAULT) oclDeviceType = "DEFAULT";
+            else if (t == cv::ocl::Device::TYPE_CPU) oclDeviceType = "CPU";
+            else if (t == cv::ocl::Device::TYPE_GPU) oclDeviceType = "GPU";
+            else if (t == cv::ocl::Device::TYPE_ACCELERATOR) oclDeviceType = "ACCELERATOR";
+            else oclDeviceType = "OTHER";
+        } catch (...) {}
+    }
+
+    std::cout << "BENCH_ENV"
+              << " opencl_req=" << (oclRequested ? 1 : 0)
+              << " opencl_eff=" << (oclEffective ? 1 : 0)
+              << " have_ocl=" << (haveOpenCL ? 1 : 0)
+              << " ocl_type=" << oclDeviceType
+              << " ocl_name=" << oclDeviceName
+              << std::endl;
 
     for (const auto& r : records) {
         std::cout << "BENCH_RESULT backend=" << r.backend

@@ -100,10 +100,10 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
 > ✅ 已完成代办 1–34 已迁移归档至 [CHANGELOG.md](CHANGELOG.md)（见 `[Unreleased]` → `Documented`）。此处仅保留未完成待办（从 35 开始编号）。
 
-35. ✅ **[P1] 加速方案研究与落地：CPU/CPU+GPU（OpenCL）/专用硬件加速，优先适配 ARM（RK3288 与 Qualcomm）**
-    *   **现状与文档**：请参考 [端到端链路加速方案与评估报告 (docs/acceleration_study.md)](docs/acceleration_study.md)。
-    *   **更新说明**：`inference_bench_cli` 工具已扩充，引入了 `--use-opencl` 独立开关，支持预处理和推理的分段耗时测量（`pre_p95_ms`、`infer_p95_ms`），并输出了用于真机收集的可复现格式。
-    *   **待补测**：在真实 RK3288 / Qualcomm 硬件上运行该工具填充基准测试数据，完成最终报告定稿。
+35. ⬜ **[P1] 加速方案研究与落地：CPU/CPU+GPU（OpenCL）/专用硬件加速，优先适配 ARM（RK3288 与 Qualcomm）**
+    *   ✅ **已完成项**：已有文档与 bench 工具（详见 [端到端链路加速方案与评估报告 (docs/acceleration_study.md)](docs/acceleration_study.md)）；`inference_bench_cli` 已支持 `--use-opencl` 独立开关与分段 P95 输出。
+    *   ⬜ **待完成项（不含真机实测）**：补齐开关 `requested`/`effective`/`evidence` 的证据链输出；主链路 OpenCL 作为进程全局开关（process-wide）存在驱动碎片化风险，默认策略将调整为保守的可控开关并输出生效证据；专用硬件后端（MPP/Qualcomm SDK）方向已纳入评估矩阵，但仓库代码尚未落地。
+    *   ⬜ **真机实测项**：后续在 RK3288/Qualcomm 真机运行 `inference_bench_cli` 填表定稿（**注：本次不做**）。
 
 36. ⬜ **[P1] 人脸注册功能拓展与完善：多样本、质量门槛、管理能力与导入导出**
     *   **现状核对**：Windows SPA 已具备 `Enroll personId` 与“清空库”入口（见 `docs/windows-web-spa/feature_parity.md`），但缺少“查看/删除单个人/多样本覆盖策略/导入导出/冲突处理/质量门槛”等完整的注册管理闭环；Android 侧也缺少对等的可审计注册流程与 UI 管理入口。
