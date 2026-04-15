@@ -277,58 +277,6 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="@string/ui_settings_capture_strategy"
-                    android:textColor="#AAAAAA"
-                    android:textSize="14sp"
-                    android:layout_marginBottom="8dp" />
-
-                <Switch
-                    android:id="@+id/switch_capture_auto"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/ui_settings_capture_auto"
-                    android:textColor="#FFFFFF"
-                    android:thumbTint="#00FF00"
-                    android:trackTint="#444444"
-                    android:layout_marginBottom="8dp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/ui_settings_capture_scheme"
-                    android:textColor="#AAAAAA"
-                    android:textSize="14sp"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/rg_capture_scheme"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp">
-
-                    <RadioButton
-                        android:id="@+id/rb_capture_camera2"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/ui_settings_capture_scheme_camera2"
-                        android:textColor="#FFFFFF"
-                        android:buttonTint="#00FF00"
-                        android:checked="true"
-                        android:padding="8dp"/>
-
-                    <RadioButton
-                        android:id="@+id/rb_capture_camerax"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/ui_settings_capture_scheme_camerax"
-                        android:textColor="#FFFFFF"
-                        android:buttonTint="#00FF00"
-                        android:padding="8dp"/>
-                </RadioGroup>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
                     android:text="@string/ui_settings_mock_url"
                     android:textColor="#AAAAAA"
                     android:textSize="14sp"

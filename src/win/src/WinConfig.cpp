@@ -252,6 +252,12 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"camera", L"height", toWStringInt(cfg.camera.height)) && ok;
     ok = writeIniW(cfg.configPath, L"camera", L"fps", toWStringInt(cfg.camera.fps)) && ok;
 
+    ok = writeIniW(cfg.configPath, L"recognition", L"cascade_path", cfg.recognition.cascadePath.wstring()) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"database_path", cfg.recognition.databasePath.wstring()) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"min_face_size_px", toWStringInt(cfg.recognition.minFaceSizePx)) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold", toWStringDouble(cfg.recognition.identifyThreshold)) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"enroll_samples", toWStringInt(cfg.recognition.enrollSamples)) && ok;
+
     ok = writeIniW(cfg.configPath, L"dnn", L"enable", toWStringInt(cfg.dnn.enable ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"dnn", L"model_path", cfg.dnn.modelPath.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"dnn", L"config_path", cfg.dnn.configPath.wstring()) && ok;
