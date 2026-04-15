@@ -34,8 +34,13 @@ static cv::Mat cropAndResize(const cv::Mat& bgr, const cv::Rect& roi, int outW, 
     if (bgr.empty()) return {};
     if (roi.width <= 0 || roi.height <= 0) return {};
     if (outW <= 0 || outH <= 0) return {};
-    cv::Mat cropped = bgr(roi).clone();
+
+    // Performance optimization: Avoid redundant clone() since cv::resize can read directly from a sub-matrix (ROI).
+    // Impact: Reduces memory allocation and memory copy overhead per face crop.
+    // Rollback: Revert to `cv::Mat cropped = bgr(roi).clone();` if compatibility issues arise with non-continuous data on specific OpenCV versions.
+    cv::Mat cropped = bgr(roi);
     if (cropped.empty()) return {};
+
     cv::Mat resized;
     cv::resize(cropped, resized, cv::Size(outW, outH), 0, 0, cv::INTER_LINEAR);
     return resized;
