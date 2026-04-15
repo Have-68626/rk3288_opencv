@@ -1958,10 +1958,10 @@ if __name__ == "__main__":
 
 指标文件格式建议（由测试/基准产出，稳定可审计）：
 ```json
-{ "top1_accuracy": 0.9731, "dataset_id": "test_set01", "build_id": "2.0.0-rc7" }
+{ "top1_accuracy": 0.9731, "dataset_id": "test_set01", "build_id": "v0.1beta0" }
 ```
 ```json
-{ "leak_delta_mb": 3.2, "scenario": "camera_open_close_50x", "build_id": "2.0.0-rc7" }
+{ "leak_delta_mb": 3.2, "scenario": "camera_open_close_50x", "build_id": "v0.1beta0" }
 ```
 
 ### 6.7 本仓库已落地的 YOLO+ArcFace 工程骨架（RK3288）
