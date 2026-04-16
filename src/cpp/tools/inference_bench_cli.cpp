@@ -379,12 +379,13 @@ static std::optional<Record> runOpenCvDnnBench(const Args& args, std::string& er
             cv::Mat iterBlob = doPreprocess();
             const auto t1 = clock::now();
             net.setInput(iterBlob);
+            const auto t1_infer = clock::now();
             if (args.opencvOutput.empty()) (void)net.forward();
             else (void)net.forward(args.opencvOutput);
             const auto t2 = clock::now();
 
             const double preMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
-            const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1).count();
+            const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1_infer).count();
             const double totalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t0).count();
 
             preSamples.push_back(preMs);
@@ -517,12 +518,13 @@ static std::optional<Record> runQualcommBench(const Args& args, std::string& err
             cv::Mat iterBlob = doPreprocess();
             const auto t1 = clock::now();
             net.setInput(iterBlob);
+            const auto t1_infer = clock::now();
             if (args.opencvOutput.empty()) (void)net.forward();
             else (void)net.forward(args.opencvOutput);
             const auto t2 = clock::now();
 
             const double preMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
-            const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1).count();
+            const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1_infer).count();
             const double totalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t0).count();
 
             preSamples.push_back(preMs);
@@ -662,11 +664,12 @@ static std::optional<Record> runNcnnBench(const Args& args, std::string& err) {
         const auto t1 = clock::now();
 
         if (ex.input(args.ncnnInput.c_str(), iterIn) == 0) {
+            const auto t1_infer = clock::now();
             ncnn::Mat out;
             if (ex.extract(args.ncnnOutput.c_str(), out) == 0) {
                 const auto t2 = clock::now();
                 const double preMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
-                const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1).count();
+                const double inferMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t1_infer).count();
                 const double totalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t2 - t0).count();
 
                 preSamples.push_back(preMs);
