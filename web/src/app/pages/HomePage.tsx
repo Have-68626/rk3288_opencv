@@ -53,7 +53,10 @@ export function HomePage() {
       <Card
         title="后端 settings（只读摘要）"
         extra={
-          <Button onClick={() => refreshServerSettings()}>
+          <Button
+            onClick={() => refreshServerSettings()}
+            loading={(serverSettings.status as string) === 'loading'}
+          >
             刷新后端设置
           </Button>
         }
