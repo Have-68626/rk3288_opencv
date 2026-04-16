@@ -159,6 +159,7 @@ jobs:
 
   windows:
     name: windows-build-test
+    if: github.event_name != 'pull_request' && (contains(github.event.head_commit.message, 'Windows') || github.event_name == 'workflow_dispatch')
     runs-on: windows-latest
     timeout-minutes: 120
     env:

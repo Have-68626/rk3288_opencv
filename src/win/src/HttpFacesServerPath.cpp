@@ -15,14 +15,23 @@ std::string urlDecodePath(const std::string& url) {
     std::string out;
     out.reserve(url.size());
     for (std::size_t i = 0; i < url.size(); ++i) {
-        if (url[i] == '%' && i + 2 < url.size()) {
-            int h1 = hexValue(url[i + 1]);
-            int h2 = hexValue(url[i + 2]);
-            if (h1 >= 0 && h2 >= 0) {
-                out += static_cast<char>((h1 << 4) | h2);
-                i += 2;
+        if (url[i] == '%') {
+            if (i + 2 < url.size()) {
+                int h1 = hexValue(url[i + 1]);
+                int h2 = hexValue(url[i + 2]);
+                if (h1 >= 0 && h2 >= 0) {
+                    out += static_cast<char>((h1 << 4) | h2);
+                    i += 2;
+                } else {
+                    // Invalid hex encoding, fail validation.
+                    return "";
+                }
             } else {
-                // Invalid hex encoding, fail validation.
+                // Threat Model: Malicious actors might append incomplete percent-encoding (e.g., '%')
+                // to paths in an attempt to bypass WAFs or canonicalization logic that expects valid sequences.
+                // Impact: Could lead to subtle path validation bypasses or interpretation discrepancies.
+                // Fix: Strict decoding. Reject any incomplete sequences at the string boundary.
+                // Rollback: Revert to treating trailing '%' as a literal by appending it to `out`.
                 return "";
             }
         } else {
