@@ -129,7 +129,7 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 - `OPENCV_ROOT`：指向 OpenCV 源码根目录（建议版本：4.10.0；修改入口：CMake 变量/环境变量）
 - `OPENCV_CONTRIB_ROOT`：指向 OpenCV Contrib 源码根目录（建议版本：4.10.0；可选）
 - `RK_WCFR_CONFIG`：Windows 配置文件的默认存储路径（建议：`%APPDATA%\rk_wcfr\config.json`）。旧版 INI 仅作初始迁移使用。
-- *注：配置项（如模型路径、HTTP端口等）均应通过 Web UI (`PUT /api/v1/settings`) 修改，不再推荐通过环境变量覆盖。*
+- *注：配置项（如模型路径、HTTP 端口等）均应通过 Web UI (`PUT /api/v1/settings`) 修改，不再推荐通过环境变量覆盖。*
 
 #### 2.3.3 变动项修改入口（路径与工具链）
 - Host 验证脚本：`scripts/verify_opencv_host.bat`
@@ -2270,7 +2270,7 @@ if __name__ == "__main__":
 4. Android Developers: 后台执行限制（与相机后台限制相关）  
    https://developer.android.com/about/versions/oreo/background
 5. ISO/IEC 30107-3:2017 Biometric presentation attack detection（PAD）测试与评估  
-   https://www.iso.org/standard/67381.html
+   (需至 ISO 官网搜索标准号查阅)
 6. Android Developers: CameraX VideoCapture（录像管线）  
    https://developer.android.com/media/camera/camerax/video-capture
 7. Android Developers: Android 13 行为变更（权限/通知等）  
@@ -2316,7 +2316,7 @@ if __name__ == "__main__":
 27. Android Developers: CameraMetadata（常量与枚举值定义）  
     https://developer.android.com/reference/android/hardware/camera2/CameraMetadata
 28. ISO/IEC 19794-5: Face image data（人脸图像与模板相关数据交换标准，按需对齐）  
-    https://www.iso.org/standard/50867.html
+    (需至 ISO 官网搜索标准号查阅)
 29. Android Developers: Android Keystore 系统（密钥生成与存储）  
     https://developer.android.com/privacy-and-security/keystore
 30. Android Developers: KeyGenParameterSpec（Keystore 对称密钥参数）  
