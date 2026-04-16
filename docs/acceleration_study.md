@@ -9,20 +9,22 @@
 | 链路分段 | 候选后端 | 开关与环境变量 / 选项 | 回退路径与触发条件 | 预期或实测收益 | 状态 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **解码** | CPU (OpenCV VideoCapture) | 默认 | 无（基线） | 基线 | ✅ 已落地 |
-| **解码** | RK MPP 硬解码 | `(待补充代码接入)` | 探测失败或硬件不兼容时回退到 CPU | 待实测 | ⏳ 待实现/补测 |
+| **解码** | RK MPP 硬解码 | `(待补充代码接入)` | 探测失败或硬件不兼容时回退到 CPU | 待实测 | ⏳ 待实测 |
 | **预处理** | CPU (OpenCV Mat) | `--use-opencl 0` | 无（基线） | 基线 | ✅ 已落地 |
 | **预处理** | CPU (libyuv) | `RK_ENABLE_LIBYUV=ON` | 遇到非规整步长、失败时回退到 OpenCV | 降低 CPU 占用率 | ✅ 已落地 |
 | **预处理** | OpenCL (cv::UMat) | `--use-opencl 1` (cv::ocl::setUseOpenCL) | 算子不支持或驱动挂起回退至 CPU Mat | 依赖 UMat 贯通度 | ✅ 已落地 (待补测) |
 | **推理** | CPU (OpenCV DNN) | `--backend opencv` | 无（基线） | 基线 | ✅ 已落地 |
 | **推理** | ncnn (CPU) | `--backend ncnn` | 模型不支持或加载失败回退到 OpenCV | 相比 DNN 通常快 | ✅ 已落地 |
-| **推理** | TFLite / Qualcomm SDK | `(待补充代码接入)` | 委托初始化失败回退到通用 CPU 后端 | 待实测 | ⏳ 待实现/补测 |
+| **推理** | TFLite / Qualcomm SDK | `(已加入框架占位)` | 委托初始化失败回退到通用 CPU 后端 | 待实测 | ⏳ 待实测 |
 
 ## 2. OpenCL (UMat) 现状核对结论
 
-当前仓库中的 `VideoManager` 已经启用了 `cv::ocl::setUseOpenCL(true)`，但是：
+当前仓库中的 `VideoManager` 和 `Engine` 已经调整了 OpenCL 策略：
+- **默认策略**：OpenCL 已作为保守的可控开关，默认关闭。必须通过环境变量 `RK_USE_OPENCL=1` 显式开启。
+- **生效证据链**：启动时会明确输出 OpenCL 的 `requested`/`effective`/`evidence` (包括设备类型、供应商、名称等) 证据链日志，以便追踪在碎片化驱动上的真实执行后端。
 - **贯通程度**：先前代码大多继续使用 `cv::Mat` 接收 `VideoCapture` 输出进行后续处理（例如转换为 BGR、缩放等）。要真正获得 OpenCL 的优势，必须确保从帧读取到预处理（如 `blobFromImage`）整个流水线保持为 `cv::UMat`，以避免频繁的 CPU-GPU 内存拷贝（即“回拷”）。
 - **哪些算子实际走 OpenCL**：通过 `cv::dnn::blobFromImage` 如果输入是 `UMat` 且平台支持，则图像的缩放和均值减法会利用 OpenCL 加速。
-- **收益评估**：如果仅启用 `setUseOpenCL(true)` 而仍然频繁地在 `Mat` 和 `UMat` 之间拷贝数据，通常会导致性能不升反降（拷贝延迟掩盖了计算收益）。建议仅在完整贯通 UMat 后，再根据下方基准数据决定是否默认开启。
+- **收益评估**：如果仅启用 `setUseOpenCL(true)` 而仍然频繁地在 `Mat` 和 `UMat` 之间拷贝数据，通常会导致性能不升反降（拷贝延迟掩盖了计算收益）。建议仅在完整贯通 UMat 后，再根据下方基准数据决定是否长期开启。
 - **失败回退**：`cv::ocl::setUseOpenCL(true)` 是透明的，OpenCV 内部如果遇到不支持 OpenCL 的情况（或无可用设备），将自动回退到基于 CPU 的 C++ 实现。
 
 ## 3. 基准测试数据 (待补测)

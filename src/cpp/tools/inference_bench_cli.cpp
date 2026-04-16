@@ -850,11 +850,16 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
 }
 
 static bool writeCsv(const std::filesystem::path &path, std::uint64_t ts,
-                     const Args &args, const std::vector<Record> &recs) {
+                     const Args &args, const std::vector<Record> &recs,
+                     bool oclRequested, bool oclEffective, bool haveOpenCL,
+                     const std::string& oclDeviceName, const std::string& oclDeviceVendor,
+                     const std::string& oclDeviceVersion, const std::string& oclDeviceType) {
   std::ofstream out(path, std::ios::out | std::ios::trunc);
   if (!out.is_open())
     return false;
-  out << "ts,use_opencl,backend,opencv_model,opencv_config,opencv_framework,"
+  out << "ts,opencl_requested,opencl_effective,opencl_have_opencl,"
+         "opencl_device_name,opencl_device_vendor,opencl_device_version,opencl_device_type,"
+         "backend,opencv_model,opencv_config,opencv_framework,"
          "opencv_output,opencv_backend,opencv_target,ncnn_param,ncnn_bin,ncnn_"
          "input,ncnn_output,ncnn_threads,ncnn_lightmode,input_w,input_h,scale,"
          "mean_b,mean_g,mean_r,swap_rb,warmup,iters,seed,ok_iters,err_iters,"
@@ -862,7 +867,9 @@ static bool writeCsv(const std::filesystem::path &path, std::uint64_t ts,
          "pre_mean_ms,pre_p50_ms,pre_p95_ms,infer_mean_ms,infer_p50_ms,infer_"
          "p95_ms,rss_before_bytes,rss_after_bytes,rss_peak_bytes\n";
   for (const auto &r : recs) {
-    out << ts << "," << (args.useOpenCL ? 1 : 0) << "," << r.backend << ","
+    out << ts << "," << (oclRequested ? 1 : 0) << "," << (oclEffective ? 1 : 0) << "," << (haveOpenCL ? 1 : 0) << ","
+        << "\"" << oclDeviceName << "\",\"" << oclDeviceVendor << "\",\"" << oclDeviceVersion << "\",\"" << oclDeviceType << "\","
+        << r.backend << ","
         << r.opencvModel << "," << r.opencvConfig << "," << r.opencvFramework
         << "," << r.opencvOutput << "," << r.opencvBackend << ","
         << r.opencvTarget << "," << r.ncnnParam << "," << r.ncnnBin << ","
@@ -1111,17 +1118,6 @@ int main(int argc, char **argv) {
   const auto csvPath = args.outDir / (stem + ".csv");
   const auto jsonPath = args.outDir / (stem + ".json");
 
-  bool ok = true;
-  if (formatHasCsv(args.format))
-    ok = ok && writeCsv(csvPath, ts, args, records);
-  if (formatHasJson(args.format))
-    ok = ok && writeJson(jsonPath, ts, args, records);
-  if (!ok) {
-    std::cerr << "BENCH_ERROR write_failed out_dir=" << args.outDir.string()
-              << std::endl;
-    return 5;
-  }
-
   bool oclRequested = args.useOpenCL;
   bool oclEffective = cv::ocl::useOpenCL();
   bool haveOpenCL = cv::ocl::haveOpenCL();
@@ -1150,6 +1146,17 @@ int main(int argc, char **argv) {
     } catch (...) {
       // keep unknown
     }
+  }
+
+  bool ok = true;
+  if (formatHasCsv(args.format))
+    ok = ok && writeCsv(csvPath, ts, args, records, oclRequested, oclEffective, haveOpenCL, oclDeviceName, oclDeviceVendor, oclDeviceVersion, oclDeviceType);
+  if (formatHasJson(args.format))
+    ok = ok && writeJson(jsonPath, ts, args, records);
+  if (!ok) {
+    std::cerr << "BENCH_ERROR write_failed out_dir=" << args.outDir.string()
+              << std::endl;
+    return 5;
   }
 
   std::cout << "BENCH_ENV"

@@ -26,10 +26,21 @@ void VideoManager::setUseOpenCL(bool requested) {
     bool effective = cv::ocl::useOpenCL();
     bool haveOpenCL = cv::ocl::haveOpenCL();
     std::string deviceName = "unknown";
+    std::string deviceVendor = "unknown";
+    std::string deviceVersion = "unknown";
+    std::string deviceType = "unknown";
     if (haveOpenCL) {
         try {
             cv::ocl::Device dev = cv::ocl::Device::getDefault();
             deviceName = dev.name();
+            deviceVendor = dev.vendorName();
+            deviceVersion = dev.version();
+            int t = dev.type();
+            if (t == cv::ocl::Device::TYPE_DEFAULT) deviceType = "DEFAULT";
+            else if (t == cv::ocl::Device::TYPE_CPU) deviceType = "CPU";
+            else if (t == cv::ocl::Device::TYPE_GPU) deviceType = "GPU";
+            else if (t == cv::ocl::Device::TYPE_ACCELERATOR) deviceType = "ACCELERATOR";
+            else deviceType = "OTHER";
         } catch (...) {
             // keep unknown
         }
@@ -38,7 +49,10 @@ void VideoManager::setUseOpenCL(bool requested) {
     std::string msg = "OpenCL process-wide requested=" + std::to_string(requested) +
                       " effective=" + std::to_string(effective) +
                       " haveOpenCL=" + std::to_string(haveOpenCL) +
-                      " device=" + deviceName;
+                      " device=" + deviceName +
+                      " vendor=" + deviceVendor +
+                      " version=" + deviceVersion +
+                      " type=" + deviceType;
     rklog::logInfo("VideoManager", "setUseOpenCL", msg);
 }
 

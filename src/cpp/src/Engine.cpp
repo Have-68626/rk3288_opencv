@@ -330,6 +330,8 @@ Engine::Engine()
             s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
         }
         useOpencl = (s == "1" || s == "true" || s == "yes" || s == "on");
+    } else {
+        rklog::logInfo("Engine", "initOpenCL", "RK_USE_OPENCL not set. Defaulting to conservative switch (false).");
     }
     videoManager->setUseOpenCL(useOpencl);
 
