@@ -1,13 +1,23 @@
 #include "rk_win/FaceRecognizer.h"
+#include "FileHash.h"
 
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <limits>
+#include <iostream>
 
 namespace rk_win {
 
 bool FaceRecognizer::initialize(const std::string& cascadePath, const std::filesystem::path& dbPath, int minFaceSizePx, double identifyThreshold) {
+    std::string hash = rk_wcfr::calculateSHA256(cascadePath);
+    if (hash.empty()) {
+        std::cerr << "[Self-Check] ERROR: Failed to read Cascade model: " << cascadePath << std::endl;
+        std::cerr << "[Self-Check] Please ensure the model file exists." << std::endl;
+    } else {
+        std::cout << "[Self-Check] Loaded Cascade model: " << cascadePath << " | SHA256: " << hash << std::endl;
+    }
+    
     if (!detector_.loadCascade(cascadePath)) return false;
     dbPath_ = dbPath;
     minFaceSizePx_ = minFaceSizePx;

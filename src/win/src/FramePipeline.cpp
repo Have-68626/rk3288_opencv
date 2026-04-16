@@ -3,6 +3,7 @@
 #include "rk_win/DnnSsdFaceDetector.h"
 #include "rk_win/OverlayRenderer.h"
 #include "rk_win/EventLogger.h"
+#include "FileHash.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -67,6 +68,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         m.configuredPath = cascadeUtf8;
         m.resolvedPath = cascadeUtf8;
         m.backend = "opencv_cascade";
+        m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.cascadePath);
         m.status = cascadeOk ? "loaded" : (std::filesystem::exists(cfg_.recognition.cascadePath) ? "failed" : "missing");
         m.isInUse = !cfg_.dnn.enable;
         if (!cascadeOk) m.lastError = "初始化失败 (cascade_path 或 database_path 有误)";
@@ -112,13 +114,10 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         m.taskType = "detect";
 
         m.configuredPath = cfg_.dnn.modelPath.string();
-
         m.resolvedPath = cfg_.dnn.modelPath.string();
-
         m.backend = "opencv_dnn";
-
+        m.hash = rk_wcfr::calculateSHA256(cfg_.dnn.modelPath);
         m.status = dnnOk ? "loaded" : (std::filesystem::exists(cfg_.dnn.modelPath) ? "failed" : "missing");
-
         m.isInUse = true;
 
         m.lastError = err;
@@ -135,6 +134,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         m.configuredPath = cfg_.dnn.modelPath.string();
         m.resolvedPath = cfg_.dnn.modelPath.string();
         m.backend = "opencv_dnn";
+        m.hash = rk_wcfr::calculateSHA256(cfg_.dnn.modelPath);
         m.status = "disabled";
         m.isInUse = false;
         std::lock_guard<std::mutex> lock(modelsMu_);

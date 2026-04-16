@@ -59,6 +59,14 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build_ci --output-on-failure
 
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-unit-tests-reports
+          path: build_ci/Testing/
+          if-no-files-found: ignore
+
   docs-audit:
     name: docs-sync-audit
     runs-on: ubuntu-latest
@@ -125,6 +133,9 @@ jobs:
           name: web-coverage-reports
           path: |
             web/coverage/
+            web/cypress/videos/
+            web/cypress/screenshots/
+            /tmp/preview.log
           if-no-files-found: ignore
 
   android:
@@ -251,3 +262,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG --output-on-failure
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unit-tests-reports
+          path: ${{ env.BUILD_DIR }}/Testing/
+          if-no-files-found: ignore
