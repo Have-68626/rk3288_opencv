@@ -12,6 +12,7 @@
 #include <chrono>
 #include <algorithm>
 #include <vector>
+#include <fstream>
 
 VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
 }
@@ -133,15 +134,51 @@ bool VideoManager::open(const std::string& filePath) {
     if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp") {
         isStaticImage = true;
         try {
-            staticFrame = cv::imread(filePath);
+            // 内存监控与分块加载机制，防止超大文件导致 OOM 崩溃
+            std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+            if (!file.is_open()) {
+                std::cerr << "Failed to open image file: " << filePath << std::endl;
+                return false;
+            }
+            std::streamsize size = file.tellg();
+            file.seekg(0, std::ios::beg);
+            
+            // 内存监控：限制最大图片大小为 50MB (防止解码出几百MB或GB的矩阵)
+            if (size > 50LL * 1024LL * 1024LL) { 
+                std::cerr << "Image file too large (" << size << " bytes). Rejected to prevent OOM." << std::endl;
+                return false;
+            }
+
+            // 分块加载 (Chunked reading)
+            std::vector<char> buffer;
+            buffer.reserve(static_cast<size_t>(size));
+            const size_t chunkSize = 1024 * 1024; // 1MB chunks
+            char chunk[1024 * 1024];
+            while (file) {
+                file.read(chunk, chunkSize);
+                std::streamsize count = file.gcount();
+                if (count > 0) {
+                    buffer.insert(buffer.end(), chunk, chunk + count);
+                }
+            }
+            
+            cv::Mat rawData(1, buffer.size(), CV_8UC1, buffer.data());
+            staticFrame = cv::imdecode(rawData, cv::IMREAD_COLOR);
+
             if (staticFrame.empty()) {
-                std::cerr << "Failed to load image: " << filePath << std::endl;
+                std::cerr << "Failed to decode image: " << filePath << std::endl;
                 return false;
             }
             // Resize to match config if needed
             if (staticFrame.cols != Config::FRAME_WIDTH || staticFrame.rows != Config::FRAME_HEIGHT) {
                 cv::resize(staticFrame, staticFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
             }
+        } catch (const std::bad_alloc& e) {
+            std::cerr << "OOM exception loading static image: " << e.what() << std::endl;
+            return false;
+        } catch (const cv::Exception& e) {
+            std::cerr << "OpenCV exception loading static image: " << e.what() << std::endl;
+            return false;
         } catch (const std::exception& e) {
             std::cerr << "Exception loading static image: " << e.what() << std::endl;
             return false;
@@ -162,6 +199,12 @@ bool VideoManager::open(const std::string& filePath) {
             params.push_back(readTimeoutMs);
             try {
                 tmp.open(pathOrUrl, cv::CAP_ANY, params);
+            } catch (const std::bad_alloc& e) {
+                std::cerr << "OOM exception in tmp.open: " << e.what() << std::endl;
+                return false;
+            } catch (const cv::Exception& e) {
+                std::cerr << "OpenCV Exception in tmp.open: " << e.what() << std::endl;
+                return false;
             } catch (const std::exception& e) {
                 std::cerr << "Exception in tmp.open: " << e.what() << std::endl;
                 return false;
