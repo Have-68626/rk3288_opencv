@@ -9,7 +9,7 @@
 #include <opencv2/core.hpp>
 
 struct ArcFaceEmbedderConfig {
-    enum class BackendType { OpenCvDnn = 1, Ncnn = 2 };
+    enum class BackendType { OpenCvDnn = 1, Ncnn = 2, Qualcomm = 3 };
 
     BackendType backend = BackendType::OpenCvDnn;
 
@@ -35,6 +35,10 @@ struct ArcFaceEmbedderConfig {
     std::string ncnnOutput = "output";
     int ncnnThreads = 1;
     bool ncnnLightmode = true;
+
+    // [Qualcomm SDK Placeholder]
+    std::string qualcommModel;
+    std::string qualcommDelegate;
 
     std::uint32_t modelVersion = 1;
     std::uint32_t preprocessVersion = 1;

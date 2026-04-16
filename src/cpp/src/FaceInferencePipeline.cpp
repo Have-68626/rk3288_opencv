@@ -738,6 +738,37 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
                     msg = "RK_HAVE_NCNN_not_enabled";
 #endif
                     break;
+                } else if (req.yoloBackend == "qualcomm") {
+                    // [Qualcomm SDK Placeholder]
+                    rklog::logInfo("FaceInferencePipeline", "yoloBackend", "Qualcomm SDK fallback to CPU... 待补测");
+                    det = CreateOpenCvDnnYoloFaceDetector();
+                    YoloFaceModelSpec spec;
+                    spec.modelPath = req.yoloModelPath;
+                    spec.configPath = req.yoloConfigPath;
+                    spec.framework = req.yoloFramework;
+                    spec.outputName = req.yoloOutputName;
+
+                    YoloFaceOptions opt;
+                    opt.inputW = req.yoloInputW;
+                    opt.inputH = req.yoloInputH;
+                    opt.scoreThreshold = req.yoloScoreThreshold;
+                    opt.nmsIouThreshold = req.yoloNmsIouThreshold;
+                    opt.enableKeypoints5 = req.yoloEnableKeypoints5;
+                    opt.letterbox = req.yoloLetterbox;
+                    opt.swapRB = req.yoloSwapRB;
+                    opt.scale = req.yoloScale;
+                    opt.meanB = req.yoloMeanB;
+                    opt.meanG = req.yoloMeanG;
+                    opt.meanR = req.yoloMeanR;
+                    opt.opencvBackend = req.yoloOpenCvBackend;
+                    opt.opencvTarget = req.yoloOpenCvTarget;
+
+                    std::string loadErr;
+                    if (!det->load(spec, opt, loadErr)) {
+                        stage = "yolo_load";
+                        msg = loadErr.empty() ? "yolo_load_failed" : loadErr;
+                        break;
+                    }
                 } else {
                     stage = "yolo_load";
                     msg = "yolo_backend_unsupported";
@@ -805,6 +836,9 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
                         cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
                     } else if (req.arcBackend == "ncnn") {
                         cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
+                    } else if (req.arcBackend == "qualcomm") {
+                        cfg.backend = ArcFaceEmbedderConfig::BackendType::Qualcomm;
+                        cfg.qualcommModel = req.arcModelPath;
                     } else {
                         stage = "arc_init";
                         msg = "arc_backend_unsupported";
@@ -819,8 +853,15 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
                         break;
                     }
 
-                    ctx.arcBackendName =
-                        (cfg.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) ? "opencv_dnn" : "ncnn";
+                    if (cfg.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) {
+                        ctx.arcBackendName = "opencv_dnn";
+                    } else if (cfg.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) {
+                        ctx.arcBackendName = "ncnn";
+                    } else if (cfg.backend == ArcFaceEmbedderConfig::BackendType::Qualcomm) {
+                        ctx.arcBackendName = "qualcomm";
+                    } else {
+                        ctx.arcBackendName = "unknown";
+                    }
                     std::string embedErr;
                     auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &embedErr);
                     if (!e.has_value()) {
