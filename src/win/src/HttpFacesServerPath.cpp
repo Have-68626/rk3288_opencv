@@ -27,11 +27,7 @@ std::string urlDecodePath(const std::string& url) {
                     return "";
                 }
             } else {
-                // Threat Model: Malicious actors might append incomplete percent-encoding (e.g., '%')
-                // to paths in an attempt to bypass WAFs or canonicalization logic that expects valid sequences.
-                // Impact: Could lead to subtle path validation bypasses or interpretation discrepancies.
-                // Fix: Strict decoding. Reject any incomplete sequences at the string boundary.
-                // Rollback: Revert to treating trailing '%' as a literal by appending it to `out`.
+                // Incomplete percent-encoding sequence at the end of the string.
                 return "";
             }
         } else {
