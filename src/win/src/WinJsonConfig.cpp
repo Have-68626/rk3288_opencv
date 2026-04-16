@@ -788,15 +788,6 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         root.o["acceleration"] = std::move(a);
     }
 
-    // acceleration
-    {
-        JsonValue a = JsonValue::makeObject();
-        a.o["enableOpenCL"] = JsonValue::makeBool(cfg.acceleration.enableOpenCL);
-        a.o["enableMpp"] = JsonValue::makeBool(cfg.acceleration.enableMpp);
-        a.o["enableQualcomm"] = JsonValue::makeBool(cfg.acceleration.enableQualcomm);
-        root.o["acceleration"] = std::move(a);
-    }
-
     return root;
 }
 
@@ -1365,4 +1356,3 @@ void WinJsonConfigStore::stopWatching() {
 }
 
 }  // namespace rk_win
-
