@@ -300,15 +300,46 @@ static float iou(const cv::Rect& a, const cv::Rect& b) {
 
 // [Qualcomm/MPP Backend Feature Placeholder]
 // 待补充代码接入: Qualcomm SDK inference delegate initialization
-static bool initQualcommDelegate() {
-    rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... 待补测");
+static bool initQualcommDelegate(bool requested) {
+#if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
+    if (!requested) {
+        rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK disabled by user config.");
+        return false;
+    }
+    rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK detected, preparing to load backend...");
+    // 真实的 SDK 初始化代码写这里
+    return true;
+#else
+    rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... (RK_HAVE_QUALCOMM not defined or 0)");
     return false; // Fallback
+#endif
 }
 
 // 待补充代码接入: MPP Hardware Decoding
-static bool initMppDecoder() {
-    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... 待补测");
+static bool initMppDecoder(bool requested) {
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+    if (!requested) {
+        rklog::logInfo("Engine", "initMppDecoder", "RK MPP disabled by user config.");
+        return false;
+    }
+    rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, preparing to load hardware decoder...");
+    // 真实的 MPP 初始化代码写这里
+    return true;
+#else
+    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (RK_HAVE_MPP not defined or 0)");
     return false; // Fallback
+#endif
+}
+
+static bool getEnvBool(const char* envName) {
+    if (const char* envVal = std::getenv(envName)) {
+        std::string s;
+        for (char c : std::string(envVal)) {
+            s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        return (s == "1" || s == "true" || s == "yes" || s == "on");
+    }
+    return false;
 }
 
 Engine::Engine() 
@@ -319,9 +350,12 @@ Engine::Engine()
       lastStatTime(0) {
     videoManager = std::make_unique<VideoManager>();
 
+    bool useQualcomm = getEnvBool("RK_USE_QUALCOMM");
+    bool useMpp = getEnvBool("RK_USE_MPP");
+    
     // 探测失败或硬件不兼容时回退到 CPU
-    initQualcommDelegate();
-    initMppDecoder();
+    initQualcommDelegate(useQualcomm);
+    initMppDecoder(useMpp);
 
     bool useOpencl = false;
     if (const char* envOcl = std::getenv("RK_USE_OPENCL")) {

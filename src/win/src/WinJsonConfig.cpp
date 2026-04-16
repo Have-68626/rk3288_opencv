@@ -406,6 +406,24 @@ static JsonValue schemaSettingsDoc() {
         props.o["display"] = std::move(d);
     }
 
+    // acceleration
+    {
+        JsonValue a = JsonValue::makeObject();
+        a.o["type"] = JsonValue::makeString("object");
+        a.o["additionalProperties"] = JsonValue::makeBool(false);
+        JsonValue req = JsonValue::makeArray();
+        req.a.push_back(JsonValue::makeString("enableOpenCL"));
+        req.a.push_back(JsonValue::makeString("enableMpp"));
+        req.a.push_back(JsonValue::makeString("enableQualcomm"));
+        a.o["required"] = std::move(req);
+        JsonValue ap = JsonValue::makeObject();
+        ap.o["enableOpenCL"] = objBool();
+        ap.o["enableMpp"] = objBool();
+        ap.o["enableQualcomm"] = objBool();
+        a.o["properties"] = std::move(ap);
+        props.o["acceleration"] = std::move(a);
+    }
+
     schema.o["properties"] = std::move(props);
     return schema;
 }
@@ -761,6 +779,24 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         root.o["display"] = std::move(d);
     }
 
+    // acceleration
+    {
+        JsonValue a = JsonValue::makeObject();
+        a.o["enableOpenCL"] = JsonValue::makeBool(cfg.acceleration.enableOpenCL);
+        a.o["enableMpp"] = JsonValue::makeBool(cfg.acceleration.enableMpp);
+        a.o["enableQualcomm"] = JsonValue::makeBool(cfg.acceleration.enableQualcomm);
+        root.o["acceleration"] = std::move(a);
+    }
+
+    // acceleration
+    {
+        JsonValue a = JsonValue::makeObject();
+        a.o["enableOpenCL"] = JsonValue::makeBool(cfg.acceleration.enableOpenCL);
+        a.o["enableMpp"] = JsonValue::makeBool(cfg.acceleration.enableMpp);
+        a.o["enableQualcomm"] = JsonValue::makeBool(cfg.acceleration.enableQualcomm);
+        root.o["acceleration"] = std::move(a);
+    }
+
     return root;
 }
 
@@ -935,6 +971,14 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getNumber(*d, "colorTempK", v)) cfg.display.colorTempK = static_cast<int>(v);
         if (getNumber(*d, "aaSamples", v)) cfg.display.aaSamples = static_cast<int>(v);
         if (getNumber(*d, "anisoLevel", v)) cfg.display.anisoLevel = static_cast<int>(v);
+    }
+
+    // acceleration
+    if (const JsonValue* a = doc.find("acceleration"); a && a->isObject()) {
+        bool b = false;
+        if (getBool(*a, "enableOpenCL", b)) cfg.acceleration.enableOpenCL = b;
+        if (getBool(*a, "enableMpp", b)) cfg.acceleration.enableMpp = b;
+        if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }
 
     cfgOut = std::move(cfg);

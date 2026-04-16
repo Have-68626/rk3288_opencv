@@ -255,7 +255,9 @@ export function SettingsPage() {
               return
             }
             try {
+              const hide = message.loading('正在应用设置并重启引擎...', 0)
               await updateServerSettings(patch)
+              hide()
               message.success('保存成功')
               setServerBaseline(normalized) // 作为新的 baseline
             } catch (e: unknown) {
@@ -266,6 +268,23 @@ export function SettingsPage() {
           <Collapse
             defaultActiveKey={['http', 'ui']}
             items={[
+              {
+                key: 'acceleration',
+                label: '硬件加速 (Acceleration)',
+                children: (
+                  <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <Form.Item label="OpenCL 加速" name={['acceleration', 'enableOpenCL']} valuePropName="checked">
+                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    </Form.Item>
+                    <Form.Item label="RK MPP 硬件解码" name={['acceleration', 'enableMpp']} valuePropName="checked">
+                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    </Form.Item>
+                    <Form.Item label="Qualcomm SNPE 推理加速" name={['acceleration', 'enableQualcomm']} valuePropName="checked">
+                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    </Form.Item>
+                  </Space>
+                ),
+              },
               {
                 key: 'http',
                 label: 'HTTP 服务',

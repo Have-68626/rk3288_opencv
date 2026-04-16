@@ -93,6 +93,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_OVERLAY_RUNNING = "pref_overlay_running";
     private static final String PREF_FLIP_X_PREFIX = "pref_flip_x_";
     private static final String PREF_FLIP_Y_PREFIX = "pref_flip_y_";
+    private static final String PREF_ACCEL_OPENCL = "pref_accel_opencl";
+    private static final String PREF_ACCEL_MPP = "pref_accel_mpp";
+    private static final String PREF_ACCEL_QUALCOMM = "pref_accel_qualcomm";
     private static final String TAG = "MainActivity";
     private static final int CAPTURE_RECOVERY_MAX_RETRIES = 2;
     private static final long[] CAPTURE_RECOVERY_BACKOFF_MS = new long[]{800L, 1600L};
@@ -113,6 +116,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Spinner spinnerCameras;
     private Switch switchFlipX;
     private Switch switchFlipY;
+    private Switch switchAccelOpenCL;
+    private Switch switchAccelMpp;
+    private Switch switchAccelQualcomm;
     private Switch switchOverlay;
     private View panelSettings;
     private View videoWrapper;
@@ -339,6 +345,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         spinnerCameras = findViewById(R.id.spinner_cameras);
         switchFlipX = findViewById(R.id.switch_flip_x);
         switchFlipY = findViewById(R.id.switch_flip_y);
+        switchAccelOpenCL = findViewById(R.id.switch_accel_opencl);
+        switchAccelMpp = findViewById(R.id.switch_accel_mpp);
+        switchAccelQualcomm = findViewById(R.id.switch_accel_qualcomm);
         switchOverlay = findViewById(R.id.switch_overlay);
         panelSettings = findViewById(R.id.panel_settings);
         etMockUrl = findViewById(R.id.et_mock_url);
@@ -542,6 +551,27 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         if (btnSetMockUrl != null) {
             btnSetMockUrl.setOnClickListener(v -> applyMockUrl());
+        }
+
+        if (switchAccelOpenCL != null) {
+            switchAccelOpenCL.setChecked(prefs.getBoolean(PREF_ACCEL_OPENCL, false));
+        }
+        if (switchAccelMpp != null) {
+            switchAccelMpp.setChecked(prefs.getBoolean(PREF_ACCEL_MPP, false));
+        }
+        if (switchAccelQualcomm != null) {
+            switchAccelQualcomm.setChecked(prefs.getBoolean(PREF_ACCEL_QUALCOMM, false));
+        }
+
+        if (btnHotRestart != null) {
+            btnHotRestart.setOnClickListener(v -> {
+                SharedPreferences.Editor ed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+                if (switchAccelOpenCL != null) ed.putBoolean(PREF_ACCEL_OPENCL, switchAccelOpenCL.isChecked());
+                if (switchAccelMpp != null) ed.putBoolean(PREF_ACCEL_MPP, switchAccelMpp.isChecked());
+                if (switchAccelQualcomm != null) ed.putBoolean(PREF_ACCEL_QUALCOMM, switchAccelQualcomm.isChecked());
+                ed.apply();
+                performHotRestart();
+            });
         }
         if (btnPushRtmp != null) {
             btnPushRtmp.setOnClickListener(v -> startRtmpPush());
@@ -1608,6 +1638,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private void initEngine() {
         AppLog.enter("MainActivity", "initEngine");
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        try {
+            android.system.Os.setenv("RK_USE_OPENCL", prefs.getBoolean(PREF_ACCEL_OPENCL, false) ? "1" : "0", true);
+            android.system.Os.setenv("RK_USE_MPP", prefs.getBoolean(PREF_ACCEL_MPP, false) ? "1" : "0", true);
+            android.system.Os.setenv("RK_USE_QUALCOMM", prefs.getBoolean(PREF_ACCEL_QUALCOMM, false) ? "1" : "0", true);
+        } catch (Exception e) {
+            AppLog.e("MainActivity", "initEngine", "Failed to setenv for acceleration", e);
+        }
+
         boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
         boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
         if (wantCamera && permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
@@ -2053,12 +2093,24 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void performHotRestart() {
         String diag = buildPreviewDiag("手动热重启");
         AppLog.i("MainActivity", "hotRestart", diag);
-        Toast.makeText(this, "热重启: " + (previewSurfaceReady ? "Surface" : "Bitmap") + " cap=" + (captureEverPushed ? "ok" : "--"), Toast.LENGTH_SHORT).show();
+        
+        ProgressDialog dialog = new ProgressDialog(this);
+        dialog.setMessage("正在应用设置并重启引擎...");
+        dialog.setCancelable(false);
+        dialog.show();
+
         if (isRunning) {
             restartMonitoring("手动热重启", 350);
         } else {
             startMonitoring();
         }
+
+        // 延迟关闭对话框
+        handler.postDelayed(() -> {
+            try {
+                if (dialog.isShowing()) dialog.dismiss();
+            } catch (Exception ignored) {}
+        }, 1500);
     }
 
     private void handleCaptureFailure(String reason) {
