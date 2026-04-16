@@ -39,6 +39,11 @@ bool test_http_faces_server_path_validation() {
     allOk &= check("//server/share", false);
     allOk &= check("/%zz%xx", false); // invalid hex
 
+    // Incomplete hex encoding
+    allOk &= check("/%", false);
+    allOk &= check("/%A", false);
+    allOk &= check("/abc%", false);
+
     // Test non-existent base directory
     std::filesystem::path fakeRoot = std::filesystem::current_path() / "does_not_exist";
     std::filesystem::path out;
