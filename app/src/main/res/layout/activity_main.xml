@@ -296,11 +296,49 @@
                 android:textSize="12sp"
                 android:layout_marginBottom="16dp" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="硬件加速 (Acceleration)"
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <Switch
+                android:id="@+id/switch_accel_opencl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="OpenCL 加速"
+                android:textColor="#FFFFFF"
+                android:thumbTint="#00FF00"
+                android:trackTint="#444444"
+                android:layout_marginBottom="8dp" />
+
+            <Switch
+                android:id="@+id/switch_accel_mpp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="RK MPP 硬件解码"
+                android:textColor="#FFFFFF"
+                android:thumbTint="#00FF00"
+                android:trackTint="#444444"
+                android:layout_marginBottom="8dp" />
+
+            <Switch
+                android:id="@+id/switch_accel_qualcomm"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Qualcomm SNPE 推理加速"
+                android:textColor="#FFFFFF"
+                android:thumbTint="#00FF00"
+                android:trackTint="#444444"
+                android:layout_marginBottom="16dp" />
+
             <Button
                 android:id="@+id/btn_hot_restart"
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
-                android:text="热重启"
+                android:text="保存并热重启"
                 android:backgroundTint="#444444"
                 android:textColor="#FFFFFF"
                 android:layout_marginBottom="16dp" />

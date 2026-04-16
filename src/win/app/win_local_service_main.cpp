@@ -83,6 +83,7 @@ int main() {
 
     rk_win::FramePipeline pipe;
     pipe.setEventLogger(&events);
+    cv::ocl::setUseOpenCL(cfg.acceleration.enableOpenCL);
     pipe.initialize(cfg);
     pipe.setPreviewLayout(1280, 720, cfg.ui.previewScaleMode);
     rk_win::ensureCameraRunning(pipe, cfg, events);
@@ -127,6 +128,33 @@ int main() {
                 (next.camera.height != cfg.camera.height) ||
                 (next.camera.fps != cfg.camera.fps);
             if (cameraChanged) {
+                rk_win::ensureCameraRunning(pipe, next, events);
+            }
+
+            const bool accelChanged = 
+                (next.acceleration.enableOpenCL != cfg.acceleration.enableOpenCL) ||
+                (next.acceleration.enableMpp != cfg.acceleration.enableMpp) ||
+                (next.acceleration.enableQualcomm != cfg.acceleration.enableQualcomm);
+            
+            if (accelChanged) {
+                events.append("acceleration_apply", "Restarting pipeline for acceleration changes");
+                cv::ocl::setUseOpenCL(next.acceleration.enableOpenCL);
+                // "Hot restart" pipeline
+                pipe.shutdown();
+                pipe.initialize(next);
+                pipe.setPreviewLayout(1280, 720, next.ui.previewScaleMode);
+                rk_win::ensureCameraRunning(pipe, next, events);
+            } else if (!cameraChanged && (
+                next.dnn.enable != cfg.dnn.enable ||
+                next.dnn.modelPath != cfg.dnn.modelPath ||
+                next.recognition.cascadePath != cfg.recognition.cascadePath ||
+                next.recognition.databasePath != cfg.recognition.databasePath
+            )) {
+                // Config changed, need pipeline re-init
+                events.append("pipeline_apply", "Restarting pipeline for model changes");
+                pipe.shutdown();
+                pipe.initialize(next);
+                pipe.setPreviewLayout(1280, 720, next.ui.previewScaleMode);
                 rk_win::ensureCameraRunning(pipe, next, events);
             }
 

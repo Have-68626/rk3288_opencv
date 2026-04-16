@@ -83,6 +83,12 @@ struct DisplayConfig {
     int anisoLevel = 1;
 };
 
+struct AccelerationConfig {
+    bool enableOpenCL = false;
+    bool enableMpp = false;
+    bool enableQualcomm = false;
+};
+
 struct AppConfig {
     std::filesystem::path configPath;
     CameraConfig camera;
@@ -93,6 +99,7 @@ struct AppConfig {
     LogConfig log;
     UiConfig ui;
     DisplayConfig display;
+    AccelerationConfig acceleration;
 };
 
 AppConfig loadConfigFromIniOrDefault();

@@ -87,5 +87,10 @@ export interface ServerSettingsDoc {
     aaSamples: number
     anisoLevel: number
   }
+  acceleration: {
+    enableOpenCL: boolean
+    enableMpp: boolean
+    enableQualcomm: boolean
+  }
 }
 
