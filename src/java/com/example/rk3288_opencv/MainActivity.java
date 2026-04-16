@@ -1037,149 +1037,157 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         progressDialog.setOnCancelListener(d -> cancelled.set(true));
 
         new Thread(() -> {
-            String displayName = "mock_source";
-            long totalBytes = -1L;
             try {
-                Cursor c = getContentResolver().query(uri, null, null, null, null);
-                if (c != null) {
-                    try {
-                        if (c.moveToFirst()) {
-                            int nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                            if (nameIndex >= 0) {
-                                String n = c.getString(nameIndex);
-                                if (n != null && !n.trim().isEmpty()) displayName = n.trim();
-                            }
-                            int sizeIndex = c.getColumnIndex(OpenableColumns.SIZE);
-                            if (sizeIndex >= 0) {
-                                long s = c.getLong(sizeIndex);
-                                if (s > 0) totalBytes = s;
-                            }
-                        }
-                    } finally {
-                        try { c.close(); } catch (Throwable ignored) {}
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
-
-            String ext = "";
-            try {
-                int dot = displayName.lastIndexOf('.');
-                if (dot >= 0 && dot < displayName.length() - 1) {
-                    ext = displayName.substring(dot + 1);
-                }
-            } catch (Throwable ignored) {
-            }
-            ext = sanitizeExtension(ext);
-
-            java.io.File root = null;
-            try {
-                root = getExternalCacheDir();
-            } catch (Throwable ignored) {
-            }
-            if (root == null) root = getCacheDir();
-
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-            String saveName = "mock_source_" + timeStamp + (ext.isEmpty() ? ".dat" : ("." + ext));
-            java.io.File outFile = new java.io.File(root, saveName);
-
-            long copied = 0L;
-            long startMs = SystemClock.elapsedRealtime();
-            long lastUiMs = 0L;
-            boolean ok = false;
-            String err = null;
-
-            java.io.InputStream is = null;
-            java.io.BufferedInputStream bis = null;
-            java.io.FileOutputStream fos = null;
-            try {
-                is = getContentResolver().openInputStream(uri);
-                if (is == null) throw new IOException("无法打开输入流");
-                bis = new java.io.BufferedInputStream(is, 1024 * 1024);
-                fos = new java.io.FileOutputStream(outFile);
-
-                if (totalBytes > 0) {
-                    final int maxKb = (int) Math.min(Integer.MAX_VALUE, Math.max(1L, totalBytes / 1024L));
-                    int finalMaxKb = maxKb;
-                    runOnUiThread(() -> {
-                        progressDialog.setIndeterminate(false);
-                        progressDialog.setMax(finalMaxKb);
-                    });
-                }
-
-                byte[] buffer = new byte[1024 * 1024];
-                int n;
-                while ((n = bis.read(buffer)) != -1) {
-                    if (cancelled.get()) {
-                        err = "用户取消";
-                        break;
-                    }
-                    fos.write(buffer, 0, n);
-                    copied += n;
-
-                    long nowMs = SystemClock.elapsedRealtime();
-                    if (nowMs - lastUiMs >= 350) {
-                        lastUiMs = nowMs;
-                        long elapsedMs = Math.max(1L, nowMs - startMs);
-                        double speed = (copied / 1024.0) / (elapsedMs / 1000.0);
-                        String msg = "已复制 " + formatBytes(copied) +
-                                (totalBytes > 0 ? (" / " + formatBytes(totalBytes)) : "") +
-                                "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
-                        int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, copied / 1024L));
-                        runOnUiThread(() -> {
-                            try {
-                                progressDialog.setMessage(msg);
-                                if (!progressDialog.isIndeterminate()) {
-                                    progressDialog.setProgress(progressKb);
+                String displayName = "mock_source";
+                long totalBytes = -1L;
+                try {
+                    Cursor c = getContentResolver().query(uri, null, null, null, null);
+                    if (c != null) {
+                        try {
+                            if (c.moveToFirst()) {
+                                int nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                                if (nameIndex >= 0) {
+                                    String n = c.getString(nameIndex);
+                                    if (n != null && !n.trim().isEmpty()) displayName = n.trim();
                                 }
-                            } catch (Throwable ignored) {
+                                int sizeIndex = c.getColumnIndex(OpenableColumns.SIZE);
+                                if (sizeIndex >= 0) {
+                                    long s = c.getLong(sizeIndex);
+                                    if (s > 0) totalBytes = s;
+                                }
                             }
+                        } finally {
+                            try { c.close(); } catch (Throwable ignored) {}
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+
+                String ext = "";
+                try {
+                    int dot = displayName.lastIndexOf('.');
+                    if (dot >= 0 && dot < displayName.length() - 1) {
+                        ext = displayName.substring(dot + 1);
+                    }
+                } catch (Throwable ignored) {
+                }
+                ext = sanitizeExtension(ext);
+
+                java.io.File root = null;
+                try {
+                    root = getExternalCacheDir();
+                } catch (Throwable ignored) {
+                }
+                if (root == null) root = getCacheDir();
+
+                String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+                String saveName = "mock_source_" + timeStamp + (ext.isEmpty() ? ".dat" : ("." + ext));
+                java.io.File outFile = new java.io.File(root, saveName);
+
+                long copied = 0L;
+                long startMs = SystemClock.elapsedRealtime();
+                long lastUiMs = 0L;
+                boolean ok = false;
+                String err = null;
+
+                java.io.InputStream is = null;
+                java.io.BufferedInputStream bis = null;
+                java.io.FileOutputStream fos = null;
+                try {
+                    is = getContentResolver().openInputStream(uri);
+                    if (is == null) throw new IOException("无法打开输入流");
+                    bis = new java.io.BufferedInputStream(is, 1024 * 1024);
+                    fos = new java.io.FileOutputStream(outFile);
+
+                    if (totalBytes > 0) {
+                        final int maxKb = (int) Math.min(Integer.MAX_VALUE, Math.max(1L, totalBytes / 1024L));
+                        int finalMaxKb = maxKb;
+                        runOnUiThread(() -> {
+                            progressDialog.setIndeterminate(false);
+                            progressDialog.setMax(finalMaxKb);
                         });
                     }
+
+                    byte[] buffer = new byte[1024 * 1024];
+                    int n;
+                    while ((n = bis.read(buffer)) != -1) {
+                        if (cancelled.get()) {
+                            err = "用户取消";
+                            break;
+                        }
+                        fos.write(buffer, 0, n);
+                        copied += n;
+
+                        long nowMs = SystemClock.elapsedRealtime();
+                        if (nowMs - lastUiMs >= 350) {
+                            lastUiMs = nowMs;
+                            long elapsedMs = Math.max(1L, nowMs - startMs);
+                            double speed = (copied / 1024.0) / (elapsedMs / 1000.0);
+                            String msg = "已复制 " + formatBytes(copied) +
+                                    (totalBytes > 0 ? (" / " + formatBytes(totalBytes)) : "") +
+                                    "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
+                            int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, copied / 1024L));
+                            runOnUiThread(() -> {
+                                try {
+                                    progressDialog.setMessage(msg);
+                                    if (!progressDialog.isIndeterminate()) {
+                                        progressDialog.setProgress(progressKb);
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            });
+                        }
+                    }
+
+                    fos.flush();
+                    if (!cancelled.get() && (err == null || err.isEmpty())) {
+                        ok = true;
+                    }
+                } catch (Throwable t) {
+                    err = t.getMessage();
+                } finally {
+                    try { if (fos != null) fos.close(); } catch (Throwable ignored) {}
+                    try { if (bis != null) bis.close(); } catch (Throwable ignored) {}
+                    try { if (is != null) is.close(); } catch (Throwable ignored) {}
                 }
 
-                fos.flush();
-                if (!cancelled.get() && (err == null || err.isEmpty())) {
-                    ok = true;
-                }
-            } catch (Throwable t) {
-                err = t.getMessage();
-            } finally {
-                try { if (fos != null) fos.close(); } catch (Throwable ignored) {}
-                try { if (bis != null) bis.close(); } catch (Throwable ignored) {}
-                try { if (is != null) is.close(); } catch (Throwable ignored) {}
+                boolean finalOk = ok;
+                String finalErr = err;
+                long finalCopied = copied;
+                String finalDisplayName = displayName;
+                String finalOutPath = outFile.getAbsolutePath();
+                runOnUiThread(() -> {
+                    try { progressDialog.dismiss(); } catch (Throwable ignored) {}
+                    if (!finalOk) {
+                        try { if (outFile.exists()) outFile.delete(); } catch (Throwable ignored) {}
+                        AppLog.e("MainActivity", "handleMockFileSelection", "Mock 文件加载失败: " + finalErr + " copied=" + finalCopied);
+                        Toast.makeText(MainActivity.this, "加载失败: " + finalErr, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+
+                    mockFilePath = finalOutPath;
+                    selectedCameraId = -1;
+                    isSpinnerInitialized = true;
+                    refreshFlipFromPrefs(true);
+
+                    AppLog.i("MainActivity", "handleMockFileSelection",
+                            "Mock file ready: " + finalOutPath + " copied=" + finalCopied + " name=" + finalDisplayName);
+                    Toast.makeText(MainActivity.this, "Mock 源已就绪: " + finalDisplayName, Toast.LENGTH_SHORT).show();
+
+                    if (isRunning) {
+                        stopMonitoring();
+                        handler.postDelayed(MainActivity.this::startMonitoring, 500);
+                    } else {
+                        initEngine();
+                    }
+                });
+            } catch (Throwable mainThreadCrash) {
+                AppLog.e("MainActivity", "handleMockFileSelection", "未捕获的 Mock 文件加载异常", mainThreadCrash);
+                runOnUiThread(() -> {
+                    try { progressDialog.dismiss(); } catch (Throwable ignored) {}
+                    Toast.makeText(MainActivity.this, "加载文件遇到严重异常: " + mainThreadCrash.getMessage(), Toast.LENGTH_LONG).show();
+                });
             }
-
-            boolean finalOk = ok;
-            String finalErr = err;
-            long finalCopied = copied;
-            String finalDisplayName = displayName;
-            String finalOutPath = outFile.getAbsolutePath();
-            runOnUiThread(() -> {
-                try { progressDialog.dismiss(); } catch (Throwable ignored) {}
-                if (!finalOk) {
-                    try { if (outFile.exists()) outFile.delete(); } catch (Throwable ignored) {}
-                    AppLog.e("MainActivity", "handleMockFileSelection", "Mock 文件加载失败: " + finalErr + " copied=" + finalCopied);
-                    Toast.makeText(MainActivity.this, "加载失败: " + finalErr, Toast.LENGTH_LONG).show();
-                    return;
-                }
-
-                mockFilePath = finalOutPath;
-                selectedCameraId = -1;
-                isSpinnerInitialized = true;
-                refreshFlipFromPrefs(true);
-
-                AppLog.i("MainActivity", "handleMockFileSelection",
-                        "Mock file ready: " + finalOutPath + " copied=" + finalCopied + " name=" + finalDisplayName);
-                Toast.makeText(MainActivity.this, "Mock 源已就绪: " + finalDisplayName, Toast.LENGTH_SHORT).show();
-
-                if (isRunning) {
-                    stopMonitoring();
-                    handler.postDelayed(MainActivity.this::startMonitoring, 500);
-                } else {
-                    initEngine();
-                }
-            });
         }).start();
     }
 
@@ -2496,6 +2504,17 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             permissionStateMachine.evaluate();
         }
         syncOverlaySwitchState();
+        
+        // Issue 42 Fix: Restore native preview surface if it was already ready but native lost it
+        if (previewSurfaceReady && previewSurface != null) {
+            try {
+                Surface surface = previewSurface.getHolder().getSurface();
+                if (surface != null && surface.isValid()) {
+                    nativeSetPreviewSurface(surface);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     @Override

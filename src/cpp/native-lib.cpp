@@ -129,7 +129,16 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
     g_cancelInit.store(false);
     g_engine->clearCancelInit();
     g_engine->setOnResultCallback(sendRecognitionResult);
-    return g_engine->initialize(pathStr, cascadeStr, storageStr);
+    
+    try {
+        return g_engine->initialize(pathStr, cascadeStr, storageStr);
+    } catch (const std::exception& e) {
+        LOGE("Engine::initialize threw std::exception: %s", e.what());
+        return JNI_FALSE;
+    } catch (...) {
+        LOGE("Engine::initialize threw unknown exception");
+        return JNI_FALSE;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -231,8 +240,19 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
         g_engine = std::make_unique<Engine>();
     }
 
+    g_cancelInit.store(false);
+    g_engine->clearCancelInit();
     g_engine->setOnResultCallback(sendRecognitionResult);
-    return g_engine->initialize(cameraId, cascadeStr, storageStr);
+    
+    try {
+        return g_engine->initialize(cameraId, cascadeStr, storageStr);
+    } catch (const std::exception& e) {
+        LOGE("Engine::initialize threw std::exception: %s", e.what());
+        return JNI_FALSE;
+    } catch (...) {
+        LOGE("Engine::initialize threw unknown exception");
+        return JNI_FALSE;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -633,9 +653,17 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
     {
         std::lock_guard<std::mutex> lock(g_previewMutex);
         win = g_previewWindow;
+        if (win) {
+            ANativeWindow_acquire(win);
+        }
         gen = g_previewGeneration.load(std::memory_order_relaxed);
     }
     if (!win) return JNI_FALSE;
+
+    struct WindowReleaser {
+        ANativeWindow* w;
+        ~WindowReleaser() { if (w) ANativeWindow_release(w); }
+    } releaser{win};
 
     cv::Mat frame;
     uint64_t seq = 0;

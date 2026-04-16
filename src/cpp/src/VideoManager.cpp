@@ -71,7 +71,20 @@ bool VideoManager::open(int deviceId) {
         return true; // Already running
     }
 
-    cap.open(deviceId);
+    std::vector<int> params;
+    params.push_back(cv::CAP_PROP_OPEN_TIMEOUT_MSEC);
+    params.push_back(openTimeoutMs);
+    params.push_back(cv::CAP_PROP_READ_TIMEOUT_MSEC);
+    params.push_back(readTimeoutMs);
+    try {
+        cap.open(deviceId, cv::CAP_ANY, params);
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in cap.open(device): " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "Unknown exception in cap.open(device)" << std::endl;
+        return false;
+    }
     if (!cap.isOpened()) {
         std::cerr << "Failed to open camera " << deviceId << std::endl;
         rklog::logError("VideoManager", __func__, "Failed to open camera");
@@ -79,9 +92,15 @@ bool VideoManager::open(int deviceId) {
     }
 
     // Configure for performance
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-    cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+    try {
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
+        cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in cap.set(device): " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in cap.set(device)" << std::endl;
+    }
 
     rklog::logInfo("VideoManager", "open", "OpenCL requested=" + std::to_string(openCLRequested) + " effective=" + std::to_string(cv::ocl::useOpenCL()));
 
@@ -113,14 +132,22 @@ bool VideoManager::open(const std::string& filePath) {
     
     if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp") {
         isStaticImage = true;
-        staticFrame = cv::imread(filePath);
-        if (staticFrame.empty()) {
-            std::cerr << "Failed to load image: " << filePath << std::endl;
+        try {
+            staticFrame = cv::imread(filePath);
+            if (staticFrame.empty()) {
+                std::cerr << "Failed to load image: " << filePath << std::endl;
+                return false;
+            }
+            // Resize to match config if needed
+            if (staticFrame.cols != Config::FRAME_WIDTH || staticFrame.rows != Config::FRAME_HEIGHT) {
+                cv::resize(staticFrame, staticFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception loading static image: " << e.what() << std::endl;
             return false;
-        }
-        // Resize to match config if needed
-        if (staticFrame.cols != Config::FRAME_WIDTH || staticFrame.rows != Config::FRAME_HEIGHT) {
-            cv::resize(staticFrame, staticFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
+        } catch (...) {
+            std::cerr << "Unknown exception loading static image" << std::endl;
+            return false;
         }
     } else {
         auto tryOpen = [&](const std::string& pathOrUrl) -> bool {
@@ -133,7 +160,15 @@ bool VideoManager::open(const std::string& filePath) {
             params.push_back(openTimeoutMs);
             params.push_back(cv::CAP_PROP_READ_TIMEOUT_MSEC);
             params.push_back(readTimeoutMs);
-            tmp.open(pathOrUrl, cv::CAP_ANY, params);
+            try {
+                tmp.open(pathOrUrl, cv::CAP_ANY, params);
+            } catch (const std::exception& e) {
+                std::cerr << "Exception in tmp.open: " << e.what() << std::endl;
+                return false;
+            } catch (...) {
+                std::cerr << "Unknown exception in tmp.open" << std::endl;
+                return false;
+            }
             if (!tmp.isOpened()) {
                 return false;
             }
@@ -168,9 +203,15 @@ bool VideoManager::open(const std::string& filePath) {
                 std::cerr << "Failed to open video file: " << filePath << std::endl;
                 return false;
             }
-            cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-            cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-            cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+            try {
+                cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
+                cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
+                cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+            } catch (const std::exception& e) {
+                std::cerr << "Exception in cap.set: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "Unknown exception in cap.set" << std::endl;
+            }
         }
     }
     
@@ -228,32 +269,45 @@ void VideoManager::captureLoop() {
             continue;
         }
 
-    if (cap.read(tempFrame)) {
-        std::lock_guard<std::mutex> lock(frameMutex);
-        if (!tempFrame.empty()) {
-            // Ensure size
-            if (tempFrame.cols != Config::FRAME_WIDTH || tempFrame.rows != Config::FRAME_HEIGHT) {
-                cv::resize(tempFrame, tempFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
+        try {
+            if (cap.read(tempFrame)) {
+                std::lock_guard<std::mutex> lock(frameMutex);
+                if (!tempFrame.empty()) {
+                    // Ensure size
+                    if (tempFrame.cols != Config::FRAME_WIDTH || tempFrame.rows != Config::FRAME_HEIGHT) {
+                        cv::resize(tempFrame, tempFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
+                    }
+                    // Swap buffers instead of copy if possible, or move
+                    // Since tempFrame is reused, we must copy. 
+                    // BUT: We can optimize by swapping if we had a pool. 
+                    // For now, let's keep copyTo but ensure latestFrame allocation is reused.
+                    tempFrame.copyTo(latestFrame); 
+                    hasNewFrame = true;
+                }
+            } else {
+                // Handle EOF or Error
+                if (isMockMode && cap.isOpened()) {
+                    // Rewind for video loop
+                    // Attempt to seek to frame 0
+                    cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                    continue;
+                }
+                
+                // Handle read error or stream end
+                // std::cerr << "Warning: Failed to read frame from camera." << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
-            // Swap buffers instead of copy if possible, or move
-            // Since tempFrame is reused, we must copy. 
-            // BUT: We can optimize by swapping if we had a pool. 
-            // For now, let's keep copyTo but ensure latestFrame allocation is reused.
-            tempFrame.copyTo(latestFrame); 
-            hasNewFrame = true;
+        } catch (const std::exception& e) {
+            std::cerr << "Exception in captureLoop: " << e.what() << std::endl;
+            try {
+                if (isMockMode && cap.isOpened()) {
+                    cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                }
+            } catch (...) {}
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } catch (...) {
+            std::cerr << "Unknown exception in captureLoop" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-    } else {
-        // Handle EOF or Error
-        if (isMockMode && cap.isOpened()) {
-            // Rewind for video loop
-            // Attempt to seek to frame 0
-            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
-            continue;
-        }
-        
-        // Handle read error or stream end
-        // std::cerr << "Warning: Failed to read frame from camera." << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
     }
 }
