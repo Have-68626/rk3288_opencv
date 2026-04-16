@@ -8,6 +8,7 @@
 #include "rk_win/WinConfig.h"
 #include "rk_win/WinJsonConfig.h"
 
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -435,6 +436,71 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         JsonValue d = JsonValue::makeObject();
         d.o["name"] = JsonValue::makeString("rk_wcfr");
         d.o["port"] = JsonValue::makeNumber(port_);
+        o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/models") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+
+        JsonValue d = JsonValue::makeObject();
+
+        JsonValue supported = JsonValue::makeArray();
+        {
+            JsonValue s1 = JsonValue::makeObject();
+            s1.o["id"] = JsonValue::makeString("cascade_frontalface");
+            s1.o["displayName"] = JsonValue::makeString("Cascade Frontal Face (LBP)");
+            s1.o["taskType"] = JsonValue::makeString("detect_recognize_pipeline");
+            supported.a.push_back(std::move(s1));
+
+            JsonValue s2 = JsonValue::makeObject();
+            s2.o["id"] = JsonValue::makeString("dnn_face_detector");
+            s2.o["displayName"] = JsonValue::makeString("OpenCV DNN Face Detector");
+            s2.o["taskType"] = JsonValue::makeString("detect");
+            supported.a.push_back(std::move(s2));
+        }
+        d.o["supportedModels"] = std::move(supported);
+
+        JsonValue active = JsonValue::makeArray();
+        int totalConfigured = 0;
+        int totalLoaded = 0;
+        int totalFailed = 0;
+        int totalMissing = 0;
+
+        if (pipe_) {
+            std::vector<ModelSnapshot> models = pipe_->getActiveModels();
+            totalConfigured = models.size();
+            for (const auto& mSnap : models) {
+                if (mSnap.status == "loaded") totalLoaded++;
+                else if (mSnap.status == "failed") totalFailed++;
+                else if (mSnap.status == "missing") totalMissing++;
+
+                JsonValue am = JsonValue::makeObject();
+                am.o["id"] = JsonValue::makeString(mSnap.id);
+                am.o["displayName"] = JsonValue::makeString(mSnap.displayName);
+                am.o["taskType"] = JsonValue::makeString(mSnap.taskType);
+                am.o["configuredPath"] = JsonValue::makeString(mSnap.configuredPath);
+                am.o["resolvedPath"] = JsonValue::makeString(mSnap.resolvedPath);
+                am.o["backend"] = JsonValue::makeString(mSnap.backend);
+                am.o["status"] = JsonValue::makeString(mSnap.status);
+                am.o["isInUse"] = JsonValue::makeBool(mSnap.isInUse);
+                if (!mSnap.modelVersion.empty()) am.o["modelVersion"] = JsonValue::makeString(mSnap.modelVersion);
+                if (!mSnap.lastError.empty()) am.o["lastError"] = JsonValue::makeString(mSnap.lastError);
+                active.a.push_back(std::move(am));
+            }
+        }
+        d.o["activeModels"] = std::move(active);
+
+        JsonValue summary = JsonValue::makeObject();
+        summary.o["totalSupported"] = JsonValue::makeNumber(2);
+        summary.o["totalConfigured"] = JsonValue::makeNumber(totalConfigured);
+        summary.o["totalLoaded"] = JsonValue::makeNumber(totalLoaded);
+        summary.o["totalFailed"] = JsonValue::makeNumber(totalFailed);
+        summary.o["totalMissing"] = JsonValue::makeNumber(totalMissing);
+        d.o["summary"] = std::move(summary);
+
         o.o["data"] = std::move(d);
         return jsonOk(toJsonString(o, false));
     }
