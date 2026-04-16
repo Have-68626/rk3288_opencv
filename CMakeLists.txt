@@ -57,6 +57,11 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
         "src/cpp/src/EventManager.cpp"
+        "tests/win/test_http_faces_server.cpp"
+        "src/win/src/HttpFacesServerPath.cpp"
+    )
+    target_include_directories(core_unit_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
     )
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
