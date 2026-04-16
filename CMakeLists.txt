@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.18.1)
 
 project(RK3288_AI_Engine)
 
+# Version definition for Windows/CLI
+set(APP_BUILD_ID "v0.1beta1")
+add_compile_definitions(BUILD_ID="${APP_BUILD_ID}")
+
 # C++ Standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

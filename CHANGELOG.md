@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **关于版本号重置的说明 (Version Reset Notice)**
+> 在项目早期的探索与架构验证阶段，曾短暂使用过 `1.x` 和 `2.0.0-rcX` 序列的版本号。随着 Windows 端向 Web SPA 架构（React + Vite + 本地 HTTP 服务）的全面迁移，以及 Android 与 Native 核心层的彻底重构，项目进入了实质性的 Beta 测试阶段。为了准确反映项目当前的成熟度与演进主线，版本号已从 `v0.1beta0` 开始重新校准，并统一收敛了全端的版本口径。
+
+## [0.1.1-beta.1] - 2026-04-16
+*(内部口径: v0.1beta1)*
+
+### Added
+- **Build System**: 向 Windows / CLI 的 CMake 构建链路中注入了 `BUILD_ID` 宏，使得二进制产物、评估工具（`win_face_eval_cli` / `inference_bench_cli`）以及应用启动日志都能输出一致的版本号。
+- **Documentation**: 在 `CREDITS.md` 中新增了完整的**模型台账 (Model Inventory)**，明确了 OpenCV DNN 模型和 LBP 级联分类器的来源、部署路径与开源许可证。
+
+### Changed
+- **Versioning**: 升级全端版本号至 `v0.1beta1` (Android `versionCode 3`)，彻底消除 Android 构建、CMake 产物与文档之间的版本漂移。
+- **Documentation**: 全面校准 `DEVELOP.md`，更新了包含 `web/` 的最新目录结构与前端技术栈（React 18 + AntD 5）。
+- **Configuration**: 明确 `%APPDATA%\rk_wcfr\config.json` 为 Windows 端配置的唯一事实来源 (Source of Truth)，并在旧版 `config/windows_camera_face_recognition.ini` 中添加了废弃/迁移警告及模型下载指引。
+
+### Documented
+- **README 待办（完成项 37–38）**：从 `README.md` 清理迁移至此处归档。
+  - 37. **[P0] 文档全量校准：修订 README/CHANGELOG/DEVELOP/CREDITS 与 `docs/`，确保与当前项目一致**（更新目录树、补齐模型台账、校准配置指引）
+  - 38. **[P0] 版本号升级到 `v0.1beta1`：统一代码/构建/文档口径**（Windows/CLI 增加 BUILD_ID 宏注入并打印，Android versionCode 升级）
+
 ## [0.1.0-beta.0] - 2026-04-15
 
 ### Added

@@ -77,13 +77,18 @@ pnpm -C web build
 
 ## ⚙️ 配置与接口入口
 
-### Windows 配置
-- 配置文件入口：`config/windows_camera_face_recognition.ini`
+### Windows 核心配置 (JSON)
+- **事实来源 (Source of Truth)**：`%APPDATA%\rk_wcfr\config.json`
+- **修改方式**：推荐通过 Web UI (`http://127.0.0.1:<port>`) 操作，或调用 `PUT /api/v1/settings` 接口。
+- **兼容性迁移配置**：`config/windows_camera_face_recognition.ini`（仅在 JSON 缺失时用于初次生成，后续修改无效）。
 - 本地 HTTP 默认监听仅 `127.0.0.1` 保障安全，实现位于 `src/win/src/HttpFacesServer.cpp`。
 
-### Windows Web SPA 配置
+### Windows Web SPA 配置说明
 - 配置文档位于：`docs/windows-web-spa/config.md`
 - JSON Schema 位于：`docs/windows-web-spa/config.schema.json`
+
+### 模型台账与下载
+本项目依赖的 DNN 模型等大文件默认不入库。关于所需模型的下载地址、存放路径与许可证说明，请查阅 [CREDITS.md](CREDITS.md) 中的**模型台账**部分。
 
 ## 📊 验证与报告输出路径
 
@@ -100,7 +105,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
 > ⬜ 表示待办（按优先级排序）
 
-> ✅ 已完成代办 1–34 已迁移归档至 [CHANGELOG.md](CHANGELOG.md)（见 `[Unreleased]` → `Documented`）。此处仅保留未完成待办（从 35 开始编号）。
+> ✅ 已完成代办 1–34 及 37–38 已迁移归档至 [CHANGELOG.md](CHANGELOG.md)（见 `[Unreleased]` / `[0.1.1-beta.1]` → `Documented`）。此处仅保留未完成待办。
 
 35. ⬜ **[P1] 加速方案研究与落地：CPU/CPU+GPU（OpenCL）/专用硬件加速，优先适配 ARM（RK3288 与 Qualcomm）**
     *   ✅ **已完成项**：已有文档与 bench 工具（详见 [端到端链路加速方案与评估报告 (docs/acceleration_study.md)](docs/acceleration_study.md)）；`inference_bench_cli` 已支持 `--use-opencl` 独立开关与分段 P95 输出。
@@ -111,16 +116,6 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
     *   **现状核对**：Windows SPA 已具备 `Enroll personId` 与“清空库”入口（见 `docs/windows-web-spa/feature_parity.md`），但缺少“查看/删除单个人/多样本覆盖策略/导入导出/冲突处理/质量门槛”等完整的注册管理闭环；Android 侧也缺少对等的可审计注册流程与 UI 管理入口。由于当前模型基于 OpenCV DNN，仅支持轻量注册与演示。
     *   **目标**：补齐注册全生命周期：注册前质量检查（清晰度/遮挡/角度/亮度阈值）、同一 personId 多样本累积与版本化、人员列表/删除/重命名、库文件导入导出与备份恢复；所有操作输出结构化日志并落盘。
     *   **验收**：多人重复注册/覆盖/删除行为可解释且可回滚；导入导出在不同设备/不同版本之间兼容；在弱光/遮挡条件下不会把低质量样本写入库导致整体识别率下降。
-
-37. ✅ **[P0] 文档全量校准：修订 README/CHANGELOG/DEVELOP/CREDITS 与 `docs/`，确保与当前项目一致**
-    *   **现状核对**：当前文档中存在版本号口径不一致（`DEVELOP.md` vs Android `versionName` vs Changelog），以及“默认模型路径/是否入库/如何获取”的信息分散在 README/DEVELOP/CREDITS/config 中，容易造成误用与排障困难。[README.md](README.md)、[CHANGELOG.md](CHANGELOG.md)、[DEVELOP.md](DEVELOP.md)、[CREDITS.md](CREDITS.md)、[windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)
-    *   **目标**：以“可复现/可审计”为标准统一文档：更新目录树与关键入口；补齐模型台账与许可证登记；校准 CI 与本地复现命令；修订 `docs/windows-web-spa/*` 与 runbook 的现状描述；确保所有链接可用并与代码一致。
-    *   **验收**：新手按 README/README_BUILD/DEVELOP/docs 能从零跑通（Windows/Android 至少一条路径）；所有文档链接与脚本可执行；CREDITS 对第三方依赖与模型来源/许可证完整可审计。
-
-38. ⬜ **[P0] 版本号升级到 `v0.1beta1`：统一代码/构建/文档口径**
-    *   **现状核对**：Android `app/build.gradle` 当前 `versionName "v0.1beta0"`；而 `DEVELOP.md` 曾存在版本口径为 `2.0.0-rc8` 的问题，文档与构建产物版本存在明显漂移风险。[app/build.gradle](app/build.gradle)、[DEVELOP.md](DEVELOP.md)
-    *   **目标**：明确并固化“发布版本号”的唯一来源（Android versionName/versionCode、Windows/CLI build_id、Docs/Changelog 口径一致）；升级到 `v0.1beta1` 并同步更新 `CHANGELOG.md`（新增条目、对外口径、兼容性说明）与 README 关键入口。
-    *   **验收**：任意构建产物（APK/Windows exe/CLI）与日志/导出证据链都能展示同一 build_id；Changelog 可追溯版本改动与破坏性变更；标签命名与分支策略一致（例如 `v0.1beta1`）。
 
 39. ⬜ **[P0] 完善自动化测试与 CI：扩展并加固 `.github/workflows/ci.yml`（Windows + Linux + Android + Web）**
     *   **现状核对**：当前 CI 已包含 repo-hygiene（执行 `node scripts/clean-repo-junk.js scan --ci`）+ Linux core 单测（跳过 OpenCV）+ Windows 构建/单测（下载 OpenCV 源码），但缺少：Android 的 assemble/lint/unit test（以及可选 emulator connected test）、Web 前端 build/lint/test、docs-sync-audit（执行 `node scripts/docs-sync-audit.js`）、以及关键产物归档（测试报告/日志/可执行文件）。[ci.yml](.github/workflows/ci.yml)

@@ -1181,6 +1181,11 @@ static int runFaceBaselineCli(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+#ifndef BUILD_ID
+#define BUILD_ID "unknown-dev"
+#endif
+    std::cout << "INFO: app_start version=" << BUILD_ID << std::endl;
+
     std::cout << "Starting RK3288 AI Engine (CLI Mode)..." << std::endl;
 
     if (argc > 1 && std::string(argv[1]) == "--analyze") {

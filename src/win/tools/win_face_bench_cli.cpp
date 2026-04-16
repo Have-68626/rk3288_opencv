@@ -73,6 +73,11 @@ std::uint64_t rssBytes() {
 }  // namespace rk_win
 
 int main(int argc, char** argv) {
+#ifndef BUILD_ID
+#define BUILD_ID "unknown-dev"
+#endif
+    std::cout << "BENCH_INFO build_id=" << BUILD_ID << std::endl;
+
     using namespace rk_win;
     const auto args = parseArgs(argc, argv);
 
