@@ -1070,6 +1070,11 @@ static bool backendWantsQualcomm(const std::string &backend) {
 } // namespace
 
 int main(int argc, char **argv) {
+#ifndef BUILD_ID
+#define BUILD_ID "unknown-dev"
+#endif
+  std::cout << "BENCH_INFO build_id=" << BUILD_ID << std::endl;
+
   const Args args = parseArgs(argc, argv);
   if (!ensureDir(args.outDir)) {
     std::cerr << "BENCH_ERROR out_dir_create_failed path="

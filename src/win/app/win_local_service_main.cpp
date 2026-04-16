@@ -79,6 +79,12 @@ int main() {
 
     rk_win::EventLogger events;
     events.open(cfg.log.logDir);
+
+#ifndef BUILD_ID
+#define BUILD_ID "unknown-dev"
+#endif
+    events.append("app_start", std::string("version=") + BUILD_ID);
+
     if (!warn.empty()) events.append("config_init_warn", warn);
 
     rk_win::FramePipeline pipe;

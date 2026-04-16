@@ -1,7 +1,7 @@
 # RK3288 AI Engine - 开发指南 (Development Guide)
 
-**版本**: v0.1beta0
-**日期**: 2026-04-07  
+**版本**: v0.1beta1
+**日期**: 2026-04-16  
 **状态**: 草案 (Draft)  
 
 ---
@@ -29,33 +29,23 @@
 ### 1.3 目录结构与 GitHub 映射
 ```text
 rk3288_opencv/
-├── .trae/                # IDE 规范与研发过程资产（spec/tasks）[GitHub]
 ├── app/                  # Android APK 源码 (Java/Kotlin + C++) [GitHub]
-│   ├── src/main/cpp/     # Native 核心逻辑 (OpenCV, V4L2, ncnn/OpenCV DNN)
-│   └── src/main/assets/  # 模型/配置等资源（不硬编码路径）
-├── src/java/             # Android Java 源码（通过 app sourceSets 引用）[GitHub]
-├── src/cpp/              # Native 核心实现（JNI/引擎/视频/存储等）[GitHub]
-├── src/win/              # Windows 专用实现（采集/UI/识别/日志）[GitHub]
-├── config/               # 可移植配置（ini），禁止硬编码绝对路径 [GitHub]
+├── src/                  # 核心源码目录 [GitHub]
+│   ├── java/             # Android Java 源码（通过 app sourceSets 引用）
+│   ├── cpp/              # Native 核心实现（JNI/引擎/视频/存储等）
+│   └── win/              # Windows 本地服务与业务逻辑（无头/HTTP/硬件调度）
+├── web/                  # Web SPA 前端源码 (React/Vite) [GitHub]
+├── config/               # 配置文件与 Schema [GitHub]
 ├── docs/                 # 项目文档 [GitHub]
-│   ├── examples/         # 核心功能独立示例代码 (V4L2, MPP, RKNN, DRM)
-│   ├── checklist/        # 验收清单
-│   └── windows-camera-face-recognition/
-│       ├── USER_MANUAL.md
-│       ├── PERF_TEST_REPORT.md
-│       └── PERF_TEST_REPORT_BASELINE.md
-├── ErrorLog/             # 报错归档与复现记录（统一入口；目录名区分大小写，不使用 errorlog/）[GitHub]
+│   ├── windows-web-spa/  # Web SPA 架构与 API 说明
+│   └── runbooks/         # 测试验收与排障流程
 ├── scripts/              # 构建与验证脚本 [GitHub]
-│   ├── clean-repo-junk.js # 仓库垃圾扫描/清理/回滚（默认 dry-run）[GitHub]
-│   └── clean-repo-junk.rules.json # 清理规则配置（白名单/目标/保护/输出/隔离）[GitHub]
-├── tests/                # 测试数据与报告（按许可证/脱敏策略提交）[GitHub]
-├── build_android_rk3288/  # 构建产物/第三方源码镜像（默认不提交）
-├── build_host/            # 构建产物（默认不提交）
-├── CMakeLists.txt         # Native 构建脚本 (CMake 3.18.1+) [GitHub]
-├── DEVELOP.md             # 本开发文档 [GitHub]
-├── README.md              # 项目主页 [GitHub]
-├── CREDITS.md             # 致谢与许可证 [GitHub]
-└── CHANGELOG.md           # 变更日志 [GitHub]
+├── tests/                # 测试脚本、配置与输出目录 [GitHub]
+├── CMakeLists.txt        # Native 构建脚本 (CMake 3.18.1+) [GitHub]
+├── DEVELOP.md            # 本开发文档 [GitHub]
+├── README.md             # 项目主页 [GitHub]
+├── CREDITS.md            # 致谢与许可证 [GitHub]
+└── CHANGELOG.md          # 变更日志 [GitHub]
 ```
 
 ---
@@ -118,6 +108,7 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 | **OpenCV** | **3.4.16** | 4.10.0 | [B] 4.10.0 | 3.x 兼容性好，旧代码迁移成本低；4.x 支持 DNN 模块更完善。 |
 | **推理后端** | OpenCV DNN (CPU) | **ncnn（CPU / 可选 GPU）** | [B] | CPU 推理通用性强但慢；ncnn 端侧部署成熟、体积小，GPU 加速不作为强依赖前提。 |
 | **视频后端** | **V4L2 (原生)** | GStreamer | [x] | V4L2 延迟最低且可控；GStreamer 功能丰富但引入额外依赖。 |
+| **Web 前端** | - | **React 18 + TS + AntD 5** | [B] | Windows 端采用 Web SPA 提供本地 UI 控制台，抛弃老旧 Win32 UI。 |
 | **显示后端** | Android Surface | **DRM/KMS (Linux)** | [A] | Android 适合 APP 开发；DRM 适合嵌入式纯 Linux 极速显示。 |
 
 > **注**: 对于 Android 平台，推荐使用 **CameraX + Native 混合架构** (见 4.5 节)，兼顾预览流畅性与算法性能。
@@ -137,11 +128,8 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 - `ANDROID_NDK_HOME`：指向 NDK 根目录（可选；脚本可从 SDK 自动定位）
 - `OPENCV_ROOT`：指向 OpenCV 源码根目录（建议版本：4.10.0；修改入口：CMake 变量/环境变量）
 - `OPENCV_CONTRIB_ROOT`：指向 OpenCV Contrib 源码根目录（建议版本：4.10.0；可选）
-- `RK_WCFR_CONFIG`：Windows 摄像头人脸识别测试系统 ini 路径（默认：`config/windows_camera_face_recognition.ini`）
-- `RK_WCFR_DNN_MODEL`：DNN 模型路径（覆盖 ini 的 `[dnn].model_path`）
-- `RK_WCFR_DNN_CONFIG`：DNN 模型配置路径（覆盖 ini 的 `[dnn].config_path`）
-- `RK_WCFR_HTTP_PORT`：本地 HTTP 服务端口（覆盖 ini 的 `[http].port`）
-- `RK_WCFR_POST_URL`：外部推送 POST 地址（覆盖 ini 的 `[poster].post_url`）
+- `RK_WCFR_CONFIG`：Windows 配置文件的默认存储路径（建议：`%APPDATA%\rk_wcfr\config.json`）。旧版 INI 仅作初始迁移使用。
+- *注：配置项（如模型路径、HTTP端口等）均应通过 Web UI (`PUT /api/v1/settings`) 修改，不再推荐通过环境变量覆盖。*
 
 #### 2.3.3 变动项修改入口（路径与工具链）
 - Host 验证脚本：`scripts/verify_opencv_host.bat`
@@ -161,41 +149,31 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
   - `.\gradlew.bat testDebugUnitTest`
   - `.\gradlew.bat lintDebug`
 
-#### 2.3.5 Windows 摄像头人脸识别测试系统（windows-camera-face-recognition）复现与变更入口
+#### 2.3.5 Windows 本地服务系统（Web SPA 架构）复现与变更入口
 - Spec：`.trae/specs/refactor-win-preview-system/`
+- Web SPA 架构文档：`docs/windows-web-spa/`
 - 配置文件：
-  - 默认：`config/windows_camera_face_recognition.ini`
-  - 覆盖：环境变量 `RK_WCFR_CONFIG`
+  - 核心配置（Source of Truth）：`%APPDATA%\rk_wcfr\config.json`
+  - 初始迁移参考：`config/windows_camera_face_recognition.ini`
 - 关键代码入口：
+  - 本地主服务入口：`src/win/app/win_local_service_main.cpp`
+  - JSON 配置管理：`src/win/src/WinJsonConfig.cpp`
   - 采集（Media Foundation）：`src/win/src/MfCamera.cpp`
-  - 预览 UI（Win32）：`src/win/app/win_camera_face_recognition_main.cpp`
-  - 显示模式枚举：`src/win/src/DisplaySettings.cpp`
-  - SwapChain 渲染：`src/win/src/D3D11Renderer.cpp`
-  - 渲染指标落盘：`src/win/src/RenderMetricsLogger.cpp`
   - 异常事件日志：`src/win/src/EventLogger.cpp`
   - DNN 检测：`src/win/src/DnnSsdFaceDetector.cpp`
   - 叠加绘制：`src/win/src/OverlayRenderer.cpp`
   - 输出端口（HTTP/SSE + 静态托管 + OpenAPI，使用 CivetWeb；只监听 127.0.0.1）：`src/win/src/HttpFacesServer.cpp`
   - 外部推送（POST）：`src/win/src/HttpFacesPoster.cpp`
-  - 输出 JSON 口径：`src/win/src/FacesJson.cpp`
-  - A/B/C 测试模式：`src/win/src/AbcTestRunner.cpp`
-  - 识别核心（LBPH embedding + 比对）：`src/win/src/FaceRecognizer.cpp`、`src/win/src/LbphEmbedder.cpp`
   - 结构化日志：`src/win/src/StructuredLogger.cpp`
   - 离线评估：`src/win/tools/win_face_eval_cli.cpp`
--  - 单元测试：`tests/win/`
+  - 单元测试：`tests/win/`
 - 本地 HTTP 最小联调入口：
-  - 静态页面：`http://127.0.0.1:<port>/`（来自 `exe_dir/webroot/index.html`；构建时从 `src/win/app/webroot` 复制）
+  - 静态页面（Web UI）：`http://127.0.0.1:<port>/`（由 Vite 构建，从 `src/win/app/webroot` 托管）
   - OpenAPI：`http://127.0.0.1:<port>/openapi.json`
-  - REST：`GET /api/health`、`GET /api/faces`
-  - SSE：`GET /api/faces/stream`
-- 本地 HTTP 最小联调入口：
-  - 静态页面：`http://127.0.0.1:<port>/`（来自 `exe_dir/webroot/index.html`；构建时从 `src/win/app/webroot` 复制）
-  - OpenAPI：`http://127.0.0.1:<port>/openapi.json`
-  - REST：`GET /api/health`、`GET /api/faces`
-  - SSE：`GET /api/faces/stream`
+  - REST API：`GET /api/health`、`GET /api/faces`、`PUT /api/v1/settings` 等
 - Windows 构建（仓库根目录）：
   - `cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 -DOPENCV_ROOT="...\opencv"`
-  - `cmake --build build_win --config Release --target win_camera_face_recognition win_unit_tests win_face_eval_cli`
+  - `cmake --build build_win --config Release --target win_local_service win_unit_tests win_face_eval_cli`
   - `ctest --test-dir build_win -C Release`
 
 #### 2.3.6 Windows 本地服务 + 浏览器 SPA（推荐路径）
@@ -1707,7 +1685,7 @@ android {
         minSdk 21
         targetSdk 34
         versionCode 1
-        versionName "v0.1beta0"
+        versionName "v0.1beta1"
 
         ndkVersion "25.2.9519653"
         ndk {
@@ -1958,10 +1936,10 @@ if __name__ == "__main__":
 
 指标文件格式建议（由测试/基准产出，稳定可审计）：
 ```json
-{ "top1_accuracy": 0.9731, "dataset_id": "test_set01", "build_id": "v0.1beta0" }
+{ "top1_accuracy": 0.9731, "dataset_id": "test_set01", "build_id": "v0.1beta1" }
 ```
 ```json
-{ "leak_delta_mb": 3.2, "scenario": "camera_open_close_50x", "build_id": "v0.1beta0" }
+{ "leak_delta_mb": 3.2, "scenario": "camera_open_close_50x", "build_id": "v0.1beta1" }
 ```
 
 ### 6.7 本仓库已落地的 YOLO+ArcFace 工程骨架（RK3288）

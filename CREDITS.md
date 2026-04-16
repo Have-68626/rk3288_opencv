@@ -2,6 +2,18 @@
 
 本文件用于记录本项目使用的第三方依赖、来源与许可证信息，便于审计与合规。
 
+## 模型台账与依赖 (Model Inventory)
+
+本项目在运行人脸检测与识别功能时，依赖以下机器视觉模型。为保证可复现性与合规性，特此登记模型来源与许可证信息。
+
+| 模型名称 | 用途 | 仓库/部署路径 | 格式 | 来源 / 下载地址 | 许可证 | 备注 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **LBP Frontal Face** | 传统人脸检测（级联分类器） | `app/src/main/assets/lbpcascade_frontalface.xml`<br>*(代码库内置)* | XML | [OpenCV Data](https://github.com/opencv/opencv/tree/master/data/lbpcascades) | 3-Clause BSD / OpenCV License | 默认的轻量级检测后备方案，随 Windows 构建自动拷贝至 `assets/` 目录。 |
+| **ResNet SSD Face Detector (8-bit)** | 高精度人脸检测 (DNN) | `storage/models/opencv_face_detector_uint8.pb`<br>*(部署时手动下载)* | PB | [OpenCV 3rdparty](https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel) | Apache 2.0 | OpenCV 官方提供的基于 SSD 架构的人脸检测模型。 |
+| **ResNet SSD Config** | 配合上述 DNN 模型的网络结构定义 | `storage/models/opencv_face_detector.pbtxt`<br>*(部署时手动下载)* | PBTXT | [OpenCV Extra](https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/opencv_face_detector.pbtxt) | Apache 2.0 | - |
+
+> **注意：** DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将上述 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的 `/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。
+
 ## 核心第三方组件
 
 ### OpenCV / opencv_contrib
