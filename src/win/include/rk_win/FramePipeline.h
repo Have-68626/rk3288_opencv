@@ -71,6 +71,30 @@ struct CameraSwitchResult {
     std::string reason;
 };
 
+struct ModelSnapshot {
+
+    std::string id;
+
+    std::string displayName;
+
+    std::string taskType;
+
+    std::string configuredPath;
+
+    std::string resolvedPath;
+
+    std::string backend;
+
+    std::string modelVersion;
+
+    std::string status;
+
+    bool isInUse = false;
+
+    std::string lastError;
+
+};
+
 struct FacesSnapshot {
     std::vector<FaceMatch> faces;
     int frameWidth = 0;
@@ -113,6 +137,8 @@ public:
 
     bool lastErrorIsPrivacyDenied() const;
     void openPrivacySettings() const;
+
+    std::vector<ModelSnapshot> getActiveModels() const { std::lock_guard<std::mutex> lock(modelsMu_); return activeModels_; }
 
 private:
     void captureLoop();
@@ -187,6 +213,10 @@ private:
     std::atomic<bool> clearDbRequested_{false};
 
     std::atomic<bool> lastPrivacyDenied_{false};
+
+    mutable std::mutex modelsMu_;
+
+    std::vector<ModelSnapshot> activeModels_;
 };
 
 }  // namespace rk_win
