@@ -1,4 +1,5 @@
 #include "rk_win/DnnSsdFaceDetector.h"
+#include "FileHash.h"
 
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 
 namespace rk_win {
 
@@ -65,6 +67,14 @@ bool DnnSsdFaceDetector::initialize(const DnnSsdConfig& cfg, std::string& error)
         error = "dnn.model_path 为空";
         shutdown();
         return false;
+    }
+
+    std::string hash = rk_wcfr::calculateSHA256(impl_->cfg.modelPath);
+    if (hash.empty()) {
+        std::cerr << "[Self-Check] ERROR: Failed to read DNN model: " << impl_->cfg.modelPath << std::endl;
+        std::cerr << "[Self-Check] Please download the model and place it in the correct directory." << std::endl;
+    } else {
+        std::cout << "[Self-Check] Loaded DNN model: " << impl_->cfg.modelPath << " | SHA256: " << hash << std::endl;
     }
 
     try {

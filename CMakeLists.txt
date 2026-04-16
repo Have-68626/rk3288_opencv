@@ -455,6 +455,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/FramePipeline.cpp"
             "src/win/src/EventLogger.cpp"
+            "src/cpp/src/FileHash.cpp"
         )
 
         target_include_directories(win_local_service PRIVATE

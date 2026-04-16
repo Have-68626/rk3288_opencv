@@ -1,4 +1,5 @@
 #include "YoloFaceDetector.h"
+#include "FileHash.h"
 
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
@@ -254,6 +255,14 @@ public:
                 return false;
             }
 
+            std::string hash = rk_wcfr::calculateSHA256(spec.modelPath);
+            if (hash.empty()) {
+                std::cerr << "[Self-Check] ERROR: Failed to read YOLO model: " << spec.modelPath << std::endl;
+                std::cerr << "[Self-Check] Please download the model and place it in the correct directory." << std::endl;
+            } else {
+                std::cout << "[Self-Check] Loaded YOLO model: " << spec.modelPath << " | SHA256: " << hash << std::endl;
+            }
+
             if (!spec.framework.empty()) {
                 net_ = cv::dnn::readNet(spec.modelPath, spec.configPath, spec.framework);
             } else if (!spec.configPath.empty()) {
@@ -355,6 +364,14 @@ public:
         if (ncnnSpec_.paramPath.empty() || ncnnSpec_.binPath.empty()) {
             err = "ncnn_param_or_bin_empty";
             return false;
+        }
+
+        std::string hashBin = rk_wcfr::calculateSHA256(ncnnSpec_.binPath);
+        if (hashBin.empty()) {
+            std::cerr << "[Self-Check] ERROR: Failed to read NCNN YOLO bin: " << ncnnSpec_.binPath << std::endl;
+            std::cerr << "[Self-Check] Please download the model and place it in the correct directory." << std::endl;
+        } else {
+            std::cout << "[Self-Check] Loaded NCNN YOLO bin: " << ncnnSpec_.binPath << " | SHA256: " << hashBin << std::endl;
         }
 
         try {

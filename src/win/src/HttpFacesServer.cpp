@@ -484,6 +484,7 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
                 am.o["configuredPath"] = JsonValue::makeString(mSnap.configuredPath);
                 am.o["resolvedPath"] = JsonValue::makeString(mSnap.resolvedPath);
                 am.o["backend"] = JsonValue::makeString(mSnap.backend);
+                if (!mSnap.hash.empty()) am.o["hash"] = JsonValue::makeString(mSnap.hash);
                 am.o["status"] = JsonValue::makeString(mSnap.status);
                 am.o["isInUse"] = JsonValue::makeBool(mSnap.isInUse);
                 if (!mSnap.modelVersion.empty()) am.o["modelVersion"] = JsonValue::makeString(mSnap.modelVersion);
