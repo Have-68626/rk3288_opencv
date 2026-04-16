@@ -1,0 +1,12 @@
+# deps/rk_mpp
+
+此目录用于存放 RK MPP 的一次性依赖（headers/libs），以减少开发阶段重复编译与重复拉取依赖。
+
+建议结构：
+- include/rockchip/...
+- lib/<abi-or-platform>/...
+
+构建行为：
+- CMake 默认开启 RK MPP 编译开关（`RK_ENABLE_MPP=ON`）。
+- 若未检测到 `include/rockchip/rk_mpi.h`，将自动降级为占位实现（运行期回退 CPU），并输出 warning 日志。
+
