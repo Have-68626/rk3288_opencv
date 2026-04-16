@@ -32,6 +32,12 @@
 - 许可证：MIT License
   - *注意*：附带的 MD5 实现文件 `src/win/third_party/civetweb/src/md5.inl`（由 L. Peter Deutsch 编写）使用 **zlib License**。
 
+### FFmpegKit
+- 用途：Android 侧 RTMP 推流（`FfmpegRtmpPusher` 按需动态加载）
+- 来源：https://github.com/arthenica/ffmpeg-kit
+- 许可证：LGPL 3.0 或 GPL 3.0（取决于用户提供的预编译版本，本项目默认不包含或仅使用其 API 包装）
+- 依赖位置：预期置于 `app/libs/ffmpeg-kit.aar` 供 Android Gradle 项目集成
+
 ### Web 前端（React + Ant Design + Vite）
 - 用途：浏览器 SPA（本地控制台 UI）
 - 目录：`web/`（构建产物输出到 `src/win/app/webroot/` 供本地服务托管）
