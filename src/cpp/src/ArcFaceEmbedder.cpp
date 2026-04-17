@@ -232,15 +232,13 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         cv::resize(alignedFaceBgr, resized, cv::Size(cfg_.inputW, cfg_.inputH), 0, 0, cv::INTER_LINEAR);
 
         cv::Mat src = resized;
-        if (cfg_.swapRB) {
-            cv::Mat rgb;
-            cv::cvtColor(resized, rgb, cv::COLOR_BGR2RGB);
-            src = std::move(rgb);
+        if (!src.isContinuous()) {
+            src = src.clone();
         }
 
         const int w = cfg_.inputW;
         const int h = cfg_.inputH;
-        ncnn::Mat in = ncnn::Mat::from_pixels(src.data, cfg_.swapRB ? ncnn::Mat::PIXEL_RGB : ncnn::Mat::PIXEL_BGR, w, h);
+        ncnn::Mat in = ncnn::Mat::from_pixels(src.data, cfg_.swapRB ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_BGR, w, h);
 
         float meanVals[3];
         if (cfg_.swapRB) {
