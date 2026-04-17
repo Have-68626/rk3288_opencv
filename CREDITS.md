@@ -38,6 +38,11 @@
 - 来源：https://chromium.googlesource.com/libyuv/libyuv
 - 许可证：BSD 3-Clause License
 
+### Rockchip MPP
+- 用途：RK3288 硬件加速解码与图像处理（按需编译）
+- 来源：Rockchip 官方开源组件（本仓库 vendor：`deps/rk_mpp/`，含 headers/libs）
+- 许可证：Apache License 2.0（以其官方开源许可为准）
+
 ### CivetWeb
 - 用途：Windows 本地 HTTP 服务（localhost REST + 静态托管 + OpenAPI）
 - 来源：https://github.com/civetweb/civetweb（本仓库 vendor：`src/win/third_party/civetweb/`，版本：v1.16）
