@@ -166,6 +166,16 @@
         "aaSamples": { "type": "number", "minimum": 1, "maximum": 16 },
         "anisoLevel": { "type": "number", "minimum": 1, "maximum": 16 }
       }
+    },
+    "acceleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enableOpenCL", "enableMpp", "enableQualcomm"],
+      "properties": {
+        "enableOpenCL": { "type": "boolean" },
+        "enableMpp": { "type": "boolean" },
+        "enableQualcomm": { "type": "boolean" }
+      }
     }
   }
 }
