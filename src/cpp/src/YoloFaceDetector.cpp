@@ -4,6 +4,8 @@
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <iostream>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>

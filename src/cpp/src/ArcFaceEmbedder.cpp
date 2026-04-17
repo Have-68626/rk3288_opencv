@@ -1,5 +1,7 @@
 #include "ArcFaceEmbedder.h"
 
+#include "NativeLog.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>

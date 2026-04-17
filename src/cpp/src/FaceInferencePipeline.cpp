@@ -4,6 +4,8 @@
 #include "../include/FaceInferencePipeline.h"
 #endif
 
+#include "NativeLog.h"
+
 #if __has_include(<opencv2/core.hpp>) && __has_include(<opencv2/imgcodecs.hpp>)
 #define RK_CPP_HAS_OPENCV 1
 #include <opencv2/core.hpp>

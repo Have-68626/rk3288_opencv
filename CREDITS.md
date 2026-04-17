@@ -2,6 +2,33 @@
 
 本文件用于记录本项目使用的第三方依赖、来源与许可证信息，便于审计与合规。
 
+## 依赖状态检查清单
+
+### ✅ 已满足（已安装或已在仓库）
+| 依赖 | 位置 | 备注 |
+|--|--|--|
+| OpenCV 4.10.0 | `D:\ProgramData\OpenCV\opencv-4.10.0` | Android/Windows 编译可用 |
+| NCNN | `D:\ProgramData\NCNN\ncnn-20260113-*` | 已下载 Windows & Android 版本 |
+| Android NDK 27.0 | `D:\ProgramData\AndroidStudioSDK\ndk\27.0.12077973` | Android 编译 ✅ |
+| Gradle 9.0 | 内置 `gradlew.bat` | Android 构建 ✅ |
+| Node.js 22.17.1 + pnpm | 系统环境 | Web 前端 ✅ |
+| CMake 3.22.1 | 系统环境 | 编译配置 ✅ |
+| LBP Cascade File | `app/src/main/assets/lbpcascade_frontalface.xml` | Android/Windows 人脸识别可用 |
+| RK MPP (可选) | `D:\ProgramData\rkmpp\mpp-1.0.11` | 硬件加速选项，已自动回退 |
+
+### ❌ 缺失（阻断部分功能，需手动补充）
+| 缺口 | 影响范围 | 需求操作 | 参考位置 |
+|--|--|--|--|
+| **DNN 模型文件** | Windows 人脸检测（DNN 后端） | 下载 `.pb` + `.pbtxt` 文件至 `storage/models/` 或通过 Web UI 配置路径 | [Model_Inventory.md](Model_Inventory.md), [config/windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini) |
+| **Windows CMake HDF5 架构冲突** | Windows 原生构建（可选） | 方案 A：重建 x64 生成器目录；方案 B：`-DBUILD_opencv_hdf=OFF` | [CMakeLists.txt](CMakeLists.txt) |
+
+### ⚠️ 可选（缺失时自动回退，不阻断核心功能）
+| 依赖 | 用途 | 现状 | 回退方案 |
+|--|--|--|--|
+| **Qualcomm SDK** | Android Qualcomm 推理加速 | 未检测到 | 自动使用 CPU 推理（CMake 第 48 行警告） |
+| **RK MPP 头文件** | RK3288 硬件解码加速 | 已下载但未配置环境变量 | 自动使用 CPU 解码（CMake 第 34 行警告） |
+| **FFmpegKit AAR** | Android RTMP 推流功能 | `app/libs/ffmpeg-kit.aar` 不存在 | 禁用 RTMP 推流（可选功能，不影响核心识别） |
+
 ## 模型台账与依赖 (Model Inventory)
 
 本项目在运行人脸检测与识别功能时，依赖多个人工智能模型。
@@ -12,7 +39,7 @@
 - **ResNet SSD Face Detector (8-bit)**: Apache 2.0
 - **ResNet SSD Config**: Apache 2.0
 
-> **注意：** DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将上述 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的 `/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。
+> **⚠️ 注意：** DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将上述 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的 `/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。详见上方"缺失（❌）"清单。
 
 ## 核心第三方组件
 
