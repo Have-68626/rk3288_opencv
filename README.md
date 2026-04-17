@@ -42,11 +42,26 @@ rk3288_opencv/
     └── reports/          # CI 报告与审查日志输出目录
 ```
 
-## 🛠️ 依赖列表
+## 🛠️ 依赖列表与状态检查
 
-*   Windows / Linux 开发环境
-*   Android NDK (推荐 r23c)
-*   OpenCV 4.10.0 Android SDK
+> 📋 **完整的依赖状态检查清单（包含已满足、缺失、可选）请参阅 [CREDITS.md#依赖状态检查清单](CREDITS.md#依赖状态检查清单)。**
+
+### 已满足（可开始构建）
+- ✅ Windows 开发环境（VS 2022）
+- ✅ Android NDK 27.0 及以上
+- ✅ OpenCV 4.10.0（位于 `D:\ProgramData\OpenCV\`）
+- ✅ CMake 3.22.1 及以上
+- ✅ Gradle 9.0（内置 `gradlew.bat`）
+- ✅ Node.js 22.x 及以上（含 pnpm 10.x）
+
+### ❌ 缺失（仅影响特定功能）
+- **DNN 模型文件**（影响 Windows DNN 人脸检测）：需下载 `.pb` + `.pbtxt` 至 `storage/models/` 或通过 Web UI 配置
+  - 详见 [Model_Inventory.md](Model_Inventory.md) 与 [config/windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)
+
+### ⚠️ 可选（自动回退，不阻断核心功能）
+- **RK MPP**（硬件解码加速）：已下载至 `D:\ProgramData\rkmpp`，需配置 CMake 环境后启用
+- **Qualcomm SDK**（推理加速）：缺失时自动回退 CPU 推理
+- **FFmpegKit AAR**（RTMP 推流）：仅 Android 远程推流需要，核心识别不需要
 
 ## 🚀 快速开始
 

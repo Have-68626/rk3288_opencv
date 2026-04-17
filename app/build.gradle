@@ -116,6 +116,9 @@ dependencies {
 
     testImplementation 'junit:junit:4.13.2'
 
+    // ⚠️ FFmpegKit AAR（可选，仅 RTMP 推流需要）
+    // 如果 app/libs/ffmpeg-kit.aar 不存在，RTMP 推流功能将被禁用，但不影响核心人脸识别功能。
+    // 详见 CREDITS.md#可选（⚠️）清单
     def ffmpegKitAar = file('libs/ffmpeg-kit.aar')
     if (ffmpegKitAar.exists()) {
         implementation(files(ffmpegKitAar))
