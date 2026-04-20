@@ -214,25 +214,30 @@ export function PreviewPage() {
           </Form.Item>
 
           <Space wrap>
-            <Button
-              type="primary"
-              onClick={async () => {
-                try {
-                  setIsEnrolling(true)
-                  await enroll(prefs, { personId })
-                  message.success('注册指令已发送')
-                  setPersonId('')
-                } catch (e: unknown) {
-                  message.error((e as Error)?.message || '注册失败')
-                } finally {
-                  setIsEnrolling(false)
-                }
-              }}
-              disabled={!personId.trim()}
-              loading={isEnrolling}
-            >
-              注册
-            </Button>
+            <Tooltip title={!personId.trim() ? "请输入注册 personId" : ""}>
+              <span style={{ display: 'inline-block', cursor: !personId.trim() ? 'not-allowed' : 'auto' }}>
+                <Button
+                  type="primary"
+                  onClick={async () => {
+                    try {
+                      setIsEnrolling(true)
+                      await enroll(prefs, { personId })
+                      message.success('注册指令已发送')
+                      setPersonId('')
+                    } catch (e: unknown) {
+                      message.error((e as Error)?.message || '注册失败')
+                    } finally {
+                      setIsEnrolling(false)
+                    }
+                  }}
+                  disabled={!personId.trim()}
+                  loading={isEnrolling}
+                  style={!personId.trim() ? { pointerEvents: 'none' } : undefined}
+                >
+                  注册
+                </Button>
+              </span>
+            </Tooltip>
             <Popconfirm
               title="警告：此操作不可恢复"
               description="确认清空所有人脸库数据？"
