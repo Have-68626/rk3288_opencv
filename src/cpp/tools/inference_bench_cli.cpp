@@ -433,10 +433,10 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   int okIters = 0;
   int errIters = 0;
 
+  cv::Mat iterBlob = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      cv::Mat iterBlob = doPreprocess();
       const auto t1 = clock::now();
       net.setInput(iterBlob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
@@ -597,10 +597,10 @@ static std::optional<Record> runQualcommBench(const Args &args,
   int okIters = 0;
   int errIters = 0;
 
+  cv::Mat iterBlob = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      cv::Mat iterBlob = doPreprocess();
       const auto t1 = clock::now();
       net.setInput(iterBlob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
