@@ -214,9 +214,11 @@ export function PreviewPage() {
           </Form.Item>
 
           <Space wrap>
-            <Button
-              type="primary"
-              onClick={async () => {
+            <Tooltip title={!personId.trim() ? "需输入 personId 才能注册" : ""}>
+              <span>
+                <Button
+                  type="primary"
+                  onClick={async () => {
                 try {
                   setIsEnrolling(true)
                   await enroll(prefs, { personId })
@@ -230,9 +232,12 @@ export function PreviewPage() {
               }}
               disabled={!personId.trim()}
               loading={isEnrolling}
+              style={!personId.trim() ? { pointerEvents: 'none' } : undefined}
             >
               注册
             </Button>
+              </span>
+            </Tooltip>
             <Popconfirm
               title="警告：此操作不可恢复"
               description="确认清空所有人脸库数据？"
