@@ -2314,7 +2314,7 @@ if __name__ == "__main__":
 14. MediaPipe Tasks: Vision（Face Detector / Face Landmarker）  
     https://ai.google.dev/edge/mediapipe/solutions/guide#vision
 15. ArcSoft（虹软）人脸识别 SDK（ArcFace）  
-    https://www.arcsoft.com.cn/
+    （访问受限，请在搜索引擎中查找“虹软 ArcFace 官网”）
 16. 百度智能云：人脸识别  
     https://ai.baidu.com/tech/face
 17. 腾讯云：人脸识别/优图（按产品线）  
