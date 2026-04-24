@@ -236,6 +236,10 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
             src = src.clone();
         }
 
+        // 为什么这样做：避免在紧凑的推理循环中使用 cv::cvtColor 产生冗余的内存分配和深拷贝，使用 ncnn 的原生像素格式转换。
+        // 坑：ncnn 内部处理时，从 BGR 转 RGB 是在 ncnn::Mat 创建时转换好的，所以给到的 meanVals 需要匹配转换后的通道顺序 (R,G,B)。
+        // 影响范围：ArcFace 特征提取管线的预处理阶段。
+        // 回滚方式：恢复为 cv::cvtColor 并在 ncnn::Mat::from_pixels 传入 PIXEL_RGB。
         const int w = cfg_.inputW;
         const int h = cfg_.inputH;
         ncnn::Mat in = ncnn::Mat::from_pixels(src.data, cfg_.swapRB ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_BGR, w, h);
