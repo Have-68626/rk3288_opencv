@@ -433,11 +433,11 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   int okIters = 0;
   int errIters = 0;
 
-  cv::Mat preprocessedBlob = doPreprocess();
+  cv::Mat iterBlob = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      cv::Mat iterBlob = preprocessedBlob; // Avoid redundant preprocessing in loop
+      // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
       net.setInput(iterBlob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
@@ -598,11 +598,11 @@ static std::optional<Record> runQualcommBench(const Args &args,
   int okIters = 0;
   int errIters = 0;
 
-  cv::Mat preprocessedBlob = doPreprocess();
+  cv::Mat iterBlob = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      cv::Mat iterBlob = preprocessedBlob; // Avoid redundant preprocessing in loop
+      // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
       net.setInput(iterBlob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
@@ -769,11 +769,11 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   int errIters = 0;
 
   ncnn::Extractor ex = net.create_extractor();
+  ncnn::Mat iterIn = doPreprocess();
 
-  ncnn::Mat preprocessedIn = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     const auto t0 = clock::now();
-    ncnn::Mat iterIn = preprocessedIn; // Avoid redundant preprocessing in loop
+    // Preprocessing hoisted outside loop to prevent redundant memory allocations
     const auto t1 = clock::now();
 
     if (ex.input(args.ncnnInput.c_str(), iterIn) == 0) {
