@@ -240,6 +240,10 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.display.aaSamples = readIniInt(cfg.configPath, L"display", L"aa_samples", cfg.display.aaSamples);
     cfg.display.anisoLevel = readIniInt(cfg.configPath, L"display", L"aniso_level", cfg.display.anisoLevel);
 
+    cfg.acceleration.enableOpenCL = readIniBool(cfg.configPath, L"acceleration", L"enable_opencl", cfg.acceleration.enableOpenCL);
+    cfg.acceleration.enableMpp = readIniBool(cfg.configPath, L"acceleration", L"enable_mpp", cfg.acceleration.enableMpp);
+    cfg.acceleration.enableQualcomm = readIniBool(cfg.configPath, L"acceleration", L"enable_qualcomm", cfg.acceleration.enableQualcomm);
+
     return cfg;
 }
 
@@ -306,6 +310,10 @@ bool saveConfigToIni(const AppConfig& cfg) {
 
     ok = writeIniW(cfg.configPath, L"display", L"aa_samples", toWStringInt(cfg.display.aaSamples)) && ok;
     ok = writeIniW(cfg.configPath, L"display", L"aniso_level", toWStringInt(cfg.display.anisoLevel)) && ok;
+
+    ok = writeIniW(cfg.configPath, L"acceleration", L"enable_opencl", toWStringInt(cfg.acceleration.enableOpenCL ? 1 : 0)) && ok;
+    ok = writeIniW(cfg.configPath, L"acceleration", L"enable_mpp", toWStringInt(cfg.acceleration.enableMpp ? 1 : 0)) && ok;
+    ok = writeIniW(cfg.configPath, L"acceleration", L"enable_qualcomm", toWStringInt(cfg.acceleration.enableQualcomm ? 1 : 0)) && ok;
 
     return ok;
 }
