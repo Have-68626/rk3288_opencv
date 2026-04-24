@@ -232,7 +232,9 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         cv::resize(alignedFaceBgr, resized, cv::Size(cfg_.inputW, cfg_.inputH), 0, 0, cv::INTER_LINEAR);
 
         cv::Mat src = resized;
-        if (!src.isContinuous()) src = src.clone();
+        if (!src.isContinuous()) {
+            src = src.clone();
+        }
 
         // 为什么这样做：避免在紧凑的推理循环中使用 cv::cvtColor 产生冗余的内存分配和深拷贝，使用 ncnn 的原生像素格式转换。
         // 坑：ncnn 内部处理时，从 BGR 转 RGB 是在 ncnn::Mat 创建时转换好的，所以给到的 meanVals 需要匹配转换后的通道顺序 (R,G,B)。

@@ -19,6 +19,7 @@
 ## 2026-04-12 - Benchmark Pure Inference Timing Boundary
 **Learning:** Including model input setup functions (like `net.setInput` or `ex.input`) and extractor creation inside the performance timing boundary introduces overhead and noise (jitter). This inflates measurements intended to capture purely the forward-pass or execution time of the network.
 **Action:** When measuring model inference latency, strictly bind the timer immediately before the actual forward execution (e.g., `net.forward()` or `ex.extract()`) and immediately after, excluding any state initialization or memory copying overhead from the measurement.
-## 2025-04-18 - Avoid redundant cv::cvtColor allocation in ncnn inference
-**Learning:** cv::cvtColor creates a new cv::Mat with new memory allocations in tight inference loop in ArcFaceEmbedder.cpp. This causes performance bottleneck and memory overhead.
-**Action:** Use NCNN's native pixel conversion flags (e.g., `ncnn::Mat::PIXEL_BGR2RGB`) within `ncnn::Mat::from_pixels()` to swap color channels without cv::cvtColor. Ensure the `meanVals` channel order matches the input pixel format (e.g., R,G,B for PIXEL_BGR2RGB), and verify the source `cv::Mat` is continuous outside the loop (`!bgr.isContinuous() -> bgr = bgr.clone()`).
+
+## 2026-04-17 - Avoid cv::cvtColor for NCNN Pixel Conversion
+**Learning:** Using `cv::cvtColor` to swap color channels (e.g., BGR to RGB) before passing a `cv::Mat` to NCNN introduces redundant memory allocation and copy overhead per frame. This is a common bottleneck in tight inference loops.
+**Action:** Use NCNN's native pixel conversion flags (e.g., `ncnn::Mat::PIXEL_BGR2RGB`) within `ncnn::Mat::from_pixels()` directly. Ensure the input `cv::Mat` is continuous (`isContinuous()`) before conversion to avoid access violations.
