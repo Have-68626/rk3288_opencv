@@ -219,7 +219,7 @@ export function PreviewPage() {
           </Form.Item>
 
           <Space wrap>
-            <Tooltip title={!personId.trim() ? "请输入要注册的 personId" : ""}>
+            <Tooltip title={!personId.trim() ? '请输入 personId 后方可注册' : ''}>
               <span>
                 <Button
                   type="primary"
