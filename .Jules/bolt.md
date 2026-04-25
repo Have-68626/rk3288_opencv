@@ -19,3 +19,10 @@
 ## 2026-04-12 - Benchmark Pure Inference Timing Boundary
 **Learning:** Including model input setup functions (like `net.setInput` or `ex.input`) and extractor creation inside the performance timing boundary introduces overhead and noise (jitter). This inflates measurements intended to capture purely the forward-pass or execution time of the network.
 **Action:** When measuring model inference latency, strictly bind the timer immediately before the actual forward execution (e.g., `net.forward()` or `ex.extract()`) and immediately after, excluding any state initialization or memory copying overhead from the measurement.
+
+## 2026-04-17 - Avoid cv::cvtColor for NCNN Pixel Conversion
+**Learning:** Using `cv::cvtColor` to swap color channels (e.g., BGR to RGB) before passing a `cv::Mat` to NCNN introduces redundant memory allocation and copy overhead per frame. This is a common bottleneck in tight inference loops.
+**Action:** Use NCNN's native pixel conversion flags (e.g., `ncnn::Mat::PIXEL_BGR2RGB`) within `ncnn::Mat::from_pixels()` directly. Ensure the input `cv::Mat` is continuous (`isContinuous()`) before conversion to avoid access violations.
+## 2025-01-20 - YUV420 to I420 Conversion Pointer Optimization
+**Learning:** Double loops with indexing and multiplications (`col * yPixelStride`) inside tight inner loops for YUV420 pixel extraction generate redundant instructions and prevent compiler vectorization, slowing down end-to-end frame decoding times.
+**Action:** Use sequential pointer arithmetic to traverse image rows and pixels, moving the pointer directly rather than recalculating the memory offset on every iteration.

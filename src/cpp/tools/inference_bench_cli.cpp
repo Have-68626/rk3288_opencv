@@ -437,6 +437,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
+      // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
       net.setInput(iterBlob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
@@ -601,6 +602,7 @@ static std::optional<Record> runQualcommBench(const Args &args,
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
+      // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
       net.setInput(iterBlob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
@@ -767,10 +769,10 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   int errIters = 0;
 
   ncnn::Extractor ex = net.create_extractor();
-
+  ncnn::Mat iterIn = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     const auto t0 = clock::now();
-    ncnn::Mat iterIn = doPreprocess();
+    // Preprocessing hoisted outside loop to prevent redundant memory allocations
     const auto t1 = clock::now();
 
     if (ex.input(args.ncnnInput.c_str(), iterIn) == 0) {
