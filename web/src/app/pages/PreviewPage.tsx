@@ -204,35 +204,44 @@ export function PreviewPage() {
 
           <Divider style={{ margin: '12px 0' }} />
 
-          <Form.Item label="注册 personId" htmlFor="preview-person-id">
+          <Form.Item
+            label="注册 personId"
+            htmlFor="preview-person-id"
+            extra="人脸特征将与此 ID 绑定。请确保上方预览画面中人脸清晰可见。"
+          >
             <Input
               id="preview-person-id"
               value={personId}
+              maxLength={32}
               onChange={(e) => setPersonId(e.target.value)}
               placeholder="例如：alice"
             />
           </Form.Item>
 
           <Space wrap>
-            <Button
-              type="primary"
-              onClick={async () => {
-                try {
-                  setIsEnrolling(true)
-                  await enroll(prefs, { personId })
-                  message.success('注册指令已发送')
-                  setPersonId('')
-                } catch (e: unknown) {
-                  message.error((e as Error)?.message || '注册失败')
-                } finally {
-                  setIsEnrolling(false)
-                }
-              }}
-              disabled={!personId.trim()}
-              loading={isEnrolling}
-            >
-              注册
-            </Button>
+            <Tooltip title={!personId.trim() ? '请输入要注册的 personId' : ''}>
+              <span style={{ display: 'inline-block' }}>
+                <Button
+                  type="primary"
+                  onClick={async () => {
+                    try {
+                      setIsEnrolling(true)
+                      await enroll(prefs, { personId })
+                      message.success('注册指令已发送')
+                      setPersonId('')
+                    } catch (e: unknown) {
+                      message.error((e as Error)?.message || '注册失败')
+                    } finally {
+                      setIsEnrolling(false)
+                    }
+                  }}
+                  disabled={!personId.trim()}
+                  loading={isEnrolling}
+                >
+                  注册
+                </Button>
+              </span>
+            </Tooltip>
             <Popconfirm
               title="警告：此操作不可恢复"
               description="确认清空所有人脸库数据？"
