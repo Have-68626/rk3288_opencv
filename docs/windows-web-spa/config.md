@@ -1,9 +1,9 @@
 # 配置说明（config.json）
 
 ## 文件位置
-- 配置文件：`%APPDATA%\rk_wcfr\config.json`
-- 备份文件：`%APPDATA%\rk_wcfr\config.json.bak`
-- 密钥文件（DPAPI 保护）：`%APPDATA%\rk_wcfr\config.key.dpapi`
+- 配置文件：`%APPDATA%\rk_wcfr\config.json` （可通过 `RK_WCFR_CONFIG` 环境变量覆盖）
+- 备份文件：`%APPDATA%\rk_wcfr\config.json.bak` （若覆盖配置路径，则备份文件在其同级目录）
+- 密钥文件（DPAPI 保护）：`%APPDATA%\rk_wcfr\config.key.dpapi` （同上，伴随配置路径生成）
 
 ## 校验（JSON Schema）
 - Schema 文件：`docs/windows-web-spa/config.schema.json`
