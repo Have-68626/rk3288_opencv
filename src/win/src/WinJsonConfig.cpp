@@ -594,8 +594,9 @@ WinJsonConfigStore::~WinJsonConfigStore() {
 
 std::filesystem::path WinJsonConfigStore::defaultConfigPath() {
     const std::wstring envPath = getEnvW(L"RK_WCFR_CONFIG");
-    if (!envPath.empty()) return std::filesystem::path(envPath);
-
+    if (!envPath.empty()) {
+        return std::filesystem::path(envPath);
+    }
     const std::wstring appdata = getEnvW(L"APPDATA");
     std::filesystem::path base = appdata.empty() ? std::filesystem::current_path() : std::filesystem::path(appdata);
     base /= kProductNameW;
