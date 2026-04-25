@@ -219,8 +219,8 @@ export function PreviewPage() {
           </Form.Item>
 
           <Space wrap>
-            <Tooltip title={!personId.trim() ? '请输入 personId 后方可注册' : ''}>
-              <span>
+            <Tooltip title={!personId.trim() ? '请输入要注册的 personId' : ''}>
+              <span style={{ display: 'inline-block' }}>
                 <Button
                   type="primary"
                   onClick={async () => {
@@ -237,7 +237,6 @@ export function PreviewPage() {
                   }}
                   disabled={!personId.trim()}
                   loading={isEnrolling}
-                  style={{ pointerEvents: !personId.trim() ? 'none' : 'auto' }}
                 >
                   注册
                 </Button>
