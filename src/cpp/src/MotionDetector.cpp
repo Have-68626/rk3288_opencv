@@ -19,7 +19,7 @@ bool MotionDetector::detect(const cv::Mat& currentFrame) {
     cv::GaussianBlur(grayFrame, blurredFrame, cv::Size(21, 21), 0);
 
     if (prevFrame.empty()) {
-        blurredFrame.copyTo(prevFrame);
+        cv::swap(blurredFrame, prevFrame);
         return false;
     }
 
@@ -31,7 +31,7 @@ bool MotionDetector::detect(const cv::Mat& currentFrame) {
     cv::threshold(diff, motionMask, Config::MOTION_THRESHOLD, 255, cv::THRESH_BINARY);
 
     // Update previous frame
-    blurredFrame.copyTo(prevFrame);
+    cv::swap(blurredFrame, prevFrame);
 
     // Count non-zero pixels to determine if motion is significant
     int changedPixels = cv::countNonZero(motionMask);
