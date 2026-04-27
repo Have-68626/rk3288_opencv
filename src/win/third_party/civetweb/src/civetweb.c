@@ -2062,7 +2062,7 @@ enum {
 static const struct mg_option config_options[] = {
 
     /* Once for each server */
-    {"listening_ports", MG_CONFIG_TYPE_STRING_LIST, "8080"},
+    {"listening_ports", MG_CONFIG_TYPE_STRING_LIST, "127.0.0.1:8080"},
     {"num_threads", MG_CONFIG_TYPE_NUMBER, "50"},
     {"run_as_user", MG_CONFIG_TYPE_STRING, NULL},
     {"tcp_nodelay", MG_CONFIG_TYPE_NUMBER, "0"},
