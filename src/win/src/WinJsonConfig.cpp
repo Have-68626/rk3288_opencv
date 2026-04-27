@@ -279,8 +279,8 @@ static JsonValue schemaSettingsDoc() {
         dp.o["enable"] = objBool();
         dp.o["modelPath"] = objStr();
         dp.o["configPath"] = objStr();
-        dp.o["inputWidth"] = objBoolInt(true, 1, 4096);
-        dp.o["inputHeight"] = objBoolInt(true, 1, 4096);
+        dp.o["inputWidth"] = objBoolInt(true, 1, 8192);
+        dp.o["inputHeight"] = objBoolInt(true, 1, 8192);
         dp.o["scale"] = objBoolInt(false, 0, 0);  // number，无范围
         dp.o["meanB"] = objBoolInt(true, 0, 255);
         dp.o["meanG"] = objBoolInt(true, 0, 255);
