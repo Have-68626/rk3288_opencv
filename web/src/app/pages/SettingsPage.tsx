@@ -11,6 +11,7 @@ import {
   Switch,
   Space,
   Tabs,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -373,45 +374,66 @@ export function SettingsPage() {
 
           <div style={{ marginTop: 12 }}>
             <Space>
-              <Button
-                type="primary"
-                htmlType="submit"
-                loading={serverSettings.status === 'loading'}
-              >
-                保存到后端
-              </Button>
-              <Popconfirm
-                title="高危操作：确认轮换密钥？"
-                description="旧密钥将立即失效，所有包含敏感信息的字段会被重新加密。"
-                okText="确认轮换"
-                cancelText="取消"
-                okButtonProps={{ danger: true, loading: isRotatingKey }}
-                onConfirm={async () => {
-                  try {
-                    setIsRotatingKey(true)
-                    await rotateCryptoKey(prefs)
-                    message.success('已触发密钥轮换（敏感字段已重新加密）')
-                    refreshServerSettings()
-                  } catch (e: unknown) {
-                    message.error((e as Error)?.message || '密钥轮换失败')
-                  } finally {
-                    setIsRotatingKey(false)
-                  }
-                }}
-                disabled={!serverSettings.data}
-              >
-                <Button loading={isRotatingKey} disabled={!serverSettings.data} danger>
-                  轮换密钥
-                </Button>
-              </Popconfirm>
-              <Button
-                onClick={() => {
-                  if (serverBaseline) serverForm.setFieldsValue(serverBaseline)
-                  message.info('已恢复为上次拉取/保存的值')
-                }}
-              >
-                恢复
-              </Button>
+              <Tooltip title={!serverSettings.data ? '尚未加载后端设置，无法保存' : ''}>
+                <span>
+                  <Button
+                    type="primary"
+                    htmlType="submit"
+                    loading={serverSettings.status === 'loading'}
+                    disabled={!serverSettings.data}
+                    style={{ pointerEvents: !serverSettings.data ? 'none' : 'auto' }}
+                  >
+                    保存到后端
+                  </Button>
+                </span>
+              </Tooltip>
+              <Tooltip title={!serverSettings.data ? '尚未加载后端设置，无法轮换密钥' : ''}>
+                <span>
+                  <Popconfirm
+                    title="高危操作：确认轮换密钥？"
+                    description="旧密钥将立即失效，所有包含敏感信息的字段会被重新加密。"
+                    okText="确认轮换"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true, loading: isRotatingKey }}
+                    onConfirm={async () => {
+                      try {
+                        setIsRotatingKey(true)
+                        await rotateCryptoKey(prefs)
+                        message.success('已触发密钥轮换（敏感字段已重新加密）')
+                        refreshServerSettings()
+                      } catch (e: unknown) {
+                        message.error((e as Error)?.message || '密钥轮换失败')
+                      } finally {
+                        setIsRotatingKey(false)
+                      }
+                    }}
+                    disabled={!serverSettings.data}
+                  >
+                    <Button
+                      loading={isRotatingKey}
+                      disabled={!serverSettings.data}
+                      danger
+                      style={{ pointerEvents: !serverSettings.data ? 'none' : 'auto' }}
+                    >
+                      轮换密钥
+                    </Button>
+                  </Popconfirm>
+                </span>
+              </Tooltip>
+              <Tooltip title={!serverBaseline ? '尚未加载基线数据，无法恢复' : ''}>
+                <span>
+                  <Button
+                    disabled={!serverBaseline}
+                    style={{ pointerEvents: !serverBaseline ? 'none' : 'auto' }}
+                    onClick={() => {
+                      if (serverBaseline) serverForm.setFieldsValue(serverBaseline)
+                      message.info('已恢复为上次拉取/保存的值')
+                    }}
+                  >
+                    恢复
+                  </Button>
+                </span>
+              </Tooltip>
             </Space>
           </div>
         </Form>
