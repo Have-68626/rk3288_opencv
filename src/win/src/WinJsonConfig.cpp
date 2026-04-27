@@ -282,13 +282,13 @@ static JsonValue schemaSettingsDoc() {
         dp.o["inputWidth"] = objBoolInt(true, 1, 8192);
         dp.o["inputHeight"] = objBoolInt(true, 1, 8192);
         dp.o["scale"] = objBoolInt(false, 0, 0);  // number，无范围
-        dp.o["meanB"] = objBoolInt(true, 0, 255);
-        dp.o["meanG"] = objBoolInt(true, 0, 255);
-        dp.o["meanR"] = objBoolInt(true, 0, 255);
+        dp.o["meanB"] = objBoolInt(false, 0, 0);
+        dp.o["meanG"] = objBoolInt(false, 0, 0);
+        dp.o["meanR"] = objBoolInt(false, 0, 0);
         dp.o["swapRB"] = objBool();
         dp.o["confThreshold"] = objBoolInt(true, 0.0, 1.0);
-        dp.o["backend"] = objBoolInt(true, 0, 999);
-        dp.o["target"] = objBoolInt(true, 0, 999);
+        dp.o["backend"] = objBoolInt(false, 0, 0);
+        dp.o["target"] = objBoolInt(false, 0, 0);
         d.o["properties"] = std::move(dp);
         props.o["dnn"] = std::move(d);
     }
@@ -389,8 +389,8 @@ static JsonValue schemaSettingsDoc() {
         d.o["required"] = std::move(req);
         JsonValue dp = JsonValue::makeObject();
         dp.o["outputIndex"] = objBoolInt(true, 0, 32);
-        dp.o["width"] = objBoolInt(true, 0, 20000);
-        dp.o["height"] = objBoolInt(true, 0, 20000);
+        dp.o["width"] = objBoolInt(true, 0, 7680);
+        dp.o["height"] = objBoolInt(true, 0, 4320);
         dp.o["refreshNumerator"] = objBoolInt(true, 0, 1000000);
         dp.o["refreshDenominator"] = objBoolInt(true, 1, 1000000);
         dp.o["vsync"] = objBool();
