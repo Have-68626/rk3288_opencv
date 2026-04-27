@@ -656,7 +656,10 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
         if (!motionDetector->detect(frame)) {
             // Even if no motion, we update render frame
             std::lock_guard<std::mutex> lock(renderMutex);
-            renderFrame = frame.clone();
+            // Performance optimization: Reusing renderFrame buffer via copyTo avoids reallocation
+            // Why: Avoids `clone()` which allocates a new block of memory each frame
+            // Rollback: Revert to `renderFrame = frame.clone();`
+            frame.copyTo(renderFrame);
             renderFrameSeq++;
             return; 
         }
@@ -824,7 +827,10 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
     long long renderStart = nowMs();
     {
         std::lock_guard<std::mutex> lock(renderMutex);
-        renderFrame = frame.clone();
+        // Performance optimization: Reusing renderFrame buffer via copyTo avoids reallocation
+        // Why: Avoids `clone()` which allocates a new block of memory each frame
+        // Rollback: Revert to `renderFrame = frame.clone();`
+        frame.copyTo(renderFrame);
         renderFrameSeq++;
     }
     stats.renderMs = static_cast<double>(nowMs() - renderStart);
