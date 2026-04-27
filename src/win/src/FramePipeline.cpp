@@ -381,7 +381,7 @@ void FramePipeline::requestClearDb() {
 
 bool FramePipeline::tryGetRenderState(RenderState& out) {
     if (render_.bgr.empty()) return false;
-    out.bgr = render_.bgr.clone();
+    render_.bgr.copyTo(out.bgr);
     out.faces = render_.faces;
     out.fps = render_.fps;
     out.inferMs = render_.inferMs;
@@ -548,16 +548,21 @@ void FramePipeline::processLoop() {
     double lastDropRate = 0.0;
     double lastInferMs = 0.0;
     std::vector<FaceMatch> lastDetections;
+    // Performance optimization: Avoid redundant clone() by reusing persistent buffers.
+    // Why: Reduces heap allocations and GC overhead in the hot render/inference loop.
+    // Rollback: Revert to local `cv::Mat frame` and `cv::Mat draw = frame.clone()`.
+    cv::Mat drawBuffer;
+    cv::Mat frameBuffer;
 
     while (running_) {
-        cv::Mat frame;
+        cv::Mat& frame = frameBuffer;
         std::uint64_t ts = 0;
 
         {
             std::unique_lock<std::mutex> lock(frameMu_);
             if (!running_) break;
             if (!hasFrame_) continue;
-            frame = latestFrame_.clone();
+            latestFrame_.copyTo(frame);
             ts = latestFrameTs_;
             hasFrame_ = false;
 
@@ -642,7 +647,7 @@ void FramePipeline::processLoop() {
             matches = lastDetections;
             matches = recognizer_.identify(frame);
 
-        cv::Mat draw = frame.clone();
+        frame.copyTo(drawBuffer); cv::Mat& draw = drawBuffer;
         drawFacesOverlay(draw, matches);
 
         FrameLogEntry le;
