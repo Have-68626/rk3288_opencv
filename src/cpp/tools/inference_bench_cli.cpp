@@ -770,7 +770,6 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
 
   ncnn::Extractor ex = net.create_extractor();
   ncnn::Mat iterIn = doPreprocess();
-
   for (int i = 0; i < std::max(0, args.iters); i++) {
     const auto t0 = clock::now();
     // Preprocessing hoisted outside loop to prevent redundant memory allocations
