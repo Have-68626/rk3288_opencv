@@ -78,11 +78,11 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
         }
     } else {
         for (int row = 0; row < h; row++) {
-            const std::size_t srcBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(yRowStride);
-            const std::size_t dstBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(w);
+            const uint8_t* srcPtr = f.y.bytes.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(yRowStride);
+            uint8_t* dstPtr = dst + static_cast<std::size_t>(row) * static_cast<std::size_t>(w);
             for (int col = 0; col < w; col++) {
-                dst[dstBase + static_cast<std::size_t>(col)] =
-                    f.y.bytes[srcBase + static_cast<std::size_t>(col) * static_cast<std::size_t>(yPixelStride)];
+                dstPtr[col] = *srcPtr;
+                srcPtr += yPixelStride;
             }
         }
     }
@@ -123,14 +123,15 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
         std::memcpy(dst + vBase, f.v.bytes.data(), uvSize);
     } else {
         for (int row = 0; row < h2; row++) {
-            const std::size_t uSrcBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(uRowStride);
-            const std::size_t vSrcBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(vRowStride);
-            const std::size_t uvDstBase = static_cast<std::size_t>(row) * static_cast<std::size_t>(w2);
+            const uint8_t* uSrcPtr = f.u.bytes.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(uRowStride);
+            const uint8_t* vSrcPtr = f.v.bytes.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(vRowStride);
+            uint8_t* uDstPtr = dst + uBase + static_cast<std::size_t>(row) * static_cast<std::size_t>(w2);
+            uint8_t* vDstPtr = dst + vBase + static_cast<std::size_t>(row) * static_cast<std::size_t>(w2);
             for (int col = 0; col < w2; col++) {
-                dst[uBase + uvDstBase + static_cast<std::size_t>(col)] =
-                    f.u.bytes[uSrcBase + static_cast<std::size_t>(col) * static_cast<std::size_t>(uPixelStride)];
-                dst[vBase + uvDstBase + static_cast<std::size_t>(col)] =
-                    f.v.bytes[vSrcBase + static_cast<std::size_t>(col) * static_cast<std::size_t>(vPixelStride)];
+                uDstPtr[col] = *uSrcPtr;
+                vDstPtr[col] = *vSrcPtr;
+                uSrcPtr += uPixelStride;
+                vSrcPtr += vPixelStride;
             }
         }
     }
