@@ -597,7 +597,6 @@ std::filesystem::path WinJsonConfigStore::defaultConfigPath() {
     if (!envPath.empty()) {
         return std::filesystem::path(envPath);
     }
-
     const std::wstring appdata = getEnvW(L"APPDATA");
     std::filesystem::path base = appdata.empty() ? std::filesystem::current_path() : std::filesystem::path(appdata);
     base /= kProductNameW;
