@@ -406,6 +406,11 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
                 r.contentType = "text/html; charset=utf-8";
                 r.body = std::move(body);
                 r.headers.push_back({"Cache-Control", "no-cache"});
+                // 威胁模型：避免静态文件被错误解析为脚本（MIME嗅探利用）和被恶意网站iframe嵌套（点击劫持）。
+                // 影响范围：只影响未匹配具体路径的 index.html fallback 响应，不会破坏现有前端功能。
+                // 回滚方式：删除这两行 push_back 即可。
+                r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+                r.headers.push_back({"X-Frame-Options", "DENY"});
                 return r;
             }
         }
@@ -422,6 +427,11 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
     } else {
         r.headers.push_back({"Cache-Control", "no-cache"});
     }
+    // 威胁模型：避免静态资源（如 js, css, 图片等）被跨域 MIME-sniffing 或被外部框架恶意加载（点击劫持）。
+    // 影响范围：只影响对 /webroot 下静态文件的读取响应，提高静态资源的安全性。
+    // 回滚方式：移除下面两行。
+    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+    r.headers.push_back({"X-Frame-Options", "DENY"});
     return r;
 }
 

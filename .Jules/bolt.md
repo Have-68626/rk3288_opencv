@@ -26,3 +26,7 @@
 ## 2025-01-20 - YUV420 to I420 Conversion Pointer Optimization
 **Learning:** Double loops with indexing and multiplications (`col * yPixelStride`) inside tight inner loops for YUV420 pixel extraction generate redundant instructions and prevent compiler vectorization, slowing down end-to-end frame decoding times.
 **Action:** Use sequential pointer arithmetic to traverse image rows and pixels, moving the pointer directly rather than recalculating the memory offset on every iteration.
+
+## 2024-05-18 - 优化帧处理与渲染中的内存分配
+**Learning:** `cv::Mat::clone()` 强制执行深度内存拷贝并分配全新内存块。如果在热门的处理循环（如 `Engine::processFrame`、`FramePipeline::processLoop`）中频繁使用，会导致持续的堆内存分配、较高的内存碎片率以及潜在的 GC 抖动（在跨 JNI 或大量小对象分配时尤为明显）。
+**Action:** 使用预先分配的/持久化的缓冲矩阵（如类成员或被置于循环外部的 `drawBuffer`/`frameBuffer`），并配合 `cv::Mat::copyTo()`，从而仅执行数据覆盖而无需重新分配，这在保证同样线程安全性的同时显著降低了动态分配开销。
