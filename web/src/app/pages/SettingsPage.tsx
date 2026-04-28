@@ -375,7 +375,7 @@ export function SettingsPage() {
           <div style={{ marginTop: 12 }}>
             <Space>
               <Tooltip title={!serverSettings.data ? '尚未加载后端设置，无法保存' : ''}>
-                <span>
+                <span style={{ display: 'inline-block' }} tabIndex={!serverSettings.data ? 0 : undefined}>
                   <Button
                     type="primary"
                     htmlType="submit"
@@ -388,7 +388,7 @@ export function SettingsPage() {
                 </span>
               </Tooltip>
               <Tooltip title={!serverSettings.data ? '尚未加载后端设置，无法轮换密钥' : ''}>
-                <span>
+                <span style={{ display: 'inline-block' }} tabIndex={!serverSettings.data ? 0 : undefined}>
                   <Popconfirm
                     title="高危操作：确认轮换密钥？"
                     description="旧密钥将立即失效，所有包含敏感信息的字段会被重新加密。"
@@ -421,7 +421,7 @@ export function SettingsPage() {
                 </span>
               </Tooltip>
               <Tooltip title={!serverBaseline ? '尚未加载基线数据，无法恢复' : ''}>
-                <span>
+                <span style={{ display: 'inline-block' }} tabIndex={!serverBaseline ? 0 : undefined}>
                   <Button
                     disabled={!serverBaseline}
                     style={{ pointerEvents: !serverBaseline ? 'none' : 'auto' }}
