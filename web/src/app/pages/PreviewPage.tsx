@@ -220,10 +220,7 @@ export function PreviewPage() {
 
           <Space wrap>
             <Tooltip title={!personId.trim() ? '请输入要注册的 personId' : ''}>
-              <span
-                style={{ display: 'inline-block' }}
-                tabIndex={!personId.trim() ? 0 : undefined}
-              >
+              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined}>
                 <Button
                   type="primary"
                   onClick={async () => {
@@ -239,8 +236,8 @@ export function PreviewPage() {
                     }
                   }}
                   disabled={!personId.trim()}
-                  style={!personId.trim() ? { pointerEvents: 'none' } : undefined}
                   loading={isEnrolling}
+                  style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
                 >
                   注册
                 </Button>
@@ -300,4 +297,3 @@ export function PreviewPage() {
     </Space>
   )
 }
-

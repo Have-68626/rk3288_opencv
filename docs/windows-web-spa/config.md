@@ -5,6 +5,13 @@
 - 备份文件：`%APPDATA%\rk_wcfr\config.json.bak` （若覆盖配置路径，则备份文件在其同级目录）
 - 密钥文件（DPAPI 保护）：`%APPDATA%\rk_wcfr\config.key.dpapi` （同上，伴随配置路径生成）
 
+### 其它支持的环境变量覆盖
+除了 `RK_WCFR_CONFIG` 外，C++ 后端还支持以下环境变量覆盖特定配置，以便于容器化或临时调试：
+- `RK_WCFR_DNN_MODEL`：覆盖 `dnn.modelPath`
+- `RK_WCFR_DNN_CONFIG`：覆盖 `dnn.configPath`
+- `RK_WCFR_HTTP_PORT`：覆盖 `http.port`
+- `RK_WCFR_POST_URL`：覆盖 `poster.postUrl`
+
 ## 校验（JSON Schema）
 - Schema 文件：`docs/windows-web-spa/config.schema.json`
 - 服务端会在启动与每次写入/热重载时对配置进行校验；校验失败会拒绝写入，并在热重载场景回滚到上一次有效配置。
