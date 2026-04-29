@@ -375,7 +375,7 @@ export function SettingsPage() {
           <div style={{ marginTop: 12 }}>
             <Space>
               <Tooltip title={!serverSettings.data ? '尚未加载后端设置，无法保存' : ''}>
-                <span style={{ display: 'inline-block' }} tabIndex={!serverSettings.data ? 0 : undefined}>
+                <span style={{ display: 'inline-block' }} tabIndex={!serverSettings.data ? 0 : undefined} role={!serverSettings.data ? 'button' : undefined} aria-disabled={!serverSettings.data ? true : undefined}>
                   <Button
                     type="primary"
                     htmlType="submit"
