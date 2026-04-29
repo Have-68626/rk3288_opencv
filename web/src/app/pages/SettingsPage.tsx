@@ -388,7 +388,7 @@ export function SettingsPage() {
                 </span>
               </Tooltip>
               <Tooltip title={!serverSettings.data ? '尚未加载后端设置，无法轮换密钥' : ''}>
-                <span style={{ display: 'inline-block' }} tabIndex={!serverSettings.data ? 0 : undefined}>
+                <span style={{ display: 'inline-block' }} tabIndex={!serverSettings.data ? 0 : undefined} role={!serverSettings.data ? 'button' : undefined} aria-disabled={!serverSettings.data ? true : undefined}>
                   <Popconfirm
                     title="高危操作：确认轮换密钥？"
                     description="旧密钥将立即失效，所有包含敏感信息的字段会被重新加密。"
