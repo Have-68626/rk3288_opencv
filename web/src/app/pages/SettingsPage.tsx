@@ -421,7 +421,7 @@ export function SettingsPage() {
                 </span>
               </Tooltip>
               <Tooltip title={!serverBaseline ? '尚未加载基线数据，无法恢复' : ''}>
-                <span style={{ display: 'inline-block' }} tabIndex={!serverBaseline ? 0 : undefined}>
+                <span style={{ display: 'inline-block' }} tabIndex={!serverBaseline ? 0 : undefined} role={!serverBaseline ? 'button' : undefined} aria-disabled={!serverBaseline ? true : undefined}>
                   <Button
                     disabled={!serverBaseline}
                     style={{ pointerEvents: !serverBaseline ? 'none' : 'auto' }}
