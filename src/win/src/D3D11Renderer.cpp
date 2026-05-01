@@ -674,7 +674,10 @@ bool D3D11Renderer::renderFrame(const cv::Mat* bgr) {
         if (bgr->type() == CV_8UC3) {
             cv::cvtColor(*bgr, bgra, cv::COLOR_BGR2BGRA);
         } else if (bgr->type() == CV_8UC4) {
-            bgra = bgr->clone();
+            // Performance optimization: Uploading to D3D11 is read-only, reuse memory via shallow copy instead of deep copy
+            // Why: Avoids cv::Mat::clone() allocating new memory, reducing RSS bloat and jitter
+            // Rollback: Revert to `bgra = bgr->clone();` if data corruption happens due to upstream mutation
+            bgra = *bgr;
         } else {
             cv::Mat tmp;
             bgr->convertTo(tmp, CV_8UC3);
