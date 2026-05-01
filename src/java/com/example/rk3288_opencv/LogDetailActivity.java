@@ -137,7 +137,7 @@ public class LogDetailActivity extends AppCompatActivity {
             String canonicalPath = file.getCanonicalPath();
 
             File internalLogs = new File(getFilesDir(), "logs");
-            if (canonicalPath.startsWith(internalLogs.getCanonicalPath() + File.separator)) {
+            if (canonicalPath.equals(internalLogs.getCanonicalPath()) || canonicalPath.startsWith(internalLogs.getCanonicalPath() + File.separator)) {
                 return true;
             }
 
@@ -146,12 +146,12 @@ public class LogDetailActivity extends AppCompatActivity {
                 File pkgDir = extFiles.getParentFile();
                 if (pkgDir != null) {
                     File externalLogs = new File(pkgDir, "logs");
-                    if (canonicalPath.startsWith(externalLogs.getCanonicalPath() + File.separator)) {
+                    if (canonicalPath.equals(externalLogs.getCanonicalPath()) || canonicalPath.startsWith(externalLogs.getCanonicalPath() + File.separator)) {
                         return true;
                     }
                 }
                 File fallback = new File(extFiles, "logs");
-                if (canonicalPath.startsWith(fallback.getCanonicalPath() + File.separator)) {
+                if (canonicalPath.equals(fallback.getCanonicalPath()) || canonicalPath.startsWith(fallback.getCanonicalPath() + File.separator)) {
                     return true;
                 }
             }
