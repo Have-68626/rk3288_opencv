@@ -1,0 +1,355 @@
+{
+  "runId": "2026-05-01T17:48:26-3079b3c4",
+  "branch": "master",
+  "lastMergeTs": 1777422539,
+  "lastMergeIso": "2026-04-29T00:28:59.000Z",
+  "files": {
+    "README.md": {
+      "path": "README.md",
+      "headUpdateTs": null,
+      "gitLastCommitTs": 1777422539,
+      "usedUpdateTs": 1777422539,
+      "usedUpdateIso": "2026-04-29T00:28:59.000Z",
+      "lagDaysFromLastMerge": 0,
+      "externalLinkCount": 10,
+      "zhEnNoSpaceLineCount": 0,
+      "fullwidthAsciiLineCount": 59
+    },
+    "DEVELOP.md": {
+      "path": "DEVELOP.md",
+      "headUpdateTs": null,
+      "gitLastCommitTs": 1777422539,
+      "usedUpdateTs": 1777422539,
+      "usedUpdateIso": "2026-04-29T00:28:59.000Z",
+      "lagDaysFromLastMerge": 0,
+      "externalLinkCount": 33,
+      "zhEnNoSpaceLineCount": 0,
+      "fullwidthAsciiLineCount": 688
+    },
+    "docs/RK3288_CONSTRAINTS.md": {
+      "path": "docs/RK3288_CONSTRAINTS.md",
+      "headUpdateTs": null,
+      "gitLastCommitTs": 1777422539,
+      "usedUpdateTs": 1777422539,
+      "usedUpdateIso": "2026-04-29T00:28:59.000Z",
+      "lagDaysFromLastMerge": 0,
+      "externalLinkCount": 0,
+      "zhEnNoSpaceLineCount": 0,
+      "fullwidthAsciiLineCount": 125
+    }
+  },
+  "defects": [
+    {
+      "type": "format",
+      "severity": "low",
+      "file": "README.md",
+      "message": "排版一致性：中英文混排缺空格行数=0，全角ASCII/全角空格行数=59；样例：L9(全角ASCII/全角空格): 本项目是一个跨平台机器视觉应用，支持在资源受限设备上进行稳定的视频监控与边缘生物识别，包含以下部分： | L10(全角ASCII/全角空格): *   **Android App (Gradle)**: 位于 ，提供带 UI 的 Android 监控界面与业务。 | L11(全角ASCII/全角空格): *   **通用 C++ 核心与工具 (CMake/CLI)**: 位于 ，实现跨平台视觉算法与无头 CLI。 | L12(全角ASCII/全角空格): *   **Windows 摄像头人脸识别系统**: 位于 ，提供本地服务、设备打开与识别链路，以及静态资源的 HTTP 分发服务。 | L13(全角ASCII/全角空格): *   **Web SPA 源码 (Vite/React)**: 位于 ，为 Windows 本地系统提供基于浏览器的前端页面。 | L47(全角ASCII/全角空格): > 📋 **完整的依赖状态检查清单（包含已满足、缺失、可选）请参阅 [CREDITS.md#依赖状态检查清单](CREDITS.md#依赖状态检查清单)。** | L49(全角ASCII/全角空格): ### 已满足（可开始构建） | L50(全角ASCII/全角空格): - ✅ Windows 开发环境（VS 2022） | L52(全角ASCII/全角空格): - ✅ OpenCV 4.10.0（位于 ） | L54(全角ASCII/全角空格): - ✅ Gradle 9.0（内置 ） | L55(全角ASCII/全角空格): - ✅ Node.js 22.x 及以上（含 pnpm 10.x） | L57(全角ASCII/全角空格): ### ❌ 缺失（仅影响特定功能）"
+    },
+    {
+      "type": "format",
+      "severity": "low",
+      "file": "DEVELOP.md",
+      "message": "排版一致性：中英文混排缺空格行数=0，全角ASCII/全角空格行数=688；样例：L12(全角ASCII/全角空格): 本项目旨在为 **Rockchip RK3288** 平台（ARM Cortex-A17 四核、Mali-T764 GPU；目标设备不含 NPU，仅 CPU+GPU）提供一套高性能、低资源的机器视觉解决方案。 | L13(全角ASCII/全角空格): 核心目标是**在有限的算力下（< 60% CPU, < 512MB RAM）实现实时的视频监控（720p@30fps）与生物识别（< 100ms 延迟）**。 | L15(全角ASCII/全角空格): 目标设备画像与硬约束入口：。 | L56(全角ASCII/全角空格): 本仓库当前开发/部署主路径为： | L57(全角ASCII/全角空格): - Windows：主开发环境（构建、运行、验证、工具脚本） | L58(全角ASCII/全角空格): - Android：APK 部署到 RK3288 设备（） | L59(全角ASCII/全角空格): - Linux：仅用于 CI/CD（快速发现编译/测试/脚本问题），不作为部署目标 | L61(全角ASCII/全角空格): > 重要提示（边界说明）： | L62(全角ASCII/全角空格): > - 仓库已启用的 CI 工作流见：，主要用于“仓库卫生扫描 + 最小单测编译运行”。 | L63(全角ASCII/全角空格): > - 本文档中出现的“CI 模板/示例”会明确标注为模板，不代表仓库已经启用同名工作流或脚本。 | L65(全角ASCII/全角空格): #### 2.1.1 Windows 端最小准备（建议） | L66(全角ASCII/全角空格): 1) 安装 Visual Studio 2022（勾选“使用 C++ 的桌面开发”）"
+    },
+    {
+      "type": "format",
+      "severity": "low",
+      "file": "docs/RK3288_CONSTRAINTS.md",
+      "message": "排版一致性：中英文混排缺空格行数=0，全角ASCII/全角空格行数=125；样例：L3(全角ASCII/全角空格): 本文用于把“目标设备画像（可复现）”与“工程硬约束（不可突破）”固化为统一口径，供选型、实现与验收使用。 | L5(全角ASCII/全角空格): ## 0. 目标设备画像（Target Device Profile） | L6(全角ASCII/全角空格): 以下画像基于已知目标设备信息（RK3288 工控机、Android 7.1.2、2GB RAM、8GB 存储、仅 CPU+GPU、前置摄像头 1 路）整理；其余字段可在设备上用第 2 节命令补齐。 | L8(全角ASCII/全角空格): ### 0.1 硬件（已知） | L9(全角ASCII/全角空格): - **SoC**：Rockchip RK3288 | L10(全角ASCII/全角空格): - **CPU**：四核 ARM Cortex-A17，最高主频约 1.8GHz | L11(全角ASCII/全角空格): - 架构：ARMv7-A（32 位） | L12(全角ASCII/全角空格): - 指令集扩展：NEON（必须启用） | L13(全角ASCII/全角空格): - **GPU**：ARM Mali-T764 MP4 | L14(全角ASCII/全角空格): - 图形 API：以 OpenGL ES 3.0 为基线（实际以驱动为准） | L15(全角ASCII/全角空格): - 通用计算：OpenCL 可能可用，但不能作为强依赖（实际以驱动为准） | L16(全角ASCII/全角空格): - **内存**：2GB RAM"
+    }
+  ],
+  "summary": {
+    "defectCount": 3,
+    "severity": {
+      "high": 0,
+      "medium": 0,
+      "low": 3
+    }
+  },
+  "markdownlintCli2": {
+    "enabled": false,
+    "output": ""
+  },
+  "linkChecks": [
+    {
+      "url": "https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://img.shields.io/badge/Language-C%2B%2B17-green",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://img.shields.io/badge/Language-C%2B%2B17-green",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://img.shields.io/badge/OpenCV-4.10.0-orange",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://img.shields.io/badge/OpenCV-4.10.0-orange",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://github.com/gradle/actions/blob/main/docs/setup-gradle.md",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://github.com/gradle/actions/blob/main/docs/setup-gradle.md",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/caching-dependencies-to-speed-up-workflows",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/guide/topics/security/cryptography",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/privacy-and-security/cryptography?hl=he",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/media/camera/camerax",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/media/camera/camerax?hl=de",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/hardware/camera2/package-summary",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/hardware/camera2/package-summary",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/training/permissions/requesting",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/training/permissions/requesting?hl=bn",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/about/versions/oreo/background",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/about/versions/oreo/background",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/media/camera/camerax/video-capture",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/media/camera/camerax/video-capture",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/about/versions/13/behavior-changes-13",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/about/versions/13/behavior-changes-13",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/about/versions/14/behavior-changes-14",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/about/versions/14/behavior-changes-14?hl=hi",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/develop/background-work/services/foreground-services",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/develop/background-work/services/fgs",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/training/data-storage/shared/media",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/training/data-storage/shared/media?hl=ko",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://www.nist.gov/programs-projects/face-recognition-vendor-test-frvt",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://www.nist.gov/programs-projects/face-recognition-vendor-test-frvt",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developers.google.com/ml-kit/vision/face-detection",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developers.google.com/ml-kit/vision/face-detection",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://ai.google.dev/edge/mediapipe/solutions/guide#vision",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://ai.google.dev/edge/mediapipe/solutions/guide?hl=pt-br",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://ai.baidu.com/tech/face",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://ai.baidu.com/tech/face",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://cloud.tencent.com/product/facerecognition",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://cloud.tencent.com/product/facerecognition",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://dlib.net/",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://dlib.net/",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://help.aliyun.com/product/135949.html",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://help.aliyun.com/zh/document_detail/135949.html",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://aws.amazon.com/rekognition/",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://aws.amazon.com/rekognition/",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/azure/ai-services/face/overview-identity",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://learn.microsoft.com/en-us/azure/ai-services/face/overview-identity",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://arxiv.org/abs/1801.07698",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://arxiv.org/abs/1801.07698",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://github.com/deepinsight/insightface",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://github.com/deepinsight/insightface",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#physicalCameraIds",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/graphics/ImageFormat",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/graphics/ImageFormat",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/hardware/camera2/CaptureRequest",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/hardware/camera2/CaptureRequest",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/hardware/camera2/CameraMetadata",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/hardware/camera2/CameraMetadata",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/privacy-and-security/keystore",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/privacy-and-security/keystore",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/reference/javax/crypto/Cipher",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/reference/javax/crypto/Cipher",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://robolectric.org/",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://robolectric.org/",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/training/testing/espresso",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/training/testing/espresso",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://developer.android.com/media/camera/camerax/architecture",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://developer.android.com/media/camera/camerax/architecture?hl=bn",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://docs.github.com/actions/writing-workflows/workflow-syntax-for-github-actions",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax",
+      "method": "HEAD"
+    },
+    {
+      "url": "https://github.com/ReactiveCircus/android-emulator-runner",
+      "ok": true,
+      "status": 200,
+      "finalUrl": "https://github.com/ReactiveCircus/android-emulator-runner",
+      "method": "HEAD"
+    }
+  ]
+}
