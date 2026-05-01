@@ -205,6 +205,7 @@ export function PreviewPage() {
           <Divider style={{ margin: '12px 0' }} />
 
           <Form.Item
+            required
             label="注册 personId"
             htmlFor="preview-person-id"
             extra="人脸特征将与此 ID 绑定。请确保上方预览画面中人脸清晰可见。"
@@ -220,7 +221,7 @@ export function PreviewPage() {
 
           <Space wrap>
             <Tooltip title={!personId.trim() ? '请输入要注册的 personId' : ''}>
-              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined}>
+              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined}>
                 <Button
                   type="primary"
                   onClick={async () => {
