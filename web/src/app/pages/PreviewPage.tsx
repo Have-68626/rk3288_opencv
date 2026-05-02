@@ -220,7 +220,7 @@ export function PreviewPage() {
 
           <Space wrap>
             <Tooltip title={!personId.trim() ? '请输入要注册的 personId' : ''}>
-              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined}>
+              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined}>
                 <Button
                   type="primary"
                   onClick={async () => {
