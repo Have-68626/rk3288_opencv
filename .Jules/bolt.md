@@ -30,3 +30,7 @@
 ## 2024-05-18 - 优化帧处理与渲染中的内存分配
 **Learning:** `cv::Mat::clone()` 强制执行深度内存拷贝并分配全新内存块。如果在热门的处理循环（如 `Engine::processFrame`、`FramePipeline::processLoop`）中频繁使用，会导致持续的堆内存分配、较高的内存碎片率以及潜在的 GC 抖动（在跨 JNI 或大量小对象分配时尤为明显）。
 **Action:** 使用预先分配的/持久化的缓冲矩阵（如类成员或被置于循环外部的 `drawBuffer`/`frameBuffer`），并配合 `cv::Mat::copyTo()`，从而仅执行数据覆盖而无需重新分配，这在保证同样线程安全性的同时显著降低了动态分配开销。
+
+## 2024-05-25 - Avoid deep copy for read-only D3D11 texture uploads
+**Learning:** Uploading multi-channel frames like `CV_8UC4` to Direct3D 11 textures in `src/win/src/D3D11Renderer.cpp` is a read-only operation from CPU memory. Performing an explicit `bgr->clone()` creates an unnecessary deep copy of the image memory, causing repetitive multi-megabyte heap allocations and high memory bandwidth overhead per frame.
+**Action:** Use a shallow copy (`bgra = *bgr`) when capturing the frame pointer for D3D11 upload if the source is already continuous and formatted correctly (e.g., `CV_8UC4`).
