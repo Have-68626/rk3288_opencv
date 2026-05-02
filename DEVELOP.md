@@ -2354,7 +2354,7 @@ if __name__ == "__main__":
 34. AndroidX CameraX: Testing（camera-testing）  
     https://developer.android.com/media/camera/camerax/architecture
 35. GitHub Actions: Workflow syntax for GitHub Actions  
-    https://docs.github.com/actions/writing-workflows/workflow-syntax-for-github-actions
+    https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 36. reactivecircus/android-emulator-runner（GitHub Actions Android 模拟器运行器）  
     https://github.com/ReactiveCircus/android-emulator-runner
 
