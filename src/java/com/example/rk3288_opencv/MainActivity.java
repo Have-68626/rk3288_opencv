@@ -2140,6 +2140,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
         Toast.makeText(this, "采集失败: " + reason, Toast.LENGTH_LONG).show();
         stopMonitoring();
+        if (tvStatus != null) {
+            tvStatus.setText("Status: Stopped (" + (reason == null ? "" : reason) + ")");
+        }
     }
 
     private void restartMonitoring(String reason) {
@@ -2151,10 +2154,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         lastCaptureSchemeReason = reason == null ? "" : reason;
         applyCaptureUiState();
         Toast.makeText(this, reason, Toast.LENGTH_SHORT).show();
-        if (tvStatus != null) {
-            tvStatus.setText("状态: 正在热重启...");
-        }
         stopMonitoring();
+        if (tvStatus != null) {
+            tvStatus.setText("状态: 正在热重启... (" + (reason == null ? "" : reason) + ")");
+        }
         handler.postDelayed(this::startMonitoring, Math.max(0, delayMs));
     }
 
