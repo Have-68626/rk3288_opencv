@@ -205,7 +205,7 @@ export function PreviewPage() {
           <Divider style={{ margin: '12px 0' }} />
 
           <Form.Item
-            required
+            rules={[{ required: true }]}
             label="注册 personId"
             htmlFor="preview-person-id"
             extra="人脸特征将与此 ID 绑定。请确保上方预览画面中人脸清晰可见。"
