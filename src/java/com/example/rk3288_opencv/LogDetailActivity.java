@@ -147,7 +147,8 @@ public class LogDetailActivity extends AppCompatActivity {
                 File pkgDir = extFiles.getParentFile();
                 if (pkgDir != null) {
                     File externalLogs = new File(pkgDir, "logs");
-                    if (canonicalPath.equals(externalLogs.getCanonicalPath()) || canonicalPath.startsWith(externalLogs.getCanonicalPath() + File.separator)) {
+                    String externalPath = externalLogs.getCanonicalPath();
+                    if (canonicalPath.equals(externalPath) || canonicalPath.startsWith(externalPath + File.separator)) {
                         return true;
                     }
                 }
