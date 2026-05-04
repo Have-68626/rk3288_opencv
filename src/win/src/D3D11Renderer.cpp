@@ -676,8 +676,12 @@ bool D3D11Renderer::renderFrame(const cv::Mat* bgr) {
         } else if (bgr->type() == CV_8UC4) {
             // Performance optimization: Uploading to D3D11 is read-only, reuse memory via shallow copy instead of deep copy
             // Why: Avoids cv::Mat::clone() allocating new memory, reducing RSS bloat and jitter
-            // Rollback: Revert to `bgra = bgr->clone();` if data corruption happens due to upstream mutation
-            bgra = *bgr;
+            // Note: Only safe if the matrix is continuous as the upload loop (line 737) assumes packed rows
+            if (bgr->isContinuous()) {
+                bgra = *bgr;
+            } else {
+                bgra = bgr->clone();
+            }
         } else {
             cv::Mat tmp;
             bgr->convertTo(tmp, CV_8UC3);
