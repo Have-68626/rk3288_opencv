@@ -674,7 +674,7 @@ bool D3D11Renderer::renderFrame(const cv::Mat* bgr) {
         if (bgr->type() == CV_8UC3) {
             cv::cvtColor(*bgr, bgra, cv::COLOR_BGR2BGRA);
         } else if (bgr->type() == CV_8UC4) {
-            bgra = *bgr;
+            bgra = bgr->isContinuous() ? *bgr : bgr->clone();
         } else {
             cv::Mat tmp;
             bgr->convertTo(tmp, CV_8UC3);
