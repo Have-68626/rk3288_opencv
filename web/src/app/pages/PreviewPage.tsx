@@ -131,15 +131,21 @@ export function PreviewPage() {
             label={
               <Space>
                 <span>摄像头设备</span>
-                <Tooltip title="重新扫描设备">
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    aria-label="重新扫描摄像头列表"
-                    onClick={() => setCamRetry((v) => v + 1)}
-                    loading={cams.status === 'loading'}
-                  />
+<Tooltip title="重新扫描设备">
+                  <span tabIndex={0}>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      aria-label="重新扫描摄像头列表"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCamRetry((v) => v + 1);
+                      }}
+                      loading={cams.status === 'loading'}
+                      style={cams.status === 'loading' ? { pointerEvents: 'none' } : undefined}
+                    />
+                  </span>
                 </Tooltip>
                 {cams.status === 'ready' && cams.devices.length === 0 ? (
                   <Tooltip title="未检测到设备。请检查摄像头是否连接、驱动是否正常，或本地服务是否已启动并拥有访问权限。">
