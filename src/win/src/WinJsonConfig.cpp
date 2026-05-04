@@ -902,6 +902,16 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getNumber(*h, "port", v)) cfg.http.port = static_cast<int>(v);
     }
 
+    {
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                cfg.http.port = std::stoi(envPort);
+            } catch (...) {
+            }
+        }
+    }
+
     // poster
     if (const JsonValue* p = doc.find("poster"); p && p->isObject()) {
         bool b = false;
