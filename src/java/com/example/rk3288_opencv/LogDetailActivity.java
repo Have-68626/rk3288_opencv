@@ -137,7 +137,8 @@ public class LogDetailActivity extends AppCompatActivity {
             String canonicalPath = file.getCanonicalPath();
 
             File internalLogs = new File(getFilesDir(), "logs");
-            if (canonicalPath.equals(internalLogs.getCanonicalPath()) || canonicalPath.startsWith(internalLogs.getCanonicalPath() + File.separator)) {
+            String internalPath = internalLogs.getCanonicalPath();
+            if (canonicalPath.equals(internalPath) || canonicalPath.startsWith(internalPath + File.separator)) {
                 return true;
             }
 
