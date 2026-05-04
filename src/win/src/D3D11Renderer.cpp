@@ -674,14 +674,10 @@ bool D3D11Renderer::renderFrame(const cv::Mat* bgr) {
         if (bgr->type() == CV_8UC3) {
             cv::cvtColor(*bgr, bgra, cv::COLOR_BGR2BGRA);
         } else if (bgr->type() == CV_8UC4) {
-            // Performance optimization: Uploading to D3D11 is read-only, reuse memory via shallow copy instead of deep copy
-            // Why: Avoids cv::Mat::clone() allocating new memory, reducing RSS bloat and jitter
-            // Note: Only safe if the matrix is continuous as the upload loop (line 737) assumes packed rows
-            if (bgr->isContinuous()) {
-                bgra = *bgr;
-            } else {
-                bgra = bgr->clone();
-            }
+            // Performance optimization: Use shallow copy for CV_8UC4 since texture upload is read-only.
+            // Why: Avoids an expensive deep copy (bgr->clone()) which allocates megabytes per frame.
+            // Rollback: Revert to `bgra = bgr->clone();` if non-continuous data causes texture upload issues.
+            bgra = bgr->isContinuous() ? *bgr : bgr->clone();
         } else {
             cv::Mat tmp;
             bgr->convertTo(tmp, CV_8UC3);
