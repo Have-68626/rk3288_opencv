@@ -1,3 +1,4 @@
+import { ReloadOutlined } from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -29,6 +30,7 @@ type LoadState =
 export function PreviewPage() {
   const { prefs, serverSettings, updateServerSettings } = useAppStore()
   const [cams, setCams] = useState<LoadState>({ status: 'idle' })
+  const [camRetry, setCamRetry] = useState(0)
   const [previewKey, setPreviewKey] = useState(0)
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
@@ -61,7 +63,7 @@ export function PreviewPage() {
     return () => {
       alive = false
     }
-  }, [prefs])
+  }, [prefs, camRetry])
 
   const deviceOptions = useMemo(() => {
     if (cams.status !== 'ready') return []
@@ -110,7 +112,17 @@ export function PreviewPage() {
 
       <Card title="相机与动作">
         {cams.status === 'error' ? (
-          <Alert type="error" showIcon message="摄像头列表不可用" description={cams.message} />
+          <Alert
+            type="error"
+            showIcon
+            message="摄像头列表不可用"
+            description={cams.message}
+            action={
+              <Button size="small" onClick={() => setCamRetry((v) => v + 1)}>
+                重试
+              </Button>
+            }
+          />
         ) : null}
 
         <Form layout="vertical">
@@ -119,6 +131,22 @@ export function PreviewPage() {
             label={
               <Space>
                 <span>摄像头设备</span>
+<Tooltip title="重新扫描设备">
+                  <span tabIndex={0}>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      aria-label="重新扫描摄像头列表"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCamRetry((v) => v + 1);
+                      }}
+                      loading={cams.status === 'loading'}
+                      style={cams.status === 'loading' ? { pointerEvents: 'none' } : undefined}
+                    />
+                  </span>
+                </Tooltip>
                 {cams.status === 'ready' && cams.devices.length === 0 ? (
                   <Tooltip title="未检测到设备。请检查摄像头是否连接、驱动是否正常，或本地服务是否已启动并拥有访问权限。">
                     <Typography.Text type="secondary" style={{ cursor: 'help' }}>
@@ -205,6 +233,7 @@ export function PreviewPage() {
           <Divider style={{ margin: '12px 0' }} />
 
           <Form.Item
+            rules={[{ required: true }]}
             label="注册 personId"
             htmlFor="preview-person-id"
             extra="人脸特征将与此 ID 绑定。请确保上方预览画面中人脸清晰可见。"
@@ -220,7 +249,7 @@ export function PreviewPage() {
 
           <Space wrap>
             <Tooltip title={!personId.trim() ? '请输入要注册的 personId' : ''}>
-              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined}>
+              <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
                 <Button
                   type="primary"
                   onClick={async () => {
