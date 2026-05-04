@@ -34,3 +34,7 @@
 ## 2024-05-25 - Avoid deep copy for read-only D3D11 texture uploads
 **Learning:** Uploading multi-channel frames like `CV_8UC4` to Direct3D 11 textures in `src/win/src/D3D11Renderer.cpp` is a read-only operation from CPU memory. Performing an explicit `bgr->clone()` creates an unnecessary deep copy of the image memory, causing repetitive multi-megabyte heap allocations and high memory bandwidth overhead per frame.
 **Action:** Use a shallow copy (`bgra = *bgr`) when capturing the frame pointer for D3D11 upload if the source is already continuous and formatted correctly (e.g., `CV_8UC4`).
+
+## 2026-05-01 - Avoid Redundant deep copy when uploading cv::Mat to D3D11 Texture
+**Learning:** Uploading a `cv::Mat` frame to a Direct3D 11 texture (e.g., in `D3D11Renderer.cpp`) is inherently a read-only operation. For multi-channel frames that do not require layout conversion (like `CV_8UC4`), using `cv::Mat::clone()` creates a redundant deep copy of the image, leading to excessive memory allocation (e.g., ~8.3MB per 1080p frame). This causes continuous RSS bloat, high memory bandwidth usage, and latency jitter during the render phase.
+**Action:** Use a shallow copy (e.g., `bgra = *bgr`) instead of `clone()` for read-only `CV_8UC4` frame uploads to eliminate per-frame allocations, while still safely incrementing OpenCV's reference counter to keep the buffer alive.
