@@ -153,7 +153,8 @@ public class LogDetailActivity extends AppCompatActivity {
                     }
                 }
                 File fallback = new File(extFiles, "logs");
-                if (canonicalPath.equals(fallback.getCanonicalPath()) || canonicalPath.startsWith(fallback.getCanonicalPath() + File.separator)) {
+                String fallbackPath = fallback.getCanonicalPath();
+                if (canonicalPath.equals(fallbackPath) || canonicalPath.startsWith(fallbackPath + File.separator)) {
                     return true;
                 }
             }
