@@ -979,6 +979,22 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }
 
+    // Apply environment variable overrides if present
+    const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
+    const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
+    const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+    const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
+
+    if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
+    if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(envConfig);
+    if (!envPort.empty()) {
+        try {
+            cfg.http.port = std::stoi(envPort);
+        } catch (...) {
+        }
+    }
+    if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
+
     cfgOut = std::move(cfg);
     return true;
 }
