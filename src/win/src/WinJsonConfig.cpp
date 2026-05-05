@@ -882,6 +882,13 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getBool(*d, "enable", b)) cfg.dnn.enable = b;
         if (getString(*d, "modelPath", s)) cfg.dnn.modelPath = resolvePathFromExeDir(s);
         if (getString(*d, "configPath", s)) cfg.dnn.configPath = resolvePathFromExeDir(s);
+
+        const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
+        if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(utf8FromWide(envModel));
+
+        const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
+        if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(utf8FromWide(envConfig));
+
         if (getNumber(*d, "inputWidth", v)) cfg.dnn.inputWidth = static_cast<int>(v);
         if (getNumber(*d, "inputHeight", v)) cfg.dnn.inputHeight = static_cast<int>(v);
         if (getNumber(*d, "scale", v)) cfg.dnn.scale = v;
@@ -900,6 +907,14 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         double v = 0;
         if (getBool(*h, "enable", b)) cfg.http.enable = b;
         if (getNumber(*h, "port", v)) cfg.http.port = static_cast<int>(v);
+
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                int p = std::stoi(envPort);
+                if (p >= 1 && p <= 65535) cfg.http.port = p;
+            } catch (...) {}
+        }
     }
 
     // poster
