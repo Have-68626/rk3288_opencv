@@ -408,8 +408,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
 
   for (int i = 0; i < std::max(0, args.warmup); i++) {
     try {
-      cv::Mat wBlob = doPreprocess();
-      net.setInput(wBlob);
+      net.setInput(blob);
       if (args.opencvOutput.empty())
         (void)net.forward();
       else
@@ -573,8 +572,7 @@ static std::optional<Record> runQualcommBench(const Args &args,
 
   for (int i = 0; i < std::max(0, args.warmup); i++) {
     try {
-      cv::Mat wBlob = doPreprocess();
-      net.setInput(wBlob);
+      net.setInput(blob);
       if (args.opencvOutput.empty())
         (void)net.forward();
       else
@@ -746,8 +744,7 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
 
   ncnn::Extractor ex_warmup = net.create_extractor();
   for (int i = 0; i < std::max(0, args.warmup); i++) {
-    ncnn::Mat wIn = doPreprocess();
-    if (ex_warmup.input(args.ncnnInput.c_str(), wIn) != 0)
+    if (ex_warmup.input(args.ncnnInput.c_str(), in) != 0)
       continue;
     ncnn::Mat out;
     (void)ex_warmup.extract(args.ncnnOutput.c_str(), out);
