@@ -2141,7 +2141,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         Toast.makeText(this, "采集失败: " + reason, Toast.LENGTH_LONG).show();
         stopMonitoring();
         if (tvStatus != null) {
-            tvStatus.setText("Status: Stopped (" + (reason == null ? "" : reason) + ")");
+            tvStatus.setText((reason != null && !reason.isEmpty()) ? "Status: Stopped (" + reason + ")" : "Status: Stopped");
         }
     }
 
