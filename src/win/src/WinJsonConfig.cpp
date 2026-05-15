@@ -900,6 +900,13 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         double v = 0;
         if (getBool(*h, "enable", b)) cfg.http.enable = b;
         if (getNumber(*h, "port", v)) cfg.http.port = static_cast<int>(v);
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                cfg.http.port = std::stoi(envPort);
+            } catch (...) {
+            }
+        }
     }
 
     // poster
