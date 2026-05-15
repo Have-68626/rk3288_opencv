@@ -38,3 +38,7 @@
 ## 2026-05-01 - Avoid Redundant deep copy when uploading cv::Mat to D3D11 Texture
 **Learning:** Uploading a `cv::Mat` frame to a Direct3D 11 texture (e.g., in `D3D11Renderer.cpp`) is inherently a read-only operation. For multi-channel frames that do not require layout conversion (like `CV_8UC4`), using `cv::Mat::clone()` creates a redundant deep copy of the image, leading to excessive memory allocation (e.g., ~8.3MB per 1080p frame). This causes continuous RSS bloat, high memory bandwidth usage, and latency jitter during the render phase.
 **Action:** Use a shallow copy (e.g., `bgra = *bgr`) instead of `clone()` for read-only `CV_8UC4` frame uploads to eliminate per-frame allocations, while still safely incrementing OpenCV's reference counter to keep the buffer alive.
+
+## 2024-05-15 - Optimize JSON String Formatting
+**Learning:** `std::stringstream` introduces high overhead (virtual function calls, locale handling, dynamic allocations) in performance-critical paths, causing CPU usage and memory fragmentation spikes when logging high-frequency events.
+**Action:** Use `std::string::reserve()` combined with `operator+=` for high-frequency string/JSON construction to eliminate virtual dispatch and dynamic allocation overhead.

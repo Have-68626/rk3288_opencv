@@ -32,15 +32,26 @@ void EventManager::logEvent(const std::string& type, const std::string& descript
 }
 
 std::string EventManager::formatEventJson(const AppEvent& event) {
-    std::stringstream ss;
-    ss << "{";
-    ss << "\"id\": \"" << event.eventId << "\", ";
-    ss << "\"type\": \"" << event.type << "\", ";
-    ss << "\"desc\": \"" << event.description << "\", ";
-    ss << "\"ts\": " << event.timestamp << ", ";
-    ss << "\"img\": \"" << event.snapshotPath << "\"";
-    ss << "}";
-    return ss.str();
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: 避免 std::stringstream 的高开销（虚函数调用和区域设置开销）。
+     * Impact: 大幅降低 EventManager 的高频事件记录和格式化阶段的 CPU 占用与内存碎片。
+     * Rollback: 恢复 std::stringstream 拼接版本。
+     */
+    std::string s;
+    s.reserve(64 + event.eventId.size() + event.type.size() + event.description.size() + 20 + event.snapshotPath.size());
+    s += "{\"id\": \"";
+    s += event.eventId;
+    s += "\", \"type\": \"";
+    s += event.type;
+    s += "\", \"desc\": \"";
+    s += event.description;
+    s += "\", \"ts\": ";
+    s += std::to_string(event.timestamp);
+    s += ", \"img\": \"";
+    s += event.snapshotPath;
+    s += "\"}";
+    return s;
 }
 
 std::string EventManager::generateUniqueId() {
