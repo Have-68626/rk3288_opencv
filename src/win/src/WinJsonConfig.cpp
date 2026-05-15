@@ -887,7 +887,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
 
         const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
-        if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(utf8FromWide(envConfig));
+        if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(envConfig);
 
         if (getNumber(*d, "inputWidth", v)) cfg.dnn.inputWidth = static_cast<int>(v);
         if (getNumber(*d, "inputHeight", v)) cfg.dnn.inputHeight = static_cast<int>(v);
