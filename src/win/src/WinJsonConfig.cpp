@@ -884,7 +884,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*d, "configPath", s)) cfg.dnn.configPath = resolvePathFromExeDir(s);
 
         const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
-        if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(utf8FromWide(envModel));
+        if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
 
         const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
         if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(utf8FromWide(envConfig));
