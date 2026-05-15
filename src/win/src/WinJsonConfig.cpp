@@ -986,7 +986,8 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(envConfig);
     if (!envPort.empty()) {
         try {
-            cfg.http.port = std::stoi(envPort);
+            const int p = std::stoi(envPort);
+            if (p >= 1 && p <= 65535) cfg.http.port = p;
         } catch (...) {
         }
     }
