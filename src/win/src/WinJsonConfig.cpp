@@ -900,6 +900,24 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         double v = 0;
         if (getBool(*h, "enable", b)) cfg.http.enable = b;
         if (getNumber(*h, "port", v)) cfg.http.port = static_cast<int>(v);
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                cfg.http.port = std::stoi(envPort);
+            } catch (...) {
+            }
+        }
+    }
+
+    {
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                int p = std::stoi(envPort);
+                if (p >= 1 && p <= 65535) cfg.http.port = p;
+            } catch (...) {
+            }
+        }
     }
 
     // poster
@@ -978,6 +996,23 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getBool(*a, "enableMpp", b)) cfg.acceleration.enableMpp = b;
         if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }
+
+    // Apply environment variable overrides if present
+    const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
+    const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
+    const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+    const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
+
+    if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
+    if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(envConfig);
+    if (!envPort.empty()) {
+        try {
+            const int p = std::stoi(envPort);
+            if (p >= 1 && p <= 65535) cfg.http.port = p;
+        } catch (...) {
+        }
+    }
+    if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
 
     cfgOut = std::move(cfg);
     return true;
