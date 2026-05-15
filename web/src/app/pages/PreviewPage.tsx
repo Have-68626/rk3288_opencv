@@ -137,7 +137,7 @@ export function PreviewPage() {
                     tabIndex={cams.status === 'loading' ? 0 : undefined}
                     role={cams.status === 'loading' ? 'button' : undefined}
                     aria-disabled={cams.status === 'loading' ? true : undefined}
-                    aria-label="重新扫描摄像头列表"
+                    aria-label={cams.status === 'loading' ? '重新扫描设备' : undefined}
                   >
                     <Button
                       type="text"
