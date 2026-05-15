@@ -900,6 +900,13 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         double v = 0;
         if (getBool(*h, "enable", b)) cfg.http.enable = b;
         if (getNumber(*h, "port", v)) cfg.http.port = static_cast<int>(v);
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                cfg.http.port = std::stoi(envPort);
+            } catch (...) {
+            }
+        }
     }
 
     // poster
@@ -925,6 +932,9 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
                 cfg.poster.postUrl.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
             }
         }
+
+        const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
+        if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
         if (getNumber(*p, "throttleMs", v)) cfg.poster.throttleMs = static_cast<int>(v);
         if (getNumber(*p, "backoffMinMs", v)) cfg.poster.backoffMinMs = static_cast<int>(v);
         if (getNumber(*p, "backoffMaxMs", v)) cfg.poster.backoffMaxMs = static_cast<int>(v);
