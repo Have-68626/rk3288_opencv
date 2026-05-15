@@ -38,3 +38,7 @@
 ## 2026-05-01 - Avoid Redundant deep copy when uploading cv::Mat to D3D11 Texture
 **Learning:** Uploading a `cv::Mat` frame to a Direct3D 11 texture (e.g., in `D3D11Renderer.cpp`) is inherently a read-only operation. For multi-channel frames that do not require layout conversion (like `CV_8UC4`), using `cv::Mat::clone()` creates a redundant deep copy of the image, leading to excessive memory allocation (e.g., ~8.3MB per 1080p frame). This causes continuous RSS bloat, high memory bandwidth usage, and latency jitter during the render phase.
 **Action:** Use a shallow copy (e.g., `bgra = *bgr`) instead of `clone()` for read-only `CV_8UC4` frame uploads to eliminate per-frame allocations, while still safely incrementing OpenCV's reference counter to keep the buffer alive.
+
+## 2024-05-07 - 避免在基准测试的 warmup 阶段引入冗余的内存分配
+**Learning:** 在 `inference_bench_cli.cpp` 中，虽然正式计时的推理循环内已经排除了 `doPreprocess()` 的开销，但在 `warmup` 循环中依然每次都调用了 `doPreprocess()` 重新分配预处理结果 `cv::Mat`。这种紧循环中的重复分配不仅增加了 warmup 阶段的耗时，更关键的是会使得记录的峰值内存 (RSS Peak) 产生无谓的膨胀，干扰对模型真实显存/内存占用的评估。
+**Action:** 在进行基准测试时，若预处理逻辑不依赖于可变的上下文状态，应将预处理调用 `doPreprocess()` 完全移至所有的循环（包括 `warmup` 和 `iters` 循环）之外，并复用同一个提前处理好的张量作为推理输入。
