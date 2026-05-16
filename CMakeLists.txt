@@ -158,16 +158,18 @@ if(NOT DEFINED OPENCV_CONTRIB_ROOT)
 endif()
 
 # Portability: forbid hard-coded absolute dependency paths; require env/cache variables.
-if(NOT OPENCV_ROOT)
-    message(FATAL_ERROR "OPENCV_ROOT not set. Please use -DOPENCV_ROOT=... or set the OPENCV_ROOT environment variable to the OpenCV source root directory.")
-endif()
+if(NOT RK_SKIP_OPENCV)
+    if(NOT OPENCV_ROOT)
+        message(FATAL_ERROR "OPENCV_ROOT not set. Please use -DOPENCV_ROOT=... or set the OPENCV_ROOT environment variable to the OpenCV source root directory.")
+    endif()
 
-if(NOT EXISTS "${OPENCV_ROOT}")
-    message(FATAL_ERROR "Invalid OPENCV_ROOT path: ${OPENCV_ROOT} does not exist. Please modify the environment variable, or explicitly skip OpenCV with -DRK_SKIP_OPENCV=ON.")
-endif()
+    if(NOT EXISTS "${OPENCV_ROOT}")
+        message(FATAL_ERROR "Invalid OPENCV_ROOT path: ${OPENCV_ROOT} does not exist. Please modify the environment variable, or explicitly skip OpenCV with -DRK_SKIP_OPENCV=ON.")
+    endif()
 
-if(NOT EXISTS "${OPENCV_ROOT}/CMakeLists.txt")
-    message(FATAL_ERROR "Invalid OPENCV_ROOT path: ${OPENCV_ROOT} is not a valid OpenCV source code directory (missing CMakeLists.txt). It must not be a system installation path. Please modify the environment variable, or explicitly skip OpenCV with -DRK_SKIP_OPENCV=ON.")
+    if(NOT EXISTS "${OPENCV_ROOT}/CMakeLists.txt")
+        message(FATAL_ERROR "Invalid OPENCV_ROOT path: ${OPENCV_ROOT} is not a valid OpenCV source code directory (missing CMakeLists.txt). It must not be a system installation path. Please modify the environment variable, or explicitly skip OpenCV with -DRK_SKIP_OPENCV=ON.")
+    endif()
 endif()
 
 # Configure OpenCV Build
