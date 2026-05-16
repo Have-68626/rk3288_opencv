@@ -409,7 +409,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   cv::Mat wBlob = blob;
   for (int i = 0; i < std::max(0, args.warmup); i++) {
     try {
-      net.setInput(wBlob);
+      net.setInput(blob);
       if (args.opencvOutput.empty())
         (void)net.forward();
       else
@@ -573,7 +573,7 @@ static std::optional<Record> runQualcommBench(const Args &args,
   cv::Mat wBlob = blob;
   for (int i = 0; i < std::max(0, args.warmup); i++) {
     try {
-      net.setInput(wBlob);
+      net.setInput(blob);
       if (args.opencvOutput.empty())
         (void)net.forward();
       else
