@@ -34,6 +34,8 @@ export function PreviewPage() {
   const [previewKey, setPreviewKey] = useState(0)
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
+  const [isFlippingX, setIsFlippingX] = useState(false)
+  const [isFlippingY, setIsFlippingY] = useState(false)
   const [personId, setPersonId] = useState('')
   const [isEnrolling, setIsEnrolling] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
@@ -131,13 +133,13 @@ export function PreviewPage() {
             label={
               <Space>
                 <span>摄像头设备</span>
-<Tooltip title="重新扫描设备">
+                <Tooltip title="重新扫描设备">
                   <span
                     style={{ display: 'inline-block' }}
                     tabIndex={cams.status === 'loading' ? 0 : undefined}
                     role={cams.status === 'loading' ? 'button' : undefined}
                     aria-disabled={cams.status === 'loading' ? true : undefined}
-                    aria-label={cams.status === 'loading' ? '重新扫描设备' : undefined}
+                    aria-label={cams.status === 'loading' ? '正在重新扫描设备' : undefined}
                   >
                     <Button
                       type="text"
@@ -210,10 +212,22 @@ export function PreviewPage() {
               <Switch
                 id="preview-flip-x"
                 checked={flipX}
+                loading={isFlippingX}
+                disabled={isFlippingY}
                 aria-label="翻转 X"
-                onChange={(v) => {
+                onChange={async (v) => {
+                  const original = flipX
                   setFlipX(v)
-                  setFlip(prefs, { flipX: v, flipY })
+                  setIsFlippingX(true)
+                  try {
+                    await setFlip(prefs, { flipX: v, flipY })
+                    message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
+                  } catch (e: unknown) {
+                    setFlipX(original)
+                    message.error((e as Error)?.message || '设置 X 轴翻转失败')
+                  } finally {
+                    setIsFlippingX(false)
+                  }
                 }}
               />
               <label htmlFor="preview-flip-x" style={{ cursor: 'pointer' }}>
@@ -224,10 +238,22 @@ export function PreviewPage() {
               <Switch
                 id="preview-flip-y"
                 checked={flipY}
+                loading={isFlippingY}
+                disabled={isFlippingX}
                 aria-label="翻转 Y"
-                onChange={(v) => {
+                onChange={async (v) => {
+                  const original = flipY
                   setFlipY(v)
-                  setFlip(prefs, { flipX, flipY: v })
+                  setIsFlippingY(true)
+                  try {
+                    await setFlip(prefs, { flipX, flipY: v })
+                    message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
+                  } catch (e: unknown) {
+                    setFlipY(original)
+                    message.error((e as Error)?.message || '设置 Y 轴翻转失败')
+                  } finally {
+                    setIsFlippingY(false)
+                  }
                 }}
               />
               <label htmlFor="preview-flip-y" style={{ cursor: 'pointer' }}>
