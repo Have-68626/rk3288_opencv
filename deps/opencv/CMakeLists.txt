@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(mock_opencv)
+add_library(opencv_core STATIC empty.cpp)
+add_library(opencv_imgproc STATIC empty.cpp)
+add_library(opencv_dnn STATIC empty.cpp)
