@@ -406,6 +406,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
 
   cv::Mat blob = doPreprocess();
 
+  cv::Mat wBlob = blob;
   for (int i = 0; i < std::max(0, args.warmup); i++) {
     try {
       net.setInput(blob);
@@ -432,13 +433,12 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   int okIters = 0;
   int errIters = 0;
 
-  cv::Mat iterBlob = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
       // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
-      net.setInput(iterBlob);
+      net.setInput(blob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -570,6 +570,7 @@ static std::optional<Record> runQualcommBench(const Args &args,
 
   cv::Mat blob = doPreprocess();
 
+  cv::Mat wBlob = blob;
   for (int i = 0; i < std::max(0, args.warmup); i++) {
     try {
       net.setInput(blob);
@@ -596,13 +597,12 @@ static std::optional<Record> runQualcommBench(const Args &args,
   int okIters = 0;
   int errIters = 0;
 
-  cv::Mat iterBlob = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
       // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
-      net.setInput(iterBlob);
+      net.setInput(blob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -766,13 +766,12 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   int errIters = 0;
 
   ncnn::Extractor ex = net.create_extractor();
-  ncnn::Mat iterIn = doPreprocess();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     const auto t0 = clock::now();
     // Preprocessing hoisted outside loop to prevent redundant memory allocations
     const auto t1 = clock::now();
 
-    if (ex.input(args.ncnnInput.c_str(), iterIn) == 0) {
+    if (ex.input(args.ncnnInput.c_str(), in) == 0) {
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
