@@ -131,13 +131,13 @@ export function PreviewPage() {
             label={
               <Space>
                 <span>摄像头设备</span>
-                <Tooltip title="重新扫描设备">
+                <Tooltip title={cams.status === 'loading' ? '正在重新扫描设备...' : '重新扫描设备'}>
                   <span
                     style={{ display: 'inline-block' }}
                     tabIndex={cams.status === 'loading' ? 0 : undefined}
                     role={cams.status === 'loading' ? 'button' : undefined}
                     aria-disabled={cams.status === 'loading' ? true : undefined}
-                    aria-label={cams.status === 'loading' ? '重新扫描设备' : undefined}
+                    aria-label={cams.status === 'loading' ? '正在重新扫描设备' : undefined}
                   >
                     <Button
                       type="text"
