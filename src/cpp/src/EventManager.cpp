@@ -32,15 +32,22 @@ void EventManager::logEvent(const std::string& type, const std::string& descript
 }
 
 std::string EventManager::formatEventJson(const AppEvent& event) {
-    std::stringstream ss;
-    ss << "{";
-    ss << "\"id\": \"" << event.eventId << "\", ";
-    ss << "\"type\": \"" << event.type << "\", ";
-    ss << "\"desc\": \"" << event.description << "\", ";
-    ss << "\"ts\": " << event.timestamp << ", ";
-    ss << "\"img\": \"" << event.snapshotPath << "\"";
-    ss << "}";
-    return ss.str();
+    std::string tsStr = std::to_string(event.timestamp);
+    std::string res;
+    // 53 is the total length of the fixed formatting characters in the JSON string
+    res.reserve(53 + event.eventId.size() + event.type.size() + event.description.size() + tsStr.size() + event.snapshotPath.size());
+    res += "{\"id\": \"";
+    res += event.eventId;
+    res += "\", \"type\": \"";
+    res += event.type;
+    res += "\", \"desc\": \"";
+    res += event.description;
+    res += "\", \"ts\": ";
+    res += tsStr;
+    res += ", \"img\": \"";
+    res += event.snapshotPath;
+    res += "\"}";
+    return res;
 }
 
 std::string EventManager::generateUniqueId() {
