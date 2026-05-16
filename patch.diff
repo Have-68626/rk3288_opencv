@@ -1,0 +1,34 @@
+--- web/src/app/pages/SettingsPage.tsx
++++ web/src/app/pages/SettingsPage.tsx
+@@ -422,14 +422,18 @@
+               </Tooltip>
+               <Tooltip title={!serverBaseline ? '尚未加载基线数据，无法恢复' : ''}>
+                 <span style={{ display: 'inline-block' }} tabIndex={!serverBaseline ? 0 : undefined} role={!serverBaseline ? 'button' : undefined} aria-disabled={!serverBaseline ? true : undefined}>
+-                  <Button
++                  <Popconfirm
++                    title="确认恢复？"
++                    description="这将丢弃当前未保存的所有修改，恢复到上次拉取的设置。"
++                    okText="确认"
++                    cancelText="取消"
++                    onConfirm={() => {
++                      if (serverBaseline) serverForm.setFieldsValue(serverBaseline)
++                      message.info('已恢复为上次拉取/保存的值')
++                    }}
+                     disabled={!serverBaseline}
+-                    style={{ pointerEvents: !serverBaseline ? 'none' : 'auto' }}
+-                    onClick={() => {
+-                      if (serverBaseline) serverForm.setFieldsValue(serverBaseline)
+-                      message.info('已恢复为上次拉取/保存的值')
+-                    }}
+                   >
+-                    恢复
+-                  </Button>
++                    <Button
++                      disabled={!serverBaseline}
++                      style={{ pointerEvents: !serverBaseline ? 'none' : 'auto' }}
++                    >
++                      恢复
++                    </Button>
++                  </Popconfirm>
+                 </span>
+               </Tooltip>
