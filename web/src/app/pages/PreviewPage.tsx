@@ -239,6 +239,7 @@ export function PreviewPage() {
                 id="preview-flip-y"
                 checked={flipY}
                 loading={isFlippingY}
+                disabled={isFlippingX}
                 aria-label="翻转 Y"
                 onChange={async (v) => {
                   const original = flipY
