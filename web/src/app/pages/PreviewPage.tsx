@@ -212,17 +212,19 @@ export function PreviewPage() {
               <Switch
                 id="preview-flip-x"
                 checked={flipX}
-                aria-label="翻转 X"
                 loading={isFlippingX}
+                disabled={isFlippingY}
+                aria-label="翻转 X"
                 onChange={async (v) => {
-                  setIsFlippingX(true)
+                  const original = flipX
                   setFlipX(v)
+                  setIsFlippingX(true)
                   try {
                     await setFlip(prefs, { flipX: v, flipY })
-                    message.success('已应用翻转 X')
+                    message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
                   } catch (e: unknown) {
-                    setFlipX(!v)
-                    message.error((e as Error)?.message || '应用翻转 X 失败')
+                    setFlipX(original)
+                    message.error((e as Error)?.message || '设置 X 轴翻转失败')
                   } finally {
                     setIsFlippingX(false)
                   }
@@ -236,17 +238,19 @@ export function PreviewPage() {
               <Switch
                 id="preview-flip-y"
                 checked={flipY}
-                aria-label="翻转 Y"
                 loading={isFlippingY}
+                disabled={isFlippingX}
+                aria-label="翻转 Y"
                 onChange={async (v) => {
-                  setIsFlippingY(true)
+                  const original = flipY
                   setFlipY(v)
+                  setIsFlippingY(true)
                   try {
                     await setFlip(prefs, { flipX, flipY: v })
-                    message.success('已应用翻转 Y')
+                    message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
                   } catch (e: unknown) {
-                    setFlipY(!v)
-                    message.error((e as Error)?.message || '应用翻转 Y 失败')
+                    setFlipY(original)
+                    message.error((e as Error)?.message || '设置 Y 轴翻转失败')
                   } finally {
                     setIsFlippingY(false)
                   }
