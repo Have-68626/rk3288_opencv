@@ -910,7 +910,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
         if (!envPort.empty()) {
             try {
-                cfg.http.port = std::stoi(envPort);
+                cfg.http.port = std::stoi(utf8FromWide(envPort));
             } catch (...) {
             }
         }
