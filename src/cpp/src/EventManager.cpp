@@ -34,9 +34,9 @@ void EventManager::logEvent(const std::string& type, const std::string& descript
 std::string EventManager::formatEventJson(const AppEvent& event) {
     /*
      * [Performance Optimization - string formatting]
-     * Why: 避免 std::stringstream 的高开销（虚函数调用和区域设置开销）。
-     * Impact: 大幅降低 EventManager 的高频事件记录和格式化阶段的 CPU 占用与内存碎片。
-     * Rollback: 恢复 std::stringstream 拼接版本。
+     * Why: Avoid high overhead of std::stringstream (virtual calls and locale overhead).
+     * Impact: Significantly reduces CPU usage and memory fragmentation during high-frequency event logging.
+     * Rollback: Revert to std::stringstream concatenation.
      */
     std::string s;
     s.reserve(64 + event.eventId.size() + event.type.size() + event.description.size() + 20 + event.snapshotPath.size());
