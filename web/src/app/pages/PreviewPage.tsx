@@ -213,6 +213,7 @@ export function PreviewPage() {
                 id="preview-flip-x"
                 checked={flipX}
                 loading={isFlippingX}
+                disabled={isFlippingY}
                 aria-label="翻转 X"
                 onChange={async (v) => {
                   const original = flipX
