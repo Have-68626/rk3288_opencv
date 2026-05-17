@@ -77,6 +77,7 @@ final class MainScreenBinder {
 
         RadioGroup rgMode;
         RadioGroup rgCaptureScheme;
+        RadioGroup rgInferenceThrottle;
         Switch switchCaptureAuto;
         Spinner spinnerCameras;
         Switch switchFlipX;
@@ -87,6 +88,9 @@ final class MainScreenBinder {
         Switch switchOverlay;
 
         View panelSettings;
+
+        EditText etInferenceIntervalMs;
+        TextView tvInferenceIntervalEffective;
 
         EditText etMockUrl;
         Button btnSetMockUrl;
@@ -126,6 +130,7 @@ final class MainScreenBinder {
 
         b.rgMode = activity.findViewById(R.id.rg_mode);
         b.rgCaptureScheme = activity.findViewById(R.id.rg_capture_scheme);
+        b.rgInferenceThrottle = activity.findViewById(R.id.rg_inference_throttle);
         b.switchCaptureAuto = activity.findViewById(R.id.switch_capture_auto);
         b.spinnerCameras = activity.findViewById(R.id.spinner_cameras);
         b.switchFlipX = activity.findViewById(R.id.switch_flip_x);
@@ -136,6 +141,9 @@ final class MainScreenBinder {
         b.switchOverlay = activity.findViewById(R.id.switch_overlay);
 
         b.panelSettings = activity.findViewById(R.id.panel_settings);
+
+        b.etInferenceIntervalMs = activity.findViewById(R.id.et_inference_interval_ms);
+        b.tvInferenceIntervalEffective = activity.findViewById(R.id.tv_inference_interval_effective);
 
         b.etMockUrl = activity.findViewById(R.id.et_mock_url);
         b.btnSetMockUrl = activity.findViewById(R.id.btn_set_mock_url);

@@ -6,6 +6,7 @@
 #include "Config.h"
 #include "Storage.h"
 #include "NativeLog.h"
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -381,6 +382,19 @@ Engine::~Engine() {
     stop();
 }
 
+void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
+    inferenceThrottleMode.store(parseInferenceThrottleMode(mode));
+    inferenceIntervalMs.store(clampInferenceIntervalMs(intervalMs));
+}
+
+InferenceThrottleMode Engine::getInferenceThrottleMode() const {
+    return inferenceThrottleMode.load();
+}
+
+int Engine::getInferenceIntervalMs() const {
+    return inferenceIntervalMs.load();
+}
+
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
     RKLOG_ENTER("Engine");
     initCancelRequested.store(false);
@@ -666,6 +680,24 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
         // Visualize motion (optional: draw contours)
         cv::putText(frame, "MOTION DETECTED", cv::Point(20, 40),
             cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
+    }
+
+    // 推理节流（inferenceIntervalMs）：
+    // - 目的：推理耗时较大时，通过时间间隔限制“重推理”频率来换取预览流畅度；
+    // - 要求：interval 未到时不触发任何识别相关回调（避免被误判为 NO_FACE/AUTH_FAIL），只更新 renderFrame；
+    // - 线程安全：配置由 JNI/其他线程写入原子变量，Engine 线程每帧读取，无需额外锁。
+    const auto throttleMode = inferenceThrottleMode.load();
+    if (throttleMode != InferenceThrottleMode::Off) {
+        const long long now = nowMs();
+        const long long last = lastInferenceStartMs.load();
+        const int interval = inferenceIntervalMs.load();
+        if (last > 0 && (now - last) < static_cast<long long>(interval)) {
+            std::lock_guard<std::mutex> lock(renderMutex);
+            frame.copyTo(renderFrame);
+            renderFrameSeq++;
+            return;
+        }
+        lastInferenceStartMs.store(now);
     }
 
     // 2. Multi-face authentication + tracking

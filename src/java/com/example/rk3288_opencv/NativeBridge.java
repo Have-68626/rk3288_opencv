@@ -21,5 +21,7 @@ final class NativeBridge {
             boolean fakeDetect,
             boolean fakeEmbedding
     );
+
+    static native void nativeSetInferenceThrottle(String mode, int intervalMs);
 }
 

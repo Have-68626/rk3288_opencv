@@ -9,6 +9,8 @@
 #pragma comment(lib, "Shlwapi.lib")
 #endif
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -19,6 +21,24 @@ namespace rk_win {
 namespace {
 
 constexpr const wchar_t* kProductNameW = L"rk_wcfr";  // TODO: 产品化时可替换为品牌名/应用名
+constexpr int kInferenceIntervalDefaultMs = 150;
+constexpr int kInferenceIntervalMinMs = 80;
+constexpr int kInferenceIntervalMaxMs = 500;
+
+static std::string asciiLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+static std::string normalizeInferenceThrottleMode(std::string s) {
+    s = asciiLower(std::move(s));
+    if (s == "auto" || s == "manual" || s == "off") return s;
+    return "auto";
+}
+
+static int clampInferenceIntervalMs(int v) {
+    return std::clamp(v, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
+}
 
 std::wstring getEnvW(const wchar_t* name) {
 #ifdef _WIN32
@@ -253,6 +273,22 @@ static JsonValue schemaSettingsDoc() {
         rp.o["enrollSamples"] = objBoolInt(true, 1, 1000);
         r.o["properties"] = std::move(rp);
         props.o["recognition"] = std::move(r);
+    }
+
+    // inference（可选：为了兼容旧 config.json，这个字段不加入 root.required）
+    {
+        JsonValue i = JsonValue::makeObject();
+        i.o["type"] = JsonValue::makeString("object");
+        i.o["additionalProperties"] = JsonValue::makeBool(false);
+        JsonValue req = JsonValue::makeArray();
+        req.a.push_back(JsonValue::makeString("throttleMode"));
+        req.a.push_back(JsonValue::makeString("intervalMs"));
+        i.o["required"] = std::move(req);
+        JsonValue ip = JsonValue::makeObject();
+        ip.o["throttleMode"] = objStr();
+        ip.o["intervalMs"] = objBoolInt(true, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
+        i.o["properties"] = std::move(ip);
+        props.o["inference"] = std::move(i);
     }
 
     // dnn
@@ -684,6 +720,14 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         root.o["recognition"] = std::move(r);
     }
 
+    // inference
+    {
+        JsonValue i = JsonValue::makeObject();
+        i.o["throttleMode"] = JsonValue::makeString(normalizeInferenceThrottleMode(cfg.inference.throttleMode));
+        i.o["intervalMs"] = JsonValue::makeNumber(clampInferenceIntervalMs(cfg.inference.intervalMs));
+        root.o["inference"] = std::move(i);
+    }
+
     // dnn
     {
         JsonValue d = JsonValue::makeObject();
@@ -872,6 +916,14 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
         if (getNumber(*r, "enrollSamples", v)) cfg.recognition.enrollSamples = static_cast<int>(v);
+    }
+
+    // inference
+    if (const JsonValue* i = doc.find("inference"); i && i->isObject()) {
+        std::string s;
+        double v = 0;
+        if (getString(*i, "throttleMode", s)) cfg.inference.throttleMode = normalizeInferenceThrottleMode(std::move(s));
+        if (getNumber(*i, "intervalMs", v)) cfg.inference.intervalMs = clampInferenceIntervalMs(static_cast<int>(v));
     }
 
     // dnn

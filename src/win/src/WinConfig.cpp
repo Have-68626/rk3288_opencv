@@ -6,11 +6,17 @@
 #pragma comment(lib, "Shlwapi.lib")
 #endif
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <vector>
 
 namespace rk_win {
 namespace {
+
+constexpr int kInferenceIntervalDefaultMs = 150;
+constexpr int kInferenceIntervalMinMs = 80;
+constexpr int kInferenceIntervalMaxMs = 500;
 
 std::wstring getEnvW(const wchar_t* name) {
 #ifdef _WIN32
@@ -129,6 +135,21 @@ std::wstring toWStringDouble(double v) {
     return buf;
 }
 
+static std::string asciiLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+static std::string normalizeInferenceThrottleMode(std::string s) {
+    s = asciiLower(std::move(s));
+    if (s == "auto" || s == "manual" || s == "off") return s;
+    return "auto";
+}
+
+static int clampInferenceIntervalMs(int v) {
+    return std::clamp(v, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
+}
+
 }  // namespace
 
 std::filesystem::path getExeDir() {
@@ -168,6 +189,11 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.recognition.minFaceSizePx = readIniInt(cfg.configPath, L"recognition", L"min_face_size_px", cfg.recognition.minFaceSizePx);
     cfg.recognition.identifyThreshold = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold", cfg.recognition.identifyThreshold);
     cfg.recognition.enrollSamples = readIniInt(cfg.configPath, L"recognition", L"enroll_samples", cfg.recognition.enrollSamples);
+
+    cfg.inference.throttleMode =
+        normalizeInferenceThrottleMode(utf8FromWide(readIniW(cfg.configPath, L"inference", L"throttle_mode", L"auto")));
+    cfg.inference.intervalMs =
+        clampInferenceIntervalMs(readIniInt(cfg.configPath, L"inference", L"interval_ms", kInferenceIntervalDefaultMs));
 
     cfg.dnn.enable = readIniBool(cfg.configPath, L"dnn", L"enable", cfg.dnn.enable);
     {
@@ -261,6 +287,9 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"recognition", L"min_face_size_px", toWStringInt(cfg.recognition.minFaceSizePx)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold", toWStringDouble(cfg.recognition.identifyThreshold)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"enroll_samples", toWStringInt(cfg.recognition.enrollSamples)) && ok;
+
+    ok = writeIniW(cfg.configPath, L"inference", L"throttle_mode", wFromUtf8(normalizeInferenceThrottleMode(cfg.inference.throttleMode))) && ok;
+    ok = writeIniW(cfg.configPath, L"inference", L"interval_ms", toWStringInt(clampInferenceIntervalMs(cfg.inference.intervalMs))) && ok;
 
     ok = writeIniW(cfg.configPath, L"dnn", L"enable", toWStringInt(cfg.dnn.enable ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"dnn", L"model_path", cfg.dnn.modelPath.wstring()) && ok;

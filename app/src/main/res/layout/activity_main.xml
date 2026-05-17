@@ -299,6 +299,71 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:text="@string/ui_settings_inference_throttle"
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:layout_marginBottom="8dp" />
+
+            <RadioGroup
+                android:id="@+id/rg_inference_throttle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp">
+
+                <RadioButton
+                    android:id="@+id/rb_inference_off"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_inference_throttle_off"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#00FF00"
+                    android:checked="false"
+                    android:padding="8dp" />
+
+                <RadioButton
+                    android:id="@+id/rb_inference_auto"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_inference_throttle_auto"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#00FF00"
+                    android:checked="true"
+                    android:padding="8dp" />
+
+                <RadioButton
+                    android:id="@+id/rb_inference_manual"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_settings_inference_throttle_manual"
+                    android:textColor="#FFFFFF"
+                    android:buttonTint="#00FF00"
+                    android:checked="false"
+                    android:padding="8dp" />
+            </RadioGroup>
+
+            <EditText
+                android:id="@+id/et_inference_interval_ms"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/ui_settings_inference_interval_hint"
+                android:inputType="number"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#666666"
+                android:background="#333333"
+                android:padding="10dp"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/tv_inference_interval_effective"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#AAAAAA"
+                android:textSize="12sp"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:text="硬件加速 (Acceleration)"
                 android:textColor="#AAAAAA"
                 android:textSize="14sp"

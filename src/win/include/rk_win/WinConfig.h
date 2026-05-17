@@ -22,6 +22,11 @@ struct RecognitionConfig {
     int enrollSamples = 12;
 };
 
+struct InferenceConfig {
+    std::string throttleMode = "auto";
+    int intervalMs = 150;
+};
+
 struct DnnConfig {
     bool enable = true;
     std::filesystem::path modelPath;
@@ -93,6 +98,7 @@ struct AppConfig {
     std::filesystem::path configPath;
     CameraConfig camera;
     RecognitionConfig recognition;
+    InferenceConfig inference;
     DnnConfig dnn;
     HttpServerConfig http;
     HttpPosterConfig poster;

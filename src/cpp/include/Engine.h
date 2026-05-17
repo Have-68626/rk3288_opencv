@@ -13,8 +13,10 @@
 #include "EventManager.h"
 #include "FrameInputChannel.h"
 #include "Types.h"
+#include "InferenceThrottle.h"
 #include <atomic>
 #include <cstdint>
+#include <string>
 #include <memory>
 #include <functional>
 #include <mutex>
@@ -92,6 +94,21 @@ public:
     void clearCancelInit();
     void setFlip(bool flipX, bool flipY);
 
+    /**
+     * @brief 运行时更新推理节流参数（通常由 JNI/配置线程调用）。
+     *
+     * 并发/线程安全：
+     * - 该接口只写入原子变量，不触碰 renderFrame/faceTracks 等非线程安全资源；
+     * - Engine 线程在每帧处理时读取原子配置，做到“低锁竞争”的实时生效。
+     *
+     * 行为约束：
+     * - mode 支持：auto/manual/off（大小写不敏感），非法值会按 off 处理；
+     * - intervalMs 会被钳制到 [kInferenceIntervalMinMs, kInferenceIntervalMaxMs]，避免 UI/调用方误传导致异常行为。
+     */
+    void updateInferenceThrottle(const std::string& mode, int intervalMs);
+    InferenceThrottleMode getInferenceThrottleMode() const;
+    int getInferenceIntervalMs() const;
+
 private:
     void processFrame(cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
@@ -107,6 +124,9 @@ private:
     std::atomic<bool> initCancelRequested{false};
     std::atomic<bool> flipXEnabled{false};
     std::atomic<bool> flipYEnabled{false};
+    std::atomic<InferenceThrottleMode> inferenceThrottleMode{InferenceThrottleMode::Off};
+    std::atomic<int> inferenceIntervalMs{kInferenceIntervalDefaultMs};
+    std::atomic<long long> lastInferenceStartMs{0};
     
     // Rendering
     cv::Mat renderFrame;

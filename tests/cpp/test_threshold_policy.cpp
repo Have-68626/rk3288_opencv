@@ -1,4 +1,5 @@
 #include "ThresholdPolicy.h"
+#include "InferenceThrottle.h"
 
 #include <string>
 
@@ -88,5 +89,17 @@ bool test_threshold_policy_rollback_empty_history() {
     // Verify error message contains expected substring
     if (err.find("无可回滚版本") == std::string::npos) return false;
 
+    return true;
+}
+
+bool test_inference_throttle_parse_and_clamp() {
+    if (parseInferenceThrottleMode("off") != InferenceThrottleMode::Off) return false;
+    if (parseInferenceThrottleMode("AUTO") != InferenceThrottleMode::Auto) return false;
+    if (parseInferenceThrottleMode("manual") != InferenceThrottleMode::Manual) return false;
+    if (parseInferenceThrottleMode("x") != InferenceThrottleMode::Off) return false;
+
+    if (clampInferenceIntervalMs(0) != kInferenceIntervalMinMs) return false;
+    if (clampInferenceIntervalMs(9999) != kInferenceIntervalMaxMs) return false;
+    if (clampInferenceIntervalMs(150) != 150) return false;
     return true;
 }

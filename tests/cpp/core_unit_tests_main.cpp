@@ -36,6 +36,7 @@ bool test_threshold_policy_rollback_empty_history();
 bool test_event_manager_format_json();
 bool test_event_manager_unique_id();
 bool test_http_faces_server_path_validation();
+bool test_inference_throttle_parse_and_clamp();
 
 int main() {
     using namespace rk_core_test;
@@ -45,6 +46,7 @@ int main() {
         {"frame_input_bounded_queue_drops_oldest", test_frame_input_bounded_queue_drops_oldest},
         {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
         {"threshold_policy_rollback_empty_history", test_threshold_policy_rollback_empty_history},
+        {"inference_throttle_parse_and_clamp", test_inference_throttle_parse_and_clamp},
         {"event_manager_format_json", test_event_manager_format_json},
         {"event_manager_unique_id", test_event_manager_unique_id},
         {"http_faces_server_path_validation", test_http_faces_server_path_validation},

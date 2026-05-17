@@ -203,6 +203,22 @@ Java_com_example_rk3288_1opencv_NativeBridge_nativeInferFaceFromImage(
     return env->NewStringUTF(o.json.c_str());
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_NativeBridge_nativeSetInferenceThrottle(
+        JNIEnv* env,
+        jclass,
+        jstring mode,
+        jint intervalMs) {
+    if (!g_engine) return;
+
+    const char* m = mode ? env->GetStringUTFChars(mode, nullptr) : nullptr;
+    std::string modeStr = m ? m : "off";
+    if (m) env->ReleaseStringUTFChars(mode, m);
+
+    // JNI 边界：该接口只更新 Engine 内的原子配置，确保运行中更新不会引入锁竞争或悬挂引用。
+    g_engine->updateInferenceThrottle(modeStr, static_cast<int>(intervalMs));
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(
         JNIEnv* env,

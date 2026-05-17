@@ -68,12 +68,19 @@ import android.util.Size;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.io.File;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
@@ -95,7 +102,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_ACCEL_OPENCL = "pref_accel_opencl";
     private static final String PREF_ACCEL_MPP = "pref_accel_mpp";
     private static final String PREF_ACCEL_QUALCOMM = "pref_accel_qualcomm";
+    private static final String PREF_INFERENCE_THROTTLE_MODE = "pref_inference_throttle_mode";
+    private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
     private static final String TAG = "MainActivity";
+
+    private static final int INFERENCE_INTERVAL_DEFAULT_MS = 150;
+    private static final int INFERENCE_INTERVAL_MIN_MS = 80;
+    private static final int INFERENCE_INTERVAL_MAX_MS = 500;
+    private static final String INFERENCE_INI_FILENAME = "rk3288_opencv.ini";
 
     private ImageView monitorView;
     private SurfaceView previewSurface;
@@ -110,6 +124,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private RadioGroup rgMode;
     private Switch switchCaptureAuto;
     private RadioGroup rgCaptureScheme;
+    private RadioGroup rgInferenceThrottle;
     private Spinner spinnerCameras;
     private Switch switchFlipX;
     private Switch switchFlipY;
@@ -119,6 +134,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Switch switchOverlay;
     private View panelSettings;
     private View videoWrapper;
+    private EditText etInferenceIntervalMs;
+    private TextView tvInferenceIntervalEffective;
     private EditText etMockUrl;
     private Button btnSetMockUrl;
     private EditText etRtmpUrl;
@@ -210,6 +227,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private boolean captureAutoEnabled = true;
     private CaptureScheme preferredCaptureScheme = CaptureScheme.CAMERA2;
     private CaptureScheme activeCaptureScheme = CaptureScheme.CAMERA2;
+
+    private String inferenceThrottleMode = "auto";
+    private int inferenceIntervalMs = INFERENCE_INTERVAL_DEFAULT_MS;
+    private int effectiveInferenceIntervalMs = INFERENCE_INTERVAL_DEFAULT_MS;
+    private InferenceThrottleAutoTuner inferenceAutoTuner = new InferenceThrottleAutoTuner(INFERENCE_INTERVAL_DEFAULT_MS);
+    private Runnable inferenceAutoUpdater;
+    private long lastInferenceAutoHeartbeatMs = 0L;
 
     private CaptureController camera2Capture;
     private CaptureController cameraXCapture;
@@ -355,6 +379,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         rgMode = b.rgMode;
         rgCaptureScheme = b.rgCaptureScheme;
+        rgInferenceThrottle = b.rgInferenceThrottle;
         switchCaptureAuto = b.switchCaptureAuto;
         spinnerCameras = b.spinnerCameras;
         switchFlipX = b.switchFlipX;
@@ -365,6 +390,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         switchOverlay = b.switchOverlay;
 
         panelSettings = b.panelSettings;
+
+        etInferenceIntervalMs = b.etInferenceIntervalMs;
+        tvInferenceIntervalEffective = b.tvInferenceIntervalEffective;
 
         etMockUrl = b.etMockUrl;
         btnSetMockUrl = b.btnSetMockUrl;
@@ -383,6 +411,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         MainScreenBinder.bindStaticListeners(b, mainScreenCallbacks);
         MainScreenBinder.bindCaptureControls(b, captureAutoEnabled, preferredCaptureScheme, mainScreenCallbacks);
+        bindInferenceThrottleControls();
 
         if (cameraAdapter != null) {
             MainScreenBinder.bindCameraSpinner(b, cameraAdapter, resetSpinnerInit, mainScreenCallbacks);
@@ -668,8 +697,345 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (switchAccelOpenCL != null) ed.putBoolean(PREF_ACCEL_OPENCL, switchAccelOpenCL.isChecked());
         if (switchAccelMpp != null) ed.putBoolean(PREF_ACCEL_MPP, switchAccelMpp.isChecked());
         if (switchAccelQualcomm != null) ed.putBoolean(PREF_ACCEL_QUALCOMM, switchAccelQualcomm.isChecked());
+        ed.putString(PREF_INFERENCE_THROTTLE_MODE, normalizeInferenceThrottleMode(inferenceThrottleMode));
+        ed.putInt(PREF_INFERENCE_INTERVAL_MS, clampInferenceIntervalMs(inferenceIntervalMs));
         ed.apply();
+        persistInferenceThrottleIni();
         performHotRestart();
+    }
+
+    private void loadInferenceThrottleSettings(SharedPreferences prefs) {
+        String mode = null;
+        Integer interval = null;
+        if (prefs != null) {
+            mode = prefs.getString(PREF_INFERENCE_THROTTLE_MODE, null);
+            if (prefs.contains(PREF_INFERENCE_INTERVAL_MS)) {
+                interval = prefs.getInt(PREF_INFERENCE_INTERVAL_MS, INFERENCE_INTERVAL_DEFAULT_MS);
+            }
+        }
+
+        if (mode == null || interval == null) {
+            InferenceIni ini = readInferenceIniIfExists();
+            if (mode == null && ini.mode != null) mode = ini.mode;
+            if (interval == null && ini.intervalMs != null) interval = ini.intervalMs;
+        }
+
+        inferenceThrottleMode = normalizeInferenceThrottleMode(mode);
+        inferenceIntervalMs = clampInferenceIntervalMs(interval == null ? INFERENCE_INTERVAL_DEFAULT_MS : interval);
+        effectiveInferenceIntervalMs = inferenceIntervalMs;
+        inferenceAutoTuner.reset(inferenceIntervalMs);
+    }
+
+    private void bindInferenceThrottleControls() {
+        if (rgInferenceThrottle == null) return;
+
+        rgInferenceThrottle.setOnCheckedChangeListener(null);
+
+        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        if ("off".equals(mode)) {
+            rgInferenceThrottle.check(R.id.rb_inference_off);
+        } else if ("manual".equals(mode)) {
+            rgInferenceThrottle.check(R.id.rb_inference_manual);
+        } else {
+            rgInferenceThrottle.check(R.id.rb_inference_auto);
+        }
+
+        if (etInferenceIntervalMs != null) {
+            etInferenceIntervalMs.setText(String.valueOf(clampInferenceIntervalMs(inferenceIntervalMs)));
+            etInferenceIntervalMs.setEnabled(!"off".equals(mode));
+            etInferenceIntervalMs.setOnFocusChangeListener((v, hasFocus) -> {
+                if (hasFocus) return;
+                onInferenceThrottleIntervalEdited();
+            });
+        }
+
+        rgInferenceThrottle.setOnCheckedChangeListener((group, checkedId) -> {
+            if (checkedId == R.id.rb_inference_off) {
+                inferenceThrottleMode = "off";
+            } else if (checkedId == R.id.rb_inference_manual) {
+                inferenceThrottleMode = "manual";
+            } else {
+                inferenceThrottleMode = "auto";
+            }
+            updateInferenceThrottleFromUi(true);
+        });
+
+        updateInferenceThrottleFromUi(false);
+    }
+
+    private void onInferenceThrottleIntervalEdited() {
+        if (etInferenceIntervalMs == null) return;
+        String raw = etInferenceIntervalMs.getText() == null ? "" : etInferenceIntervalMs.getText().toString();
+        int v = INFERENCE_INTERVAL_DEFAULT_MS;
+        try {
+            String t = raw == null ? "" : raw.trim();
+            if (!t.isEmpty()) v = Integer.parseInt(t);
+        } catch (Exception ignored) {
+        }
+        int clamped = clampInferenceIntervalMs(v);
+        inferenceIntervalMs = clamped;
+        etInferenceIntervalMs.setText(String.valueOf(clamped));
+        updateInferenceThrottleFromUi(true);
+    }
+
+    private void updateInferenceThrottleFromUi(boolean persist) {
+        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        if (etInferenceIntervalMs != null) {
+            etInferenceIntervalMs.setEnabled(!"off".equals(mode));
+        }
+
+        int baseInterval = clampInferenceIntervalMs(inferenceIntervalMs);
+        if ("auto".equals(mode)) {
+            inferenceAutoTuner.reset(baseInterval);
+            effectiveInferenceIntervalMs = inferenceAutoTuner.getIntervalMs();
+        } else if ("manual".equals(mode)) {
+            effectiveInferenceIntervalMs = baseInterval;
+        } else {
+            effectiveInferenceIntervalMs = baseInterval;
+        }
+
+        if (persist) {
+            SharedPreferences.Editor ed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+            ed.putString(PREF_INFERENCE_THROTTLE_MODE, mode);
+            ed.putInt(PREF_INFERENCE_INTERVAL_MS, baseInterval);
+            ed.apply();
+            persistInferenceThrottleIni();
+        }
+
+        applyInferenceThrottleToNative();
+        updateInferenceThrottleEffectiveUi();
+    }
+
+    private void updateInferenceThrottleEffectiveUi() {
+        if (tvInferenceIntervalEffective == null) return;
+        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        if ("off".equals(mode)) {
+            tvInferenceIntervalEffective.setText("推理节流：关闭");
+        } else if ("manual".equals(mode)) {
+            tvInferenceIntervalEffective.setText(String.format(Locale.US, "推理节流：手动 %dms", clampInferenceIntervalMs(inferenceIntervalMs)));
+        } else {
+            tvInferenceIntervalEffective.setText(String.format(Locale.US, "推理节流：自动 生效 %dms", clampInferenceIntervalMs(effectiveInferenceIntervalMs)));
+        }
+    }
+
+    private void applyInferenceThrottleToNative() {
+        if (!engineInitialized) return;
+        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        int interval = clampInferenceIntervalMs("auto".equals(mode) ? effectiveInferenceIntervalMs : inferenceIntervalMs);
+        try {
+            NativeBridge.nativeSetInferenceThrottle(mode, interval);
+        } catch (Throwable t) {
+            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetInferenceThrottle 失败", t);
+        }
+
+        if (!"auto".equals(mode)) {
+            if (inferenceAutoUpdater != null) handler.removeCallbacks(inferenceAutoUpdater);
+            inferenceAutoUpdater = null;
+            lastInferenceAutoHeartbeatMs = 0L;
+            return;
+        }
+
+        if (inferenceAutoUpdater == null) {
+            inferenceAutoUpdater = new Runnable() {
+                @Override
+                public void run() {
+                    if (!isRunning || !engineInitialized) return;
+                    String m = normalizeInferenceThrottleMode(inferenceThrottleMode);
+                    if (!"auto".equals(m)) return;
+                    long nowMs = SystemClock.elapsedRealtime();
+                    StatsSnapshot s = StatsRepository.getInstance().getSnapshot();
+                    boolean changed = inferenceAutoTuner.update(s);
+                    int next = clampInferenceIntervalMs(inferenceAutoTuner.getIntervalMs());
+                    if (changed && next != effectiveInferenceIntervalMs) {
+                        int from = effectiveInferenceIntervalMs;
+                        effectiveInferenceIntervalMs = next;
+                        try {
+                            NativeBridge.nativeSetInferenceThrottle("auto", next);
+                        } catch (Throwable ignored) {
+                        }
+                        updateInferenceThrottleEffectiveUi();
+                        String cpu = (s == null || s.cpuPercent == null) ? "--" : String.format(Locale.US, "%.1f", s.cpuPercent);
+                        String lat = (s == null || s.latencyMs == null) ? "--" : String.format(Locale.US, "%.0f", s.latencyMs);
+                        String fps = (s == null || s.fps == null) ? "--" : String.format(Locale.US, "%.1f", s.fps);
+                        String action = next >= from ? "step_up" : "step_down";
+                        AppLog.i("MainActivity", "inferenceAutoTune",
+                                String.format(Locale.US,
+                                        "action=%s mode=auto base_ms=%d from_ms=%d to_ms=%d cpu=%s lat_ms=%s ui_fps=%s",
+                                        action,
+                                        clampInferenceIntervalMs(inferenceIntervalMs),
+                                        from,
+                                        next,
+                                        cpu,
+                                        lat,
+                                        fps));
+                    } else if (lastInferenceAutoHeartbeatMs > 0 && (nowMs - lastInferenceAutoHeartbeatMs) >= 30_000) {
+                        String cpu = (s == null || s.cpuPercent == null) ? "--" : String.format(Locale.US, "%.1f", s.cpuPercent);
+                        String lat = (s == null || s.latencyMs == null) ? "--" : String.format(Locale.US, "%.0f", s.latencyMs);
+                        String fps = (s == null || s.fps == null) ? "--" : String.format(Locale.US, "%.1f", s.fps);
+                        AppLog.i("MainActivity", "inferenceAutoTune",
+                                String.format(Locale.US,
+                                        "action=heartbeat mode=auto base_ms=%d effective_ms=%d cpu=%s lat_ms=%s ui_fps=%s",
+                                        clampInferenceIntervalMs(inferenceIntervalMs),
+                                        clampInferenceIntervalMs(effectiveInferenceIntervalMs),
+                                        cpu,
+                                        lat,
+                                        fps));
+                        lastInferenceAutoHeartbeatMs = nowMs;
+                    }
+                    handler.postDelayed(this, 1000);
+                }
+            };
+        }
+        handler.removeCallbacks(inferenceAutoUpdater);
+        lastInferenceAutoHeartbeatMs = SystemClock.elapsedRealtime();
+        handler.postDelayed(inferenceAutoUpdater, 800);
+    }
+
+    private void persistInferenceThrottleIni() {
+        String baseDir = getAppStoragePath();
+        if (baseDir == null || baseDir.trim().isEmpty()) return;
+        File ini = new File(baseDir, INFERENCE_INI_FILENAME);
+
+        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        int interval = clampInferenceIntervalMs(inferenceIntervalMs);
+
+        List<String> lines = new ArrayList<>();
+        if (ini.exists()) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(ini), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    lines.add(line);
+                }
+            } catch (Exception e) {
+                AppLog.e("MainActivity", "persistInferenceThrottleIni", "读取 ini 失败: " + ini.getAbsolutePath(), e);
+                lines.clear();
+            }
+        }
+
+        List<String> out = new ArrayList<>();
+        boolean hasSection = false;
+        boolean inSection = false;
+        boolean wroteMode = false;
+        boolean wroteInterval = false;
+
+        for (String line : lines) {
+            String t = line == null ? "" : line.trim();
+            if (t.startsWith("[") && t.endsWith("]")) {
+                if (inSection) {
+                    if (!wroteMode) out.add("throttle_mode=" + mode);
+                    if (!wroteInterval) out.add("interval_ms=" + interval);
+                }
+                inSection = "[inference]".equalsIgnoreCase(t);
+                if (inSection) {
+                    hasSection = true;
+                    wroteMode = false;
+                    wroteInterval = false;
+                }
+                out.add(line);
+                continue;
+            }
+
+            if (inSection) {
+                String lower = t.toLowerCase(Locale.US);
+                if (lower.startsWith("throttle_mode=")) {
+                    out.add("throttle_mode=" + mode);
+                    wroteMode = true;
+                    continue;
+                }
+                if (lower.startsWith("interval_ms=")) {
+                    out.add("interval_ms=" + interval);
+                    wroteInterval = true;
+                    continue;
+                }
+            }
+            out.add(line);
+        }
+
+        if (inSection) {
+            if (!wroteMode) out.add("throttle_mode=" + mode);
+            if (!wroteInterval) out.add("interval_ms=" + interval);
+        }
+
+        if (!hasSection) {
+            if (!out.isEmpty() && !out.get(out.size() - 1).trim().isEmpty()) out.add("");
+            out.add("[inference]");
+            out.add("throttle_mode=" + mode);
+            out.add("interval_ms=" + interval);
+        }
+
+        try (BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(ini, false), StandardCharsets.UTF_8))) {
+            for (int i = 0; i < out.size(); i++) {
+                bw.write(out.get(i) == null ? "" : out.get(i));
+                bw.newLine();
+            }
+        } catch (Exception e) {
+            AppLog.e("MainActivity", "persistInferenceThrottleIni", "写入 ini 失败: " + ini.getAbsolutePath(), e);
+        }
+    }
+
+    private static final class InferenceIni {
+        final String mode;
+        final Integer intervalMs;
+
+        InferenceIni(String mode, Integer intervalMs) {
+            this.mode = mode;
+            this.intervalMs = intervalMs;
+        }
+    }
+
+    private InferenceIni readInferenceIniIfExists() {
+        String baseDir = getAppStoragePath();
+        if (baseDir == null || baseDir.trim().isEmpty()) return new InferenceIni(null, null);
+        File ini = new File(baseDir, INFERENCE_INI_FILENAME);
+        if (!ini.exists()) return new InferenceIni(null, null);
+
+        String mode = null;
+        Integer interval = null;
+        boolean inSection = false;
+
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(ini), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith(";") || t.startsWith("#")) continue;
+                if (t.startsWith("[") && t.endsWith("]")) {
+                    inSection = "[inference]".equalsIgnoreCase(t);
+                    continue;
+                }
+                if (!inSection) continue;
+                int eq = t.indexOf('=');
+                if (eq <= 0) continue;
+                String k = t.substring(0, eq).trim().toLowerCase(Locale.US);
+                String v = t.substring(eq + 1).trim();
+                if ("throttle_mode".equals(k)) {
+                    mode = v;
+                } else if ("interval_ms".equals(k)) {
+                    try {
+                        interval = Integer.parseInt(v);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (Exception e) {
+            AppLog.e("MainActivity", "readInferenceIniIfExists", "读取 ini 失败: " + ini.getAbsolutePath(), e);
+            return new InferenceIni(null, null);
+        }
+
+        return new InferenceIni(mode, interval);
+    }
+
+    private static String normalizeInferenceThrottleMode(String raw) {
+        String v = raw == null ? "" : raw.trim().toLowerCase(Locale.US);
+        if ("0".equals(v) || "false".equals(v) || "off".equals(v) || "disable".equals(v) || "disabled".equals(v)) return "off";
+        if ("1".equals(v) || "manual".equals(v) || "fixed".equals(v)) return "manual";
+        if ("2".equals(v) || "auto".equals(v) || "adaptive".equals(v)) return "auto";
+        return "auto";
+    }
+
+    private static int clampInferenceIntervalMs(int v) {
+        if (v < INFERENCE_INTERVAL_MIN_MS) return INFERENCE_INTERVAL_MIN_MS;
+        if (v > INFERENCE_INTERVAL_MAX_MS) return INFERENCE_INTERVAL_MAX_MS;
+        return v;
     }
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
@@ -751,6 +1117,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         captureAutoEnabled = prefs.getBoolean(PREF_CAPTURE_AUTO, true);
         String schemeRaw = prefs.getString(PREF_CAPTURE_SCHEME, CaptureScheme.CAMERA2.name());
         preferredCaptureScheme = parseCaptureScheme(schemeRaw, CaptureScheme.CAMERA2);
+        loadInferenceThrottleSettings(prefs);
 
         cameraAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
         cameraAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
@@ -1646,6 +2013,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     engineInitialized = result;
                     if (engineInitialized) {
                         applyFlipToNative();
+                        applyInferenceThrottleToNative();
                         updateSystemReadyUi("引擎初始化成功 (Mock)");
                     } else {
                         updateSystemReadyUi("引擎初始化失败 (Mock)");
@@ -1657,6 +2025,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             engineInitialized = nativeInit(-1, cascadePath, storagePath);
             if (engineInitialized) {
                 applyFlipToNative();
+                applyInferenceThrottleToNative();
                 updateSystemReadyUi("引擎初始化成功 (外部采集)");
             } else {
                 updateSystemReadyUi("引擎初始化失败");
@@ -2419,6 +2788,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         stopMonitoring();
         if (statsUpdater != null) {
             handler.removeCallbacks(statsUpdater);
+        }
+        if (inferenceAutoUpdater != null) {
+            handler.removeCallbacks(inferenceAutoUpdater);
+            inferenceAutoUpdater = null;
         }
         try {
             unregisterReceiver(usbReceiver);
