@@ -21,9 +21,17 @@ export function HomePage() {
           type="error"
           showIcon
           message="后端 /api/v1/settings 不可用"
+          action={
+            <Button size="small" onClick={() => refreshServerSettings()} loading={(serverSettings.status as string) === 'loading'}>
+              重试
+            </Button>
+          }
           description={
             <>
               <div>{serverSettings.error.message}</div>
+              <div style={{ marginTop: 8 }}>
+                建议：请检查本地后端服务是否已启动，或确认网络/端口配置是否正确。
+              </div>
               {serverSettings.error.details?.length ? (
                 <div style={{ marginTop: 8 }}>
                   <Typography.Text type="secondary">details：</Typography.Text>
