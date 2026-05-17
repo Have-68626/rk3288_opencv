@@ -22,6 +22,13 @@
 #endif
 
 namespace {
+static bool isSafePath(const std::string& path) {
+    if (path.find("..") != std::string::npos) return false;
+    if (!path.empty() && (path[0] == '/' || path[0] == '\\')) return false;
+    if (path.length() >= 2 && path[1] == ':') return false;
+    return true;
+}
+
 static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, std::string& err) {
     const int w = f.width;
     const int h = f.height;
@@ -549,7 +556,13 @@ void Engine::run() {
                     std::cout << "Perf Total: Mean=" << totalMean << "ms, P50=" << total50 << "ms, P95=" << total95 << "ms, Max=" << totalMax << "ms | Peak RSS: " << (perfHistory.back().rssBytes / 1024 / 1024) << "MB" << std::endl;
 
                     const char* envOutDir = std::getenv("RK_BENCH_OUT_DIR");
-                    std::string outDir = envOutDir ? envOutDir : "tests/metrics";
+                    std::string outDir = "tests/metrics";
+                    if (envOutDir) {
+                        std::string envOutDirStr(envOutDir);
+                        if (isSafePath(envOutDirStr)) {
+                            outDir = envOutDirStr;
+                        }
+                    }
                     std::string outPath = outDir + "/engine_perf.csv";
 
                     FILE* f = fopen(outPath.c_str(), "a");
