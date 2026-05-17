@@ -39,7 +39,6 @@ import android.view.animation.LinearInterpolator;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -97,8 +96,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_ACCEL_MPP = "pref_accel_mpp";
     private static final String PREF_ACCEL_QUALCOMM = "pref_accel_qualcomm";
     private static final String TAG = "MainActivity";
-    private static final int CAPTURE_RECOVERY_MAX_RETRIES = 2;
-    private static final long[] CAPTURE_RECOVERY_BACKOFF_MS = new long[]{800L, 1600L};
 
     private ImageView monitorView;
     private SurfaceView previewSurface;
@@ -139,12 +136,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     
     private boolean isRunning = false;
     private boolean engineInitialized = false;
-    private volatile boolean pendingStartAfterInit = false;
     private volatile boolean cancelInitMock = false;
     private boolean firstFrameReceived = false;
     private boolean lastReadyVisible = false;
     private boolean restartMonitoringOnStart = false;
     private PermissionStateMachine permissionStateMachine;
+    private final MonitoringCoordinator monitoringCoordinator = new MonitoringCoordinator();
     private Bitmap frameBitmap;
     private Bitmap backBitmap;
     private final Object bitmapSwapLock = new Object();
@@ -154,7 +151,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private volatile int previewRecoveryCount = 0;
     private volatile long lastPreviewRecoveryRealtimeMs = 0L;
     private Runnable previewWatchdog;
-    private volatile String lastCaptureSchemeReason = "";
     private final SurfaceHolder.Callback previewSurfaceCallback = new SurfaceHolder.Callback() {
         @Override
         public void surfaceCreated(@NonNull SurfaceHolder holder) {
@@ -214,9 +210,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private boolean captureAutoEnabled = true;
     private CaptureScheme preferredCaptureScheme = CaptureScheme.CAMERA2;
     private CaptureScheme activeCaptureScheme = CaptureScheme.CAMERA2;
-    private CaptureScheme forcedNextScheme = null;
-    private boolean autoSwitchedThisRun = false;
-    private int captureRecoveryRetries = 0;
 
     private CaptureController camera2Capture;
     private CaptureController cameraXCapture;
@@ -246,6 +239,437 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         public String toString() {
             return description; // For Spinner display
         }
+    }
+
+    private final MainScreenBinder.Callbacks mainScreenCallbacks = new MainScreenBinder.Callbacks() {
+        @Override
+        public void onStartStopClicked() {
+            dispatchMonitoringDecision(monitoringCoordinator.onToggleStartStopClicked(snapshotMonitoringInputs()));
+        }
+
+        @Override
+        public void onViewLogsClicked() {
+            Intent intent = new Intent(MainActivity.this, LogViewerActivity.class);
+            startActivity(intent);
+        }
+
+        @Override
+        public void onNavPlaybackClicked() {
+            pickMediaFile();
+        }
+
+        @Override
+        public void onNavSettingsClicked() {
+            toggleSettingsPanel();
+        }
+
+        @Override
+        public void onNavAboutClicked() {
+            showAboutDialog();
+        }
+
+        @Override
+        public void onExitClicked() {
+            showExitDialog();
+        }
+
+        @Override
+        public void onSetMockUrlClicked() {
+            applyMockUrl();
+        }
+
+        @Override
+        public void onPushRtmpClicked() {
+            startRtmpPush();
+        }
+
+        @Override
+        public void onStopRtmpClicked() {
+            stopRtmpPush();
+        }
+
+        @Override
+        public void onHotRestartClicked() {
+            performHotRestartWithPrefsPersist();
+        }
+
+        @Override
+        public void onModeChanged(int checkedId) {
+            int mode = (checkedId == R.id.rb_continuous) ? 0 : 1;
+            nativeSetMode(mode);
+        }
+
+        @Override
+        public void onToggleRecognitionPanelClicked() {
+            toggleRecognitionPanel();
+        }
+
+        @Override
+        public boolean isCameraSpinnerInitialized() {
+            return isSpinnerInitialized;
+        }
+
+        @Override
+        public void setCameraSpinnerInitialized(boolean initialized) {
+            isSpinnerInitialized = initialized;
+        }
+
+        @Override
+        public void onCameraSpinnerItemSelected(int position) {
+            handleCameraSpinnerSelection(position);
+        }
+
+        @Override
+        public void onCaptureAutoChanged(boolean enabled) {
+            handleCaptureAutoChanged(enabled);
+        }
+
+        @Override
+        public void onCaptureSchemeChanged(@NonNull CaptureScheme scheme) {
+            handleCaptureSchemeChanged(scheme);
+        }
+    };
+
+    private void bindMainScreen(boolean resetSpinnerInit) {
+        MainScreenBinder.Binding b = MainScreenBinder.bindViews(this);
+
+        monitorView = b.monitorView;
+        previewSurface = b.previewSurface;
+        videoWrapper = b.videoWrapper;
+        tvFps = b.tvFps;
+        tvCpu = b.tvCpu;
+        tvMemory = b.tvMemory;
+        tvLatency = b.tvLatency;
+        tvCaptureStrategyInfo = b.tvCaptureStrategyInfo;
+        tvStatus = b.tvStatus;
+        tvOverlayStatus = b.tvOverlayStatus;
+        recognitionTitle = b.recognitionTitle;
+
+        btnStartStop = b.btnStartStop;
+        btnViewLogs = b.btnViewLogs;
+        btnNavPlayback = b.btnNavPlayback;
+        btnNavSettings = b.btnNavSettings;
+        btnNavAbout = b.btnNavAbout;
+        btnExit = b.btnExit;
+        btnHotRestart = b.btnHotRestart;
+
+        rgMode = b.rgMode;
+        rgCaptureScheme = b.rgCaptureScheme;
+        switchCaptureAuto = b.switchCaptureAuto;
+        spinnerCameras = b.spinnerCameras;
+        switchFlipX = b.switchFlipX;
+        switchFlipY = b.switchFlipY;
+        switchAccelOpenCL = b.switchAccelOpenCL;
+        switchAccelMpp = b.switchAccelMpp;
+        switchAccelQualcomm = b.switchAccelQualcomm;
+        switchOverlay = b.switchOverlay;
+
+        panelSettings = b.panelSettings;
+
+        etMockUrl = b.etMockUrl;
+        btnSetMockUrl = b.btnSetMockUrl;
+
+        etRtmpUrl = b.etRtmpUrl;
+        btnPushRtmp = b.btnPushRtmp;
+        btnStopRtmp = b.btnStopRtmp;
+
+        panelRecognitionEvents = b.panelRecognitionEvents;
+        rvRecognitionEvents = b.rvRecognitionEvents;
+        fabToggleEvents = b.fabToggleEvents;
+
+        if (tvOverlayStatus != null) {
+            tvOverlayStatus.setVisibility(View.GONE);
+        }
+
+        MainScreenBinder.bindStaticListeners(b, mainScreenCallbacks);
+        MainScreenBinder.bindCaptureControls(b, captureAutoEnabled, preferredCaptureScheme, mainScreenCallbacks);
+
+        if (cameraAdapter != null) {
+            MainScreenBinder.bindCameraSpinner(b, cameraAdapter, resetSpinnerInit, mainScreenCallbacks);
+        }
+
+        if (switchOverlay != null) {
+            switchOverlay.setOnCheckedChangeListener(overlaySwitchListener);
+            syncOverlaySwitchState();
+        }
+        if (switchFlipX != null) switchFlipX.setOnCheckedChangeListener(flipXSwitchListener);
+        if (switchFlipY != null) switchFlipY.setOnCheckedChangeListener(flipYSwitchListener);
+        refreshFlipFromPrefs(false);
+        syncMonitoringUiAfterRebind();
+    }
+
+    private MonitoringCoordinator.Inputs snapshotMonitoringInputs() {
+        boolean runtimeGranted = permissionStateMachine != null && permissionStateMachine.isRuntimeGranted();
+        return new MonitoringCoordinator.Inputs(selectedCameraId, mockFilePath, runtimeGranted);
+    }
+
+    private void syncMonitoringUiAfterRebind() {
+        renderMonitoringUi(monitoringCoordinator.snapshot(snapshotMonitoringInputs()).uiState);
+    }
+
+    private void dispatchMonitoringDecision(@NonNull MonitoringCoordinator.Decision d) {
+        MonitoringCoordinator.Decision next = applyMonitoringEffects(d);
+        renderMonitoringUi(next.uiState);
+    }
+
+    private void renderMonitoringUi(@NonNull MonitoringCoordinator.UiState s) {
+        if (btnStartStop != null) {
+            btnStartStop.setText(s.startStopText);
+            btnStartStop.setEnabled(s.startStopEnabled);
+            btnStartStop.setBackgroundColor(s.startStopBackgroundColorArgb);
+        }
+        if (tvStatus != null) {
+            tvStatus.setText(s.statusText);
+        }
+        if (tvCaptureStrategyInfo != null) {
+            tvCaptureStrategyInfo.setText(s.captureStrategyInfoText);
+        }
+        if (tvOverlayStatus != null) {
+            tvOverlayStatus.setVisibility(s.overlayVisible ? View.VISIBLE : View.GONE);
+        }
+        if (rgCaptureScheme != null) {
+            rgCaptureScheme.setEnabled(s.captureSchemeGroupEnabled);
+            rgCaptureScheme.setAlpha(s.captureSchemeGroupAlpha);
+            for (int i = 0; i < rgCaptureScheme.getChildCount(); i++) {
+                View c = rgCaptureScheme.getChildAt(i);
+                if (c != null) {
+                    c.setEnabled(s.captureSchemeGroupEnabled);
+                    c.setAlpha(s.captureSchemeGroupAlpha);
+                }
+            }
+        }
+    }
+
+    private MonitoringCoordinator.Decision applyMonitoringEffects(@NonNull MonitoringCoordinator.Decision d) {
+        if (d.effects == null || d.effects.isEmpty()) return d;
+
+        MonitoringCoordinator.Inputs in = snapshotMonitoringInputs();
+        MonitoringCoordinator.Decision current = d;
+
+        for (MonitoringCoordinator.Effect effect : d.effects) {
+            if (effect instanceof MonitoringCoordinator.ShowToast) {
+                MonitoringCoordinator.ShowToast t = (MonitoringCoordinator.ShowToast) effect;
+                Toast.makeText(this, t.text, t.longDuration ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.RequestRuntimePermission) {
+                if (permissionStateMachine != null) {
+                    permissionStateMachine.requestWithUserConfirmation();
+                }
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.MaybeShowGoToSettingsDialog) {
+                if (permissionStateMachine != null) {
+                    permissionStateMachine.showGoToSettingsDialogIfNeeded();
+                }
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.RunPreflight) {
+                MonitoringCoordinator.RunPreflight p = (MonitoringCoordinator.RunPreflight) effect;
+                String preflight = runInputPreflight(p.wantCamera, p.wantMock);
+                if (preflight != null && !preflight.isEmpty()) {
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_LAST_PREFLIGHT, preflight).apply();
+                    AppLog.i("MainActivity", "preflight", preflight.replace('\n', ' '));
+                }
+                current = monitoringCoordinator.onPreflightFinished(in, preflight);
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.InitEngine) {
+                MonitoringCoordinator.InitEngine ie = (MonitoringCoordinator.InitEngine) effect;
+                MonitoringCoordinator.Decision after = performInitEngineEffect(ie.wantMock);
+                if (after != null) {
+                    current = after;
+                }
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.ScheduleInitEngine) {
+                MonitoringCoordinator.ScheduleInitEngine se = (MonitoringCoordinator.ScheduleInitEngine) effect;
+                handler.postDelayed(() -> {
+                    if (isFinishing()) return;
+                    initEngine();
+                    if (!se.wantMock) {
+                        dispatchMonitoringDecision(monitoringCoordinator.onEngineInitResult(snapshotMonitoringInputs(), engineInitialized, false));
+                    }
+                }, Math.max(0L, se.delayMs));
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.StartMonitoringFlow) {
+                MonitoringCoordinator.StartMonitoringFlow s = (MonitoringCoordinator.StartMonitoringFlow) effect;
+                MonitoringCoordinator.Decision after = performStartMonitoringFlowEffect(s);
+                if (after != null) {
+                    current = after;
+                }
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.StopMonitoringFlow) {
+                performStopMonitoringFlowEffect();
+                continue;
+            }
+            if (effect instanceof MonitoringCoordinator.ScheduleStart) {
+                MonitoringCoordinator.ScheduleStart ss = (MonitoringCoordinator.ScheduleStart) effect;
+                handler.postDelayed(() -> dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null)), Math.max(0L, ss.delayMs));
+                continue;
+            }
+        }
+        return current;
+    }
+
+    private MonitoringCoordinator.Decision performInitEngineEffect(boolean wantMock) {
+        if (wantMock) {
+            initEngine();
+            return null;
+        }
+        initEngine();
+        return monitoringCoordinator.onEngineInitResult(snapshotMonitoringInputs(), engineInitialized, false);
+    }
+
+    private MonitoringCoordinator.Decision performStartMonitoringFlowEffect(@NonNull MonitoringCoordinator.StartMonitoringFlow s) {
+        boolean wantCamera = s.wantCamera;
+        boolean wantMock = s.wantMock;
+
+        firstFrameReceived = false;
+        updateSystemReadyUi("开始监控");
+
+        if (wantCamera) {
+            captureEverPushed = false;
+            pushFailStreak = 0;
+            lastPushOkRealtimeMs = 0L;
+
+            nativeConfigureExternalInput(true, 0, 1);
+            activeCaptureScheme = s.schemeOrNull == null ? CaptureScheme.CAMERA2 : s.schemeOrNull;
+            activeCapture = (activeCaptureScheme == CaptureScheme.CAMERAX) ? cameraXCapture : camera2Capture;
+            boolean started = activeCapture != null && activeCapture.start(String.valueOf(selectedCameraId));
+            if (!started) {
+                String capName = activeCapture == null ? "N/A" : activeCapture.name();
+                nativeConfigureExternalInput(false, 0, 1);
+                activeCapture = null;
+                updateSystemReadyUi("采集启动失败");
+                return monitoringCoordinator.onMonitoringStartFailed(snapshotMonitoringInputs(), "启动采集失败: " + capName);
+            }
+        }
+
+        nativeStart();
+        isRunning = true;
+        if (frameHandler != null) {
+            frameHandler.post(frameUpdater);
+        }
+        if (wantCamera) {
+            startCaptureWatchdog();
+        }
+        startPreviewWatchdog();
+        updateSystemReadyUi("已启动监控");
+
+        return monitoringCoordinator.onMonitoringStarted(
+                snapshotMonitoringInputs(),
+                wantCamera,
+                activeCapture != null ? activeCapture.name() : null,
+                activeCaptureScheme
+        );
+    }
+
+    private void performStopMonitoringFlowEffect() {
+        isRunning = false;
+        firstFrameReceived = false;
+        stopCaptureWatchdog();
+        stopPreviewWatchdog();
+        if (activeCapture != null) {
+            try {
+                activeCapture.stop();
+            } catch (Exception ignored) {
+            }
+            activeCapture = null;
+        }
+        if (engineInitialized) {
+            try {
+                nativeConfigureExternalInput(false, 0, 1);
+            } catch (Exception ignored) {
+            }
+        }
+        if (frameHandler != null) {
+            frameHandler.removeCallbacks(frameUpdater);
+        }
+        nativeStop();
+        rtmpPusher.stop();
+        updateSystemReadyUi("停止监控");
+    }
+
+    private void handleCaptureAutoChanged(boolean enabled) {
+        captureAutoEnabled = enabled;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_CAPTURE_AUTO, captureAutoEnabled)
+                .apply();
+        dispatchMonitoringDecision(monitoringCoordinator.onCapturePolicyChanged(
+                snapshotMonitoringInputs(),
+                captureAutoEnabled,
+                preferredCaptureScheme,
+                "切换自动模式"
+        ));
+    }
+
+    private void handleCaptureSchemeChanged(@NonNull CaptureScheme scheme) {
+        if (scheme == preferredCaptureScheme) return;
+        preferredCaptureScheme = scheme;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putString(PREF_CAPTURE_SCHEME, preferredCaptureScheme.name())
+                .apply();
+        dispatchMonitoringDecision(monitoringCoordinator.onCapturePolicyChanged(
+                snapshotMonitoringInputs(),
+                captureAutoEnabled,
+                preferredCaptureScheme,
+                "切换采集方案"
+        ));
+    }
+
+    private void handleCameraSpinnerSelection(int position) {
+        if (availableCameras == null || position < 0 || position >= availableCameras.size()) return;
+
+        CameraInfo info = availableCameras.get(position);
+        if ("-1".equals(info.id)) {
+            AppLog.i("MainActivity", "onItemSelected", "Selected Mock Source");
+            pickMediaFile();
+            return;
+        }
+        if ("-2".equals(info.id)) {
+            AppLog.i("MainActivity", "onItemSelected", "Selected System Camera Mock");
+            dispatchTakePictureIntent();
+            return;
+        }
+
+        try {
+            int newId = Integer.parseInt(info.id);
+            if (newId == selectedCameraId) return;
+
+            selectedCameraId = newId;
+            mockFilePath = null;
+            refreshFlipFromPrefs(true);
+            AppLog.i("MainActivity", "onItemSelected", "切换 Camera ID: " + selectedCameraId);
+
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .edit()
+                    .putInt(PREF_CAMERA_ID, selectedCameraId)
+                    .apply();
+
+            if (isRunning) {
+                stopMonitoring();
+                handler.postDelayed(() -> startMonitoring(), 500);
+            } else {
+                initEngine();
+                dispatchMonitoringDecision(monitoringCoordinator.onEngineInitResult(snapshotMonitoringInputs(), engineInitialized, false));
+            }
+        } catch (NumberFormatException e) {
+            AppLog.e("MainActivity", "onItemSelected", "Camera ID 非法: " + info.id, e);
+        }
+    }
+
+    private void performHotRestartWithPrefsPersist() {
+        SharedPreferences.Editor ed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+        if (switchAccelOpenCL != null) ed.putBoolean(PREF_ACCEL_OPENCL, switchAccelOpenCL.isChecked());
+        if (switchAccelMpp != null) ed.putBoolean(PREF_ACCEL_MPP, switchAccelMpp.isChecked());
+        if (switchAccelQualcomm != null) ed.putBoolean(PREF_ACCEL_QUALCOMM, switchAccelQualcomm.isChecked());
+        ed.apply();
+        performHotRestart();
     }
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
@@ -321,46 +745,27 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         DeviceProfile profile = DeviceRuntime.get().getProfile();
         DeviceClass deviceClass = DeviceRuntime.get().getDeviceClass();
 
-        // Initialize Views
-        monitorView = findViewById(R.id.monitor_view);
-        previewSurface = findViewById(R.id.preview_surface);
-        videoWrapper = findViewById(R.id.video_wrapper);
-        tvFps = findViewById(R.id.tv_fps);
-        tvCpu = findViewById(R.id.tv_cpu);
-        tvMemory = findViewById(R.id.tv_memory);
-        tvLatency = findViewById(R.id.tv_storage);
-        tvCaptureStrategyInfo = findViewById(R.id.tv_capture_strategy_info);
-        tvStatus = findViewById(R.id.tv_app_status);
-        tvOverlayStatus = findViewById(R.id.tv_overlay_status);
-        recognitionTitle = findViewById(R.id.recognition_title);
-        btnStartStop = findViewById(R.id.btn_start_stop);
-        btnViewLogs = findViewById(R.id.btn_view_logs);
-        btnNavPlayback = findViewById(R.id.btn_nav_playback);
-        btnNavSettings = findViewById(R.id.btn_nav_settings);
-        btnNavAbout = findViewById(R.id.btn_nav_about);
-        btnExit = findViewById(R.id.btn_exit);
-        rgMode = findViewById(R.id.rg_mode);
-        rgCaptureScheme = findViewById(R.id.rg_capture_scheme);
-        switchCaptureAuto = findViewById(R.id.switch_capture_auto);
-        spinnerCameras = findViewById(R.id.spinner_cameras);
-        switchFlipX = findViewById(R.id.switch_flip_x);
-        switchFlipY = findViewById(R.id.switch_flip_y);
-        switchAccelOpenCL = findViewById(R.id.switch_accel_opencl);
-        switchAccelMpp = findViewById(R.id.switch_accel_mpp);
-        switchAccelQualcomm = findViewById(R.id.switch_accel_qualcomm);
-        switchOverlay = findViewById(R.id.switch_overlay);
-        panelSettings = findViewById(R.id.panel_settings);
-        etMockUrl = findViewById(R.id.et_mock_url);
-        btnSetMockUrl = findViewById(R.id.btn_set_mock_url);
-        btnHotRestart = findViewById(R.id.btn_hot_restart);
-        etRtmpUrl = findViewById(R.id.et_rtmp_url);
-        btnPushRtmp = findViewById(R.id.btn_push_rtmp);
-        btnStopRtmp = findViewById(R.id.btn_stop_rtmp);
-        panelRecognitionEvents = findViewById(R.id.panel_recognition_events);
-        rvRecognitionEvents = findViewById(R.id.rv_recognition_events);
-        fabToggleEvents = findViewById(R.id.fab_toggle_events);
-        tvOverlayStatus.setVisibility(View.GONE);
-        
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        selectedCameraId = prefs.getInt(PREF_CAMERA_ID, 0);
+        recognitionEventsVisible = prefs.getBoolean(PREF_EVENTS_VISIBLE, true);
+        captureAutoEnabled = prefs.getBoolean(PREF_CAPTURE_AUTO, true);
+        String schemeRaw = prefs.getString(PREF_CAPTURE_SCHEME, CaptureScheme.CAMERA2.name());
+        preferredCaptureScheme = parseCaptureScheme(schemeRaw, CaptureScheme.CAMERA2);
+
+        cameraAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
+        cameraAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+
+        bindMainScreen(true);
+
+        if (switchAccelOpenCL != null) {
+            switchAccelOpenCL.setChecked(prefs.getBoolean(PREF_ACCEL_OPENCL, false));
+        }
+        if (switchAccelMpp != null) {
+            switchAccelMpp.setChecked(prefs.getBoolean(PREF_ACCEL_MPP, false));
+        }
+        if (switchAccelQualcomm != null) {
+            switchAccelQualcomm.setChecked(prefs.getBoolean(PREF_ACCEL_QUALCOMM, false));
+        }
 
         frameThread = new HandlerThread("FrameWorker");
         frameThread.start();
@@ -389,134 +794,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (previewSurface != null) {
             previewSurface.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
         }
-        monitorView.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
-
-        // Load Preferences
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        selectedCameraId = prefs.getInt(PREF_CAMERA_ID, 0);
-        recognitionEventsVisible = prefs.getBoolean(PREF_EVENTS_VISIBLE, true);
-        captureAutoEnabled = prefs.getBoolean(PREF_CAPTURE_AUTO, true);
-        String schemeRaw = prefs.getString(PREF_CAPTURE_SCHEME, CaptureScheme.CAMERA2.name());
-        preferredCaptureScheme = parseCaptureScheme(schemeRaw, CaptureScheme.CAMERA2);
-
-        if (switchCaptureAuto != null) {
-            switchCaptureAuto.setChecked(captureAutoEnabled);
-            switchCaptureAuto.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                captureAutoEnabled = isChecked;
-                lastCaptureSchemeReason = isChecked ? "切到自动模式" : "切到手动模式";
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        .edit()
-                        .putBoolean(PREF_CAPTURE_AUTO, captureAutoEnabled)
-                        .apply();
-                applyCaptureUiState();
-                if (isRunning) {
-                    restartMonitoring("切换自动模式");
-                }
-            });
+        if (monitorView != null) {
+            monitorView.setOnTouchListener((v, event) -> monitorGestureDetector != null && monitorGestureDetector.onTouchEvent(event));
         }
-        if (rgCaptureScheme != null) {
-            rgCaptureScheme.check(preferredCaptureScheme == CaptureScheme.CAMERAX ? R.id.rb_capture_camerax : R.id.rb_capture_camera2);
-            rgCaptureScheme.setOnCheckedChangeListener((group, checkedId) -> {
-                CaptureScheme next = (checkedId == R.id.rb_capture_camerax) ? CaptureScheme.CAMERAX : CaptureScheme.CAMERA2;
-                if (next == preferredCaptureScheme) return;
-                preferredCaptureScheme = next;
-                lastCaptureSchemeReason = "手动选择 " + preferredCaptureScheme.name();
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        .edit()
-                        .putString(PREF_CAPTURE_SCHEME, preferredCaptureScheme.name())
-                        .apply();
-                if (!captureAutoEnabled && isRunning) {
-                    restartMonitoring("切换采集方案");
-                }
-                applyCaptureUiState();
-            });
-        }
-        applyCaptureUiState();
 
         rvRecognitionEvents.setLayoutManager(new LinearLayoutManager(this));
         recognitionEventAdapter = new RecognitionEventAdapter();
         rvRecognitionEvents.setAdapter(recognitionEventAdapter);
         setRecognitionPanelVisible(recognitionEventsVisible, false);
 
-        fabToggleEvents.setOnClickListener(v -> toggleRecognitionPanel());
-
-        // Setup Spinner
-        cameraAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
-        cameraAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinnerCameras.setAdapter(cameraAdapter);
-        
-        spinnerCameras.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (!isSpinnerInitialized) {
-                    isSpinnerInitialized = true;
-                    return;
-                }
-                
-                CameraInfo info = availableCameras.get(position);
-                
-                // Check for Mock Source
-                if ("-1".equals(info.id)) {
-                    AppLog.i("MainActivity", "onItemSelected", "Selected Mock Source");
-                    pickMediaFile();
-                    return;
-                }
-                
-                // Check for System Camera Mock
-                if ("-2".equals(info.id)) {
-                    AppLog.i("MainActivity", "onItemSelected", "Selected System Camera Mock");
-                    dispatchTakePictureIntent();
-                    return;
-                }
-
-                try {
-                    int newId = Integer.parseInt(info.id);
-                    if (newId != selectedCameraId) {
-                        selectedCameraId = newId;
-                        mockFilePath = null; // Clear mock path
-                        refreshFlipFromPrefs(true);
-                        AppLog.i("MainActivity", "onItemSelected", "切换 Camera ID: " + selectedCameraId);
-                        
-                        // Save preference
-                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                            .edit()
-                            .putInt(PREF_CAMERA_ID, selectedCameraId)
-                            .apply();
-
-                        // Restart Engine if running
-                        if (isRunning) {
-                            stopMonitoring();
-                            // Small delay to ensure native cleanup
-                            handler.postDelayed(() -> startMonitoring(), 500);
-                        } else {
-                            // Re-init engine with new ID
-                            initEngine();
-                        }
-                    }
-                } catch (NumberFormatException e) {
-                    AppLog.e("MainActivity", "onItemSelected", "Camera ID 非法: " + info.id, e);
-                }
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) { }
-        });
-
         // Register USB Receiver
         IntentFilter filter = new IntentFilter();
         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         registerReceiver(usbReceiver, filter);
-        
-        // Setup Overlay Switch
-        if (switchOverlay != null) {
-            switchOverlay.setOnCheckedChangeListener(overlaySwitchListener);
-            syncOverlaySwitchState();
-        }
-
-        if (switchFlipX != null) switchFlipX.setOnCheckedChangeListener(flipXSwitchListener);
-        if (switchFlipY != null) switchFlipY.setOnCheckedChangeListener(flipYSwitchListener);
-        refreshFlipFromPrefs(false);
 
         // Discover Cameras
         discoverCameras();
@@ -526,75 +817,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (!permissionStateMachine.isRuntimeGranted()) {
             permissionStateMachine.requestWithUserConfirmation();
         }
-
-        // Button Listeners
-        btnStartStop.setOnClickListener(v -> {
-            if (isRunning) {
-                stopMonitoring();
-            } else {
-                startMonitoring();
-            }
-        });
-
-        if (btnNavPlayback != null) {
-            btnNavPlayback.setOnClickListener(v -> pickMediaFile());
-        }
-        if (btnNavSettings != null) {
-            btnNavSettings.setOnClickListener(v -> toggleSettingsPanel());
-        }
-        if (btnNavAbout != null) {
-            btnNavAbout.setOnClickListener(v -> showAboutDialog());
-        }
-        if (btnExit != null) {
-            btnExit.setOnClickListener(v -> showExitDialog());
-        }
-
-        if (btnSetMockUrl != null) {
-            btnSetMockUrl.setOnClickListener(v -> applyMockUrl());
-        }
-
-        if (switchAccelOpenCL != null) {
-            switchAccelOpenCL.setChecked(prefs.getBoolean(PREF_ACCEL_OPENCL, false));
-        }
-        if (switchAccelMpp != null) {
-            switchAccelMpp.setChecked(prefs.getBoolean(PREF_ACCEL_MPP, false));
-        }
-        if (switchAccelQualcomm != null) {
-            switchAccelQualcomm.setChecked(prefs.getBoolean(PREF_ACCEL_QUALCOMM, false));
-        }
-
-        if (btnHotRestart != null) {
-            btnHotRestart.setOnClickListener(v -> {
-                SharedPreferences.Editor ed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
-                if (switchAccelOpenCL != null) ed.putBoolean(PREF_ACCEL_OPENCL, switchAccelOpenCL.isChecked());
-                if (switchAccelMpp != null) ed.putBoolean(PREF_ACCEL_MPP, switchAccelMpp.isChecked());
-                if (switchAccelQualcomm != null) ed.putBoolean(PREF_ACCEL_QUALCOMM, switchAccelQualcomm.isChecked());
-                ed.apply();
-                performHotRestart();
-            });
-        }
-        if (btnPushRtmp != null) {
-            btnPushRtmp.setOnClickListener(v -> startRtmpPush());
-        }
-        if (btnStopRtmp != null) {
-            btnStopRtmp.setOnClickListener(v -> stopRtmpPush());
-        }
-        if (btnHotRestart != null) {
-            btnHotRestart.setOnClickListener(v -> performHotRestart());
-        }
-        if (btnHotRestart != null) {
-            btnHotRestart.setOnClickListener(v -> performHotRestart());
-        }
-
-        rgMode.setOnCheckedChangeListener((group, checkedId) -> {
-            int mode = (checkedId == R.id.rb_continuous) ? 0 : 1; // 0=Continuous, 1=Motion
-            nativeSetMode(mode);
-        });
-
-        btnViewLogs.setOnClickListener(v -> {
-            Intent intent = new Intent(MainActivity.this, LogViewerActivity.class);
-            startActivity(intent);
-        });
 
         // Frame Update Loop
         frameUpdater = new Runnable() {
@@ -642,6 +864,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                             applyMonitorLayoutRule(640, 480);
                         }
                         updateSystemReadyUi("首帧到达");
+                        dispatchMonitoringDecision(monitoringCoordinator.onFirstFrameArrived(snapshotMonitoringInputs()));
                     }
                     if (frameHandler != null) {
                         frameHandler.postDelayed(frameUpdater, 16);
@@ -694,42 +917,18 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void rebindViewsAfterConfigChange() {
-        monitorView = findViewById(R.id.monitor_view);
-        previewSurface = findViewById(R.id.preview_surface);
-        videoWrapper = findViewById(R.id.video_wrapper);
-        tvFps = findViewById(R.id.tv_fps);
-        tvCpu = findViewById(R.id.tv_cpu);
-        tvMemory = findViewById(R.id.tv_memory);
-        tvLatency = findViewById(R.id.tv_storage);
-        tvCaptureStrategyInfo = findViewById(R.id.tv_capture_strategy_info);
-        tvStatus = findViewById(R.id.tv_app_status);
-        tvOverlayStatus = findViewById(R.id.tv_overlay_status);
-        recognitionTitle = findViewById(R.id.recognition_title);
-        btnStartStop = findViewById(R.id.btn_start_stop);
-        btnViewLogs = findViewById(R.id.btn_view_logs);
-        btnNavPlayback = findViewById(R.id.btn_nav_playback);
-        btnNavSettings = findViewById(R.id.btn_nav_settings);
-        btnNavAbout = findViewById(R.id.btn_nav_about);
-        btnExit = findViewById(R.id.btn_exit);
-        rgMode = findViewById(R.id.rg_mode);
-        rgCaptureScheme = findViewById(R.id.rg_capture_scheme);
-        switchCaptureAuto = findViewById(R.id.switch_capture_auto);
-        spinnerCameras = findViewById(R.id.spinner_cameras);
-        switchFlipX = findViewById(R.id.switch_flip_x);
-        switchFlipY = findViewById(R.id.switch_flip_y);
-        switchOverlay = findViewById(R.id.switch_overlay);
-        panelSettings = findViewById(R.id.panel_settings);
-        etMockUrl = findViewById(R.id.et_mock_url);
-        btnSetMockUrl = findViewById(R.id.btn_set_mock_url);
-        etRtmpUrl = findViewById(R.id.et_rtmp_url);
-        btnPushRtmp = findViewById(R.id.btn_push_rtmp);
-        btnStopRtmp = findViewById(R.id.btn_stop_rtmp);
-        btnHotRestart = findViewById(R.id.btn_hot_restart);
-        panelRecognitionEvents = findViewById(R.id.panel_recognition_events);
-        rvRecognitionEvents = findViewById(R.id.rv_recognition_events);
-        fabToggleEvents = findViewById(R.id.fab_toggle_events);
-        tvOverlayStatus.setVisibility(View.GONE);
-        
+        bindMainScreen(true);
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (switchAccelOpenCL != null) {
+            switchAccelOpenCL.setChecked(prefs.getBoolean(PREF_ACCEL_OPENCL, false));
+        }
+        if (switchAccelMpp != null) {
+            switchAccelMpp.setChecked(prefs.getBoolean(PREF_ACCEL_MPP, false));
+        }
+        if (switchAccelQualcomm != null) {
+            switchAccelQualcomm.setChecked(prefs.getBoolean(PREF_ACCEL_QUALCOMM, false));
+        }
 
         if (frameBitmap != null) {
             monitorView.setImageBitmap(frameBitmap);
@@ -763,138 +962,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
         }
         setRecognitionPanelVisible(recognitionEventsVisible, false);
-        if (fabToggleEvents != null) {
-            fabToggleEvents.setOnClickListener(v -> toggleRecognitionPanel());
-        }
-
-        if (cameraAdapter != null && spinnerCameras != null) {
-            spinnerCameras.setAdapter(cameraAdapter);
-            isSpinnerInitialized = false;
-            spinnerCameras.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-                @Override
-                public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                    if (!isSpinnerInitialized) {
-                        isSpinnerInitialized = true;
-                        return;
-                    }
-
-                    CameraInfo info = availableCameras.get(position);
-
-                    if ("-1".equals(info.id)) {
-                        AppLog.i("MainActivity", "onItemSelected", "Selected Mock Source");
-                        pickMediaFile();
-                        return;
-                    }
-
-                    if ("-2".equals(info.id)) {
-                        AppLog.i("MainActivity", "onItemSelected", "Selected System Camera Mock");
-                        dispatchTakePictureIntent();
-                        return;
-                    }
-
-                    try {
-                        int newId = Integer.parseInt(info.id);
-                        if (newId != selectedCameraId) {
-                            selectedCameraId = newId;
-                            mockFilePath = null;
-                            AppLog.i("MainActivity", "onItemSelected", "切换 Camera ID: " + selectedCameraId);
-                            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                                    .edit()
-                                    .putInt(PREF_CAMERA_ID, selectedCameraId)
-                                    .apply();
-                            if (isRunning) {
-                                stopMonitoring();
-                                handler.postDelayed(() -> startMonitoring(), 500);
-                            } else {
-                                initEngine();
-                            }
-                        }
-                    } catch (NumberFormatException e) {
-                        AppLog.e("MainActivity", "onItemSelected", "Camera ID 非法: " + info.id, e);
-                    }
-                }
-
-                @Override
-                public void onNothingSelected(AdapterView<?> parent) {
-                }
-            });
-        }
-
-        if (switchCaptureAuto != null) {
-            switchCaptureAuto.setChecked(captureAutoEnabled);
-            switchCaptureAuto.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                captureAutoEnabled = isChecked;
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        .edit()
-                        .putBoolean(PREF_CAPTURE_AUTO, captureAutoEnabled)
-                        .apply();
-                applyCaptureUiState();
-                if (isRunning) {
-                    restartMonitoring("切换自动模式");
-                }
-            });
-        }
-        if (rgCaptureScheme != null) {
-            rgCaptureScheme.check(preferredCaptureScheme == CaptureScheme.CAMERAX ? R.id.rb_capture_camerax : R.id.rb_capture_camera2);
-            rgCaptureScheme.setOnCheckedChangeListener((group, checkedId) -> {
-                CaptureScheme next = (checkedId == R.id.rb_capture_camerax) ? CaptureScheme.CAMERAX : CaptureScheme.CAMERA2;
-                if (next == preferredCaptureScheme) return;
-                preferredCaptureScheme = next;
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        .edit()
-                        .putString(PREF_CAPTURE_SCHEME, preferredCaptureScheme.name())
-                        .apply();
-                if (!captureAutoEnabled && isRunning) {
-                    restartMonitoring("切换采集方案");
-                }
-            });
-        }
-        applyCaptureUiState();
-
-        if (switchOverlay != null) {
-            switchOverlay.setOnCheckedChangeListener(overlaySwitchListener);
-            syncOverlaySwitchState();
-        }
-        if (switchFlipX != null) switchFlipX.setOnCheckedChangeListener(flipXSwitchListener);
-        if (switchFlipY != null) switchFlipY.setOnCheckedChangeListener(flipYSwitchListener);
-        refreshFlipFromPrefs(false);
-
-        if (btnStartStop != null) {
-            btnStartStop.setOnClickListener(v -> {
-                if (isRunning) {
-                    stopMonitoring();
-                } else {
-                    startMonitoring();
-                }
-            });
-        }
-        if (btnViewLogs != null) {
-            btnViewLogs.setOnClickListener(v -> {
-                Intent intent = new Intent(MainActivity.this, LogViewerActivity.class);
-                startActivity(intent);
-            });
-        }
-        if (btnNavPlayback != null) {
-            btnNavPlayback.setOnClickListener(v -> pickMediaFile());
-        }
-        if (btnNavSettings != null) {
-            btnNavSettings.setOnClickListener(v -> toggleSettingsPanel());
-        }
-        if (btnNavAbout != null) {
-            btnNavAbout.setOnClickListener(v -> showAboutDialog());
-        }
-        if (btnExit != null) {
-            btnExit.setOnClickListener(v -> showExitDialog());
-        }
-        if (btnSetMockUrl != null) {
-            btnSetMockUrl.setOnClickListener(v -> applyMockUrl());
-        }
-        if (btnPushRtmp != null) {
-            btnPushRtmp.setOnClickListener(v -> startRtmpPush());
-        }
-        if (btnStopRtmp != null) {
-            btnStopRtmp.setOnClickListener(v -> stopRtmpPush());
-        }
 
         if (isFullscreen) {
             if (recognitionTitle != null) recognitionTitle.setVisibility(View.GONE);
@@ -1214,94 +1281,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private void startMonitoring() {
         AppLog.enter("MainActivity", "startMonitoring");
-        boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
-        boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
-        if (!wantCamera && !wantMock) {
-            Toast.makeText(this, "请先选择摄像头或 Mock 源", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        if (wantCamera && permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
-            Toast.makeText(this, "权限不足：已进入安全模式", Toast.LENGTH_LONG).show();
-            permissionStateMachine.requestWithUserConfirmation();
-            return;
-        }
-
-        String preflight = runInputPreflight(wantCamera, wantMock);
-        if (preflight != null && !preflight.isEmpty()) {
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_LAST_PREFLIGHT, preflight).apply();
-            AppLog.i("MainActivity", "preflight", preflight.replace('\n', ' '));
-            if (tvStatus != null) {
-                String first = preflight.contains("\n") ? preflight.substring(0, preflight.indexOf('\n')) : preflight;
-                tvStatus.setText("Preflight: " + first);
-            }
-        }
-
-        if (!engineInitialized) {
-            if (wantMock) {
-                pendingStartAfterInit = true;
-            }
-            initEngine();
-            if (!wantMock && !engineInitialized) {
-                Toast.makeText(this, "引擎初始化失败，无法启动监控", Toast.LENGTH_LONG).show();
-                return;
-            }
-            if (wantMock && !engineInitialized) {
-                Toast.makeText(this, "正在初始化 Mock 引擎，请稍候…", Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
-        if (wantCamera) {
-            boolean comingFromAutoSwitch = (forcedNextScheme != null && captureAutoEnabled);
-            CaptureScheme scheme = forcedNextScheme != null ? forcedNextScheme : (captureAutoEnabled ? CaptureScheme.CAMERA2 : preferredCaptureScheme);
-            forcedNextScheme = null;
-            activeCaptureScheme = scheme;
-            autoSwitchedThisRun = comingFromAutoSwitch;
-            if (captureAutoEnabled) {
-                lastCaptureSchemeReason = comingFromAutoSwitch ? ("自动切换到 " + scheme.name()) : ("自动默认 " + scheme.name());
-            } else {
-                lastCaptureSchemeReason = "手动使用 " + scheme.name();
-            }
-            captureEverPushed = false;
-            pushFailStreak = 0;
-            lastPushOkRealtimeMs = 0L;
-            captureRecoveryRetries = 0;
-
-            nativeConfigureExternalInput(true, 0, 1);
-            activeCapture = (scheme == CaptureScheme.CAMERAX) ? cameraXCapture : camera2Capture;
-            boolean started = activeCapture != null && activeCapture.start(String.valueOf(selectedCameraId));
-            if (!started) {
-                Toast.makeText(this, "启动采集失败: " + (activeCapture == null ? "N/A" : activeCapture.name()), Toast.LENGTH_LONG).show();
-                updateSystemReadyUi("采集启动失败");
-                nativeConfigureExternalInput(false, 0, 1);
-                activeCapture = null;
-                return;
-            }
-        }
-        firstFrameReceived = false;
-        applyCaptureUiState();
-        updateSystemReadyUi("开始监控");
-        nativeStart();
-        isRunning = true;
-        if (btnStartStop != null) {
-            btnStartStop.setText("STOP MONITORING");
-            btnStartStop.setBackgroundColor(0xFFFF0000); // Red
-        }
-        if (tvStatus != null) {
-            if (wantCamera && activeCapture != null) {
-                tvStatus.setText("Status: Running (" + activeCapture.name() + " / Cam " + selectedCameraId + ")");
-            } else {
-                tvStatus.setText("Status: Running");
-            }
-        }
-        if (frameHandler != null) {
-            frameHandler.post(frameUpdater);
-        }
-        if (wantCamera) {
-            startCaptureWatchdog();
-        }
-        startPreviewWatchdog();
-        updateSystemReadyUi("已启动监控");
+        dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
     }
 
     private String runInputPreflight(boolean wantCamera, boolean wantMock) {
@@ -1613,35 +1593,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private void stopMonitoring() {
         AppLog.enter("MainActivity", "stopMonitoring");
-        isRunning = false;
-        stopCaptureWatchdog();
-        stopPreviewWatchdog();
-        if (activeCapture != null) {
-            try {
-                activeCapture.stop();
-            } catch (Exception ignored) {
-            }
-            activeCapture = null;
-        }
-        if (engineInitialized) {
-            try {
-                nativeConfigureExternalInput(false, 0, 1);
-            } catch (Exception ignored) {
-            }
-        }
-        if (frameHandler != null) {
-            frameHandler.removeCallbacks(frameUpdater);
-        }
-        nativeStop();
-        rtmpPusher.stop();
-        if (btnStartStop != null) {
-            btnStartStop.setText("START MONITORING");
-            btnStartStop.setBackgroundColor(0xFF00FF00); // Green
-        }
-        if (tvStatus != null) {
-            tvStatus.setText("Status: Stopped");
-        }
-        updateSystemReadyUi("停止监控");
+        dispatchMonitoringDecision(monitoringCoordinator.onStopRequested(snapshotMonitoringInputs(), null));
     }
 
     private void initEngine() {
@@ -1660,9 +1612,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
         if (wantCamera && permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
             engineInitialized = false;
-            if (tvStatus != null) {
-                tvStatus.setText("Status: SAFE MODE (Permissions Missing)");
-            }
+            firstFrameReceived = false;
             updateSystemReadyUi("权限不足，禁止初始化引擎");
             return;
         }
@@ -1696,28 +1646,19 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     engineInitialized = result;
                     if (engineInitialized) {
                         applyFlipToNative();
-                        tvStatus.setText("Status: Engine Initialized (Mock Mode)");
                         updateSystemReadyUi("引擎初始化成功 (Mock)");
-                        if (pendingStartAfterInit && !isRunning) {
-                            pendingStartAfterInit = false;
-                            startMonitoring();
-                        }
                     } else {
-                        pendingStartAfterInit = false;
-                        tvStatus.setText("Status: Engine Init FAILED (Mock)");
                         updateSystemReadyUi("引擎初始化失败 (Mock)");
-                        Toast.makeText(MainActivity.this, "Mock 引擎初始化失败或已取消", Toast.LENGTH_LONG).show();
                     }
+                    dispatchMonitoringDecision(monitoringCoordinator.onEngineInitResult(snapshotMonitoringInputs(), engineInitialized, true));
                 });
             }).start();
         } else if (wantCamera) {
             engineInitialized = nativeInit(-1, cascadePath, storagePath);
             if (engineInitialized) {
                 applyFlipToNative();
-                tvStatus.setText("Status: Engine Initialized (External Capture / Cam " + selectedCameraId + ")");
                 updateSystemReadyUi("引擎初始化成功 (外部采集)");
             } else {
-                tvStatus.setText("Status: Engine Init FAILED");
                 updateSystemReadyUi("引擎初始化失败");
             }
         } else {
@@ -1757,47 +1698,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         } catch (Exception ignored) {
             return fallback;
         }
-    }
-
-    private void applyCaptureUiState() {
-        if (rgCaptureScheme == null) return;
-        boolean enabled = !captureAutoEnabled;
-        rgCaptureScheme.setEnabled(enabled);
-        float alpha = enabled ? 1.0f : 0.55f;
-        rgCaptureScheme.setAlpha(alpha);
-        for (int i = 0; i < rgCaptureScheme.getChildCount(); i++) {
-            View c = rgCaptureScheme.getChildAt(i);
-            if (c != null) {
-                c.setEnabled(enabled);
-                c.setAlpha(alpha);
-            }
-        }
-        updateCaptureStrategyInfo();
-    }
-
-    private void updateCaptureStrategyInfo() {
-        if (tvCaptureStrategyInfo == null) return;
-        String base = captureAutoEnabled
-                ? "自动：默认 Camera2，失败切换到 CameraX"
-                : "手动：固定使用所选方案";
-
-        String preferred = preferredCaptureScheme == null ? "--" : preferredCaptureScheme.name();
-        String active = activeCapture != null ? activeCapture.name() : (activeCaptureScheme == null ? "--" : activeCaptureScheme.name());
-
-        String state = isRunning
-                ? ("当前生效: " + active)
-                : (captureAutoEnabled ? "待生效: 自动" : ("待生效: " + preferred));
-
-        String reason = lastCaptureSchemeReason == null ? "" : lastCaptureSchemeReason.trim();
-        if (!reason.isEmpty()) {
-            reason = "最近切换: " + reason;
-        }
-
-        String text = base + "\n" + state;
-        if (!reason.isEmpty()) {
-            text = text + "\n" + reason;
-        }
-        tvCaptureStrategyInfo.setText(text);
     }
 
     private int getDeviceRotationDegrees() {
@@ -2122,27 +2022,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void handleCaptureFailure(String reason) {
-        if (!isRunning) return;
         updateSystemReadyUi("采集异常: " + reason);
-        if (captureRecoveryRetries < CAPTURE_RECOVERY_MAX_RETRIES) {
-            int next = captureRecoveryRetries + 1;
-            captureRecoveryRetries = next;
-            long delay = CAPTURE_RECOVERY_BACKOFF_MS[Math.min(next - 1, CAPTURE_RECOVERY_BACKOFF_MS.length - 1)];
-            forcedNextScheme = activeCaptureScheme;
-            restartMonitoring("恢复重试" + next + "/" + CAPTURE_RECOVERY_MAX_RETRIES + "(" + reason + ")", delay);
-            return;
-        }
-        if (captureAutoEnabled && !autoSwitchedThisRun) {
-            autoSwitchedThisRun = true;
-            forcedNextScheme = (activeCaptureScheme == CaptureScheme.CAMERA2) ? CaptureScheme.CAMERAX : CaptureScheme.CAMERA2;
-            restartMonitoring("自动降级(" + reason + ")");
-            return;
-        }
-        Toast.makeText(this, "采集失败: " + reason, Toast.LENGTH_LONG).show();
-        stopMonitoring();
-        if (tvStatus != null) {
-            tvStatus.setText((reason != null && !reason.isEmpty()) ? "Status: Stopped (" + reason + ")" : "Status: Stopped");
-        }
+        dispatchMonitoringDecision(monitoringCoordinator.onCaptureFailure(snapshotMonitoringInputs(), reason));
     }
 
     private void restartMonitoring(String reason) {
@@ -2150,15 +2031,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void restartMonitoring(String reason, long delayMs) {
-        if (!isRunning) return;
-        lastCaptureSchemeReason = reason == null ? "" : reason;
-        applyCaptureUiState();
-        Toast.makeText(this, reason, Toast.LENGTH_SHORT).show();
-        stopMonitoring();
-        if (tvStatus != null) {
-            tvStatus.setText((reason != null && !reason.isEmpty()) ? "状态: 正在热重启... (" + reason + ")" : "状态: 正在热重启...");
-        }
-        handler.postDelayed(this::startMonitoring, Math.max(0, delayMs));
+        dispatchMonitoringDecision(monitoringCoordinator.onRestartRequested(snapshotMonitoringInputs(), reason, delayMs));
     }
 
     private void updateSystemReadyUi(String reason) {
@@ -2169,7 +2042,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             if (!lastReadyVisible) {
                 AppLog.i("MainActivity", "updateSystemReadyUi", "SYSTEM READY permissionOk=" + permissionOk + " engineInitialized=" + engineInitialized + " firstFrameReceived=" + firstFrameReceived);
             }
-            tvOverlayStatus.setVisibility(View.VISIBLE);
             lastReadyVisible = true;
             return;
         }
@@ -2184,7 +2056,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 AppLog.i("MainActivity", "updateSystemReadyUi", "System initializing... (" + reason + ")");
             }
         }
-        tvOverlayStatus.setVisibility(View.GONE);
         lastReadyVisible = false;
     }
 
@@ -2386,39 +2257,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void onPermissionStateChanged(@NonNull PermissionStateMachine.State state, @NonNull List<String> missingRuntimePermissions) {
         AppLog.enter("MainActivity", "onPermissionStateChanged");
         boolean granted = (state == PermissionStateMachine.State.GRANTED);
-        boolean allowMock = (selectedCameraId == -1 && mockFilePath != null);
-        if (btnStartStop != null) {
-            btnStartStop.setEnabled(granted || allowMock);
+        if (!granted && selectedCameraId >= 0) {
+            engineInitialized = false;
+            firstFrameReceived = false;
         }
-        if (!granted) {
-            if (isRunning && selectedCameraId >= 0) {
-                stopMonitoring();
-            }
-            if (selectedCameraId >= 0) {
-                engineInitialized = false;
-                firstFrameReceived = false;
-                if (tvStatus != null) {
-                    tvStatus.setText("Status: SAFE MODE (Missing Permissions)");
-                }
-                updateSystemReadyUi("安全模式: " + state + " missing=" + missingRuntimePermissions);
-            } else {
-                if (tvStatus != null) {
-                    tvStatus.setText("Status: SAFE MODE (Missing Permissions)");
-                }
-                updateSystemReadyUi("安全模式(仍可使用 Mock): " + state);
-            }
-            permissionStateMachine.showGoToSettingsDialogIfNeeded();
-        } else {
-            if (tvStatus != null) {
-                tvStatus.setText("Status: Permissions Granted");
-            }
-            // 延迟初始化以确保权限已广播至系统服务
-            handler.postDelayed(() -> {
-                if (!isFinishing()) {
-                    initEngine();
-                }
-            }, 500);
-        }
+        dispatchMonitoringDecision(monitoringCoordinator.onPermissionStateChanged(
+                snapshotMonitoringInputs(),
+                granted,
+                missingRuntimePermissions,
+                state.name()
+        ));
     }
 
     @Override

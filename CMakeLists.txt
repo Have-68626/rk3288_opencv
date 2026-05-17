@@ -50,21 +50,21 @@ if(RK_ENABLE_MPP)
     if(RK_MPP_INCLUDE_DIR)
         set(RK_HAVE_MPP 1)
         include_directories(${RK_MPP_INCLUDE_DIR})
-        message(STATUS "✅ Found RK MPP headers in ${RK_MPP_INCLUDE_DIR}")
+        message(STATUS "Found RK MPP headers in ${RK_MPP_INCLUDE_DIR}")
     else()
         set(RK_HAVE_MPP 0)
-        message(WARNING "❌ RK MPP headers not found. Falling back to CPU decoding. (See CREDITS.md#可选)")
+        message(WARNING "RK MPP headers not found. Falling back to CPU decoding. (See CREDITS.md#optional)")
     endif()
 else()
     set(RK_HAVE_MPP 0)
 endif()
 
 if(RK_ENABLE_QUALCOMM)
-    # ⚠️ 注意：Qualcomm SNPE SDK 未检测到（可选）
-    # 如需启用，请：
-    # 1. 从 Qualcomm 官方获取 SNPE SDK
-    # 2. 解压至 deps/qualcomm_snpe/
-    # 3. 重新运行 CMake 配置
+    # Note: Qualcomm SNPE SDK not detected (optional).
+    # To enable:
+    # 1. Get SNPE SDK from Qualcomm official
+    # 2. Extract to deps/qualcomm_snpe/
+    # 3. Re-run CMake configuration
     find_path(QUALCOMM_INCLUDE_DIR DlSystem/DlError.hpp 
         PATHS 
             ${CMAKE_CURRENT_SOURCE_DIR}/deps/qualcomm_snpe/include
@@ -76,7 +76,7 @@ if(RK_ENABLE_QUALCOMM)
         message(STATUS "Found Qualcomm SDK headers in ${QUALCOMM_INCLUDE_DIR}")
     else()
         set(RK_HAVE_QUALCOMM 0)
-        message(WARNING "❌ Qualcomm SDK headers not found. Falling back to CPU inference. (See CREDITS.md)")
+        message(WARNING "Qualcomm SDK headers not found. Falling back to CPU inference. (See CREDITS.md)")
     endif()
 else()
     set(RK_HAVE_QUALCOMM 0)
@@ -85,6 +85,9 @@ endif()
 add_definitions(-DRK_HAVE_MPP=${RK_HAVE_MPP} -DRK_HAVE_QUALCOMM=${RK_HAVE_QUALCOMM})
 
 if(ANDROID)
+    # Android NDK Clang UTF-8 编码支持（解决 Ninja 构建时中文路径/错误信息乱码）
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdiagnostics-charset=UTF-8")
+    
     set(_rk_enable_libyuv_default ON)
 else()
     set(_rk_enable_libyuv_default OFF)
@@ -428,6 +431,43 @@ if(NOT RK_SKIP_OPENCV)
             opencv_objdetect
             opencv_features2d
         )
+    endif()
+
+    option(RK_BUILD_FACE_INFER_UNIT_TESTS "Build face inference unit tests (requires OpenCV)" ON)
+    if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
+        enable_testing()
+        add_executable(face_infer_unit_tests
+            "tests/cpp/face_infer_unit_tests_main.cpp"
+            "tests/cpp/test_face_infer_pipeline.cpp"
+            "src/cpp/src/ArcFaceEmbedder.cpp"
+            "src/cpp/src/FaceAlign.cpp"
+            "src/cpp/src/FaceInferOutcomeJson.cpp"
+            "src/cpp/src/FaceInferStages.cpp"
+            "src/cpp/src/FaceInferencePipeline.cpp"
+            "src/cpp/src/FaceSearch.cpp"
+            "src/cpp/src/FaceTemplate.cpp"
+            "src/cpp/src/FileHash.cpp"
+            "src/cpp/src/NativeLog.cpp"
+            "src/cpp/src/ThresholdPolicy.cpp"
+            "src/cpp/src/YoloFaceDetector.cpp"
+        )
+        target_include_directories(face_infer_unit_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        )
+        if(MSVC)
+            target_compile_options(face_infer_unit_tests PRIVATE /utf-8)
+        endif()
+        if(WIN32)
+            target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        endif()
+        target_link_libraries(face_infer_unit_tests
+            opencv_core
+            opencv_imgproc
+            opencv_imgcodecs
+            opencv_calib3d
+            opencv_dnn
+        )
+        add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
     endif()
 endif()
 

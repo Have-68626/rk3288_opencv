@@ -29,6 +29,11 @@ android {
         targetCompatibility JavaVersion.VERSION_11
     }
 
+    // 设置 Java 编译编码为 UTF-8，解决源码注释/字符串乱码问题
+    tasks.withType(JavaCompile) {
+        options.encoding = 'UTF-8'
+    }
+
     defaultConfig {
         applicationId "com.example.rk3288_opencv"
         minSdk 21 // Android 5.0+ (RK3288 常用版本)
