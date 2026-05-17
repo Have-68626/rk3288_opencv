@@ -169,7 +169,7 @@ final class MonitoringCoordinator {
 
     MonitoringCoordinator() {}
 
-    Decision syncFromActivity(
+    synchronized Decision syncFromActivity(
             Inputs in,
             boolean engineInitialized,
             boolean isRunning,
@@ -195,11 +195,11 @@ final class MonitoringCoordinator {
         return snapshot(in);
     }
 
-    Decision snapshot(Inputs in) {
+    synchronized Decision snapshot(Inputs in) {
         return new Decision(buildUiState(in), Collections.emptyList());
     }
 
-    Decision onToggleStartStopClicked(Inputs in) {
+    synchronized Decision onToggleStartStopClicked(Inputs in) {
         boolean runningOrStarting = runState == RunState.RUNNING || runState == RunState.STARTING || runState == RunState.RESTARTING;
         if (runningOrStarting) {
             return stopInternal(in, null);
@@ -207,15 +207,15 @@ final class MonitoringCoordinator {
         return startInternal(in, null);
     }
 
-    Decision onStartRequested(Inputs in, String reasonOrNull) {
+    synchronized Decision onStartRequested(Inputs in, String reasonOrNull) {
         return startInternal(in, reasonOrNull);
     }
 
-    Decision onStopRequested(Inputs in, String reasonOrNull) {
+    synchronized Decision onStopRequested(Inputs in, String reasonOrNull) {
         return stopInternal(in, reasonOrNull);
     }
 
-    Decision onRestartRequested(Inputs in, String reasonOrNull, long delayMs) {
+    synchronized Decision onRestartRequested(Inputs in, String reasonOrNull, long delayMs) {
         if (runState != RunState.RUNNING) {
             return snapshot(in);
         }
@@ -234,7 +234,7 @@ final class MonitoringCoordinator {
         return new Decision(buildUiState(in), fx);
     }
 
-    Decision onCapturePolicyChanged(Inputs in, boolean captureAutoEnabled, CaptureScheme preferredCaptureScheme, String reasonOrNull) {
+    synchronized Decision onCapturePolicyChanged(Inputs in, boolean captureAutoEnabled, CaptureScheme preferredCaptureScheme, String reasonOrNull) {
         this.captureAutoEnabled = captureAutoEnabled;
         if (preferredCaptureScheme != null) {
             this.preferredCaptureScheme = preferredCaptureScheme;
@@ -247,7 +247,7 @@ final class MonitoringCoordinator {
         return snapshot(in);
     }
 
-    Decision onCaptureFailure(Inputs in, String reason) {
+    synchronized Decision onCaptureFailure(Inputs in, String reason) {
         if (runState != RunState.RUNNING) {
             return snapshot(in);
         }
@@ -275,7 +275,7 @@ final class MonitoringCoordinator {
         return new Decision(buildUiState(in), fx);
     }
 
-    Decision onPermissionStateChanged(Inputs in, boolean runtimeGranted, List<String> missingPermissionsOrNull, String stateNameOrNull) {
+    synchronized Decision onPermissionStateChanged(Inputs in, boolean runtimeGranted, List<String> missingPermissionsOrNull, String stateNameOrNull) {
         boolean allowMock = in.allowMockEvenWithoutPermission();
         if (!runtimeGranted) {
             if (in.selectedCameraId >= 0) {
@@ -301,7 +301,7 @@ final class MonitoringCoordinator {
         return new Decision(buildUiState(in), fx);
     }
 
-    Decision onPreflightFinished(Inputs in, String preflightTextOrNull) {
+    synchronized Decision onPreflightFinished(Inputs in, String preflightTextOrNull) {
         if (preflightTextOrNull == null || preflightTextOrNull.trim().isEmpty()) {
             lastPreflightFirstLineOrNull = null;
             return snapshot(in);
@@ -312,7 +312,7 @@ final class MonitoringCoordinator {
         return snapshot(in);
     }
 
-    Decision onEngineInitResult(Inputs in, boolean ok, boolean wantMock) {
+    synchronized Decision onEngineInitResult(Inputs in, boolean ok, boolean wantMock) {
         engineState = ok ? EngineState.READY : EngineState.NOT_READY;
         if (!ok) {
             lastStoppedReasonOrNull = wantMock ? "引擎初始化失败 (Mock)" : "引擎初始化失败";
@@ -329,7 +329,7 @@ final class MonitoringCoordinator {
         return snapshot(in);
     }
 
-    Decision onMonitoringStarted(Inputs in, boolean wantCamera, String activeCaptureNameOrNull, CaptureScheme schemeOrNull) {
+    synchronized Decision onMonitoringStarted(Inputs in, boolean wantCamera, String activeCaptureNameOrNull, CaptureScheme schemeOrNull) {
         runState = RunState.RUNNING;
         lastStoppedReasonOrNull = null;
         lastRestartReasonOrNull = null;
@@ -340,7 +340,7 @@ final class MonitoringCoordinator {
         return snapshot(in);
     }
 
-    Decision onMonitoringStartFailed(Inputs in, String reason) {
+    synchronized Decision onMonitoringStartFailed(Inputs in, String reason) {
         runState = RunState.STOPPED;
         firstFrameReceived = false;
         lastStoppedReasonOrNull = reason;
@@ -349,7 +349,7 @@ final class MonitoringCoordinator {
         return new Decision(buildUiState(in), fx);
     }
 
-    Decision onFirstFrameArrived(Inputs in) {
+    synchronized Decision onFirstFrameArrived(Inputs in) {
         firstFrameReceived = true;
         return snapshot(in);
     }
