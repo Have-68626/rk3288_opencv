@@ -549,7 +549,16 @@ void Engine::run() {
                     std::cout << "Perf Total: Mean=" << totalMean << "ms, P50=" << total50 << "ms, P95=" << total95 << "ms, Max=" << totalMax << "ms | Peak RSS: " << (perfHistory.back().rssBytes / 1024 / 1024) << "MB" << std::endl;
 
                     const char* envOutDir = std::getenv("RK_BENCH_OUT_DIR");
-                    std::string outDir = envOutDir ? envOutDir : "tests/metrics";
+                    std::string outDir = "tests/metrics";
+                    // 威胁模型：防止通过 RK_BENCH_OUT_DIR 环境变量传入带有 `..` 或绝对路径的字符串，导致性能日志文件被写入到任意目录甚至覆盖敏感文件。
+                    // 影响范围：仅影响性能统计落盘的目录路径，如果发现非法的目录名，则静默回退到默认的 tests/metrics。
+                    // 回滚方式：删除验证逻辑，恢复 `std::string outDir = envOutDir ? envOutDir : "tests/metrics";`。
+                    if (envOutDir) {
+                        std::string tempEnv(envOutDir);
+                        if (tempEnv.find("..") == std::string::npos && !tempEnv.empty() && tempEnv[0] != '/' && tempEnv[0] != '\\' && tempEnv.find(":") == std::string::npos) {
+                            outDir = tempEnv;
+                        }
+                    }
                     std::string outPath = outDir + "/engine_perf.csv";
 
                     FILE* f = fopen(outPath.c_str(), "a");
