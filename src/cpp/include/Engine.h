@@ -179,6 +179,7 @@ private:
     std::unordered_map<std::string, long long> lastAbnormalEventMs_;
     std::unordered_map<std::string, int> abnormalEventCount_;
     std::unordered_map<std::string, long long> abnormalEventCooldownMs_;
+    std::mutex abnormalEventMutex_;
 
     struct FaceTrack {
         int trackId = 0;
