@@ -2,170 +2,150 @@
 
 本文件用于记录本项目使用的第三方依赖、来源与许可证信息，便于审计与合规。
 
-## 依赖状态检查清单
+## 📑 快速索引
 
-### ✅ 已满足（已安装或已在仓库）
-| 依赖 | 位置 | 备注 |
-|--|--|--|
-| OpenCV 4.10.0 | `D:\ProgramData\OpenCV\opencv-4.10.0` | Android/Windows 编译可用 |
-| NCNN | `D:\ProgramData\NCNN\ncnn-20260113-*` | 已下载 Windows & Android 版本 |
-| Android NDK 27.0 | `D:\ProgramData\AndroidStudioSDK\ndk\27.0.12077973` | Android 编译 ✅ |
-| Gradle 9.0 | 内置 `gradlew.bat` | Android 构建 ✅ |
-| Node.js 22.17.1 + pnpm | 系统环境 | Web 前端 ✅ |
-| CMake 3.22.1 | 系统环境 | 编译配置 ✅ |
-| LBP Cascade File | `app/src/main/assets/lbpcascade_frontalface.xml` | Android/Windows 人脸识别可用 |
-| RK MPP (可选) | `D:\ProgramData\rkmpp\mpp-1.0.11` | 硬件加速选项，已自动回退 |
+| 平台 | 章节 |
+|:----|:-----|
+| 跨平台 | [📦 跨平台依赖](#-跨平台依赖) |
+| Android | [🤖 Android 依赖](#-android-依赖) |
+| Windows | [🖥️ Windows 依赖](#️-windows-依赖) |
+| 模型 | [📊 模型台账与依赖](#️-模型台账与依赖) |
+| 检查 | [📋 依赖状态检查](#-依赖状态检查) |
+| 模板 | [📝 外部文档模板](#-外部文档模板) |
 
-### ❌ 缺失（阻断部分功能，需手动补充）
-| 缺口 | 影响范围 | 需求操作 | 参考位置 |
-|--|--|--|--|
-| **DNN 模型文件** | Windows 人脸检测（DNN 后端） | 下载 `.pb` + `.pbtxt` 文件至 `storage/models/` 或通过 Web UI 配置路径 | 见下方"模型台账"表格、 [config/windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini) |
-| **Windows CMake HDF5 架构冲突** | Windows 原生构建（可选） | 方案 A：重建 x64 生成器目录；方案 B：`-DBUILD_opencv_hdf=OFF` | [CMakeLists.txt](CMakeLists.txt) |
+---
 
-### ⚠️ 可选（缺失时自动回退，不阻断核心功能）
-| 依赖 | 用途 | 现状 | 回退方案 |
-|--|--|--|--|
-| **Qualcomm SDK** | Android Qualcomm 推理加速 | 未检测到 | 自动使用 CPU 推理（CMake 第 48 行警告） |
-| **RK MPP 头文件** | RK3288 硬件解码加速 | 已下载但未配置环境变量 | 自动使用 CPU 解码（CMake 第 34 行警告） |
-| **FFmpegKit AAR** | Android RTMP 推流功能 | `app/libs/ffmpeg-kit.aar` 不存在 | 禁用 RTMP 推流（可选功能，不影响核心识别） |
+## 📦 跨平台依赖
 
-## 模型台账与依赖 (Model Inventory)
+### 构建工具链
+
+| 依赖 | 版本 | 用途 | 许可证 |
+|:-----|:-----|:-----|:-------|
+| CMake | 3.22.1+ | 跨平台构建配置 | BSD 3-Clause |
+| Gradle | 9.0（内置 gradlew） | Android 构建系统 | Apache 2.0 |
+| Android NDK | 27.0 | Native 编译 | Android SDK License |
+| Node.js + pnpm | 22.17.1+ | Web 前端构建 | MIT |
+
+### 跨平台库
+
+| 依赖 | 版本 | 用途 | 许可证 |
+|:-----|:-----|:-----|:-------|
+| **OpenCV** | 4.10.0 | 图像采集、处理、特征提取 | Apache 2.0 |
+| **libyuv** | — | YUV/RGB 格式转换与缩放 | BSD 3-Clause |
+| **ncnn** | 20260113 | 端侧推理后端 | BSD 3-Clause |
+
+---
+
+## 🤖 Android 依赖
+
+### 图像处理与推理
+
+| 依赖 | 用途 | 许可证 | 状态 |
+|:-----|:-----|:-------|:-----|
+| OpenCV 4.10.0 | 图像处理核心 | Apache 2.0 | ✅ 已集成 |
+| ncnn | 端侧推理加速 | BSD 3-Clause | ✅ 已下载 |
+| Rockchip MPP | 硬件解码加速 | Apache 2.0 | ⚠️ 可选（自动回退） |
+| Qualcomm SDK | 推理加速 | — | ⚠️ 可选（未检测到） |
+| FFmpegKit | RTMP 推流 | LGPL 3.0 / GPL 3.0 | ⚠️ 可选（未集成） |
+
+### UI 组件
+
+| 依赖 | 版本 | 用途 | 许可证 |
+|:-----|:-----|:-----|:-------|
+| AndroidX AppCompat | 兼容性支持 | Apache 2.0 | ✅ |
+| Material Components | Material 风格 UI | Apache 2.0 | ✅ |
+| CameraX | 相机采集 | Apache 2.0 | ✅ 1.3.4 |
+| AndroidX ConstraintLayout | 布局系统 | Apache 2.0 | ✅ |
+
+### 传递依赖说明
+
+CameraX 的传递依赖（已解析）：
+- `androidx.concurrent:concurrent-futures:1.1.0` → Apache 2.0
+- `com.google.guava:listenablefuture:1.0` → Apache 2.0
+- `androidx.lifecycle:lifecycle-*:2.6.1` → Apache 2.0
+
+---
+
+## 🖥️ Windows 依赖
+
+### Native 层
+
+| 依赖 | 用途 | 许可证 |
+|:-----|:-----|:-------|
+| OpenCV 4.10.0 | 图像处理核心 | Apache 2.0 |
+| ncnn | 推理加速 | BSD 3-Clause |
+| Microsoft Windows SDK | 摄像头采集（Media Foundation）、Win32 UI | Microsoft License |
+
+### HTTP 服务
+
+| 依赖 | 版本 | 用途 | 许可证 |
+|:-----|:-----|:-----|:-------|
+| CivetWeb | 1.16 | 本地 HTTP 服务（REST + 静态托管） | MIT |
+| └─ MD5 实现 | — | L. Peter Deutsch 实现 | zlib |
+
+### Web 前端
+
+| 依赖 | 用途 | 许可证 |
+|:-----|:-----|:-------|
+| React / ReactDOM | UI 框架 | MIT |
+| Ant Design | UI 组件库 | MIT |
+| React Router | 路由管理 | MIT |
+| Vite | 构建工具 | MIT |
+| Cypress | E2E 测试 | MIT |
+
+---
+
+## 📊 模型台账与依赖
 
 本项目使用或支持以下机器视觉模型。对于需要在部署时下载的模型，请确保计算其 SHA-256 哈希值与下表一致，以确保安全性与精度。
 
-| 模型名称 | 用途 | 格式 | 仓库/部署路径 | 来源 / 下载地址 | SHA-256 Hash |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **LBP Frontal Face** | 传统人脸检测（级联分类器） | XML | `app/src/main/assets/lbpcascade_frontalface.xml`<br>*(代码库内置)* | [OpenCV Data](https://github.com/opencv/opencv/tree/master/data/lbpcascades) | `529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d` |
-| **ResNet SSD Face Detector (8-bit)** | 高精度人脸检测 (DNN) | PB | `storage/models/opencv_face_detector_uint8.pb`<br>*(部署时手动下载)* | [OpenCV 3rdparty](https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel) | *(按实际下载版本定)* |
-| **ResNet SSD Config** | 配合上述 DNN 模型的网络结构定义 | PBTXT | `storage/models/opencv_face_detector.pbtxt`<br>*(部署时手动下载)* | [OpenCV Extra](https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/opencv_face_detector.pbtxt) | *(按实际版本定)* |
-| **NCNN YOLO Face (Bin)** | 端侧高精度人脸检测 (NCNN) | BIN | *(按需配置路径)* | 第三方提供或自训练 | *(按实际版本定)* |
-| **NCNN YOLO Face (Param)** | NCNN 网络结构定义 | PARAM | *(按需配置路径)* | 第三方提供或自训练 | *(按实际版本定)* |
-| **ArcFace Embedder** | 人脸特征提取 (NCNN/ONNX) | ONNX / BIN | *(按需配置路径)* | 第三方提供或自训练 | *(按实际版本定)* |
+| 模型名称 | 用途 | 格式 | 部署路径 | 来源 | SHA-256 | 许可证 |
+|:---------|:-----|:-----|:---------|:-----|:--------|:-------|
+| **LBP Frontal Face** | 人脸检测（级联） | XML | `app/src/main/assets/lbpcascade_frontalface.xml` | [OpenCV Data](https://github.com/opencv/opencv/tree/master/data/lbpcascades) | `529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d` | 3-Clause BSD |
+| **ResNet SSD Face** | 人脸检测（DNN） | PB | `storage/models/opencv_face_detector_uint8.pb` | [OpenCV 3rdparty](https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel) | ⚠️ 需在部署时验证 | Apache 2.0 |
+| **ResNet SSD Config** | 网络结构定义 | PBTXT | `storage/models/opencv_face_detector.pbtxt` | [OpenCV Extra](https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/opencv_face_detector.pbtxt) | ⚠️ 需在部署时验证 | Apache 2.0 |
+| **NCNN YOLO Face** | 端侧检测 | BIN/PARAM | *(按需配置)* | 第三方/自训练 | ⚠️ 需在部署时验证 | — |
+| **ArcFace Embedder** | 人脸特征提取 | ONNX/BIN | *(按需配置)* | 第三方/自训练 | ⚠️ 需在部署时验证 | — |
 
-> **提示：** 启动时程序将自动进行自检，并会在日志中打印所有加载模型的 SHA-256。请确保与上述台账保持一致。如果在模型加载阶段发现缺失，请根据"来源 / 下载地址"获取对应的模型并放置在正确路径。
+> **提示**：启动时程序将自动进行自检，并会在日志中打印所有加载模型的 SHA-256。请确保与上述台账保持一致。
 
-模型许可证信息：
-- **LBP Frontal Face**: 3-Clause BSD / OpenCV License
-- **ResNet SSD Face Detector (8-bit)**: Apache 2.0
-- **ResNet SSD Config**: Apache 2.0
+> **⚠️ 重要**：DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的 `/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。
 
-> **⚠️ 注意：** DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将上述 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的 `/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。详见上方"缺失（❌）"清单。
+---
 
-## 核心第三方组件
+## 📋 依赖状态检查
 
-### OpenCV / opencv_contrib
-- 用途：图像采集、处理、特征提取等（Native C++）
-- 来源：OpenCV 官方项目
-- 许可证：Apache License 2.0
+### ❌ 阻断性问题（需手动补充）
 
-### OpenCV 人脸检测模型与级联文件
-- 用途：Windows 摄像头人脸检测（DNN）与测试数据（级联）
-- 文件与来源：
-  - `app/src/main/assets/lbpcascade_frontalface.xml`（原 `tests/data/lbpcascade_frontalface.xml`）：来源于 OpenCV 数据集（随 OpenCV 发布）
-  - `opencv_face_detector_uint8.pb` + `opencv_face_detector.pbtxt`：来源于 OpenCV DNN 示例/模型包（随 OpenCV 发布；用户自行下载并在 ini/env 配置路径）
-- 许可证：Apache License 2.0（随 OpenCV 发布）
+| 缺口 | 影响范围 | 参考位置 |
+|:-----|:---------|:---------|
+| **DNN 模型文件缺失** | Windows 人脸检测（DNN 后端） | 见上方"模型台账"，下载后放置于 `storage/models/` |
+| **Windows CMake HDF5 冲突** | Windows 原生构建（可选） | 方案 A：重建 x64 生成器；方案 B：`BUILD_opencv_hdf=OFF` |
 
-### ncnn
-- 用途：端侧推理后端（可选；RK3288/Android 侧优先方案）
-- 来源：Tencent 开源项目 ncnn
-- 许可证：BSD 3-Clause License
+### ⚠️ 可选组件（缺失时自动回退）
 
-### libyuv
-- 用途：YUV/RGB 像素格式转换与缩放（用于外部帧/JNI 通道性能优化）
-- 来源：https://chromium.googlesource.com/libyuv/libyuv
-- 许可证：BSD 3-Clause License
+| 依赖 | 用途 | 回退方案 |
+|:-----|:-----|:---------|
+| Qualcomm SDK | 推理加速 | 自动使用 CPU 推理 |
+| RK MPP 头文件 | 硬件解码 | 自动使用 CPU 解码 |
+| FFmpegKit AAR | RTMP 推流 | 禁用推流功能（不影响核心识别） |
 
-### Rockchip MPP
-- 用途：RK3288 硬件加速解码与图像处理（按需编译）
-- 来源：Rockchip 官方开源组件（本仓库 vendor：`deps/rk_mpp/`，含 headers/libs）
-- 许可证：Apache License 2.0（以其官方开源许可为准）
+---
 
-### CivetWeb
-- 用途：Windows 本地 HTTP 服务（localhost REST + 静态托管 + OpenAPI）
-- 来源：https://github.com/civetweb/civetweb（本仓库 vendor：`src/win/third_party/civetweb/`，版本：v1.16）
-- 许可证：MIT License
-  - *注意*：附带的 MD5 实现文件 `src/win/third_party/civetweb/src/md5.inl`（由 L. Peter Deutsch 编写）使用 **zlib License**。
-
-### FFmpegKit
-- 用途：Android 侧 RTMP 推流（`FfmpegRtmpPusher` 按需动态加载）
-- 来源：https://github.com/arthenica/ffmpeg-kit
-- 许可证：LGPL 3.0 或 GPL 3.0（取决于用户提供的预编译版本，本项目默认不包含或仅使用其 API 包装）
-- 依赖位置：预期置于 `app/libs/ffmpeg-kit.aar` 供 Android Gradle 项目集成
-
-### Web 前端（React + Ant Design + Vite）
-- 用途：浏览器 SPA（本地控制台 UI）
-- 目录：`web/`（构建产物输出到 `src/win/app/webroot/` 供本地服务托管）
-- 依赖与许可证（以各自仓库 LICENSE 为准）：
-  - React / ReactDOM：MIT License
-  - Ant Design：MIT License
-  - React Router：MIT License
-  - Vite：MIT License
-  - Cypress：MIT License
-
-### 端侧模型（默认不入库，部署侧提供）
-- 用途：人脸检测（YOLO）与人脸识别（ArcFace）推理模型（例如：storage/models/opencv_face_detector_uint8.pb）
-- 来源与许可证：模型文件默认不随仓库提交；由部署/交付环节提供并登记来源、版本号、用途范围与许可证
-- 风险提示：不同模型的许可证与使用限制差异很大；在量产前必须完成审计并在交付文档中固化
-
-### AndroidX AppCompat
-- 用途：兼容性支持、基础 UI 组件
-- 组件：`androidx.appcompat:appcompat`
-- 许可证：Apache License 2.0
-
-### Google Material Components for Android
-- 用途：Material 风格 UI 组件
-- 组件：`com.google.android.material:material`
-- 许可证：Apache License 2.0
-
-### AndroidX ConstraintLayout
-- 用途：布局系统
-- 组件：`androidx.constraintlayout:constraintlayout`
-- 许可证：Apache License 2.0
-
-### AndroidX CameraX
-- 用途：Android 相机采集（CameraX ImageAnalysis，可作为 Camera2 的替代/降级路径）
-- 发布渠道：Google Maven（`https://maven.google.com/`）
-- 上游来源：
-  - AndroidX（Jetpack）CameraX Release Notes：`https://developer.android.com/jetpack/androidx/releases/camera`
-  - 源码仓库（镜像）：`https://github.com/androidx/androidx`（CameraX 位于 `camera/` 目录）
-- 组件（本项目当前版本：`1.3.4`，见 `app/build.gradle`）：
-  - `androidx.camera:camera-core:1.3.4`
-  - `androidx.camera:camera-camera2:1.3.4`
-  - `androidx.camera:camera-lifecycle:1.3.4`
-- 许可证：Apache License 2.0
-- CameraX 相关传递依赖（基于本项目 `debugRuntimeClasspath` 解析结果）：
-  - `androidx.concurrent:concurrent-futures:1.1.0`：Apache License 2.0
-  - `com.google.guava:listenablefuture:1.0`：Apache License 2.0
-  - `androidx.lifecycle:lifecycle-*:2.6.1`：Apache License 2.0
-  - 说明：传递依赖可能随版本升级变化；如需精确复核，请运行 `.\gradlew.bat :app:dependencyInsight --configuration debugRuntimeClasspath --dependency <artifact>`。
-
-## 工具与构建
-
-### Gradle / Android Gradle Plugin
-- 用途：构建系统
-- 许可证：Apache License 2.0
-
-### Android NDK / SDK
-- 用途：Native 编译与 Android 平台开发
-- 许可证：按 Android 官方发布条款
-
-## Windows 依赖（系统组件）
-
-### Microsoft Windows SDK（Win32 API / Media Foundation）
-- 用途：Windows 摄像头采集（Media Foundation）、Win32 原生窗口 UI、系统能力调用
-- 来源：Microsoft Windows SDK（随 Visual Studio / Windows SDK 安装）
-- 许可证：按 Microsoft Windows SDK 发布条款（系统组件与 SDK 许可）
-
-## 外部文档与模板
+## 📝 外部文档模板
 
 ### Linux Kernel 配置模板（RK3288 BSP）
-- 用途：记录设备运行态内核配置快照，仅用于合规审计与基准对齐参考，不参与实际编译。
-- 文件与来源：
-  - `docs/bsp/defconfig/rk3288_defconfig`
-  - `docs/bsp/kernel-config/kernel.config`
-  - 来源：设备运行态内核快照（基于 Linux Kernel 4.4.143 导出）。
-- 许可证：GPL-2.0 License（随 Linux Kernel 发布；仅作为文档存留，不造成衍生污染）。
+
+| 文件 | 用途 | 来源 | 许可证 |
+|:-----|:-----|:-----|:-------|
+| `docs/bsp/defconfig/rk3288_defconfig` | 内核配置快照 | Linux Kernel 4.4.143 导出 | GPL-2.0 |
+| `docs/bsp/kernel-config/kernel.config` | 内核配置参考 | 设备运行态快照 | GPL-2.0 |
+
+> **说明**：以上文件仅用于合规审计与基准对齐参考，不参与实际编译。
+
+---
 
 ## 备注
-- 如新增/升级/替换依赖，请同时更新本文件，并在 `DEVELOP.md` 中记录变更路径与影响面。
 
+- 如新增/升级/替换依赖，请同时更新本文件，并在 `DEVELOP.md` 中记录变更路径与影响面。
+- 如需精确复核 Android 传递依赖，请运行：`.\gradlew.bat :app:dependencyInsight --configuration debugRuntimeClasspath --dependency <artifact>`
