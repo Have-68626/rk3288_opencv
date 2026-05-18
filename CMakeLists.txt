@@ -85,9 +85,6 @@ endif()
 add_definitions(-DRK_HAVE_MPP=${RK_HAVE_MPP} -DRK_HAVE_QUALCOMM=${RK_HAVE_QUALCOMM})
 
 if(ANDROID)
-    # Android NDK Clang UTF-8 编码支持（解决 Ninja 构建时中文路径/错误信息乱码）
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdiagnostics-charset=UTF-8")
-    
     set(_rk_enable_libyuv_default ON)
 else()
     set(_rk_enable_libyuv_default OFF)
@@ -265,6 +262,7 @@ if(RK_ENABLE_LIBYUV)
         libyuv
         GIT_REPOSITORY https://chromium.googlesource.com/libyuv/libyuv
         GIT_TAG        d9681c53b3af633ab3c64655fcb9625e364b8f9c
+        GIT_SUBMODULES ""
     )
     FetchContent_GetProperties(libyuv)
     if(NOT libyuv_POPULATED)
