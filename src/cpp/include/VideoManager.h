@@ -11,9 +11,11 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/ocl.hpp>
 #include <atomic>
-#include <thread>
-#include <mutex>
 #include <memory>
+#include <mutex>
+#include <thread>
+
+class MppDecoder;
 
 class VideoManager {
 public:
@@ -104,6 +106,8 @@ private:
     bool isMockMode = false;
     bool isStaticImage = false;
     cv::Mat staticFrame;
+    std::unique_ptr<MppDecoder> mppDecoder;
+    bool useMppDecode = false;
 
     // Mock state tracking
     std::atomic<MockState> mockState{ MockState::NONE };

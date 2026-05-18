@@ -4,6 +4,7 @@
  */
 #include "VideoManager.h"
 #include "Config.h"
+#include "MppDecoder.h"
 #include "NativeLog.h"
 #include <iostream>
 #ifdef __linux__
@@ -288,22 +289,31 @@ bool VideoManager::open(const std::string& filePath) {
                 }
             }
         } else {
-            // Local file
+            // Local file — try MPP hardware decoding first
             mockState = MockState::LOADING;
             rklog::logInfo("MockMode", "open", "Opening local file, state=LOADING");
-            if (!tryOpen(filePath)) {
-                mockState = MockState::FAILED;
-                rklog::logError("MockMode", "open", "Failed to open local video file, state=FAILED");
-                return false;
-            }
-            try {
-                cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-                cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-                cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
-            } catch (const std::exception& e) {
-                rklog::logWarn("MockMode", "open", "cap.set exception: " + std::string(e.what()));
-            } catch (...) {
-                rklog::logWarn("MockMode", "open", "cap.set unknown exception");
+            mppDecoder = std::make_unique<MppDecoder>();
+            if (mppDecoder->init() && mppDecoder->open(filePath)) {
+                useMppDecode = true;
+                rklog::logInfo("MockMode", "open", "MPP hardware decoding enabled for: " + filePath);
+            } else {
+                useMppDecode = false;
+                mppDecoder.reset();
+                rklog::logInfo("MockMode", "open", "MPP unavailable, falling back to OpenCV VideoCapture");
+                if (!tryOpen(filePath)) {
+                    mockState = MockState::FAILED;
+                    rklog::logError("MockMode", "open", "Failed to open local video file, state=FAILED");
+                    return false;
+                }
+                try {
+                    cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
+                    cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
+                    cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+                } catch (const std::exception& e) {
+                    rklog::logWarn("MockMode", "open", "cap.set exception: " + std::string(e.what()));
+                } catch (...) {
+                    rklog::logWarn("MockMode", "open", "cap.set unknown exception");
+                }
             }
         }
     }
@@ -335,6 +345,11 @@ void VideoManager::close() {
     if (isMockMode) {
         mockState = MockState::NONE;
         mockFilePath.clear();
+        if (mppDecoder) {
+            mppDecoder->close();
+            mppDecoder.reset();
+        }
+        useMppDecode = false;
         isMockMode = false;
         isStaticImage = false;
         rklog::logInfo("MockMode", "close", "Mock source closed, state=NONE");
@@ -373,6 +388,42 @@ void VideoManager::captureLoop() {
     cv::Mat tempFrame;
     bool firstFrameValidated = false;
     while (isRunning) {
+        // MPP hardware decoding branch (mock mode video files)
+        if (isMockMode && useMppDecode && mppDecoder) {
+            if (mppDecoder->read(tempFrame)) {
+                std::lock_guard<std::mutex> lock(frameMutex);
+                if (!tempFrame.empty()) {
+                    if (!firstFrameValidated && isMockMode) {
+                        int ch = tempFrame.channels();
+                        bool valid = tempFrame.cols > 0 && tempFrame.cols <= 4096
+                            && tempFrame.rows > 0 && tempFrame.rows <= 4096
+                            && (ch == 3 || ch == 4);
+                        if (valid) {
+                            mockState = MockState::RUNNING;
+                            rklog::logInfo("MockMode", "captureLoop", "MPP first frame valid, w=" +
+                                std::to_string(tempFrame.cols) + " h=" + std::to_string(tempFrame.rows) +
+                                " ch=" + std::to_string(ch) + " state=RUNNING");
+                        } else {
+                            mockState = MockState::FAILED;
+                            rklog::logError("MockMode", "captureLoop", "MPP first frame invalid, w=" +
+                                std::to_string(tempFrame.cols) + " h=" + std::to_string(tempFrame.rows) +
+                                " ch=" + std::to_string(ch) + " state=FAILED");
+                        }
+                        firstFrameValidated = true;
+                    }
+                    tempFrame.copyTo(latestFrame);
+                    hasNewFrame = true;
+                }
+            } else if (!mppDecoder->isOpened()) {
+                // MPP decoding failed or EOS, try to re-init
+                rklog::logWarn("MockMode", "captureLoop", "MPP decode failed, falling back to VideoCapture");
+                useMppDecode = false;
+                mppDecoder.reset();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+            continue;
+        }
+
         if (isMockMode && isStaticImage) {
             // Static Image Mode: verified at open() time
             if (!firstFrameValidated) {

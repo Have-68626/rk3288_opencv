@@ -324,12 +324,22 @@ static bool initMppDecoder(bool requested) {
         rklog::logInfo("Engine", "initMppDecoder", "RK MPP disabled by user config.");
         return false;
     }
-    rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, preparing to load hardware decoder...");
-    // 真实的 MPP 初始化代码写这里
-    return true;
+    rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, probing decoder...");
+    // Probe MPP library availability with a lightweight create/destroy
+    MppCtx ctx = nullptr;
+    MppApi* mpi = nullptr;
+    MPP_RET ret = mpp_create(&ctx, &mpi);
+    if (ret == MPP_OK && ctx) {
+        mpp_destroy(ctx);
+        rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoder probe successful");
+        return true;
+    }
+    rklog::logWarn("Engine", "initMppDecoder", "MPP probe failed: ret=" + std::to_string(ret) + ", fallback to CPU");
+    return false;
 #else
+    (void)requested;
     rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (RK_HAVE_MPP not defined or 0)");
-    return false; // Fallback
+    return false;
 #endif
 }
 
