@@ -11,7 +11,7 @@
 本项目旨在为 **Rockchip RK3288** 平台（ARM Cortex-A17 四核、Mali-T764 GPU；目标设备不含 NPU，仅 CPU+GPU）提供一套高性能、低资源的机器视觉解决方案。
 核心目标是**在有限的算力下（< 60% CPU, < 512MB RAM）实现实时的视频监控（720p@30fps）与生物识别（< 100ms 延迟）**。
 
-目标设备画像与硬约束入口：[RK3288_CONSTRAINTS.md](file:///d:/19842/Documents/GitHub/rk3288_opencv/docs/RK3288_CONSTRAINTS.md)。
+目标设备画像与硬约束入口：[RK3288_CONSTRAINTS.md](docs/RK3288_CONSTRAINTS.md)。
 
 ---
 
@@ -115,7 +115,7 @@ rk3288_opencv/
 ```
 
 ### 4.2 依赖状态
-详细的依赖列表、版本要求及安装指南请参考：[CREDITS.md](file:///d:/19842/Documents/GitHub/rk3288_opencv/docs/CREDITS.md)。
+详细的依赖列表、版本要求及安装指南请参考：[CREDITS.md](docs/CREDITS.md)。
 
 ---
 
@@ -123,9 +123,9 @@ rk3288_opencv/
 
 本节包含针对核心技术难点的深度研究报告及落地建议。
 
-- [Android 摄像头调用机制研究](file:///d:/19842/Documents/GitHub/rk3288_opencv/docs/research/camera_system.md)
-- [人脸识别技术实现方案研究](file:///d:/19842/Documents/GitHub/rk3288_opencv/docs/research/face_recognition.md)
-- [性能优化与故障排障研究](file:///d:/19842/Documents/GitHub/rk3288_opencv/docs/research/perf_optimization.md)
+- [Android 摄像头调用机制研究](docs/research/camera_system.md)
+- [人脸识别技术实现方案研究](docs/research/face_recognition.md)
+- [性能优化与故障排障研究](docs/research/perf_optimization.md)
 
 ---
 
@@ -165,10 +165,10 @@ rk3288_opencv/
 
 | 类 / 函数 | 文件 | 说明 |
 | :--- | :--- | :--- |
-| `Engine::initialize()` | [Engine.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/cpp/src/Engine.cpp) | 初始化引擎及所有子模块 |
-| `FaceInferencePipeline::process()` | [FaceInferencePipeline.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/cpp/src/FaceInferencePipeline.cpp) | 执行完整人脸推理管线 |
-| `YoloFaceDetector` | [YoloFaceDetector.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/cpp/src/YoloFaceDetector.cpp) | YOLO 人脸检测 (OpenCV DNN / NCNN) |
-| `ArcFaceEmbedder` | [ArcFaceEmbedder.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/cpp/src/ArcFaceEmbedder.cpp) | ArcFace 特征提取 |
+| `Engine::initialize()` | [Engine.cpp](src/cpp/src/Engine.cpp) | 初始化引擎及所有子模块 |
+| `FaceInferencePipeline::process()` | [FaceInferencePipeline.cpp](src/cpp/src/FaceInferencePipeline.cpp) | 执行完整人脸推理管线 |
+| `YoloFaceDetector` | [YoloFaceDetector.cpp](src/cpp/src/YoloFaceDetector.cpp) | YOLO 人脸检测 (OpenCV DNN / NCNN) |
+| `ArcFaceEmbedder` | [ArcFaceEmbedder.cpp](src/cpp/src/ArcFaceEmbedder.cpp) | ArcFace 特征提取 |
 
 ### A.2 Android Java (`src/java/com/example/rk3288_opencv/`)
 
@@ -182,9 +182,9 @@ rk3288_opencv/
 
 | 类 / 函数 | 文件 | 说明 |
 | :--- | :--- | :--- |
-| `HttpFacesServer::start()` | [HttpFacesServer.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/win/src/HttpFacesServer.cpp) | 启动 HTTP 服务 (127.0.0.1) |
-| `MfCamera` | [MfCamera.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/win/src/MfCamera.cpp) | Media Foundation 摄像头采集 |
-| `WinJsonConfig` | [WinJsonConfig.cpp](file:///d:/19842/Documents/GitHub/rk3288_opencv/src/win/src/WinJsonConfig.cpp) | JSON 配置读写与热重载 |
+| `HttpFacesServer::start()` | [HttpFacesServer.cpp](src/win/src/HttpFacesServer.cpp) | 启动 HTTP 服务 (127.0.0.1) |
+| `MfCamera` | [MfCamera.cpp](src/win/src/MfCamera.cpp) | Media Foundation 摄像头采集 |
+| `WinJsonConfig` | [WinJsonConfig.cpp](src/win/src/WinJsonConfig.cpp) | JSON 配置读写与热重载 |
 
 ### A.4 Web 前端 (`web/`)
 
