@@ -23,5 +23,7 @@ final class NativeBridge {
     );
 
     static native void nativeSetInferenceThrottle(String mode, int intervalMs);
+    static native void nativeSetDetectionThrottle(String mode, int intervalMs);
+    static native void nativeSetRecognitionThrottle(String mode, int intervalMs);
 }
 

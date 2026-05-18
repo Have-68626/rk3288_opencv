@@ -383,16 +383,46 @@ Engine::~Engine() {
 }
 
 void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
-    inferenceThrottleMode.store(parseInferenceThrottleMode(mode));
-    inferenceIntervalMs.store(clampInferenceIntervalMs(intervalMs));
+    const auto m = parseInferenceThrottleMode(mode);
+    const int v = clampInferenceIntervalMs(intervalMs);
+    detThrottleMode.store(m);
+    detIntervalMs.store(clampDetectionIntervalMs(v));
+    recThrottleMode.store(m);
+    recIntervalMs.store(clampRecognitionIntervalMs(v));
 }
 
 InferenceThrottleMode Engine::getInferenceThrottleMode() const {
-    return inferenceThrottleMode.load();
+    return recThrottleMode.load();
 }
 
 int Engine::getInferenceIntervalMs() const {
-    return inferenceIntervalMs.load();
+    return recIntervalMs.load();
+}
+
+void Engine::updateDetectionThrottle(const std::string& mode, int intervalMs) {
+    detThrottleMode.store(parseInferenceThrottleMode(mode));
+    detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
+}
+
+InferenceThrottleMode Engine::getDetectionThrottleMode() const {
+    return detThrottleMode.load();
+}
+
+int Engine::getDetectionIntervalMs() const {
+    return detIntervalMs.load();
+}
+
+void Engine::updateRecognitionThrottle(const std::string& mode, int intervalMs) {
+    recThrottleMode.store(parseInferenceThrottleMode(mode));
+    recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
+}
+
+InferenceThrottleMode Engine::getRecognitionThrottleMode() const {
+    return recThrottleMode.load();
+}
+
+int Engine::getRecognitionIntervalMs() const {
+    return recIntervalMs.load();
 }
 
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
@@ -682,32 +712,7 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
             cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
     }
 
-    // 推理节流（inferenceIntervalMs）：
-    // - 目的：推理耗时较大时，通过时间间隔限制“重推理”频率来换取预览流畅度；
-    // - 要求：interval 未到时不触发任何识别相关回调（避免被误判为 NO_FACE/AUTH_FAIL），只更新 renderFrame；
-    // - 线程安全：配置由 JNI/其他线程写入原子变量，Engine 线程每帧读取，无需额外锁。
-    const auto throttleMode = inferenceThrottleMode.load();
-    if (throttleMode != InferenceThrottleMode::Off) {
-        const long long now = nowMs();
-        const long long last = lastInferenceStartMs.load();
-        const int interval = inferenceIntervalMs.load();
-        if (last > 0 && (now - last) < static_cast<long long>(interval)) {
-            std::lock_guard<std::mutex> lock(renderMutex);
-            frame.copyTo(renderFrame);
-            renderFrameSeq++;
-            return;
-        }
-        lastInferenceStartMs.store(now);
-    }
-
-    // 2. Multi-face authentication + tracking
-    std::vector<BioAuth::FaceAuthResult> results;
-    bool faceDetected = bioAuth->verifyMulti(frame, results, 4);
-    stats.inferMs = static_cast<double>(nowMs() - inferStart);
-    long long postStart = nowMs();
-
-    long long now = nowMs();
-
+    const long long now = nowMs();
     const long long trackTtlMs = 1200;
     const float matchIouThreshold = 0.3f;
     const int stableFrames = 3;
@@ -721,6 +726,80 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
         std::remove_if(faceTracks.begin(), faceTracks.end(), [](const FaceTrack& t) { return t.lastSeenMs == 0; }),
         faceTracks.end()
     );
+
+    auto drawTracks = [&]() {
+        for (const FaceTrack& t : faceTracks) {
+            const bool authed = (!t.stableId.empty() && t.stableId != "Unknown");
+            cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+            cv::rectangle(frame, t.bbox, color, 2);
+            std::ostringstream label;
+            label << "T" << t.trackId << " " << (t.stableId.empty() ? "Unknown" : t.stableId);
+            if (authed) {
+                label << " " << static_cast<int>(t.stableConfidence * 100) << "%";
+            }
+            const cv::Point origin(std::max(0, t.bbox.x), std::max(0, t.bbox.y - 8));
+            cv::putText(frame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+        }
+    };
+
+    bool shouldDetect = true;
+    const auto detMode = detThrottleMode.load();
+    if (detMode != InferenceThrottleMode::Off) {
+        const long long last = lastDetStartMs.load();
+        const int interval = detIntervalMs.load();
+        if (last > 0 && (now - last) < static_cast<long long>(interval)) {
+            shouldDetect = false;
+        } else {
+            lastDetStartMs.store(now);
+        }
+    }
+
+    if (!shouldDetect) {
+        drawTracks();
+        stats.inferMs = static_cast<double>(nowMs() - inferStart);
+        long long postStart = nowMs();
+        stats.postMs = static_cast<double>(nowMs() - postStart);
+        long long renderStart = nowMs();
+        {
+            std::lock_guard<std::mutex> lock(renderMutex);
+            frame.copyTo(renderFrame);
+            renderFrameSeq++;
+        }
+        stats.renderMs = static_cast<double>(nowMs() - renderStart);
+        perfHistory.push_back(stats);
+        return;
+    }
+
+    bool shouldRecognize = true;
+    const auto recMode = recThrottleMode.load();
+    if (recMode != InferenceThrottleMode::Off) {
+        const long long last = lastRecStartMs.load();
+        const int interval = recIntervalMs.load();
+        if (last > 0 && (now - last) < static_cast<long long>(interval)) {
+            shouldRecognize = false;
+        } else {
+            lastRecStartMs.store(now);
+        }
+    }
+
+    std::vector<BioAuth::FaceAuthResult> results;
+    bool faceDetected = bioAuth->verifyMulti(frame, results, 4, shouldRecognize);
+    stats.inferMs = static_cast<double>(nowMs() - inferStart);
+    long long postStart = nowMs();
+
+    if ((!faceDetected || results.empty()) && !faceTracks.empty()) {
+        drawTracks();
+        stats.postMs = static_cast<double>(nowMs() - postStart);
+        long long renderStart = nowMs();
+        {
+            std::lock_guard<std::mutex> lock(renderMutex);
+            frame.copyTo(renderFrame);
+            renderFrameSeq++;
+        }
+        stats.renderMs = static_cast<double>(nowMs() - renderStart);
+        perfHistory.push_back(stats);
+        return;
+    }
 
     std::vector<int> detOrder(results.size());
     for (int i = 0; i < static_cast<int>(results.size()); i++) detOrder[i] = i;
@@ -772,22 +851,29 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
         t.bbox = results[i].face;
         t.lastSeenMs = now;
 
-        const std::string rawId = results[i].identity.isAuthenticated ? results[i].identity.id : "Unknown";
-        const float rawConf = results[i].identity.confidence;
+        if (shouldRecognize) {
+            const std::string rawId = results[i].identity.isAuthenticated ? results[i].identity.id : "Unknown";
+            const float rawConf = results[i].identity.confidence;
 
-        if (rawId == t.lastId) {
-            t.lastIdStreak++;
+            if (rawId == t.lastId) {
+                t.lastIdStreak++;
+            } else {
+                t.lastId = rawId;
+                t.lastIdStreak = 1;
+            }
+
+            if (t.lastIdStreak >= stableFrames) {
+                t.stableId = rawId;
+                t.stableConfidence = rawConf;
+            } else if (t.stableId.empty()) {
+                t.stableId = rawId;
+                t.stableConfidence = rawConf;
+            }
         } else {
-            t.lastId = rawId;
-            t.lastIdStreak = 1;
-        }
-
-        if (t.lastIdStreak >= stableFrames) {
-            t.stableId = rawId;
-            t.stableConfidence = rawConf;
-        } else if (t.stableId.empty()) {
-            t.stableId = rawId;
-            t.stableConfidence = rawConf;
+            if (t.stableId.empty()) {
+                t.stableId = "Unknown";
+                t.stableConfidence = 0.0f;
+            }
         }
 
         activeTracks.push_back(&t);
@@ -840,7 +926,7 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
                 std::string msg = "VERIFIED " + bestAuth->stableId + " " + std::to_string(static_cast<int>(bestAuth->stableConfidence * 100)) + "%";
                 onResultCallback(msg);
             }
-        } else {
+        } else if (shouldRecognize) {
             handleAbnormalEvent("AUTH_FAIL", "Unknown person detected", frame);
             if (onResultCallback && (now - lastUnknownMs > 1200)) {
                 lastUnknownMs = now;

@@ -109,6 +109,14 @@ public:
     InferenceThrottleMode getInferenceThrottleMode() const;
     int getInferenceIntervalMs() const;
 
+    void updateDetectionThrottle(const std::string& mode, int intervalMs);
+    InferenceThrottleMode getDetectionThrottleMode() const;
+    int getDetectionIntervalMs() const;
+
+    void updateRecognitionThrottle(const std::string& mode, int intervalMs);
+    InferenceThrottleMode getRecognitionThrottleMode() const;
+    int getRecognitionIntervalMs() const;
+
 private:
     void processFrame(cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
@@ -124,9 +132,13 @@ private:
     std::atomic<bool> initCancelRequested{false};
     std::atomic<bool> flipXEnabled{false};
     std::atomic<bool> flipYEnabled{false};
-    std::atomic<InferenceThrottleMode> inferenceThrottleMode{InferenceThrottleMode::Off};
-    std::atomic<int> inferenceIntervalMs{kInferenceIntervalDefaultMs};
-    std::atomic<long long> lastInferenceStartMs{0};
+    std::atomic<InferenceThrottleMode> detThrottleMode{InferenceThrottleMode::Off};
+    std::atomic<int> detIntervalMs{kDetectionIntervalDefaultMs};
+    std::atomic<long long> lastDetStartMs{0};
+
+    std::atomic<InferenceThrottleMode> recThrottleMode{InferenceThrottleMode::Off};
+    std::atomic<int> recIntervalMs{kRecognitionIntervalDefaultMs};
+    std::atomic<long long> lastRecStartMs{0};
     
     // Rendering
     cv::Mat renderFrame;

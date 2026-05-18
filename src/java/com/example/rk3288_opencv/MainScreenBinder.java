@@ -77,6 +77,7 @@ final class MainScreenBinder {
 
         RadioGroup rgMode;
         RadioGroup rgCaptureScheme;
+        RadioGroup rgDetectionThrottle;
         RadioGroup rgInferenceThrottle;
         Switch switchCaptureAuto;
         Spinner spinnerCameras;
@@ -89,6 +90,8 @@ final class MainScreenBinder {
 
         View panelSettings;
 
+        EditText etDetectionIntervalMs;
+        TextView tvDetectionIntervalEffective;
         EditText etInferenceIntervalMs;
         TextView tvInferenceIntervalEffective;
 
@@ -130,6 +133,7 @@ final class MainScreenBinder {
 
         b.rgMode = activity.findViewById(R.id.rg_mode);
         b.rgCaptureScheme = activity.findViewById(R.id.rg_capture_scheme);
+        b.rgDetectionThrottle = activity.findViewById(R.id.rg_detection_throttle);
         b.rgInferenceThrottle = activity.findViewById(R.id.rg_inference_throttle);
         b.switchCaptureAuto = activity.findViewById(R.id.switch_capture_auto);
         b.spinnerCameras = activity.findViewById(R.id.spinner_cameras);
@@ -142,6 +146,8 @@ final class MainScreenBinder {
 
         b.panelSettings = activity.findViewById(R.id.panel_settings);
 
+        b.etDetectionIntervalMs = activity.findViewById(R.id.et_detection_interval_ms);
+        b.tvDetectionIntervalEffective = activity.findViewById(R.id.tv_detection_interval_effective);
         b.etInferenceIntervalMs = activity.findViewById(R.id.et_inference_interval_ms);
         b.tvInferenceIntervalEffective = activity.findViewById(R.id.tv_inference_interval_effective);
 

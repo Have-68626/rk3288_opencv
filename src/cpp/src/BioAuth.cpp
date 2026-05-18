@@ -117,7 +117,7 @@ bool BioAuth::verify(const cv::Mat& frame,
     return true;
 }
 
-bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces) {
+bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces, bool enableRecognition) {
     outResults.clear();
 
     std::vector<cv::Rect> faces;
@@ -176,7 +176,7 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
         r.face = face;
         r.isMain = (face == largestFace);
 
-        if (isModelLoaded) {
+        if (enableRecognition && isModelLoaded) {
 #ifdef HAS_OPENCV_FACE
             int label = -1;
             double distance = 0.0;

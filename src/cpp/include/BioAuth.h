@@ -62,7 +62,7 @@ public:
         bool isMain = false;
     };
 
-    bool verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces = 3);
+    bool verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces = 3, bool enableRecognition = true);
 
 private:
     cv::CascadeClassifier faceCascade;

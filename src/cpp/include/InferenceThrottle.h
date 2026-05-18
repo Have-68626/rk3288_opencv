@@ -22,6 +22,14 @@ constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
 
+constexpr int kDetectionIntervalDefaultMs = 150;
+constexpr int kDetectionIntervalMinMs = 80;
+constexpr int kDetectionIntervalMaxMs = 500;
+
+constexpr int kRecognitionIntervalDefaultMs = 650;
+constexpr int kRecognitionIntervalMinMs = 80;
+constexpr int kRecognitionIntervalMaxMs = 2000;
+
 inline InferenceThrottleMode parseInferenceThrottleMode(const std::string& s) {
     std::string v;
     v.reserve(s.size());
@@ -35,5 +43,13 @@ inline InferenceThrottleMode parseInferenceThrottleMode(const std::string& s) {
 
 inline int clampInferenceIntervalMs(int v) {
     return std::clamp(v, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
+}
+
+inline int clampDetectionIntervalMs(int v) {
+    return std::clamp(v, kDetectionIntervalMinMs, kDetectionIntervalMaxMs);
+}
+
+inline int clampRecognitionIntervalMs(int v) {
+    return std::clamp(v, kRecognitionIntervalMinMs, kRecognitionIntervalMaxMs);
 }
 

@@ -219,6 +219,32 @@ Java_com_example_rk3288_1opencv_NativeBridge_nativeSetInferenceThrottle(
     g_engine->updateInferenceThrottle(modeStr, static_cast<int>(intervalMs));
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_NativeBridge_nativeSetDetectionThrottle(
+        JNIEnv* env,
+        jclass,
+        jstring mode,
+        jint intervalMs) {
+    if (!g_engine) return;
+    const char* m = mode ? env->GetStringUTFChars(mode, nullptr) : nullptr;
+    std::string modeStr = m ? m : "off";
+    if (m) env->ReleaseStringUTFChars(mode, m);
+    g_engine->updateDetectionThrottle(modeStr, static_cast<int>(intervalMs));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_NativeBridge_nativeSetRecognitionThrottle(
+        JNIEnv* env,
+        jclass,
+        jstring mode,
+        jint intervalMs) {
+    if (!g_engine) return;
+    const char* m = mode ? env->GetStringUTFChars(mode, nullptr) : nullptr;
+    std::string modeStr = m ? m : "off";
+    if (m) env->ReleaseStringUTFChars(mode, m);
+    g_engine->updateRecognitionThrottle(modeStr, static_cast<int>(intervalMs));
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(
         JNIEnv* env,

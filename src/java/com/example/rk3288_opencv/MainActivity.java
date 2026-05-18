@@ -102,13 +102,19 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_ACCEL_OPENCL = "pref_accel_opencl";
     private static final String PREF_ACCEL_MPP = "pref_accel_mpp";
     private static final String PREF_ACCEL_QUALCOMM = "pref_accel_qualcomm";
+    private static final String PREF_DETECTION_THROTTLE_MODE = "pref_detection_throttle_mode";
+    private static final String PREF_DETECTION_INTERVAL_MS = "pref_detection_interval_ms";
     private static final String PREF_INFERENCE_THROTTLE_MODE = "pref_inference_throttle_mode";
     private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
     private static final String TAG = "MainActivity";
 
-    private static final int INFERENCE_INTERVAL_DEFAULT_MS = 150;
+    private static final int DETECTION_INTERVAL_DEFAULT_MS = 150;
+    private static final int DETECTION_INTERVAL_MIN_MS = 80;
+    private static final int DETECTION_INTERVAL_MAX_MS = 500;
+
+    private static final int INFERENCE_INTERVAL_DEFAULT_MS = 650;
     private static final int INFERENCE_INTERVAL_MIN_MS = 80;
-    private static final int INFERENCE_INTERVAL_MAX_MS = 500;
+    private static final int INFERENCE_INTERVAL_MAX_MS = 2000;
     private static final String INFERENCE_INI_FILENAME = "rk3288_opencv.ini";
 
     private ImageView monitorView;
@@ -124,6 +130,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private RadioGroup rgMode;
     private Switch switchCaptureAuto;
     private RadioGroup rgCaptureScheme;
+    private RadioGroup rgDetectionThrottle;
     private RadioGroup rgInferenceThrottle;
     private Spinner spinnerCameras;
     private Switch switchFlipX;
@@ -134,6 +141,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Switch switchOverlay;
     private View panelSettings;
     private View videoWrapper;
+    private EditText etDetectionIntervalMs;
+    private TextView tvDetectionIntervalEffective;
     private EditText etInferenceIntervalMs;
     private TextView tvInferenceIntervalEffective;
     private EditText etMockUrl;
@@ -227,6 +236,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private boolean captureAutoEnabled = true;
     private CaptureScheme preferredCaptureScheme = CaptureScheme.CAMERA2;
     private CaptureScheme activeCaptureScheme = CaptureScheme.CAMERA2;
+
+    private String detectionThrottleMode = "auto";
+    private int detectionIntervalMs = DETECTION_INTERVAL_DEFAULT_MS;
+    private int effectiveDetectionIntervalMs = DETECTION_INTERVAL_DEFAULT_MS;
 
     private String inferenceThrottleMode = "auto";
     private int inferenceIntervalMs = INFERENCE_INTERVAL_DEFAULT_MS;
@@ -379,6 +392,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         rgMode = b.rgMode;
         rgCaptureScheme = b.rgCaptureScheme;
+        rgDetectionThrottle = b.rgDetectionThrottle;
         rgInferenceThrottle = b.rgInferenceThrottle;
         switchCaptureAuto = b.switchCaptureAuto;
         spinnerCameras = b.spinnerCameras;
@@ -391,6 +405,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         panelSettings = b.panelSettings;
 
+        etDetectionIntervalMs = b.etDetectionIntervalMs;
+        tvDetectionIntervalEffective = b.tvDetectionIntervalEffective;
         etInferenceIntervalMs = b.etInferenceIntervalMs;
         tvInferenceIntervalEffective = b.tvInferenceIntervalEffective;
 
@@ -697,6 +713,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (switchAccelOpenCL != null) ed.putBoolean(PREF_ACCEL_OPENCL, switchAccelOpenCL.isChecked());
         if (switchAccelMpp != null) ed.putBoolean(PREF_ACCEL_MPP, switchAccelMpp.isChecked());
         if (switchAccelQualcomm != null) ed.putBoolean(PREF_ACCEL_QUALCOMM, switchAccelQualcomm.isChecked());
+        ed.putString(PREF_DETECTION_THROTTLE_MODE, normalizeInferenceThrottleMode(detectionThrottleMode));
+        ed.putInt(PREF_DETECTION_INTERVAL_MS, clampDetectionIntervalMs(detectionIntervalMs));
         ed.putString(PREF_INFERENCE_THROTTLE_MODE, normalizeInferenceThrottleMode(inferenceThrottleMode));
         ed.putInt(PREF_INFERENCE_INTERVAL_MS, clampInferenceIntervalMs(inferenceIntervalMs));
         ed.apply();
@@ -705,62 +723,127 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void loadInferenceThrottleSettings(SharedPreferences prefs) {
-        String mode = null;
-        Integer interval = null;
+        String detMode = null;
+        Integer detInterval = null;
+        String recMode = null;
+        Integer recInterval = null;
         if (prefs != null) {
-            mode = prefs.getString(PREF_INFERENCE_THROTTLE_MODE, null);
+            detMode = prefs.getString(PREF_DETECTION_THROTTLE_MODE, null);
+            if (prefs.contains(PREF_DETECTION_INTERVAL_MS)) {
+                detInterval = prefs.getInt(PREF_DETECTION_INTERVAL_MS, DETECTION_INTERVAL_DEFAULT_MS);
+            }
+            recMode = prefs.getString(PREF_INFERENCE_THROTTLE_MODE, null);
             if (prefs.contains(PREF_INFERENCE_INTERVAL_MS)) {
-                interval = prefs.getInt(PREF_INFERENCE_INTERVAL_MS, INFERENCE_INTERVAL_DEFAULT_MS);
+                recInterval = prefs.getInt(PREF_INFERENCE_INTERVAL_MS, INFERENCE_INTERVAL_DEFAULT_MS);
             }
         }
 
-        if (mode == null || interval == null) {
+        if (detMode == null || detInterval == null || recMode == null || recInterval == null) {
             InferenceIni ini = readInferenceIniIfExists();
-            if (mode == null && ini.mode != null) mode = ini.mode;
-            if (interval == null && ini.intervalMs != null) interval = ini.intervalMs;
+            if (detMode == null && ini.detMode != null) detMode = ini.detMode;
+            if (detInterval == null && ini.detIntervalMs != null) detInterval = ini.detIntervalMs;
+            if (recMode == null) {
+                if (ini.recMode != null) recMode = ini.recMode;
+                else if (ini.legacyMode != null) recMode = ini.legacyMode;
+            }
+            if (recInterval == null) {
+                if (ini.recIntervalMs != null) recInterval = ini.recIntervalMs;
+                else if (ini.legacyIntervalMs != null) recInterval = ini.legacyIntervalMs;
+            }
         }
 
-        inferenceThrottleMode = normalizeInferenceThrottleMode(mode);
-        inferenceIntervalMs = clampInferenceIntervalMs(interval == null ? INFERENCE_INTERVAL_DEFAULT_MS : interval);
+        detectionThrottleMode = normalizeInferenceThrottleMode(detMode);
+        detectionIntervalMs = clampDetectionIntervalMs(detInterval == null ? DETECTION_INTERVAL_DEFAULT_MS : detInterval);
+        effectiveDetectionIntervalMs = detectionIntervalMs;
+
+        inferenceThrottleMode = normalizeInferenceThrottleMode(recMode);
+        inferenceIntervalMs = clampInferenceIntervalMs(recInterval == null ? INFERENCE_INTERVAL_DEFAULT_MS : recInterval);
         effectiveInferenceIntervalMs = inferenceIntervalMs;
         inferenceAutoTuner.reset(inferenceIntervalMs);
     }
 
     private void bindInferenceThrottleControls() {
-        if (rgInferenceThrottle == null) return;
+        if (rgDetectionThrottle != null) {
+            rgDetectionThrottle.setOnCheckedChangeListener(null);
+            String mode = normalizeInferenceThrottleMode(detectionThrottleMode);
+            if ("off".equals(mode)) {
+                rgDetectionThrottle.check(R.id.rb_detection_off);
+            } else if ("manual".equals(mode)) {
+                rgDetectionThrottle.check(R.id.rb_detection_manual);
+            } else {
+                rgDetectionThrottle.check(R.id.rb_detection_auto);
+            }
 
-        rgInferenceThrottle.setOnCheckedChangeListener(null);
+            if (etDetectionIntervalMs != null) {
+                etDetectionIntervalMs.setText(String.valueOf(clampDetectionIntervalMs(detectionIntervalMs)));
+                etDetectionIntervalMs.setEnabled(!"off".equals(mode));
+                etDetectionIntervalMs.setOnFocusChangeListener((v, hasFocus) -> {
+                    if (hasFocus) return;
+                    onDetectionThrottleIntervalEdited();
+                });
+            }
 
-        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
-        if ("off".equals(mode)) {
-            rgInferenceThrottle.check(R.id.rb_inference_off);
-        } else if ("manual".equals(mode)) {
-            rgInferenceThrottle.check(R.id.rb_inference_manual);
-        } else {
-            rgInferenceThrottle.check(R.id.rb_inference_auto);
-        }
-
-        if (etInferenceIntervalMs != null) {
-            etInferenceIntervalMs.setText(String.valueOf(clampInferenceIntervalMs(inferenceIntervalMs)));
-            etInferenceIntervalMs.setEnabled(!"off".equals(mode));
-            etInferenceIntervalMs.setOnFocusChangeListener((v, hasFocus) -> {
-                if (hasFocus) return;
-                onInferenceThrottleIntervalEdited();
+            rgDetectionThrottle.setOnCheckedChangeListener((group, checkedId) -> {
+                if (checkedId == R.id.rb_detection_off) {
+                    detectionThrottleMode = "off";
+                } else if (checkedId == R.id.rb_detection_manual) {
+                    detectionThrottleMode = "manual";
+                } else {
+                    detectionThrottleMode = "auto";
+                }
+                updateInferenceThrottleFromUi(true);
             });
         }
 
-        rgInferenceThrottle.setOnCheckedChangeListener((group, checkedId) -> {
-            if (checkedId == R.id.rb_inference_off) {
-                inferenceThrottleMode = "off";
-            } else if (checkedId == R.id.rb_inference_manual) {
-                inferenceThrottleMode = "manual";
+        if (rgInferenceThrottle != null) {
+            rgInferenceThrottle.setOnCheckedChangeListener(null);
+
+            String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+            if ("off".equals(mode)) {
+                rgInferenceThrottle.check(R.id.rb_inference_off);
+            } else if ("manual".equals(mode)) {
+                rgInferenceThrottle.check(R.id.rb_inference_manual);
             } else {
-                inferenceThrottleMode = "auto";
+                rgInferenceThrottle.check(R.id.rb_inference_auto);
             }
-            updateInferenceThrottleFromUi(true);
-        });
+
+            if (etInferenceIntervalMs != null) {
+                etInferenceIntervalMs.setText(String.valueOf(clampInferenceIntervalMs(inferenceIntervalMs)));
+                etInferenceIntervalMs.setEnabled(!"off".equals(mode));
+                etInferenceIntervalMs.setOnFocusChangeListener((v, hasFocus) -> {
+                    if (hasFocus) return;
+                    onInferenceThrottleIntervalEdited();
+                });
+            }
+
+            rgInferenceThrottle.setOnCheckedChangeListener((group, checkedId) -> {
+                if (checkedId == R.id.rb_inference_off) {
+                    inferenceThrottleMode = "off";
+                } else if (checkedId == R.id.rb_inference_manual) {
+                    inferenceThrottleMode = "manual";
+                } else {
+                    inferenceThrottleMode = "auto";
+                }
+                updateInferenceThrottleFromUi(true);
+            });
+        }
 
         updateInferenceThrottleFromUi(false);
+    }
+
+    private void onDetectionThrottleIntervalEdited() {
+        if (etDetectionIntervalMs == null) return;
+        String raw = etDetectionIntervalMs.getText() == null ? "" : etDetectionIntervalMs.getText().toString();
+        int v = DETECTION_INTERVAL_DEFAULT_MS;
+        try {
+            String t = raw == null ? "" : raw.trim();
+            if (!t.isEmpty()) v = Integer.parseInt(t);
+        } catch (Exception ignored) {
+        }
+        int clamped = clampDetectionIntervalMs(v);
+        detectionIntervalMs = clamped;
+        etDetectionIntervalMs.setText(String.valueOf(clamped));
+        updateInferenceThrottleFromUi(true);
     }
 
     private void onInferenceThrottleIntervalEdited() {
@@ -779,25 +862,31 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void updateInferenceThrottleFromUi(boolean persist) {
-        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
-        if (etInferenceIntervalMs != null) {
-            etInferenceIntervalMs.setEnabled(!"off".equals(mode));
+        String detMode = normalizeInferenceThrottleMode(detectionThrottleMode);
+        if (etDetectionIntervalMs != null) {
+            etDetectionIntervalMs.setEnabled(!"off".equals(detMode));
         }
+        int detBase = clampDetectionIntervalMs(detectionIntervalMs);
+        effectiveDetectionIntervalMs = detBase;
 
-        int baseInterval = clampInferenceIntervalMs(inferenceIntervalMs);
-        if ("auto".equals(mode)) {
-            inferenceAutoTuner.reset(baseInterval);
+        String recMode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        if (etInferenceIntervalMs != null) {
+            etInferenceIntervalMs.setEnabled(!"off".equals(recMode));
+        }
+        int recBase = clampInferenceIntervalMs(inferenceIntervalMs);
+        if ("auto".equals(recMode)) {
+            inferenceAutoTuner.reset(recBase);
             effectiveInferenceIntervalMs = inferenceAutoTuner.getIntervalMs();
-        } else if ("manual".equals(mode)) {
-            effectiveInferenceIntervalMs = baseInterval;
         } else {
-            effectiveInferenceIntervalMs = baseInterval;
+            effectiveInferenceIntervalMs = recBase;
         }
 
         if (persist) {
             SharedPreferences.Editor ed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
-            ed.putString(PREF_INFERENCE_THROTTLE_MODE, mode);
-            ed.putInt(PREF_INFERENCE_INTERVAL_MS, baseInterval);
+            ed.putString(PREF_DETECTION_THROTTLE_MODE, detMode);
+            ed.putInt(PREF_DETECTION_INTERVAL_MS, detBase);
+            ed.putString(PREF_INFERENCE_THROTTLE_MODE, recMode);
+            ed.putInt(PREF_INFERENCE_INTERVAL_MS, recBase);
             ed.apply();
             persistInferenceThrottleIni();
         }
@@ -807,28 +896,48 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void updateInferenceThrottleEffectiveUi() {
-        if (tvInferenceIntervalEffective == null) return;
-        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
-        if ("off".equals(mode)) {
-            tvInferenceIntervalEffective.setText("推理节流：关闭");
-        } else if ("manual".equals(mode)) {
-            tvInferenceIntervalEffective.setText(String.format(Locale.US, "推理节流：手动 %dms", clampInferenceIntervalMs(inferenceIntervalMs)));
-        } else {
-            tvInferenceIntervalEffective.setText(String.format(Locale.US, "推理节流：自动 生效 %dms", clampInferenceIntervalMs(effectiveInferenceIntervalMs)));
+        String detMode = normalizeInferenceThrottleMode(detectionThrottleMode);
+        if (tvDetectionIntervalEffective != null) {
+            if ("off".equals(detMode)) {
+                tvDetectionIntervalEffective.setText("检测节流：关闭");
+            } else {
+                tvDetectionIntervalEffective.setText(String.format(Locale.US, "检测节流：%s %dms",
+                        "manual".equals(detMode) ? "手动" : "自动",
+                        clampDetectionIntervalMs(effectiveDetectionIntervalMs)));
+            }
+        }
+
+        if (tvInferenceIntervalEffective != null) {
+            String recMode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+            if ("off".equals(recMode)) {
+                tvInferenceIntervalEffective.setText("识别节流：关闭");
+            } else if ("manual".equals(recMode)) {
+                tvInferenceIntervalEffective.setText(String.format(Locale.US, "识别节流：手动 %dms", clampInferenceIntervalMs(inferenceIntervalMs)));
+            } else {
+                tvInferenceIntervalEffective.setText(String.format(Locale.US, "识别节流：自动 生效 %dms", clampInferenceIntervalMs(effectiveInferenceIntervalMs)));
+            }
         }
     }
 
     private void applyInferenceThrottleToNative() {
         if (!engineInitialized) return;
-        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
-        int interval = clampInferenceIntervalMs("auto".equals(mode) ? effectiveInferenceIntervalMs : inferenceIntervalMs);
+        String detMode = normalizeInferenceThrottleMode(detectionThrottleMode);
+        int detInterval = clampDetectionIntervalMs(effectiveDetectionIntervalMs);
         try {
-            NativeBridge.nativeSetInferenceThrottle(mode, interval);
+            NativeBridge.nativeSetDetectionThrottle(detMode, detInterval);
         } catch (Throwable t) {
-            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetInferenceThrottle 失败", t);
+            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetDetectionThrottle 失败", t);
         }
 
-        if (!"auto".equals(mode)) {
+        String recMode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        int recInterval = clampInferenceIntervalMs("auto".equals(recMode) ? effectiveInferenceIntervalMs : inferenceIntervalMs);
+        try {
+            NativeBridge.nativeSetRecognitionThrottle(recMode, recInterval);
+        } catch (Throwable t) {
+            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetRecognitionThrottle 失败", t);
+        }
+
+        if (!"auto".equals(recMode)) {
             if (inferenceAutoUpdater != null) handler.removeCallbacks(inferenceAutoUpdater);
             inferenceAutoUpdater = null;
             lastInferenceAutoHeartbeatMs = 0L;
@@ -850,7 +959,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         int from = effectiveInferenceIntervalMs;
                         effectiveInferenceIntervalMs = next;
                         try {
-                            NativeBridge.nativeSetInferenceThrottle("auto", next);
+                            NativeBridge.nativeSetRecognitionThrottle("auto", next);
                         } catch (Throwable ignored) {
                         }
                         updateInferenceThrottleEffectiveUi();
@@ -896,8 +1005,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (baseDir == null || baseDir.trim().isEmpty()) return;
         File ini = new File(baseDir, INFERENCE_INI_FILENAME);
 
-        String mode = normalizeInferenceThrottleMode(inferenceThrottleMode);
-        int interval = clampInferenceIntervalMs(inferenceIntervalMs);
+        String detMode = normalizeInferenceThrottleMode(detectionThrottleMode);
+        int detInterval = clampDetectionIntervalMs(detectionIntervalMs);
+        String recMode = normalizeInferenceThrottleMode(inferenceThrottleMode);
+        int recInterval = clampInferenceIntervalMs(inferenceIntervalMs);
 
         List<String> lines = new ArrayList<>();
         if (ini.exists()) {
@@ -915,21 +1026,33 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         List<String> out = new ArrayList<>();
         boolean hasSection = false;
         boolean inSection = false;
-        boolean wroteMode = false;
-        boolean wroteInterval = false;
+        boolean wroteLegacyMode = false;
+        boolean wroteLegacyInterval = false;
+        boolean wroteDetMode = false;
+        boolean wroteDetInterval = false;
+        boolean wroteRecMode = false;
+        boolean wroteRecInterval = false;
 
         for (String line : lines) {
             String t = line == null ? "" : line.trim();
             if (t.startsWith("[") && t.endsWith("]")) {
                 if (inSection) {
-                    if (!wroteMode) out.add("throttle_mode=" + mode);
-                    if (!wroteInterval) out.add("interval_ms=" + interval);
+                    if (!wroteLegacyMode) out.add("throttle_mode=" + recMode);
+                    if (!wroteLegacyInterval) out.add("interval_ms=" + recInterval);
+                    if (!wroteDetMode) out.add("det_throttle_mode=" + detMode);
+                    if (!wroteDetInterval) out.add("det_interval_ms=" + detInterval);
+                    if (!wroteRecMode) out.add("rec_throttle_mode=" + recMode);
+                    if (!wroteRecInterval) out.add("rec_interval_ms=" + recInterval);
                 }
                 inSection = "[inference]".equalsIgnoreCase(t);
                 if (inSection) {
                     hasSection = true;
-                    wroteMode = false;
-                    wroteInterval = false;
+                    wroteLegacyMode = false;
+                    wroteLegacyInterval = false;
+                    wroteDetMode = false;
+                    wroteDetInterval = false;
+                    wroteRecMode = false;
+                    wroteRecInterval = false;
                 }
                 out.add(line);
                 continue;
@@ -938,13 +1061,33 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             if (inSection) {
                 String lower = t.toLowerCase(Locale.US);
                 if (lower.startsWith("throttle_mode=")) {
-                    out.add("throttle_mode=" + mode);
-                    wroteMode = true;
+                    out.add("throttle_mode=" + recMode);
+                    wroteLegacyMode = true;
                     continue;
                 }
                 if (lower.startsWith("interval_ms=")) {
-                    out.add("interval_ms=" + interval);
-                    wroteInterval = true;
+                    out.add("interval_ms=" + recInterval);
+                    wroteLegacyInterval = true;
+                    continue;
+                }
+                if (lower.startsWith("det_throttle_mode=")) {
+                    out.add("det_throttle_mode=" + detMode);
+                    wroteDetMode = true;
+                    continue;
+                }
+                if (lower.startsWith("det_interval_ms=")) {
+                    out.add("det_interval_ms=" + detInterval);
+                    wroteDetInterval = true;
+                    continue;
+                }
+                if (lower.startsWith("rec_throttle_mode=")) {
+                    out.add("rec_throttle_mode=" + recMode);
+                    wroteRecMode = true;
+                    continue;
+                }
+                if (lower.startsWith("rec_interval_ms=")) {
+                    out.add("rec_interval_ms=" + recInterval);
+                    wroteRecInterval = true;
                     continue;
                 }
             }
@@ -952,15 +1095,23 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
 
         if (inSection) {
-            if (!wroteMode) out.add("throttle_mode=" + mode);
-            if (!wroteInterval) out.add("interval_ms=" + interval);
+            if (!wroteLegacyMode) out.add("throttle_mode=" + recMode);
+            if (!wroteLegacyInterval) out.add("interval_ms=" + recInterval);
+            if (!wroteDetMode) out.add("det_throttle_mode=" + detMode);
+            if (!wroteDetInterval) out.add("det_interval_ms=" + detInterval);
+            if (!wroteRecMode) out.add("rec_throttle_mode=" + recMode);
+            if (!wroteRecInterval) out.add("rec_interval_ms=" + recInterval);
         }
 
         if (!hasSection) {
             if (!out.isEmpty() && !out.get(out.size() - 1).trim().isEmpty()) out.add("");
             out.add("[inference]");
-            out.add("throttle_mode=" + mode);
-            out.add("interval_ms=" + interval);
+            out.add("throttle_mode=" + recMode);
+            out.add("interval_ms=" + recInterval);
+            out.add("det_throttle_mode=" + detMode);
+            out.add("det_interval_ms=" + detInterval);
+            out.add("rec_throttle_mode=" + recMode);
+            out.add("rec_interval_ms=" + recInterval);
         }
 
         try (BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(ini, false), StandardCharsets.UTF_8))) {
@@ -974,23 +1125,40 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private static final class InferenceIni {
-        final String mode;
-        final Integer intervalMs;
+        final String detMode;
+        final Integer detIntervalMs;
+        final String recMode;
+        final Integer recIntervalMs;
+        final String legacyMode;
+        final Integer legacyIntervalMs;
 
-        InferenceIni(String mode, Integer intervalMs) {
-            this.mode = mode;
-            this.intervalMs = intervalMs;
+        InferenceIni(String detMode,
+                     Integer detIntervalMs,
+                     String recMode,
+                     Integer recIntervalMs,
+                     String legacyMode,
+                     Integer legacyIntervalMs) {
+            this.detMode = detMode;
+            this.detIntervalMs = detIntervalMs;
+            this.recMode = recMode;
+            this.recIntervalMs = recIntervalMs;
+            this.legacyMode = legacyMode;
+            this.legacyIntervalMs = legacyIntervalMs;
         }
     }
 
     private InferenceIni readInferenceIniIfExists() {
         String baseDir = getAppStoragePath();
-        if (baseDir == null || baseDir.trim().isEmpty()) return new InferenceIni(null, null);
+        if (baseDir == null || baseDir.trim().isEmpty()) return new InferenceIni(null, null, null, null, null, null);
         File ini = new File(baseDir, INFERENCE_INI_FILENAME);
-        if (!ini.exists()) return new InferenceIni(null, null);
+        if (!ini.exists()) return new InferenceIni(null, null, null, null, null, null);
 
-        String mode = null;
-        Integer interval = null;
+        String detMode = null;
+        Integer detInterval = null;
+        String recMode = null;
+        Integer recInterval = null;
+        String legacyMode = null;
+        Integer legacyInterval = null;
         boolean inSection = false;
 
         try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(ini), StandardCharsets.UTF_8))) {
@@ -1008,20 +1176,34 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 String k = t.substring(0, eq).trim().toLowerCase(Locale.US);
                 String v = t.substring(eq + 1).trim();
                 if ("throttle_mode".equals(k)) {
-                    mode = v;
+                    legacyMode = v;
                 } else if ("interval_ms".equals(k)) {
                     try {
-                        interval = Integer.parseInt(v);
+                        legacyInterval = Integer.parseInt(v);
+                    } catch (Exception ignored) {
+                    }
+                } else if ("det_throttle_mode".equals(k)) {
+                    detMode = v;
+                } else if ("det_interval_ms".equals(k)) {
+                    try {
+                        detInterval = Integer.parseInt(v);
+                    } catch (Exception ignored) {
+                    }
+                } else if ("rec_throttle_mode".equals(k)) {
+                    recMode = v;
+                } else if ("rec_interval_ms".equals(k)) {
+                    try {
+                        recInterval = Integer.parseInt(v);
                     } catch (Exception ignored) {
                     }
                 }
             }
         } catch (Exception e) {
             AppLog.e("MainActivity", "readInferenceIniIfExists", "读取 ini 失败: " + ini.getAbsolutePath(), e);
-            return new InferenceIni(null, null);
+            return new InferenceIni(null, null, null, null, null, null);
         }
 
-        return new InferenceIni(mode, interval);
+        return new InferenceIni(detMode, detInterval, recMode, recInterval, legacyMode, legacyInterval);
     }
 
     private static String normalizeInferenceThrottleMode(String raw) {
@@ -1035,6 +1217,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static int clampInferenceIntervalMs(int v) {
         if (v < INFERENCE_INTERVAL_MIN_MS) return INFERENCE_INTERVAL_MIN_MS;
         if (v > INFERENCE_INTERVAL_MAX_MS) return INFERENCE_INTERVAL_MAX_MS;
+        return v;
+    }
+
+    private static int clampDetectionIntervalMs(int v) {
+        if (v < DETECTION_INTERVAL_MIN_MS) return DETECTION_INTERVAL_MIN_MS;
+        if (v > DETECTION_INTERVAL_MAX_MS) return DETECTION_INTERVAL_MAX_MS;
         return v;
     }
 
