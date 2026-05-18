@@ -14,54 +14,23 @@
 
 ## 📂 项目结构
 
-```text
-rk3288_opencv/
-├── app/                  # Android 应用目录
-│   ├── src/main/java/    # Android UI 代码
-│   └── build.gradle      # Android 构建配置
-├── config/               # 配置文件
-│   └── windows_camera_face_recognition.ini
-├── docs/                 # 开发设计文档与运维手册
-│   ├── runbooks/         # 测试验收与排障流程
-│   └── windows-web-spa/  # Web SPA 架构与功能对照
-├── src/                  # 核心源码
-│   ├── cpp/              # C++ 核心算法、工具与头文件
-│   │   ├── src/          # C++ 源文件
-│   │   ├── native-lib.cpp # JNI 入口
-│   │   ├── main.cpp      # Native CLI 主循环入口
-│   │   └── tools/inference_bench_cli.cpp # 推理基准测试工具
-│   ├── java/             # 核心 Java 层源码
-│   └── win/              # Windows 特定代码
-│       ├── app/
-│       │   ├── win_local_service_main.cpp # Windows 本地服务入口
-│       │   └── webroot/  # Windows 静态资源落盘目录
-│       └── src/          # Windows 侧代码
-├── web/                  # Web SPA 前端源码
-└── tests/                # 测试脚本、配置与输出目录
-    ├── metrics/          # 基准 / 性能报告输出目录
-    └── reports/          # CI 报告与审查日志输出目录
-```
+> 📋 **详细目录结构与模块说明请参阅 [DEVELOP.md](DEVELOP.md)。**
+
+主要目录：
+- `app/` — Android 应用（UI + 业务）
+- `src/cpp/` — C++ 核心算法与工具
+- `src/win/` — Windows 本地服务
+- `web/` — Web SPA 前端
+- `docs/` — 开发设计文档与运维手册
 
 ## 🛠️ 依赖列表与状态检查
 
-> 📋 **完整的依赖状态检查清单（包含已满足、缺失、可选）请参阅 [CREDITS.md#依赖状态检查清单](CREDITS.md#依赖状态检查清单)。**
+> 📋 **完整的依赖状态检查清单（包含已满足、缺失、可选）请参阅 [CREDITS.md](CREDITS.md)。**
 
-### 已满足（可开始构建）
-- ✅ Windows 开发环境（VS 2022）
-- ✅ Android NDK 27.0 及以上
-- ✅ OpenCV 4.10.0（位于 `D:\ProgramData\OpenCV\`）
-- ✅ CMake 3.22.1 及以上
-- ✅ Gradle 9.0（内置 `gradlew.bat`）
-- ✅ Node.js 22.x 及以上（含 pnpm 10.x）
-
-### ❌ 缺失（仅影响特定功能）
-- **DNN 模型文件**（影响 Windows DNN 人脸检测）：需下载 `.pb` + `.pbtxt` 至 `storage/models/` 或通过 Web UI 配置
-  - 详见 [Model_Inventory.md](Model_Inventory.md) 与 [config/windows_camera_face_recognition.ini](config/windows_camera_face_recognition.ini)
-
-### ⚠️ 可选（自动回退，不阻断核心功能）
-- **RK MPP**（硬件解码加速）：已下载至 `D:\ProgramData\rkmpp`，需配置 CMake 环境后启用
-- **Qualcomm SDK**（推理加速）：缺失时自动回退 CPU 推理
-- **FFmpegKit AAR**（RTMP 推流）：仅 Android 远程推流需要，核心识别不需要
+关键依赖：
+- **必需**：OpenCV 4.10.0、Android NDK 27.0、CMake 3.22.1、Gradle 9.0、Node.js 22.x
+- **可选**：RK MPP（硬件加速）、Qualcomm SDK、DNN 模型文件
+- **详见**：[CREDITS.md](CREDITS.md) 中的模型台账与依赖清单
 
 ## 🚀 快速开始
 
@@ -116,6 +85,19 @@ pnpm -C web build
 node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 ```
 
+## 🔧 脚本工具
+
+> 位于 `scripts/` 目录，提供构建、测试、验证等自动化工具。
+
+| 脚本 | 用途 | 使用说明 |
+| :--- | :--- | :--- |
+| `clean-repo-junk.js` | 清理仓库垃圾文件 | `node scripts/clean-repo-junk.js scan --ci` |
+| `docs-sync-audit.js` | 审计文档同步状态 | `node scripts/docs-sync-audit.js --out-dir tests/reports` |
+| `verify_opencv_host.bat` | 验证 OpenCV 主机环境 | 设置 `OPENCV_ROOT` 后执行 |
+| `verify_faces_test_set01.bat` | 人脸检测参数验证 | 依赖 `tests/test_set01/` 测试集 |
+| `run-web-e2e.ps1` | Web SPA 端到端测试 | Cypress E2E + 覆盖率报告 |
+| `bench_camera_adb.ps1` / `.sh` | Android 摄像头基准测试 | 通过 ADB 连接设备测试 |
+
 ## 待办列表 (Todo List)
 
 > ⬜ 表示待办（按优先级排序）
@@ -151,8 +133,12 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
     *   **目标**：建立人员实体（personId + profile + role/permissions + 状态机），支持增删改查、批量导入导出（加密 ZIP/签名可选）、权限校验与审计日志；定义最小化存储字段与脱敏策略；导入导出兼容版本演进（schema version）并可回滚。
     *   **验收**：可在 UI 中完成“新增/禁用/删除/导入/导出/权限变更”全流程；导入导出文件被篡改/版本不兼容时可识别并拒绝；默认不把敏感字段明文落盘/落日志。
 
-42.预览画面依旧存在应用返回桌面后，再打开应用后画面卡死的问题，热重启没有解决问题。
-43.使用 mock 模式，依旧加载文件后闪退。
-44.需要详细分析软件日志。
+42. 预览画面依旧存在应用返回桌面后，再打开应用后画面卡死的问题，热重启没有解决问题。
+43. 使用 mock 模式，依旧加载文件后闪退。
+44. 需要详细分析软件日志。
+45. 模型参数调优（minSize/scaleFactor/minNeighbors）功能在设置中落盘
+46. 切换 YOLO 检测，设置新增切换模型功能
+47. 清理遗留接口函数等，升级过程暂不考虑向下兼容
+48. 基础框架、开发流程的研究与补齐
 ## 📄 许可证
 MIT License

@@ -8,8 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **关于版本号重置的说明 (Version Reset Notice)**
 > 在项目早期的探索与架构验证阶段，曾短暂使用过 `1.x` 和 `2.0.0-rcX` 序列的版本号。随着 Windows 端向 Web SPA 架构（React + Vite + 本地 HTTP 服务）的全面迁移，以及 Android 与 Native 核心层的彻底重构，项目进入了实质性的 Beta 测试阶段。为了准确反映项目当前的成熟度与演进主线，版本号已从 `v0.1beta0` 开始重新校准，并统一收敛了全端的版本口径。
 
+## [Unreleased]
+
+### Added
+- **Documentation**: 新增 `DEVELOP.md` 附录 A "代码速查"，整合原 `CODE_WIKI.md` 的关键类与函数参考。
+
+### Changed
+- **Documentation**: 精简 `README.md`，删除与 `DEVELOP.md`/`CREDITS.md` 重复的项目结构和依赖列表，改为交叉引用。
+- **Documentation**: 在 `README.md` 新增 `🔧 脚本工具` 章节，为 `scripts/` 目录下的工具脚本添加显式引用说明。
+
+### Removed
+- **Documentation**: 删除冗余文档文件：
+  - `CODE_WIKI.md`（内容已合并至 `DEVELOP.md` 附录 A）
+  - `Model_Inventory.md`（内容已合并至 `CREDITS.md` 模型台账部分）
+  - `win_cmake.txt` / `win_cmake2.txt`（CMake 代码已整合至 `CMakeLists.txt`）
+  - `test_json.sh`（临时测试脚本）
+  - `docs/芯片调度优化与架构分析报告.md`（学术论文，与项目无关）
+  - `docs/ARM 平台加速方案与 OpenCV.md`（与 `acceleration_study.md` 重复）
+  - `docs/refactor-insights-audit-2026-05-16.md`（临时审计产物）
+  - `docs/perf/stutter-investigation-report.md`（临时调试产物）
+  - `docs/documents/` 目录（重构洞察笔记，已归档）
+  - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
+
+### Archived
+- **Technical Plans**: 以下 AI Agent 执行计划已归档至本 CHANGELOG：
+
+#### 检测/识别节流拆分与画框稳定性方案
+
+**目标**：解决检测与识别共用节流参数导致的画框不稳定问题
+
+**核心改动**：
+- **A) 节流参数拆分**：新增 `DetectionThrottle` + `RecognitionThrottle` 两套独立参数
+  - 检测节流：min=80ms、max=500ms
+  - 识别节流：min=80ms、max=2000ms
+- **B) 画框稳定性**：跳过推理的帧仍绘制"最近一次的稳定框/轨迹"
+- **C) BioAuth 改造**：支持"只检测不识别"模式
+
+**涉及文件**：`InferenceThrottle.h`、`Engine.cpp`、`BioAuth.cpp`、`NativeBridge.java`、`native-lib.cpp`、UI 布局与配置
+
+#### Auto 推理节流日志方案
+
+**目标**：在 Auto 推理节流模式下记录运行状态日志
+
+**核心改动**：
+- **变化日志**：每次 effective interval 变化时记录（包含 from/to、CPU/LAT/FPS）
+- **心跳日志**：Auto 模式运行时每 30 秒记录一次当前状态
+- 日志写入 `AppLog`，关键字 `inferenceAutoTune`
+
+**涉及文件**：`MainActivity.java`
+
+#### docs/ 目录审计计划
+
+**执行结果**：删除 6 个冗余文档，保留核心目录（`bsp/`、`windows-web-spa/`、`runbooks/`、`feasibility/`）
+
 ## [0.1.1-beta.1] - 2026-04-16
-*(内部口径: v0.1beta1)*
 
 ### Added
 - **Build System**: 向 Windows / CLI 的 CMake 构建链路中注入了 `BUILD_ID` 宏，使得二进制产物、评估工具（`win_face_eval_cli` / `inference_bench_cli`）以及应用启动日志都能输出一致的版本号。
@@ -28,48 +80,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0-beta.0] - 2026-04-15
 
 ### Added
-- **Documentation**: Comprehensive refactor of `DEVELOP.md` with standardized Markdown, bilingual terminology, and engineering improvements.
-- **Examples**: Added `docs/examples/` directory containing 6 compilable C++ examples for RK3288 platform:
-    - `01_v4l2_capture.cpp`: Direct V4L2 camera capture with MMAP.
-    - `02_rkmpp_decode.cpp`: Hardware video decoding using Rockchip MPP.
-    - `03_rknn_inference.cpp`: NPU inference using RKNN API.
-    - `04_drm_kms_display.cpp`: Direct rendering using DRM/KMS with double buffering.
-    - `05_opencv_rknn_bridge.cpp`: OpenCV preprocessing for RKNN.
-    - `06_integration_demo.cpp`: Integration demo combining V4L2, RKNN, and display logic.
-    - `07_camerax_jni_bridge.java`: Android CameraX with JNI bridge for zero-copy preview.
-    - `07_jni_yuv_processor.cpp`: Native C++ processing of CameraX YUV streams.
-- **Architecture**: Added Hybrid Architecture (CameraX + Native) section to `DEVELOP.md`.
-- **Checklists**: Added `docs/checklist/acceptance.md` for development, testing, and release phases.
-- **Quick Start**: Added quick start script guidelines and dependency matrix in `DEVELOP.md`.
+- **Documentation**: 全面重构 `DEVELOP.md`，采用标准化 Markdown、中英双语术语与工程化改进。
+- **Examples**: 新增 `docs/examples/` 目录，包含 RK3288 平台的 8 个可编译 C++ 示例：
+  - `01_v4l2_capture.cpp`: 直接使用 V4L2 + MMAP 采集摄像头。
+  - `02_rkmpp_decode.cpp`: 使用 Rockchip MPP 硬件解码。
+  - `03_rknn_inference.cpp`: 使用 RKNN API 进行 NPU 推理。
+  - `04_drm_kms_display.cpp`: 使用 DRM/KMS + 双缓冲直接渲染。
+  - `05_opencv_rknn_bridge.cpp`: OpenCV 预处理桥接 RKNN。
+  - `06_integration_demo.cpp`: 集成 V4L2、RKNN 与显示逻辑的综合示例。
+  - `07_camerax_jni_bridge.java`: Android CameraX 与 JNI 桥接实现零拷贝预览。
+  - `07_jni_yuv_processor.cpp`: Native C++ 处理 CameraX YUV 流。
+- **Architecture**: 在 `DEVELOP.md` 中新增混合架构 (CameraX + Native) 章节。
+- **Checklists**: 新增 `docs/checklist/acceptance.md`，涵盖开发、测试与发布阶段验收清单。
+- **Quick Start**: 在 `DEVELOP.md` 中新增快速开始脚本指南与依赖矩阵。
 
 ### Removed
-- **Legacy SDK**: Removed `ColorOsSdkBridge`, `PlayIntegrityChecker`, `GmsDetector`, `PrivilegedCommandGate`, and `DevicePolicy` to eliminate invalid dependencies.
-- **Security**: Removed `SecurityEventLogger` as part of the SDK cleanup.
+- **Legacy SDK**: 移除 `ColorOsSdkBridge`、`PlayIntegrityChecker`、`GmsDetector`、`PrivilegedCommandGate` 与 `DevicePolicy`，消除无效依赖。
+- **Security**: 移除 `SecurityEventLogger` 作为 SDK 清理的一部分。
 
 ### Changed
-- **Device Profiling**: Simplified `DeviceProfile` to focus solely on hardware data collection (Build info, Memory/Storage).
-- **Documentation**: Added Section 4.6 to `DEVELOP.md` detailing the simplified Device Profiling task (Pending Implementation).
-- **Structure**: Reorganized `DEVELOP.md` into "Overview -> Environment -> Core Development -> Advanced/Troubleshooting".
-- **Content**: Expanded technical details on V4L2, MPP, RKNN, and DRM/KMS.
-- **Style**: Enforced strict Markdown standards and bilingual terminology.
+- **Device Profiling**: 简化 `DeviceProfile`，聚焦于硬件数据采集（Build info、Memory/Storage）。
+- **Documentation**: 在 `DEVELOP.md` 第 4.6 节新增简化版设备画像任务（待实现）。
+- **Structure**: 重构 `DEVELOP.md` 为"概述 → 环境 → 核心开发 → 高级/排障"结构。
+- **Content**: 扩展 V4L2、MPP、RKNN 与 DRM/KMS 的技术细节。
+- **Style**: 强制执行严格 Markdown 标准与中英双语术语。
 - **日志目录**: 错误日志目录统一为 `ErrorLog/`（区分大小写），不再兼容 `errorlog/`。
 
 ### Documented
-- **Roadmap**: Migrated completed items from `README.md` Todo List into `CHANGELOG.md` for traceability.
+- **Roadmap**: 将 `README.md` 中已完成的待办项迁移到 `CHANGELOG.md` 以保持可追溯性。
 - **README 待办（完成项 1–15）**：从 `README.md` 清理迁移至此处归档（README 仅保留未完成待办 16+）。
   - 1. **[P0] 非 RK3288 设备：高分辨率/高帧率输入的稳定性与兼容性治理**（输入端强制 ≤1080p@60fps；超规格自动降档/拒绝并提示）
   - 2. **[P0] 外部帧输入性能优化（JNI 拷贝与 YUV 转换）**（降低拷贝与转换开销；推理前统一缩放到工作分辨率）
   - 3. **[P0] Mock（文件/URL）模式：大文件/高分辨率的 ANR 与卡顿治理**（初始化后台化+可取消；超规格降档/拒绝）
   - 4. **[P0] 识别事件面板无输出：打通 Native 事件→UI 列表的闭环**（补齐回调链路并做节流）
   - 5. **[P0] 屏幕旋转后预览未回正：旋转元数据与画面布局的稳定性修复**（rotationDegrees 口径统一+配置变更后重绑）
-  - 6. **[P0] 人脸识别链路“检测驱动识别”**（仅对检测到的 ROI 识别；预留策略开关）
+  - 6. **[P0] 人脸识别链路"检测驱动识别"**（仅对检测到的 ROI 识别；预留策略开关）
   - 7. **[P0] 预览叠加人脸框**（渲染帧绘制人脸框，主脸高亮）
   - 8. **[P0] 预览输出上限与低开销渲染**（Surface 渲染替代 Bitmap 高频刷新；输入端仍强制 ≤1080p60）
-  - 9. **[P1] 输入源“预检 + 自动降档”策略（相机/文件统一）**（开始监控前预检并记录结果）
+  - 9. **[P1] 输入源"预检 + 自动降档"策略（相机/文件统一）**（开始监控前预检并记录结果）
   - 10. **[P1] App 内日志查看能力增强**（突破 100KB 限制；支持抓取/展示 logcat）
   - 11. **[P1] 稳定性回归与问题收敛（ErrorLog 证据链）**（一键导出日志+logcat+设备信息+预检结果）
   - 12. **[P1] 悬浮窗开关状态与实际悬浮窗不同步**（以服务真实运行状态回填 UI，支持回前台自动校准）
-  - 13. **[P1] 新增“退出”按钮**（停止监控/释放资源/停止悬浮窗并移除任务栈）
+  - 13. **[P1] 新增"退出"按钮**（停止监控/释放资源/停止悬浮窗并移除任务栈）
   - 14. **[P1] 日志详情页筛选**（支持正则与快捷筛选并高亮）
   - 15. **[P1] 日志删除与保留策略可配置**（手动删除 + 自动清理保留 1/7/14/30 天）
 - **README 待办（完成项 16–34）**：从 `README.md` 清理迁移至此处归档（README 仅保留未完成待办 35+）。
@@ -81,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 21. **[P1] Mock 初始化可取消**（取消可中断 native 阻塞；超时/降级）
   - 22. **[P1] 悬浮窗 Service 稳定性增强**（前台服务模式 + 通知关闭入口）
   - 23. **[P1] logcat 采集能力校准**（范围提示；失败降级；导出脱敏）
-  - 24. **[P1] “退出”语义补强**（安全退出/强退二级选项与解释）
+  - 24. **[P1] "退出"语义补强**（安全退出/强退二级选项与解释）
   - 25. **[P1] 日志筛选性能优化**（流式/分页；超时/长度保护）
   - 26. **[P0] 镜像/翻转语义统一**（flipX/flipY；端到端一致；可持久化）
   - 27. **[P0] Mock 文件加载大文件优化**（少拷贝；进度与可取消）
@@ -92,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 32. **[P0] 热重启入口与黑屏恢复**（渲染停滞检测；Surface 重建；Bitmap 回退）
   - 33. **[P1] 识别事件面板覆盖式叠加**（HUD；不挤压预览）
   - 34. **[P1] 自动模式 UI 解释与展示**（灰显方案；展示当前生效方案与切换原因）
-- **DEVELOP.md 修订记录**: 将 `DEVELOP.md` 末尾“修订记录”从开发设计书中移除，并迁移到此处归档，避免文档重复与漂移。
+- **DEVELOP.md 修订记录**: 将 `DEVELOP.md` 末尾"修订记录"从开发设计书中移除，并迁移到此处归档。
 
 | 日期 | 版本 | 修订来源 | 变更摘要 |
 | :--- | :--- | :--- | :--- |
@@ -105,33 +157,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 2026-03-22 | 2.0.0-rc7 | 文档补齐 | 6.5.1 增补 Java 版 AES/GCM/Keystore 示例（含 KeyStore/KeyGenerator/GCMParameterSpec）；6.6.3 增补 android-emulator-runner 模板以跑 connectedAndroidTest；更新参考文献与示例 build_id 口径 |
 | 2026-03-23 | 2.0.0-rc8 | audit-camera-pipeline spec | 相机链路审计与最小修复：权限最小化、退后台释放与回前台恢复、拉帧背压与主线程卸载、Native 引擎线程 join；补齐审计报告与回归测试计划入口 |
 | 2026-04-07 | 2.0.0-rc8 | fix-android-camera2-uvc-open-failure spec | 补充 Camera2/CameraX 采集方案复现/验收入口（Runbook 链接、自动/手动切换、热重启与已知限制）。 |
-- **Android Compatibility**: Support Android API 21–34; declare camera/USB Host features as optional (`required=false`); SAFE MODE when key runtime permissions are missing; handle Android 13+ media permissions and legacy scoped-storage differences.
-- **Permissions**: Unified permission rationale flow; handle "Don't ask again" by guiding users to system settings; gate monitoring start and engine init when permissions are missing; separate overlay permission from runtime permissions.
-- **Logging & Export**: Session log naming (`rk3288_yyyyMMdd_HHmmss.log`); Java+Native co-write; dual-path persistence (internal + external when available); retention cleanup (age/count); size-based rolling; log viewer and ZIP export via SAF (CRC32 + `manifest.txt`); sensitive data masking (`SensitiveDataUtil`).
-- **Camera Discovery**: Enumerate cameras via `CameraManager.getCameraIdList()`; UI switching with `SharedPreferences` persistence; USB hot-plug refresh; mock sources (system camera return + file picker).
-- **Overlay Metrics**: `StatusService` overlay for FPS/CPU/MEM (500ms refresh), requiring overlay permission only when enabled.
-- **Debug Tooling**: Maintain Native CLI entry (`main.cpp` / `rk3288_cli`) to run with `cameraId` or file input plus optional `cascadePath`/`storagePath`.
-- **Android Capture (Camera2/CameraX)**: Use Android camera stack to produce `YUV_420_888` frames and push into Native via JNI with rotation/mirror normalization; add watchdog retry/backoff and auto downgrade path.
-- **FFmpeg Mock & RTMP**: Support mock URL (MP4/HLS/RTSP); RTMP push entry; optional `ffmpeg-kit.aar` integration; loop playback (`-stream_loop -1`); dual ABI (`arm64-v8a` + `armeabi-v7a`) strategy.
-- **UI Adaptation**: Portrait/landscape layouts; `onConfigurationChanged`-based rotation handling (no Activity restart) with transition animation; recognition events panel show/hide with FAB and persisted state.
-- **Stability & Performance**: Reduce misleading "SYSTEM NOT READY" logs; improve media layout adaptability; enable NEON and reduce `Mat` copies where applicable; tolerate `/proc/stat` permission denial in CPU sampling.
+
+### Technical Highlights
+- **Android Compatibility**: 支持 Android API 21–34；声明 camera/USB Host 为可选特性（`required=false`）；关键运行时权限缺失时进入 SAFE MODE；处理 Android 13+ 媒体权限与旧版 scoped-storage 差异。
+- **Permissions**: 统一权限说明流程；处理"不再询问"引导至系统设置；权限缺失时阻塞监控启动与引擎初始化；区分 overlay 权限与运行时权限。
+- **Logging & Export**: Session 日志命名（`rk3288_yyyyMMdd_HHmmss.log`）；Java+Native 双写；双路径持久化（internal + external）；按时间/数量清理；日志查看器与 ZIP 导出（CRC32 + `manifest.txt`）；敏感数据脱敏（`SensitiveDataUtil`）。
+- **Camera Discovery**: 通过 `CameraManager.getCameraIdList()` 枚举摄像头；UI 切换配合 `SharedPreferences` 持久化；USB 热插拔刷新；Mock 源（系统摄像头返回 + 文件选择器）。
+- **Overlay Metrics**: `StatusService` overlay 显示 FPS/CPU/MEM（500ms 刷新），仅在启用时请求 overlay 权限。
+- **Debug Tooling**: 维护 Native CLI 入口（`main.cpp` / `rk3288_cli`），支持 cameraId 或文件输入，可选 cascadePath/storagePath。
+- **Android Capture (Camera2/CameraX)**: 使用 Android 相机栈产生 `YUV_420_888` 帧并通过 JNI 推入 Native 层（含旋转/镜像归一化）；添加 watchdog 重试/退避与自动降级路径。
+- **FFmpeg Mock & RTMP**: 支持 Mock URL (MP4/HLS/RTSP)；RTMP 推流入口；可选 `ffmpeg-kit.aar` 集成；循环播放（`-stream_loop -1`）；双 ABI（`arm64-v8a` + `armeabi-v7a`）策略。
+- **UI Adaptation**: 竖屏/横屏双布局；基于 `onConfigurationChanged` 的旋转处理（无 Activity 重启）配合过渡动画；识别事件面板显示/隐藏配合 FAB 与持久化状态。
+- **Stability & Performance**: 减少误导性的"SYSTEM NOT READY"日志；提升媒体布局适应性；启用 NEON 并减少 `Mat` 拷贝；容忍 CPU 采样中 `/proc/stat` 权限拒绝。
 
 ## [1.2.0] - 2026-02-09
 
 ### Added
-- **System**: `PermissionStateMachine` for robust permission handling on Android 13+.
-- **Logging**: `AppLog`/`FileLogSink`/`NativeLog` with dual-path storage and automatic rollback.
-- **Monitoring**: `StatsRepository` for real-time FPS/CPU/MEM monitoring via `StatusService`.
+- **System**: `PermissionStateMachine`，用于 Android 13+ 的健壮权限处理。
+- **Logging**: `AppLog` / `FileLogSink` / `NativeLog` 双路径存储与自动回滚。
+- **Monitoring**: `StatsRepository`，通过 `StatusService` 实现实时 FPS/CPU/MEM 监控。
 
 ### Changed
-- **UI**: Improved `LogViewerActivity` with export capability and sensitive data masking.
-- **Camera**: Dynamic camera discovery and hot-plug support.
+- **UI**: 改进 `LogViewerActivity`，支持导出与敏感数据脱敏。
+- **Camera**: 动态摄像头发现与热插拔支持。
 
 ## [1.1.0] - 2026-02-09
 
 ### Added
-- **Compatibility**: Optimized `AndroidManifest.xml` for non-industrial Android devices.
-- **Debug**: Fixed `main.cpp` CLI build issues.
+- **Compatibility**: 优化 `AndroidManifest.xml` 以适配非工业 Android 设备。
+- **Debug**: 修复 `main.cpp` CLI 构建问题。
 
 ### Fixed
-- **Build**: Added `<string>` header to `main.cpp` to fix compilation error.
+- **Build**: 向 `main.cpp` 添加 `<string>` 头文件以修复编译错误。

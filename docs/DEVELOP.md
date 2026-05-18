@@ -2359,3 +2359,61 @@ if __name__ == "__main__":
     https://github.com/ReactiveCircus/android-emulator-runner
 
 ---
+
+## 附录 A. 代码速查 (Code Quick Reference)
+
+> 本附录整合自原 `CODE_WIKI.md`，提供关键类与函数的快速参考。
+
+### A.1 C++ 核心 (`src/cpp/`)
+
+| 类 / 函数 | 文件 | 说明 |
+| :--- | :--- | :--- |
+| `Engine::initialize()` | Engine.cpp | 初始化引擎及所有子模块 |
+| `Engine::pushExternalFrame()` | Engine.cpp | 接收外部视频帧（Android JNI） |
+| `Engine::setFlip()` | Engine.cpp | 设置画面翻转（flipX/flipY） |
+| `FaceInferencePipeline::process()` | FaceInferencePipeline.cpp | 执行完整人脸推理管线 |
+| `FaceSearch::searchTopK()` | FaceSearch.cpp | 1:N 特征检索 |
+| `YoloFaceDetector` | YoloFaceDetector.cpp | YOLO 人脸检测（OpenCV DNN / NCNN） |
+| `ArcFaceEmbedder` | ArcFaceEmbedder.cpp | ArcFace 特征提取 |
+| `native-lib.cpp` | — | JNI 入口，导出 `nativeInit`/`nativeRenderFrameToSurface` 等 |
+
+### A.2 Android Java (`src/java/com/example/rk3288_opencv/`)
+
+| 类 / 方法 | 说明 |
+| :--- | :--- |
+| `MainActivity.initEngine()` | 调用 `nativeInit`/`nativeInitFile` 启动 C++ 引擎 |
+| `MainActivity.startMonitoring()` | 开启 CameraX/Camera2 采集流 |
+| `Camera2CaptureController.pushExternalYuv420888()` | YUV Buffer 推入 JNI |
+| `CameraXCaptureController` | CameraX 采集控制器 |
+| `FeatureTemplateEncryptedStore` | Android Keystore 加密存储 |
+| `SensitiveDataUtil` | 日志脱敏工具 |
+
+### A.3 Windows C++ (`src/win/`)
+
+| 类 / 函数 | 文件 | 说明 |
+| :--- | :--- | :--- |
+| `HttpFacesServer::start()` | HttpFacesServer.cpp | 启动 HTTP 服务（仅 127.0.0.1） |
+| `HttpFacesServer::registerRoutes()` | HttpFacesServer.cpp | 注册 `/api/v1/*` REST 接口 |
+| `FramePipeline` | FramePipeline.cpp | 帧处理管线（采集→检测→识别） |
+| `MfCamera` | MfCamera.cpp | Media Foundation 摄像头采集 |
+| `DnnSsdFaceDetector` | DnnSsdFaceDetector.cpp | DNN 人脸检测 |
+| `LbphEmbedder` | LbphEmbedder.cpp | LBPH 特征提取 |
+| `FaceRecognizer` | FaceRecognizer.cpp | 人脸比对与识别 |
+| `FaceDatabase` | FaceDatabase.cpp | 人脸底库管理 |
+| `WinCrypto::encryptData()` | WinCrypto.cpp | DPAPI 配置加密 |
+| `WinJsonConfig` | WinJsonConfig.cpp | JSON 配置读写与热重载 |
+| `DisplaySettings` | DisplaySettings.cpp | Windows 显示设置 |
+
+### A.4 Web 前端 (`web/`)
+
+| 组件 / 页面 | 说明 |
+| :--- | :--- |
+| `AppStore.tsx` | 全局状态管理（偏好、服务器配置） |
+| `HomePage.tsx` | 仪表盘与服务健康状态 |
+| `PreviewPage.tsx` | 实时预览、人脸注册、库清空 |
+| `SettingsPage.tsx` | 摄像头参数、检测阈值、系统设置 |
+| `api/client.ts` | HTTP API 客户端封装 |
+
+---
+
+
