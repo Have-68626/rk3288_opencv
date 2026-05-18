@@ -296,6 +296,16 @@ bool VideoManager::open(const std::string& filePath) {
             if (mppDecoder->init() && mppDecoder->open(filePath)) {
                 useMppDecode = true;
                 rklog::logInfo("MockMode", "open", "MPP hardware decoding enabled for: " + filePath);
+                // Also initialize cap as fallback in case MPP fails at runtime
+                if (!tryOpen(filePath)) {
+                    rklog::logWarn("MockMode", "open", "MPP backup cap.open failed (non-fatal, MPP will be primary)");
+                } else {
+                    try {
+                        cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
+                        cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
+                        cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+                    } catch (...) {}
+                }
             } else {
                 useMppDecode = false;
                 mppDecoder.reset();

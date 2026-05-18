@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <fstream>
 #include <vector>
 
 struct MppDecoder::MppState {
@@ -26,6 +25,16 @@ struct MppDecoder::MppState {
     std::FILE* fileHandle = nullptr;
 #endif
 };
+
+static constexpr size_t kChunkSize = 1024 * 1024;  // 1MB per read
+
+static int64_t getFileSize(std::FILE* fh) {
+    int64_t pos = std::ftell(fh);
+    std::fseek(fh, 0, SEEK_END);
+    int64_t size = std::ftell(fh);
+    std::fseek(fh, pos, SEEK_SET);
+    return size;
+}
 
 MppDecoder::MppDecoder()
     : mpp_(std::make_unique<MppState>()) {
@@ -43,7 +52,18 @@ bool MppDecoder::init() {
         return false;
     }
 
-    // Initialize decoder with H.264 (most common for mock files)
+    // Enable byte-stream parser split mode: MPP will find NALU boundaries internally,
+    // so callers can feed data in arbitrary-sized chunks without manual splitting.
+    {
+        RK_U32 need_split = 1;
+        ret = mpp_->mpi->control(mpp_->ctx, MPP_DEC_SET_PARSER_SPLIT_MODE, &need_split);
+        if (ret != MPP_OK) {
+            rklog::logWarn("MppDecoder", "init", "MPP_DEC_SET_PARSER_SPLIT_MODE failed: ret=" + std::to_string(ret));
+        } else {
+            rklog::logInfo("MppDecoder", "init", "MPP byte-stream split mode enabled");
+        }
+    }
+
     ret = mpp_init(mpp_->ctx, MPP_CTX_DEC, mpp_->codingType);
     if (ret != MPP_OK) {
         rklog::logError("MppDecoder", "init", "mpp_init failed: ret=" + std::to_string(ret));
@@ -53,6 +73,7 @@ bool MppDecoder::init() {
     }
 
     inited_ = true;
+    chunkBuf_.resize(kChunkSize);
     rklog::logInfo("MppDecoder", "init", "MPP decoder initialized successfully");
     return true;
 #else
@@ -73,26 +94,14 @@ bool MppDecoder::open(const std::string& filePath) {
         return false;
     }
 
-    // Read whole file into packet buffer (for looped playback)
-    std::fseek(mpp_->fileHandle, 0, SEEK_END);
-    long fileSize = std::ftell(mpp_->fileHandle);
-    std::fseek(mpp_->fileHandle, 0, SEEK_SET);
-
-    packetBuffer_.resize(fileSize);
-    size_t bytesRead = std::fread(packetBuffer_.data(), 1, fileSize, mpp_->fileHandle);
-    if (bytesRead != static_cast<size_t>(fileSize)) {
-        rklog::logWarn("MppDecoder", "open", "Read " + std::to_string(bytesRead) +
-            "/" + std::to_string(fileSize) + " bytes");
-    }
-
-    std::fclose(mpp_->fileHandle);
-    mpp_->fileHandle = nullptr;
+    fileSize_ = getFileSize(mpp_->fileHandle);
+    fileReadOffset_ = 0;
     mpp_->eos = false;
+    reachedEos_ = false;
     opened_ = true;
-    hasFrame_ = false;
 
-    rklog::logInfo("MppDecoder", "open", "Loaded " + std::to_string(packetBuffer_.size()) +
-        " bytes from " + filePath);
+    rklog::logInfo("MppDecoder", "open",
+        "Streaming: " + filePath + " (" + std::to_string(fileSize_) + " bytes)");
     return true;
 #else
     (void)filePath;
@@ -104,7 +113,6 @@ bool MppDecoder::read(cv::Mat& outBgr) {
     if (!opened_ || !inited_) return false;
 
 #if defined(RK_HAVE_MPP) && RK_HAVE_MPP
-    // If we already have an unconsumed frame, return it
     if (hasFrame_) {
         if (!latestBgr_.empty()) {
             latestBgr_.copyTo(outBgr);
@@ -113,54 +121,52 @@ bool MppDecoder::read(cv::Mat& outBgr) {
         return !latestBgr_.empty();
     }
 
-    // Decode loop: send packets until we get a frame or EOS
-    size_t offset = 0;
-    while (offset < packetBuffer_.size() || mpp_->eos) {
+    // Decode loop: read chunk, feed to MPP, collect frames
+    while (true) {
         MppPacket packet = nullptr;
+        mpp_packet_new(&packet);
 
-        if (offset < packetBuffer_.size()) {
-            size_t chunkSize = std::min<size_t>(packetBuffer_.size() - offset, 1024 * 1024);
-            mpp_packet_new(&packet);
-            mpp_packet_set_data(packet, packetBuffer_.data() + offset);
-            mpp_packet_set_size(packet, chunkSize);
-            mpp_packet_set_length(packet, chunkSize);
-            offset += chunkSize;
-        } else if (mpp_->eos) {
-            // Flush remaining frames with null packet
-            mpp_packet_new(&packet);
+        if (mpp_->fileHandle && !mpp_->eos) {
+            size_t bytesRead = std::fread(chunkBuf_.data(), 1, kChunkSize, mpp_->fileHandle);
+            if (bytesRead > 0) {
+                fileReadOffset_ += static_cast<int64_t>(bytesRead);
+                mpp_packet_set_data(packet, chunkBuf_.data());
+                mpp_packet_set_size(packet, bytesRead);
+                mpp_packet_set_length(packet, bytesRead);
+            }
+            if (std::feof(mpp_->fileHandle) || bytesRead == 0) {
+                mpp_->eos = true;
+            }
+        }
+
+        if (mpp_->eos) {
             mpp_packet_set_eos(packet);
-        } else {
-            break;
         }
 
-        MPP_RET ret = mpp_->mpi->decode_put_packet(mpp_->ctx, packet);
-        if (ret != MPP_OK && ret != MPP_ERR_BUFFER_FULL) {
+        MPP_RET putRet = mpp_->mpi->decode_put_packet(mpp_->ctx, packet);
+        if (putRet != MPP_OK && putRet != MPP_ERR_BUFFER_FULL) {
             mpp_packet_destroy(packet);
-            break;
+            if (mpp_->eos) break;
+            continue;
         }
 
-        // Try to get decoded frame
-        MppFrame frame = nullptr;
-        ret = mpp_->mpi->decode_get_frame(mpp_->ctx, &frame);
-        if (ret == MPP_OK && frame) {
+        // Collect all available frames from this packet
+        bool gotFrame = false;
+        while (true) {
+            MppFrame frame = nullptr;
+            MPP_RET ret = mpp_->mpi->decode_get_frame(mpp_->ctx, &frame);
+            if (ret != MPP_OK || !frame) break;
+
             if (mpp_frame_get_info_change(frame) || mpp_frame_get_eos(frame)) {
-                if (mpp_frame_get_eos(frame)) {
-                    // End of stream reached
-                    if (offset >= packetBuffer_.size()) {
-                        // Rewind for looped playback
-                        offset = 0;
-                        rklog::logInfo("MppDecoder", "read", "EOS reached, rewinding for loop");
-                    }
-                    mpp_frame_deinit(&frame);
-                    mpp_packet_destroy(packet);
-                    return false;
-                }
+                bool eos = mpp_frame_get_eos(frame);
                 mpp_frame_deinit(&frame);
-                mpp_packet_destroy(packet);
+                if (eos) {
+                    mpp_packet_destroy(packet);
+                    goto handle_eos;
+                }
                 continue;
             }
 
-            // Convert MppFrame (NV12) to cv::Mat (BGR)
             int w = mpp_frame_get_width(frame);
             int h = mpp_frame_get_height(frame);
             int horStride = mpp_frame_get_hor_stride(frame);
@@ -176,26 +182,37 @@ bool MppDecoder::read(cv::Mat& outBgr) {
                     if (!bgr.empty()) {
                         bgr.copyTo(latestBgr_);
                         hasFrame_ = true;
+                        gotFrame = true;
                     }
                 }
             }
-
             mpp_frame_deinit(&frame);
-
-            if (hasFrame_) {
-                mpp_packet_destroy(packet);
-                if (!latestBgr_.empty()) {
-                    latestBgr_.copyTo(outBgr);
-                    hasFrame_ = false;
-                    return true;
-                }
-                return false;
-            }
+            if (gotFrame) break;
         }
 
         mpp_packet_destroy(packet);
+
+        if (hasFrame_) {
+            if (!latestBgr_.empty()) {
+                latestBgr_.copyTo(outBgr);
+                hasFrame_ = false;
+                return true;
+            }
+            return false;
+        }
+
+        if (mpp_->eos) break;
     }
 
+handle_eos:
+    // Rewind for looped playback
+    if (mpp_->fileHandle && fileSize_ > 0) {
+        std::fseek(mpp_->fileHandle, 0, SEEK_SET);
+        fileReadOffset_ = 0;
+        mpp_->eos = false;
+        reachedEos_ = true;
+        rklog::logInfo("MppDecoder", "read", "EOS reached, rewound for looped playback");
+    }
     return false;
 #else
     return false;
@@ -220,7 +237,10 @@ void MppDecoder::close() {
     opened_ = false;
     inited_ = false;
     hasFrame_ = false;
-    packetBuffer_.clear();
+    reachedEos_ = false;
+    fileReadOffset_ = 0;
+    fileSize_ = 0;
+    chunkBuf_.clear();
     latestBgr_ = cv::Mat();
     rklog::logInfo("MppDecoder", "close", "MPP decoder closed");
 }
