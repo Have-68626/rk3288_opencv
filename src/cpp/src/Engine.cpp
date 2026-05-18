@@ -978,6 +978,8 @@ void Engine::setFlip(bool flipX, bool flipY) {
 void Engine::handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence) {
     RKLOG_ENTER("Engine");
 
+    std::lock_guard<std::mutex> lock(renderMutex);
+
     long long now = nowMs();
 
     // Initialize cooldown for this event type if first time seen
