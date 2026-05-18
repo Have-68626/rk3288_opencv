@@ -121,6 +121,7 @@ public:
 private:
     void processFrame(cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
+    void performAccelSelfCheck();
 
     std::unique_ptr<VideoManager> videoManager;
     std::unique_ptr<MotionDetector> motionDetector;
