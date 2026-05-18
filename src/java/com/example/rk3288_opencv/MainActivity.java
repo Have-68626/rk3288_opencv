@@ -165,7 +165,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private volatile boolean cancelInitMock = false;
     private boolean firstFrameReceived = false;
     private boolean lastReadyVisible = false;
-    private boolean restartMonitoringOnStart = false;
+    private volatile boolean restartMonitoringOnStart = false;
+    private volatile boolean pendingResumeStart = false;
+    private int surfaceCreatedCount = 0;
     private PermissionStateMachine permissionStateMachine;
     private final MonitoringCoordinator monitoringCoordinator = new MonitoringCoordinator();
     private Bitmap frameBitmap;
@@ -184,7 +186,18 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 nativeSetPreviewSurface(holder.getSurface());
                 previewSurfaceReady = true;
                 lastPreviewRenderOkRealtimeMs = SystemClock.elapsedRealtime();
+                surfaceCreatedCount++;
+                AppLog.d("MainActivity", "surfaceCreated",
+                    "count=" + surfaceCreatedCount + " pendingResume=" + pendingResumeStart +
+                    " engineInit=" + engineInitialized + " isRunning=" + isRunning);
                 if (monitorView != null) monitorView.setVisibility(View.GONE);
+                // Auto-recover: if Engine is ready but monitoring stopped, restart
+                if (pendingResumeStart && engineInitialized && !isRunning && selectedCameraId >= 0) {
+                    pendingResumeStart = false;
+                    AppLog.i("MainActivity", "surfaceCreated",
+                        "Surface ready, resuming monitoring (delay 100ms)");
+                    handler.postDelayed(MainActivity.this::startMonitoring, 100);
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -3037,6 +3050,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onPause() {
         super.onPause();
+        // Release camera resources but keep Engine initialized
+        if (activeCapture != null) {
+            try {
+                activeCapture.stop();
+                AppLog.d("MainActivity", "onPause", "Camera released, Engine kept initialized");
+            } catch (Exception ignored) {
+            }
+            activeCapture = null;
+        }
+        pendingResumeStart = (isRunning && selectedCameraId >= 0);
     }
 
     @Override
@@ -3055,7 +3078,22 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 permissionStateMachine.evaluate();
             }
             if (permissionStateMachine != null && permissionStateMachine.isRuntimeGranted() && !isRunning) {
-                handler.postDelayed(this::startMonitoring, 200);
+                // Surface-aware resume: poll for surface readiness (max 1s, 100ms intervals)
+                final long startWaitMs = SystemClock.elapsedRealtime();
+                final long maxWaitMs = 1000;
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        long waited = SystemClock.elapsedRealtime() - startWaitMs;
+                        if (previewSurfaceReady || waited >= maxWaitMs) {
+                            AppLog.i("MainActivity", "onStart",
+                                "Surface ready=" + previewSurfaceReady + " waitedMs=" + waited);
+                            startMonitoring();
+                        } else {
+                            handler.postDelayed(this, 100);
+                        }
+                    }
+                });
             }
         }
     }

@@ -20,6 +20,7 @@
 #include <memory>
 #include <functional>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 class Engine {
@@ -170,6 +171,14 @@ private:
     long long lastUnknownMs = 0;
     long long lastVerifiedMs = 0;
     long long lastMultiMs = 0;
+
+    // Abnormal event throttling (per type)
+    static constexpr long long kAbnormalEventCooldownBaseMs = 2000;
+    static constexpr long long kAbnormalEventCooldownMaxMs = 10000;
+    static constexpr int kAbnormalEventMaxPerMin = 30;
+    std::unordered_map<std::string, long long> lastAbnormalEventMs_;
+    std::unordered_map<std::string, int> abnormalEventCount_;
+    std::unordered_map<std::string, long long> abnormalEventCooldownMs_;
 
     struct FaceTrack {
         int trackId = 0;

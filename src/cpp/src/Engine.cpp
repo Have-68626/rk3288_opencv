@@ -977,10 +977,51 @@ void Engine::setFlip(bool flipX, bool flipY) {
 
 void Engine::handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence) {
     RKLOG_ENTER("Engine");
+
+    long long now = nowMs();
+
+    // Initialize cooldown for this event type if first time seen
+    if (abnormalEventCooldownMs_.find(type) == abnormalEventCooldownMs_.end()) {
+        abnormalEventCooldownMs_[type] = kAbnormalEventCooldownBaseMs;
+    }
+
+    // Check cooldown: skip if within cooldown period
+    auto lastIt = lastAbnormalEventMs_.find(type);
+    if (lastIt != lastAbnormalEventMs_.end()) {
+        long long elapsed = now - lastIt->second;
+        long long cooldown = abnormalEventCooldownMs_[type];
+        if (elapsed < cooldown) {
+            return;
+        }
+        // Reset cooldown if no events for > 1 minute
+        if (elapsed > 60000) {
+            abnormalEventCooldownMs_[type] = kAbnormalEventCooldownBaseMs;
+            abnormalEventCount_[type] = 0;
+            rklog::logWarn("Engine", "handleAbnormalEvent",
+                "type=" + type + " cooldown reset to base (" +
+                std::to_string(kAbnormalEventCooldownBaseMs) + "ms) after idle");
+        }
+    }
+
+    // Update last event time
+    lastAbnormalEventMs_[type] = now;
+
+    // Increment count and check rate limit
+    int& count = abnormalEventCount_[type];
+    count++;
+    if (count > kAbnormalEventMaxPerMin) {
+        long long& cd = abnormalEventCooldownMs_[type];
+        cd = std::min(cd * 2, kAbnormalEventCooldownMaxMs);
+        rklog::logWarn("Engine", "handleAbnormalEvent",
+            "type=" + type + " count=" + std::to_string(count) +
+            " exceeded limit, cooldown increased to " + std::to_string(cd) + "ms");
+        count = 0;
+    }
+
+    // Original event handling
     std::string timestamp = std::to_string(std::time(nullptr));
     std::string imgPath = this->storagePath + type + "_" + timestamp + ".jpg";
-    
-    // Save evidence asynchronously or quickly
+
     if (Storage::saveImage(imgPath, evidence)) {
         eventManager->logEvent(type, desc, imgPath);
         std::cout << "Event Logged: " << desc << std::endl;
