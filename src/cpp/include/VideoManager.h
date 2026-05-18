@@ -106,7 +106,7 @@ private:
     cv::Mat staticFrame;
 
     // Mock state tracking
-    MockState mockState = MockState::NONE;
+    std::atomic<MockState> mockState{ MockState::NONE };
     int64_t mockLoadTimeoutMs = 30000;
     std::string mockFilePath;
 };
