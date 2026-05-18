@@ -60,6 +60,31 @@ public:
      */
     bool isOpened() const;
 
+    // ---- Mock Mode State ----
+
+    /**
+     * @brief Mock file loading state machine.
+     */
+    enum class MockState {
+        NONE,             // Not in mock mode
+        INIT,             // Mock mode initialized
+        PREFLIGHT_OK,     // Preflight check passed
+        LOADING,          // File/video loading in progress
+        RUNNING,          // Mock source running normally
+        FAILED,           // Mock source failed (corrupted/unsupported)
+        FALLBACK          // Mock failed, fell back to camera
+    };
+
+    /**
+     * @brief Returns the current mock state.
+     */
+    MockState getMockState() const;
+
+    /**
+     * @brief Returns the mock file path, empty if not in mock mode.
+     */
+    std::string getMockFilePath() const;
+
 private:
     void captureLoop();
 
@@ -79,4 +104,9 @@ private:
     bool isMockMode = false;
     bool isStaticImage = false;
     cv::Mat staticFrame;
+
+    // Mock state tracking
+    MockState mockState = MockState::NONE;
+    int64_t mockLoadTimeoutMs = 30000;
+    std::string mockFilePath;
 };

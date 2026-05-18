@@ -14,6 +14,19 @@
 #include <vector>
 #include <fstream>
 
+static const char* mockStateName(VideoManager::MockState s) {
+    switch (s) {
+        case VideoManager::MockState::NONE:         return "NONE";
+        case VideoManager::MockState::INIT:          return "INIT";
+        case VideoManager::MockState::PREFLIGHT_OK:  return "PREFLIGHT_OK";
+        case VideoManager::MockState::LOADING:       return "LOADING";
+        case VideoManager::MockState::RUNNING:       return "RUNNING";
+        case VideoManager::MockState::FAILED:        return "FAILED";
+        case VideoManager::MockState::FALLBACK:      return "FALLBACK";
+    }
+    return "UNKNOWN";
+}
+
 VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
 }
 
@@ -122,6 +135,9 @@ bool VideoManager::open(const std::string& filePath) {
 
     isMockMode = true;
     isStaticImage = false;
+    mockState = MockState::INIT;
+    mockFilePath = filePath;
+    rklog::logInfo("MockMode", "open", "Mock file path=" + filePath);
 
     // Check extension (case-insensitive)
     std::string ext = "";
@@ -133,6 +149,8 @@ bool VideoManager::open(const std::string& filePath) {
     
     if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp") {
         isStaticImage = true;
+        mockState = MockState::PREFLIGHT_OK;
+        rklog::logInfo("MockMode", "open", "Static image, state=PREFLIGHT_OK ext=" + ext);
         try {
             // 内存监控与分块加载机制，防止超大文件导致 OOM 崩溃
             std::ifstream file(filePath, std::ios::binary | std::ios::ate);
@@ -167,54 +185,77 @@ bool VideoManager::open(const std::string& filePath) {
 
             if (staticFrame.empty()) {
                 std::cerr << "Failed to decode image: " << filePath << std::endl;
+                mockState = MockState::FAILED;
+                rklog::logError("MockMode", "open", "Failed to decode static image");
                 return false;
             }
             // Resize to match config if needed
             if (staticFrame.cols != Config::FRAME_WIDTH || staticFrame.rows != Config::FRAME_HEIGHT) {
                 cv::resize(staticFrame, staticFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
             }
+            mockState = MockState::LOADING;
+            rklog::logInfo("MockMode", "open", "Static image decoded, w=" + std::to_string(staticFrame.cols) +
+                " h=" + std::to_string(staticFrame.rows) + " state=LOADING");
         } catch (const std::bad_alloc& e) {
             std::cerr << "OOM exception loading static image: " << e.what() << std::endl;
+            mockState = MockState::FAILED;
+            rklog::logError("MockMode", "open", "OOM loading static image: " + std::string(e.what()));
             return false;
         } catch (const cv::Exception& e) {
             std::cerr << "OpenCV exception loading static image: " << e.what() << std::endl;
+            mockState = MockState::FAILED;
+            rklog::logError("MockMode", "open", "OpenCV exception: " + std::string(e.what()));
             return false;
         } catch (const std::exception& e) {
             std::cerr << "Exception loading static image: " << e.what() << std::endl;
+            mockState = MockState::FAILED;
+            rklog::logError("MockMode", "open", "Exception: " + std::string(e.what()));
             return false;
         } catch (...) {
             std::cerr << "Unknown exception loading static image" << std::endl;
+            mockState = MockState::FAILED;
+            rklog::logError("MockMode", "open", "Unknown exception");
             return false;
         }
     } else {
+        // Video file or network stream
+        mockState = MockState::PREFLIGHT_OK;
+        rklog::logInfo("MockMode", "open", "Video/stream source, ext=" + ext + " state=PREFLIGHT_OK");
+
         auto tryOpen = [&](const std::string& pathOrUrl) -> bool {
             if (cancelToken && cancelToken->load()) {
                 return false;
             }
             cv::VideoCapture tmp;
             std::vector<int> params;
+            // Use mock-specific timeout for network streams
+            int effectiveTimeout = (pathOrUrl.find("http") == 0 || pathOrUrl.find("rtsp") == 0 || pathOrUrl.find("rtmp") == 0)
+                ? static_cast<int>(mockLoadTimeoutMs) : openTimeoutMs;
             params.push_back(cv::CAP_PROP_OPEN_TIMEOUT_MSEC);
-            params.push_back(openTimeoutMs);
+            params.push_back(effectiveTimeout);
             params.push_back(cv::CAP_PROP_READ_TIMEOUT_MSEC);
             params.push_back(readTimeoutMs);
+            rklog::logInfo("MockMode", "tryOpen", "Opening: " + pathOrUrl + " timeoutMs=" + std::to_string(effectiveTimeout));
             try {
                 tmp.open(pathOrUrl, cv::CAP_ANY, params);
             } catch (const std::bad_alloc& e) {
-                std::cerr << "OOM exception in tmp.open: " << e.what() << std::endl;
+                rklog::logError("MockMode", "tryOpen", "OOM: " + std::string(e.what()));
                 return false;
             } catch (const cv::Exception& e) {
-                std::cerr << "OpenCV Exception in tmp.open: " << e.what() << std::endl;
+                rklog::logError("MockMode", "tryOpen", "OpenCV Exception: " + std::string(e.what()));
                 return false;
             } catch (const std::exception& e) {
-                std::cerr << "Exception in tmp.open: " << e.what() << std::endl;
+                rklog::logError("MockMode", "tryOpen", "Exception: " + std::string(e.what()));
                 return false;
             } catch (...) {
-                std::cerr << "Unknown exception in tmp.open" << std::endl;
+                rklog::logError("MockMode", "tryOpen", "Unknown exception");
                 return false;
             }
             if (!tmp.isOpened()) {
+                rklog::logError("MockMode", "tryOpen", "Failed to open (timeout or unsupported format)");
                 return false;
             }
+            rklog::logInfo("MockMode", "tryOpen", "Opened successfully");
             cap = std::move(tmp);
             return true;
         };
@@ -230,20 +271,29 @@ bool VideoManager::open(const std::string& filePath) {
                 backup = filePath.substr(sep + 1);
             }
             rklog::logInfo("VideoManager", "open", "Connecting to: " + primary);
+            mockState = MockState::LOADING;
             if (!tryOpen(primary)) {
+                rklog::logError("MockMode", "open", "Primary stream failed, state=FAILED");
                 if (!backup.empty()) {
-                    rklog::logInfo("VideoManager", "open", "Downgrading to backup: " + backup);
+                    rklog::logInfo("MockMode", "open", "Trying backup: " + backup);
                     if (!tryOpen(backup)) {
+                        mockState = MockState::FAILED;
+                        rklog::logError("MockMode", "open", "Backup also failed, state=FAILED");
                         return false;
                     }
                 } else {
+                    mockState = MockState::FAILED;
+                    rklog::logError("MockMode", "open", "No backup, state=FAILED");
                     return false;
                 }
             }
         } else {
             // Local file
+            mockState = MockState::LOADING;
+            rklog::logInfo("MockMode", "open", "Opening local file, state=LOADING");
             if (!tryOpen(filePath)) {
-                std::cerr << "Failed to open video file: " << filePath << std::endl;
+                mockState = MockState::FAILED;
+                rklog::logError("MockMode", "open", "Failed to open local video file, state=FAILED");
                 return false;
             }
             try {
@@ -251,9 +301,9 @@ bool VideoManager::open(const std::string& filePath) {
                 cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
                 cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
             } catch (const std::exception& e) {
-                std::cerr << "Exception in cap.set: " << e.what() << std::endl;
+                rklog::logWarn("MockMode", "open", "cap.set exception: " + std::string(e.what()));
             } catch (...) {
-                std::cerr << "Unknown exception in cap.set" << std::endl;
+                rklog::logWarn("MockMode", "open", "cap.set unknown exception");
             }
         }
     }
@@ -263,19 +313,31 @@ bool VideoManager::open(const std::string& filePath) {
         return false;
     }
 
+    mockState = MockState::LOADING;
     isRunning = true;
     captureThread = std::thread(&VideoManager::captureLoop, this);
+    rklog::logInfo("MockMode", "open", "Capture thread started, state=LOADING");
     return true;
 }
 
 void VideoManager::close() {
     RKLOG_ENTER("VideoManager");
+    if (isMockMode) {
+        rklog::logInfo("MockMode", "close", "Closing mock source, current state=" + std::string(mockStateName(mockState)));
+    }
     isRunning = false;
     if (captureThread.joinable()) {
         captureThread.join();
     }
     if (cap.isOpened()) {
         cap.release();
+    }
+    if (isMockMode) {
+        mockState = MockState::NONE;
+        mockFilePath.clear();
+        isMockMode = false;
+        isStaticImage = false;
+        rklog::logInfo("MockMode", "close", "Mock source closed, state=NONE");
     }
 }
 
@@ -294,6 +356,14 @@ bool VideoManager::isOpened() const {
     return cap.isOpened();
 }
 
+VideoManager::MockState VideoManager::getMockState() const {
+    return mockState;
+}
+
+std::string VideoManager::getMockFilePath() const {
+    return mockFilePath;
+}
+
 void VideoManager::captureLoop() {
     // Set thread priority to high (Display/Audio priority) to ensure <500ms latency
 #ifdef __linux__
@@ -301,8 +371,29 @@ void VideoManager::captureLoop() {
 #endif
 
     cv::Mat tempFrame;
+    bool firstFrameValidated = false;
     while (isRunning) {
         if (isMockMode && isStaticImage) {
+            // Static Image Mode: verified at open() time
+            if (!firstFrameValidated) {
+                int ch = staticFrame.channels();
+                bool valid = !staticFrame.empty()
+                    && staticFrame.cols > 0 && staticFrame.cols <= 4096
+                    && staticFrame.rows > 0 && staticFrame.rows <= 4096
+                    && (ch == 3 || ch == 4);
+                if (valid) {
+                    mockState = MockState::RUNNING;
+                    rklog::logInfo("MockMode", "captureLoop", "Static image valid, w=" +
+                        std::to_string(staticFrame.cols) + " h=" + std::to_string(staticFrame.rows) +
+                        " ch=" + std::to_string(ch) + " state=RUNNING");
+                } else {
+                    mockState = MockState::FAILED;
+                    rklog::logError("MockMode", "captureLoop", "Static image invalid, w=" +
+                        std::to_string(staticFrame.cols) + " h=" + std::to_string(staticFrame.rows) +
+                        " ch=" + std::to_string(ch) + " state=FAILED");
+                }
+                firstFrameValidated = true;
+            }
             // Static Image Mode
             std::lock_guard<std::mutex> lock(frameMutex);
             staticFrame.copyTo(latestFrame);
@@ -316,7 +407,25 @@ void VideoManager::captureLoop() {
             if (cap.read(tempFrame)) {
                 std::lock_guard<std::mutex> lock(frameMutex);
                 if (!tempFrame.empty()) {
-                    // Ensure size
+                    // First frame validation for mock mode video sources
+                    if (!firstFrameValidated && isMockMode) {
+                        int ch = tempFrame.channels();
+                        bool valid = tempFrame.cols > 0 && tempFrame.cols <= 4096
+                            && tempFrame.rows > 0 && tempFrame.rows <= 4096
+                            && (ch == 3 || ch == 4);
+                        if (valid) {
+                            mockState = MockState::RUNNING;
+                            rklog::logInfo("MockMode", "captureLoop", "First frame valid, w=" +
+                                std::to_string(tempFrame.cols) + " h=" + std::to_string(tempFrame.rows) +
+                                " ch=" + std::to_string(ch) + " state=RUNNING");
+                        } else {
+                            mockState = MockState::FAILED;
+                            rklog::logError("MockMode", "captureLoop", "First frame invalid, w=" +
+                                std::to_string(tempFrame.cols) + " h=" + std::to_string(tempFrame.rows) +
+                                " ch=" + std::to_string(ch) + " state=FAILED");
+                        }
+                        firstFrameValidated = true;
+                    }
                     if (tempFrame.cols != Config::FRAME_WIDTH || tempFrame.rows != Config::FRAME_HEIGHT) {
                         cv::resize(tempFrame, tempFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
                     }
