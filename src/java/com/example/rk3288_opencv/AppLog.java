@@ -226,22 +226,16 @@ final class AppLog {
             sb.append('\n').append(android.util.Log.getStackTraceString(t));
         }
 
-        String logLine = sb.toString();
+        // 1. Globally redact sensitive data at ingestion
+        String logLine = SensitiveDataUtil.maskSensitiveData(sb.toString());
 
-        // 1. Output to Android Logcat
+        // 2. Output to Android Logcat
         android.util.Log.println(level.androidLevel, module, logLine);
 
-        // 2. Write to Disk (FileLogSink)
+        // 3. Write to Disk (FileLogSink)
         FileLogSink s = sink;
         if (s != null) {
-            // Apply masking for disk logs unless it's DEBUG/VERBOSE level
-            // This aligns with "Allow full details in DEBUG/VERBOSE" policy
-            if (level.ordinal() >= Level.I.ordinal()) {
-                String maskedLine = SensitiveDataUtil.maskSensitiveData(logLine);
-                s.writeLine(maskedLine);
-            } else {
-                s.writeLine(logLine);
-            }
+            s.writeLine(logLine);
         }
     }
 
