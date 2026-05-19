@@ -240,6 +240,15 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
             return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
         }
     } else if (req.yoloBackend == "ncnn") {
+        auto tryFallbackOpenCvDnn = [&]() -> bool {
+            det = CreateOpenCvDnnYoloFaceDetector();
+            YoloFaceModelSpec fallbackSpec;
+            fallbackSpec.modelPath = req.yoloModelPath;
+            fallbackSpec.configPath = req.yoloConfigPath;
+            fallbackSpec.framework = req.yoloFramework;
+            fallbackSpec.outputName = req.yoloOutputName;
+            return det->load(fallbackSpec, opt, detErr);
+        };
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
         NcnnYoloFaceModelSpec ns;
         ns.paramPath = req.yoloNcnnParam;
@@ -253,26 +262,14 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
         if (!det->load(dummy, opt, detErr)) {
             rklog::logWarn("FaceInferStages", "detectFaces",
                 "ncnn YOLO load failed: " + detErr + ", falling back to OpenCV DNN");
-            det = CreateOpenCvDnnYoloFaceDetector();
-            YoloFaceModelSpec fallbackSpec;
-            fallbackSpec.modelPath = req.yoloModelPath;
-            fallbackSpec.configPath = req.yoloConfigPath;
-            fallbackSpec.framework = req.yoloFramework;
-            fallbackSpec.outputName = req.yoloOutputName;
-            if (!det->load(fallbackSpec, opt, detErr)) {
+            if (!tryFallbackOpenCvDnn()) {
                 return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
             }
         }
 #else
         rklog::logWarn("FaceInferStages", "detectFaces",
             "ncnn backend not enabled, falling back to OpenCV DNN");
-        det = CreateOpenCvDnnYoloFaceDetector();
-        YoloFaceModelSpec fallbackSpec;
-        fallbackSpec.modelPath = req.yoloModelPath;
-        fallbackSpec.configPath = req.yoloConfigPath;
-        fallbackSpec.framework = req.yoloFramework;
-        fallbackSpec.outputName = req.yoloOutputName;
-        if (!det->load(fallbackSpec, opt, detErr)) {
+        if (!tryFallbackOpenCvDnn()) {
             return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
         }
 #endif
