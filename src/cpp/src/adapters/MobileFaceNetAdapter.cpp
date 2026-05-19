@@ -8,10 +8,7 @@
 
 #include <opencv2/imgproc.hpp>
 
-MobileFaceNetAdapter::MobileFaceNetAdapter() {
-    inputW_ = 112;
-    inputH_ = 112;
-}
+MobileFaceNetAdapter::MobileFaceNetAdapter() = default;
 
 MobileFaceNetAdapter::~MobileFaceNetAdapter() = default;
 
@@ -97,13 +94,22 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
     }
 
     const std::size_t total = static_cast<std::size_t>(out.total());
-    if (total < 128) {
-        err = "mobilefacenet: output dim < 128";
+    if (total != 128) {
+        err = "mobilefacenet: expected output dim 128, got " + std::to_string(total);
         return std::nullopt;
     }
 
     std::vector<float> embedding(128);
     std::memcpy(embedding.data(), out.ptr<float>(), 128 * sizeof(float));
+
+    // L2 normalize for correct cosine similarity comparison
+    float sqSum = 0.0f;
+    for (float v : embedding) sqSum += v * v;
+    if (sqSum > 0.0f) {
+        float inv = 1.0f / std::sqrt(sqSum);
+        for (float& v : embedding) v *= inv;
+    }
+
     return embedding;
 #else
     (void)err;
