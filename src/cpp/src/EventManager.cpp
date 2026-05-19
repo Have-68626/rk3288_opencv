@@ -69,13 +69,9 @@ std::string EventManager::generateUniqueId() {
      */
     std::string uuid(8, '0');
     uint32_t v = dis(gen);
-    uuid[0] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[1] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[2] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[3] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[4] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[5] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[6] = hex_chars[v & 0x0f]; v >>= 4;
-    uuid[7] = hex_chars[v & 0x0f];
+    for (int i = 0; i < 8; ++i) {
+        uuid[i] = hex_chars[v & 0x0f];
+        v >>= 4;
+    }
     return uuid;
 }
