@@ -12,3 +12,8 @@
 **Vulnerability:** URL percent-encoding validation could be bypassed using incomplete sequences (like a lone `%`) at the end of the input string because `urlDecodePath` incorrectly treated them as literal characters instead of triggering a validation failure. This could potentially disrupt WAF logic or downstream canonicalization checks.
 **Learning:** Custom decoding loops often fail to handle edge cases at the very end of string boundaries, falling through to default literal assignment instead of safely aborting.
 **Prevention:** When implementing or reviewing custom parsers (e.g., URL decoding), ensure boundary edge cases correctly return an explicit failure state rather than silently accepting truncated input.
+
+## 2026-05-18 - Enforce global redaction of sensitive credentials at rest
+**Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
+**Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
+**Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.

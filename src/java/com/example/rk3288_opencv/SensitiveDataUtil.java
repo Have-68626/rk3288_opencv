@@ -11,6 +11,12 @@ public class SensitiveDataUtil {
     // Simple GPS pattern (Lat, Lon) e.g., "39.9042, 116.4074"
     private static final Pattern GPS_PATTERN = Pattern.compile("(-?\\d{1,3}\\.\\d{4,}),\\s*(-?\\d{1,3}\\.\\d{4,})");
 
+    // Authentication credentials and tokens
+    private static final Pattern SENSITIVE_KV = Pattern.compile(
+            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret|api[_-]?key)\\b(\\s*[:=]\\s*)([^\\s,;]+)"
+    );
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b");
+
     /**
      * Masks sensitive data in the given text.
      * @param text Original text
@@ -46,6 +52,31 @@ public class SensitiveDataUtil {
         // Mask GPS: 39.9042, 116.4074 -> ***, ***
         Matcher gpsMatcher = GPS_PATTERN.matcher(result);
         result = gpsMatcher.replaceAll("***, ***");
+
+        /*
+         * 威胁模型：避免运行时的凭据（Token/Password/Secret）以及邮箱通过 AppLog 以明文落盘，导致设备被 root 或日志被非授权读取时泄露高价值凭据。
+         * 为什么这样改：原逻辑仅在日志导出时 (LogViewerActivity) 对凭据进行脱敏，但落盘日志依然是明文。将其统一移至 SensitiveDataUtil，使全局落盘和展示都生效。
+         * 影响范围：所有调用 SensitiveDataUtil.maskSensitiveData 的日志记录、UI 显示和导出均会应用凭据与邮箱掩码。
+         * 回滚方式：删除 SENSITIVE_KV 和 EMAIL_PATTERN 的正则替换逻辑即可。
+         */
+        Matcher kvMatcher = SENSITIVE_KV.matcher(result);
+        StringBuffer kvSb = new StringBuffer();
+        while (kvMatcher.find()) {
+            String k = kvMatcher.group(1);
+            String sep = kvMatcher.group(2); // Assuming regex was updated to capture separator
+            String v = kvMatcher.group(3);
+            String masked = "***";
+            int len = v.length();
+            if (len > 4) {
+                int keep = Math.min(2, len);
+                masked = v.substring(0, keep) + "***" + v.substring(len - keep);
+            }
+            kvMatcher.appendReplacement(kvSb, Matcher.quoteReplacement(k + sep + masked));
+        }
+        kvMatcher.appendTail(kvSb);
+        result = kvSb.toString();
+
+        result = EMAIL_PATTERN.matcher(result).replaceAll("***@***");
 
         return result;
     }

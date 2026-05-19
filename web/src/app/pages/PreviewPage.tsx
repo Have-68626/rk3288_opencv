@@ -176,10 +176,18 @@ export function PreviewPage() {
               }
               options={deviceOptions}
               value={selectedDevice?.deviceId}
-              onChange={(deviceId) => {
-                updateServerSettings({ camera: { preferredDeviceId: deviceId } })
+              onChange={async (deviceId) => {
+                const hide = message.loading('正在切换摄像头...', 0)
+                try {
+                  await updateServerSettings({ camera: { preferredDeviceId: deviceId } })
+                  message.success('切换摄像头成功')
+                } catch (e: unknown) {
+                  message.error((e as Error)?.message || '切换摄像头失败')
+                } finally {
+                  hide()
+                }
               }}
-              disabled={cams.status !== 'ready'}
+              disabled={cams.status !== 'ready' || serverSettings.status === 'loading'}
             />
           </Form.Item>
 
@@ -190,18 +198,26 @@ export function PreviewPage() {
               notFoundContent="该设备无可用分辨率"
               options={formatOptions}
               value={currentFormatKey}
-              onChange={(k) => {
+              onChange={async (k) => {
                 const m = /^(\d+)x(\d+)@(\d+)$/.exec(k)
                 if (!m) return
-                updateServerSettings({
-                  camera: {
-                    width: Number(m[1]),
-                    height: Number(m[2]),
-                    fps: Number(m[3]),
-                  },
-                })
+                const hide = message.loading('正在更改分辨率...', 0)
+                try {
+                  await updateServerSettings({
+                    camera: {
+                      width: Number(m[1]),
+                      height: Number(m[2]),
+                      fps: Number(m[3]),
+                    },
+                  })
+                  message.success('更改分辨率成功')
+                } catch (e: unknown) {
+                  message.error((e as Error)?.message || '更改分辨率失败')
+                } finally {
+                  hide()
+                }
               }}
-              disabled={!selectedDevice}
+              disabled={!selectedDevice || serverSettings.status === 'loading'}
             />
           </Form.Item>
 
