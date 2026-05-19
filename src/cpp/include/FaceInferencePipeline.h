@@ -26,12 +26,26 @@ struct FaceInferRequest {
     int yoloOpenCvBackend = 0;
     int yoloOpenCvTarget = 0;
 
+    std::string yoloNcnnParam;
+    std::string yoloNcnnBin;
+    std::string yoloNcnnInput = "data";
+    std::string yoloNcnnOutput = "output";
+    int yoloNcnnThreads = 1;
+    bool yoloNcnnLightmode = true;
+
     std::string arcBackend = "opencv";
     std::string arcModelPath;
     std::string arcConfigPath;
     std::string arcFramework;
     std::string arcOutputName;
     std::string arcInputName;
+
+    std::string arcNcnnParam;
+    std::string arcNcnnBin;
+    std::string arcNcnnInput = "data";
+    std::string arcNcnnOutput = "output";
+    int arcNcnnThreads = 1;
+    bool arcNcnnLightmode = true;
     int arcInputW = 112;
     int arcInputH = 112;
     std::uint32_t arcModelVersion = 1;

@@ -56,6 +56,11 @@ android {
                         cmakeArgs.add("-DOPENCV_CONTRIB_ROOT=${opencvContribRoot}")
                     }
                 }
+                // ncnn 本地路径（避免 FetchContent 网络下载）
+                // ncnn Android 包按 ABI 分目录，不同 ABI 用不同的 NCNN_DIR
+                def ncnnRoot = "D:/ProgramData/NCNN/ncnn-20260113-android-vulkan"
+                cmakeArgs.add("-DNCNN_DIR_ARMv7=${ncnnRoot}/armeabi-v7a")
+                cmakeArgs.add("-DNCNN_DIR_ARM64=${ncnnRoot}/arm64-v8a")
                 arguments(*cmakeArgs)
             }
         }

@@ -229,6 +229,19 @@ if(RK_ENABLE_NCNN)
         set(NCNN_DIR $ENV{NCNN_DIR})
     endif()
 
+    # Android multi-ABI: use separate NCNN_DIR per ABI when provided via Gradle
+    if(ANDROID)
+        if(ANDROID_ABI STREQUAL "armeabi-v7a")
+            if(DEFINED NCNN_DIR_ARMv7 AND NOT NCNN_DIR_ARMv7 STREQUAL "")
+                set(NCNN_DIR "${NCNN_DIR_ARMv7}")
+            endif()
+        elseif(ANDROID_ABI STREQUAL "arm64-v8a")
+            if(DEFINED NCNN_DIR_ARM64 AND NOT NCNN_DIR_ARM64 STREQUAL "")
+                set(NCNN_DIR "${NCNN_DIR_ARM64}")
+            endif()
+        endif()
+    endif()
+
     find_package(ncnn CONFIG QUIET)
 
     if(NOT ncnn_FOUND AND RK_NCNN_FETCHCONTENT)

@@ -120,9 +120,21 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 - **现状核对**：
   - [CPU-only] 日志分析确认 **所有硬件加速路径均不可用**：Qualcomm SDK 回退（RK_HAVE_QUALCOMM=0）、MPP 硬件解码回退（RK_HAVE_MPP=0）、OpenCL 不支持。Yolo/ArcFace 推理、帧预处理完全由 CPU 承担，这是性能瓶颈的根本原因。参见 [诊断报告](docs/analysis/evidence_20170115_analysis.md)。
   - [延迟尖峰] CPU-only 下帧分析最大延迟达 37.6ms，25fps（40ms 间隔）余量仅 2.4ms，极易丢帧。
-  - 已有文档与 bench 工具，但主链路缺乏生效证据链。
-- **目标**：启用 MPP 硬件解码（定义 `RK_HAVE_MPP`，配置 MPP 库）；补齐加速开关的 `requested`/`effective`/`evidence` 证据输出；在 RK3288 真机完成实测填表并定稿加速策略。
-- **验收**：日志中明确记录"为何启用/为何回退加速"；启用 MPP 后帧分析 P95 延迟降低 50% 以上；证据日志分析结论闭环。
+  - [加速全景调查] 端到端管线各阶段 CPU 占比：YOLO 检测推理 ~40%（10-20ms）、ArcFace 特征提取 ~30%（8-15ms）、帧预处理 ~10%（2-5ms）、Mock 视频解码 ~15%（5-15ms）、人脸对齐 ~3%（1-2ms）、1:N 搜索 ~1%（<1ms）。参见 [加速方案评估报告](docs/acceleration_study.md)。
+- **加速机会矩阵**：
+
+  | 优先级 | 加速项 | 当前耗时 | 加速手段 | 预期收益 | 实现难度 | 项目已有支持 |
+  |:------:|:-------|:--------:|:---------|:--------:|:--------:|:-----------|
+  | **P0** | 推理调度优化 | 10-20ms | 调整 detect stride 帧跳过策略 | 推理负载降 50% | 低 | ✅ InferenceThrottle 框架已有 |
+  | **P0** | **YOLO ncnn 推理** | 10-20ms | ncnn (NEON) 替代 OpenCV DNN | 延迟降 30-50% | 中 | ✅ 工厂方法 `CreateNcnnYoloFaceDetector()` 已有 |
+  | **P0** | **ArcFace ncnn 推理** | 8-15ms | ncnn (NEON) 替代 OpenCV DNN | 延迟降 30-50% | 中 | ✅ `BackendType::Ncnn` 枚举与 `NcnnState` 已有 |
+  | P1 | Mock 视频 MPP 硬解码 | 5-15ms | MPP 硬件解码（`MppDecoder` 已完成） | CPU 占用降至 ~0% | 中 | ✅ `MppDecoder` 类已创建并集成 |
+  | P1 | 帧预处理 libyuv | 2-5ms | libyuv NEON 加速 resize/颜色转换 | 降 2-4ms | 低 | ✅ `RK_ENABLE_LIBYUV=ON` |
+  | P1 | 模型 INT8 量化 | 10-20ms | ncnn INT8 量化模型推理 | 加速 2-3x | 高 | ❌ 需量化工具链 |
+  | P2 | 1:N 搜索 NEON 加速 | <1ms | ARM NEON vmlaq_f32 点积 | 加速 5-10x | 低 | ❌ 需在新 `FaceSearch` 中增加 SIMD 路径 |
+
+- **目标**：按优先级推进加速项落地；启用 MPP 硬件解码；补齐加速开关的 `requested`/`effective`/`evidence` 证据输出；在 RK3288 真机完成实测填表并定稿加速策略。
+- **验收**：日志中明确记录"为何启用/为何回退加速"；启用 ncnn 后 YOLO+ArcFace 推理 P95 延迟降低 30% 以上；MPP 启用后帧分析 P95 延迟降低 50% 以上；证据日志分析结论闭环。
 
 ### 3. ⬜ **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
 - **现状核对**：模型台账已建立但在代码中为静态描述；缺乏运行时模型查询接口；检测参数（minSize 等）未持久化。

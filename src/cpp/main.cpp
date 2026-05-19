@@ -400,6 +400,13 @@ static int runFaceInferCli(int argc, char** argv) {
         else if (k == "--yolo-opencv-backend") nextInt(a.req.yoloOpenCvBackend);
         else if (k == "--yolo-opencv-target") nextInt(a.req.yoloOpenCvTarget);
 
+        else if (k == "--yolo-ncnn-param") nextStr(a.req.yoloNcnnParam);
+        else if (k == "--yolo-ncnn-bin") nextStr(a.req.yoloNcnnBin);
+        else if (k == "--yolo-ncnn-input") nextStr(a.req.yoloNcnnInput);
+        else if (k == "--yolo-ncnn-output") nextStr(a.req.yoloNcnnOutput);
+        else if (k == "--yolo-ncnn-threads") nextInt(a.req.yoloNcnnThreads);
+        else if (k == "--yolo-ncnn-lightmode") nextBool(a.req.yoloNcnnLightmode);
+
         else if (k == "--arc-backend") nextStr(a.req.arcBackend);
         else if (k == "--arc-model") nextStr(a.req.arcModelPath);
         else if (k == "--arc-config") nextStr(a.req.arcConfigPath);
@@ -408,6 +415,14 @@ static int runFaceInferCli(int argc, char** argv) {
         else if (k == "--arc-input-name") nextStr(a.req.arcInputName);
         else if (k == "--arc-w") nextInt(a.req.arcInputW);
         else if (k == "--arc-h") nextInt(a.req.arcInputH);
+
+        else if (k == "--arc-ncnn-param") nextStr(a.req.arcNcnnParam);
+        else if (k == "--arc-ncnn-bin") nextStr(a.req.arcNcnnBin);
+        else if (k == "--arc-ncnn-input") nextStr(a.req.arcNcnnInput);
+        else if (k == "--arc-ncnn-output") nextStr(a.req.arcNcnnOutput);
+        else if (k == "--arc-ncnn-threads") nextInt(a.req.arcNcnnThreads);
+        else if (k == "--arc-ncnn-lightmode") nextBool(a.req.arcNcnnLightmode);
+
         else if (k == "--arc-model-version") {
             int v = 1;
             nextInt(v);

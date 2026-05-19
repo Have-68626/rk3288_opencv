@@ -241,9 +241,40 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
         }
     } else if (req.yoloBackend == "ncnn") {
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-        return failStatus("yolo_load", "ncnn_backend_requires_param_bin_via_yolo_face_cli");
+        NcnnYoloFaceModelSpec ns;
+        ns.paramPath = req.yoloNcnnParam;
+        ns.binPath = req.yoloNcnnBin;
+        ns.inputName = req.yoloNcnnInput;
+        ns.outputName = req.yoloNcnnOutput;
+        ns.threads = req.yoloNcnnThreads;
+        ns.lightmode = req.yoloNcnnLightmode;
+        det = CreateNcnnYoloFaceDetector(ns);
+        YoloFaceModelSpec dummy;
+        if (!det->load(dummy, opt, detErr)) {
+            rklog::logWarn("FaceInferStages", "detectFaces",
+                "ncnn YOLO load failed: " + detErr + ", falling back to OpenCV DNN");
+            det = CreateOpenCvDnnYoloFaceDetector();
+            YoloFaceModelSpec fallbackSpec;
+            fallbackSpec.modelPath = req.yoloModelPath;
+            fallbackSpec.configPath = req.yoloConfigPath;
+            fallbackSpec.framework = req.yoloFramework;
+            fallbackSpec.outputName = req.yoloOutputName;
+            if (!det->load(fallbackSpec, opt, detErr)) {
+                return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
+            }
+        }
 #else
-        return failStatus("yolo_load", "RK_HAVE_NCNN_not_enabled");
+        rklog::logWarn("FaceInferStages", "detectFaces",
+            "ncnn backend not enabled, falling back to OpenCV DNN");
+        det = CreateOpenCvDnnYoloFaceDetector();
+        YoloFaceModelSpec fallbackSpec;
+        fallbackSpec.modelPath = req.yoloModelPath;
+        fallbackSpec.configPath = req.yoloConfigPath;
+        fallbackSpec.framework = req.yoloFramework;
+        fallbackSpec.outputName = req.yoloOutputName;
+        if (!det->load(fallbackSpec, opt, detErr)) {
+            return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
+        }
 #endif
     } else if (req.yoloBackend == "qualcomm") {
         rklog::logInfo("FaceInferStages", "yoloBackend", "Qualcomm SDK fallback to CPU... 待补测");
@@ -345,6 +376,12 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
     } else if (req.arcBackend == "ncnn") {
         cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
+        cfg.ncnnParam = req.arcNcnnParam;
+        cfg.ncnnBin = req.arcNcnnBin;
+        cfg.ncnnInput = req.arcNcnnInput;
+        cfg.ncnnOutput = req.arcNcnnOutput;
+        cfg.ncnnThreads = req.arcNcnnThreads;
+        cfg.ncnnLightmode = req.arcNcnnLightmode;
     } else if (req.arcBackend == "qualcomm") {
         cfg.backend = ArcFaceEmbedderConfig::BackendType::Qualcomm;
         cfg.qualcommModel = req.arcModelPath;
