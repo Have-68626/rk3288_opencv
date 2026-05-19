@@ -63,13 +63,15 @@ public class SensitiveDataUtil {
         StringBuffer kvSb = new StringBuffer();
         while (kvMatcher.find()) {
             String k = kvMatcher.group(1);
-            String v = kvMatcher.group(2);
+            String sep = kvMatcher.group(2); // Assuming regex was updated to capture separator
+            String v = kvMatcher.group(3);
             String masked = "***";
-            if (v != null && v.trim().length() > 4) {
-                int keep = Math.min(2, v.trim().length());
-                masked = v.substring(0, keep) + "***" + v.substring(v.length() - keep);
+            int len = v.length();
+            if (len > 4) {
+                int keep = Math.min(2, len);
+                masked = v.substring(0, keep) + "***" + v.substring(len - keep);
             }
-            kvMatcher.appendReplacement(kvSb, Matcher.quoteReplacement(k + "=" + masked));
+            kvMatcher.appendReplacement(kvSb, Matcher.quoteReplacement(k + sep + masked));
         }
         kvMatcher.appendTail(kvSb);
         result = kvSb.toString();
