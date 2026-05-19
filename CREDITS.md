@@ -78,10 +78,10 @@ CameraX 的传递依赖（已解析）：
 
 ### HTTP 服务
 
-| 依赖 | 版本 | 用途 | 许可证 |
-|:-----|:-----|:-----|:-------|
-| CivetWeb | 1.16 | 本地 HTTP 服务（REST + 静态托管） | MIT |
-| └─ MD5 实现 | — | L. Peter Deutsch 实现 | zlib |
+| 依赖 | 版本 | 用途 | 许可证 | 位置 |
+|:-----|:-----|:-----|:-------|:-----|
+| [CivetWeb](https://github.com/civetweb/civetweb) | 1.16 | 本地 HTTP 服务（REST + 静态托管） | MIT | `src/win/third_party/civetweb/` |
+| └─ MD5 实现 | — | L. Peter Deutsch 实现 | zlib | `src/win/third_party/civetweb/src/md5.inl` |
 
 ### Web 前端
 
