@@ -13,7 +13,7 @@ public class SensitiveDataUtil {
 
     // Authentication credentials and tokens
     private static final Pattern SENSITIVE_KV = Pattern.compile(
-            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret|api[_-]?key)\\b\\s*[:=]\\s*([^\\s,;]+)"
+            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret|api[_-]?key)\\b(\\s*[:=]\\s*)([^\\s,;]+)"
     );
     private static final Pattern EMAIL_PATTERN = Pattern.compile("(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b");
 
