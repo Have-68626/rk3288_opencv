@@ -34,11 +34,11 @@
 
 | 设备 | 配置组合 | 预处理 P95 (ms) | 推理 P95 (ms) | 总 P95 (ms) | RSS 峰值 (MB) | 回退原因 / 备注 | 结论 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| RK3288 | OpenCV DNN + CPU 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | 0 | 待实测 |
-| RK3288 | OpenCV DNN + OpenCL 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | 待实测 | 待实测 |
-| RK3288 | ncnn + CPU 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | 待实测 | 待实测 |
-| Qualcomm | OpenCV DNN + CPU 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | 0 | 待实测 |
-| Qualcomm | OpenCV DNN + OpenCL 预处理| 待实测 | 待实测 | 待实测 | 待实测 | 待实测 | 待实测 |
+| RK3288 | OpenCV DNN + CPU 预处理 | ~2.3-5.9 (analyzeAvg) | — | 37.6 (analyzeMax) | — | 日志分析结论：所有硬件加速均不可用，CPU-only 运行 Yolo+ArcFace | 待实测填充精确数据 |
+| RK3288 | OpenCV DNN + OpenCL 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | OpenCL 在该设备不可用（haveOpenCL=0） | 待实测 |
+| RK3288 | ncnn + CPU 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | ncnn 编译状态：RK_HAVE_NCNN 需确认 | 待实测（需真机） |
+| Qualcomm | OpenCV DNN + CPU 预处理 | 待实测 | 待实测 | 待实测 | 待实测 | 无真机可用 | 待实测（需真机） |
+| Qualcomm | OpenCV DNN + OpenCL 预处理| 待实测 | 待实测 | 待实测 | 待实测 | 无真机可用 | 待实测（需真机） |
 
 ## 4. 默认策略建议
 

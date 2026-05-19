@@ -87,6 +87,8 @@ struct ModelSnapshot {
 
     std::string modelVersion;
 
+    std::string hash;
+
     std::string status;
 
     bool isInUse = false;

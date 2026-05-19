@@ -516,6 +516,51 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         return jsonOk(toJsonString(o, false));
     }
 
+    if (p == "/api/v1/acceleration") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        JsonValue d = JsonValue::makeObject();
+
+        // Acceleration config from settings
+        if (settings_) {
+            std::string redacted = settings_->currentRedactedJsonPretty();
+            JsonValue settingsDoc;
+            std::string perr;
+            if (parseJson(redacted, settingsDoc, perr) && settingsDoc.isObject()) {
+                if (const JsonValue* accel = settingsDoc.find("acceleration"); accel && accel->isObject()) {
+                    d.o["config"] = *accel;
+                }
+                if (const JsonValue* dnn = settingsDoc.find("dnn"); dnn && dnn->isObject()) {
+                    JsonValue dnnSummary = JsonValue::makeObject();
+                    if (const JsonValue* e = dnn->find("enable")) dnnSummary.o["enable"] = *e;
+                    if (const JsonValue* b = dnn->find("backend")) dnnSummary.o["backend"] = *b;
+                    if (const JsonValue* bt = dnn->find("confThreshold")) dnnSummary.o["confThreshold"] = *bt;
+                    d.o["dnn"] = std::move(dnnSummary);
+                }
+            }
+        }
+
+        // Active model backends from pipeline
+        JsonValue backends = JsonValue::makeArray();
+        if (pipe_) {
+            auto models = pipe_->getActiveModels();
+            for (const auto& m : models) {
+                if (m.isInUse) {
+                    JsonValue b = JsonValue::makeObject();
+                    b.o["id"] = JsonValue::makeString(m.id);
+                    b.o["backend"] = JsonValue::makeString(m.backend);
+                    b.o["status"] = JsonValue::makeString(m.status);
+                    backends.a.push_back(std::move(b));
+                }
+            }
+        }
+        d.o["activeBackends"] = std::move(backends);
+
+        o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
+    }
+
     if (p == "/api/v1/openapi" || p == "/openapi.json") {
         if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
         JsonValue o = JsonValue::makeObject();
