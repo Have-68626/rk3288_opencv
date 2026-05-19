@@ -3,11 +3,21 @@
 #include <algorithm>
 #include <cmath>
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
 namespace {
 
-// Optimized to use float instead of double to maximize SIMD vectorization
-// and improve execution speed on the RK3288 (ARM Cortex-A17) platform.
-static float l2Norm(const float* v, std::size_t dim) {
+static float dotProductScalar(const float* a, const float* b, std::size_t dim) {
+    float dot = 0.0f;
+    for (std::size_t i = 0; i < dim; i++) {
+        dot += a[i] * b[i];
+    }
+    return dot;
+}
+
+static float l2NormScalar(const float* v, std::size_t dim) {
     float s = 0.0f;
     for (std::size_t i = 0; i < dim; i++) {
         const float x = v[i];
@@ -18,17 +28,65 @@ static float l2Norm(const float* v, std::size_t dim) {
     return n;
 }
 
-// Optimized to use float instead of double to maximize SIMD vectorization
-// and improve execution speed on the RK3288 (ARM Cortex-A17) platform.
-static float cosineSimilarity(const float* a, float aNorm, const float* b, float bNorm, std::size_t dim, bool assumeL2Normalized) {
-    float dot = 0.0f;
-    for (std::size_t i = 0; i < dim; i++) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+static float reduceAdd(float32x4_t v) {
+    float32x2_t sum = vadd_f32(vget_low_f32(v), vget_high_f32(v));
+    sum = vpadd_f32(sum, sum);
+    return vget_lane_f32(sum, 0);
+}
+
+static float dotProductNeon(const float* a, const float* b, std::size_t dim) {
+    std::size_t i = 0;
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    for (; i + 4 <= dim; i += 4) {
+        acc = vmlaq_f32(acc, vld1q_f32(a + i), vld1q_f32(b + i));
+    }
+    float dot = reduceAdd(acc);
+    for (; i < dim; i++) {
         dot += a[i] * b[i];
     }
-    if (assumeL2Normalized) return dot;
+    return dot;
+}
+
+static float l2NormNeon(const float* v, std::size_t dim) {
+    std::size_t i = 0;
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    for (; i + 4 <= dim; i += 4) {
+        const float32x4_t x = vld1q_f32(v + i);
+        acc = vmlaq_f32(acc, x, x);
+    }
+    float s = reduceAdd(acc);
+    for (; i < dim; i++) {
+        const float x = v[i];
+        s += x * x;
+    }
+    const float n = std::sqrt(s);
+    if (!(n > 0.0f)) return 0.0f;
+    return n;
+}
+#endif
+
+static float dotProduct(const float* a, const float* b, std::size_t dim) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    return dotProductNeon(a, b, dim);
+#else
+    return dotProductScalar(a, b, dim);
+#endif
+}
+
+static float l2Norm(const float* v, std::size_t dim) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    return l2NormNeon(v, dim);
+#else
+    return l2NormScalar(v, dim);
+#endif
+}
+
+static float cosineSimilarity(const float* a, float aNorm, const float* b, float bNorm, std::size_t dim, bool assumeL2Normalized) {
+    if (assumeL2Normalized) return dotProduct(a, b, dim);
     const float denom = aNorm * bNorm;
     if (!(denom > 0.0f)) return -1.0f;
-    return dot / denom;
+    return dotProduct(a, b, dim) / denom;
 }
 
 }  // namespace

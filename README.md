@@ -131,7 +131,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
   | P1 | Mock 视频 MPP 硬解码 | 5-15ms | MPP 硬件解码（`MppDecoder` 已完成） | CPU 占用降至 ~0% | 中 | ✅ `MppDecoder` 类已创建并集成 |
   | P1 | 帧预处理 libyuv | 2-5ms | libyuv NEON 加速 resize/颜色转换 | 降 2-4ms | 低 | ✅ `RK_ENABLE_LIBYUV=ON` |
   | P1 | 模型 INT8 量化 | 10-20ms | ncnn INT8 量化模型推理 | 加速 2-3x | 高 | ❌ 需量化工具链 |
-  | P2 | 1:N 搜索 NEON 加速 | <1ms | ARM NEON vmlaq_f32 点积 | 加速 5-10x | 低 | ❌ 需在新 `FaceSearch` 中增加 SIMD 路径 |
+  | P2 | 1:N 搜索 NEON 加速 | <1ms | ARM NEON vmlaq_f32 点积 | 加速 5-10x | 低 | ✅ `FaceSearchLinearIndex` 已增加 NEON/SIMD 路径，x86 自动回退 |
 
 - **目标**：按优先级推进加速项落地；启用 MPP 硬件解码；补齐加速开关的 `requested`/`effective`/`evidence` 证据输出；在 RK3288 真机完成实测填表并定稿加速策略。
 - **验收**：日志中明确记录"为何启用/为何回退加速"；启用 ncnn 后 YOLO+ArcFace 推理 P95 延迟降低 30% 以上；MPP 启用后帧分析 P95 延迟降低 50% 以上；证据日志分析结论闭环。

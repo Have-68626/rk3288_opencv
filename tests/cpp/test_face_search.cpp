@@ -49,3 +49,34 @@ bool test_face_search_stable_topk() {
     return true;
 }
 
+bool test_face_search_cosine_without_normalization() {
+    FaceSearchLinearIndex index;
+
+    std::vector<FaceSearchEntry> entries;
+    entries.push_back(FaceSearchEntry{"A", {2.0f, 0.0f, 0.0f}});
+    entries.push_back(FaceSearchEntry{"B", {1.0f, 1.0f, 0.0f}});
+    entries.push_back(FaceSearchEntry{"C", {0.0f, 3.0f, 0.0f}});
+
+    std::string err;
+    if (!index.reset(std::move(entries), 3, err)) return false;
+
+    FaceSearchOptions opt;
+    opt.tieEpsilon = 1e-6f;
+    opt.assumeL2Normalized = false;
+
+    const std::vector<float> query = {4.0f, 0.0f, 0.0f};
+    const auto hits = index.searchTopK(query, 3, opt, err);
+    if (!err.empty()) return false;
+    if (hits.size() != 3) return false;
+
+    if (hits[0].id != "A") return false;
+    if (hits[1].id != "B") return false;
+    if (hits[2].id != "C") return false;
+
+    if (!nearlyEqual(hits[0].score, 1.0f)) return false;
+    if (!nearlyEqual(hits[1].score, 0.70710677f, 1e-5f)) return false;
+    if (!nearlyEqual(hits[2].score, 0.0f)) return false;
+
+    return true;
+}
+
