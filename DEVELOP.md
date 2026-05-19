@@ -115,7 +115,7 @@ rk3288_opencv/
 ```
 
 ### 4.2 依赖状态
-详细的依赖列表、版本要求及安装指南请参考：[CREDITS.md](docs/CREDITS.md)。
+详细的依赖列表、版本要求及安装指南请参考：[CREDITS.md](CREDITS.md)。
 
 ---
 
