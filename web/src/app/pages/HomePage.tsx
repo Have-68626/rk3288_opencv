@@ -21,6 +21,16 @@ export function HomePage() {
           type="error"
           showIcon
           message="后端 /api/v1/settings 不可用"
+          action={
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => refreshServerSettings()}
+              loading={(serverSettings.status as string) === 'loading'}
+            >
+              重试
+            </Button>
+          }
           description={
             <>
               <div>{serverSettings.error.message}</div>
