@@ -155,5 +155,27 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 - **现状核对**：存在遗留废弃接口；开发流程文档化程度尚需补齐；`initEngine()` 中存在 Engine 初始化双重调用，浪费约 20ms 启动时间。
 - **目标**：执行废弃代码"零容忍"清理；补齐基础框架、核心算法与开发流程的研究结论；消除 Engine 初始化冗余调用。
 - **验收**：代码库无未引用的旧版接口；开发者可根据文档一键复现全链路开发/调试环境；Engine 初始化日志中仅出现一次 `initialize` 调用。
+
+### 7. ⬜ **[P2] 多模型集成与切换策略 (Model Diversity)**
+- **现状核对**：当前项目使用 YOLO Face（检测）+ ArcFace（特征提取），OpenCV DNN/ncnn 双后端。CREDITS.md 中登记了 5 个模型的台账，但缺少替代模型集成和运行时切换能力。
+- **模型对比参考**：
+
+  | 管线 | 用途 | 当前模型 | 可替代模型 | 替代优势 | 切换代价 |
+  |:----|:----|:--------|:----------|:--------|:--------|
+  | Android/CLI | 检测 | YOLO Face (~7M) | **SCRFD-0.5GF** | 精度更高(WiderFace 96.1%)，参数量更低 | 需重新适配 ncnn 接口 |
+  | Android/CLI | 检测 | YOLO Face (~7M) | **YuNet** (OpenCV ~0.3M) | 极轻量，OpenCV 内置 | 需用 `FaceDetectorYN` API |
+  | Android/CLI | 检测 | YOLO Face (~7M) | **RetinaFace** (InsightFace 500MF) | 精度最高，生态完善 | 需新增 ONNX→ncnn 转换 |
+  | Android/CLI | 识别 | ArcFace 512D (FP32) | **MobileFaceNet** 128D | 推理快 2-3 倍，适合 RK3288 | 需训练/转换 ncnn 模型 |
+  | Android/CLI | 识别 | ArcFace 512D (FP32) | **SFace** 128D | CPU 上最快识别模型 | 需重新适配推理接口 |
+  | Android/CLI | 双模型 | YOLO + ArcFace (FP32) | **INT8 量化版** | 推理加速 2-3x，内存减半 | 需 ncnn2int8 量化工具链 |
+  | Windows | 检测 | LBP Cascade | **ResNet SSD Face** (已内置) | DNN 检测精度显著高于 Cascade | 配置 `dnn.enable=true`，无需代码改动 |
+  | Windows | 识别 | LBPH | **ArcFace ONNX** | 精度从 <90% 提升至 99.8% | 需集成 ONNX Runtime 推理 |
+
+- **RK3288 部署建议分级**：
+  - **追求精度**：YOLO Face (ncnn FP32) + ArcFace (ncnn FP32) — 推理约 15ms + 8ms
+  - **追求速度**：SCRFD-0.5GF (ncnn) + MobileFaceNet (ncnn) — 推理约 5ms + 3ms
+  - **追求极致**：任选模型 + ncnn INT8 量化 — 再加速 2-3x
+- **目标**：建立模型注册与运行时切换框架，支持通过配置切换模型后端；补齐 INT8 量化工具链；补充 SCRFD/MobileFaceNet 等轻量模型的 ncnn 适配。
+- **验收**：可通过 JSON 配置 `model.detection` / `model.recognition` 切换模型后端；INT8 量化模型在 RK3288 上推理 P95 延迟降低 50% 以上。
 ## 📄 许可证
 MIT License

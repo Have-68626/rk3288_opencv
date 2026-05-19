@@ -329,6 +329,20 @@ static JsonValue schemaSettingsDoc() {
         props.o["dnn"] = std::move(d);
     }
 
+    // model (optional, with defaults)
+    {
+        JsonValue m = JsonValue::makeObject();
+        m.o["type"] = JsonValue::makeString("object");
+        m.o["additionalProperties"] = JsonValue::makeBool(false);
+        JsonValue mp = JsonValue::makeObject();
+        mp.o["detection"] = objBoolInt(true, 1, 256);
+        mp.o["recognition"] = objBoolInt(true, 1, 256);
+        mp.o["backend"] = objBoolInt(true, 1, 64);
+        mp.o["autoFallback"] = objBool();
+        m.o["properties"] = std::move(mp);
+        props.o["model"] = std::move(m);
+    }
+
     // http
     {
         JsonValue h = JsonValue::makeObject();
@@ -747,6 +761,16 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         root.o["dnn"] = std::move(d);
     }
 
+    // model
+    {
+        JsonValue md = JsonValue::makeObject();
+        md.o["detection"] = JsonValue::makeString(cfg.model.detection);
+        md.o["recognition"] = JsonValue::makeString(cfg.model.recognition);
+        md.o["backend"] = JsonValue::makeString(cfg.model.backend);
+        md.o["autoFallback"] = JsonValue::makeBool(cfg.model.autoFallback);
+        root.o["model"] = std::move(md);
+    }
+
     // http
     {
         JsonValue h = JsonValue::makeObject();
@@ -951,6 +975,16 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getNumber(*d, "confThreshold", v)) cfg.dnn.confThreshold = v;
         if (getNumber(*d, "backend", v)) cfg.dnn.backend = static_cast<int>(v);
         if (getNumber(*d, "target", v)) cfg.dnn.target = static_cast<int>(v);
+    }
+
+    // model (optional, silently fall back to defaults if missing)
+    if (const JsonValue* m = doc.find("model"); m && m->isObject()) {
+        std::string s;
+        if (getString(*m, "detection", s)) cfg.model.detection = s;
+        if (getString(*m, "recognition", s)) cfg.model.recognition = s;
+        if (getString(*m, "backend", s)) cfg.model.backend = s;
+        bool b = false;
+        if (getBool(*m, "autoFallback", b)) cfg.model.autoFallback = b;
     }
 
     // http

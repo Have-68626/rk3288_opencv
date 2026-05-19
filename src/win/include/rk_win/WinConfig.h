@@ -94,6 +94,13 @@ struct AccelerationConfig {
     bool enableQualcomm = false;
 };
 
+struct ModelConfig {
+    std::string detection = "yolo_face";
+    std::string recognition = "arcface";
+    std::string backend = "ncnn";
+    bool autoFallback = true;
+};
+
 struct AppConfig {
     std::filesystem::path configPath;
     CameraConfig camera;
@@ -106,6 +113,7 @@ struct AppConfig {
     UiConfig ui;
     DisplayConfig display;
     AccelerationConfig acceleration;
+    ModelConfig model;
 };
 
 AppConfig loadConfigFromIniOrDefault();

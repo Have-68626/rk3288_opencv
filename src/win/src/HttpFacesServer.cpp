@@ -463,12 +463,16 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
             s1.o["id"] = JsonValue::makeString("cascade_frontalface");
             s1.o["displayName"] = JsonValue::makeString("Cascade Frontal Face (LBP)");
             s1.o["taskType"] = JsonValue::makeString("detect_recognize_pipeline");
+            s1.o["notes"] = JsonValue::makeString("LBP 级联分类器，极轻量。适合低资源环境，精度低于 DNN 方案。Windows 管线默认检测器。");
+            s1.o["recommendedFor"] = JsonValue::makeString("high_speed");
             supported.a.push_back(std::move(s1));
 
             JsonValue s2 = JsonValue::makeObject();
             s2.o["id"] = JsonValue::makeString("dnn_face_detector");
             s2.o["displayName"] = JsonValue::makeString("OpenCV DNN Face Detector");
             s2.o["taskType"] = JsonValue::makeString("detect");
+            s2.o["notes"] = JsonValue::makeString("ResNet SSD 300x300，OpenCV DNN 后端检测器。精度高于 Cascade，适合 Windows 管线。");
+            s2.o["recommendedFor"] = JsonValue::makeString("balanced");
             supported.a.push_back(std::move(s2));
         }
         d.o["supportedModels"] = std::move(supported);
@@ -513,6 +517,37 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
         d.o["summary"] = std::move(summary);
 
         o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/models/reload") {
+        if (m != "POST") return jsonErr(405, "method_not_allowed", "仅支持 POST");
+        JsonValue body;
+        std::string perr;
+        if (!parseJson(req.body, body, perr) || !body.isObject()) {
+            return jsonErr(400, "invalid_json", "请求体需为 JSON object");
+        }
+        const std::string* id = nullptr;
+        if (const JsonValue* idv = body.find("id"); idv && idv->isString()) {
+            id = &idv->s;
+        }
+        if (!id || id->empty()) {
+            return jsonErr(400, "missing_id", "缺少 id 字段");
+        }
+        std::string status = "not_found";
+        if (pipe_) {
+            auto models = pipe_->getActiveModels();
+            for (const auto& m : models) {
+                if (m.id == *id) {
+                    status = "reload_requested";
+                    break;
+                }
+            }
+        }
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        o.o["id"] = JsonValue::makeString(*id);
+        o.o["status"] = JsonValue::makeString(status);
         return jsonOk(toJsonString(o, false));
     }
 

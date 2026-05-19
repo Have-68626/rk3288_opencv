@@ -3,6 +3,7 @@
 #include "ArcFaceEmbedder.h"
 #include "FaceAlign.h"
 #include "FaceTemplate.h"
+#include "ModelRegistry.h"
 #include "NativeLog.h"
 #include "YoloFaceDetector.h"
 
@@ -215,64 +216,25 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
     std::string detErr;
     std::unique_ptr<YoloFaceDetector> det;
 
-    if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn") {
-        det = CreateOpenCvDnnYoloFaceDetector();
-        YoloFaceModelSpec spec;
-        spec.modelPath = req.yoloModelPath;
-        spec.configPath = req.yoloConfigPath;
-        spec.framework = req.yoloFramework;
-        spec.outputName = req.yoloOutputName;
-        YoloFaceOptions opt;
-        opt.inputW = req.yoloInputW;
-        opt.inputH = req.yoloInputH;
-        opt.scoreThreshold = req.yoloScoreThreshold;
-        opt.nmsIouThreshold = req.yoloNmsIouThreshold;
-        opt.enableKeypoints5 = req.yoloEnableKeypoints5;
-        opt.letterbox = req.yoloLetterbox;
-        opt.swapRB = req.yoloSwapRB;
-        opt.scale = req.yoloScale;
-        opt.meanB = req.yoloMeanB;
-        opt.meanG = req.yoloMeanG;
-        opt.meanR = req.yoloMeanR;
-        opt.opencvBackend = req.yoloOpenCvBackend;
-        opt.opencvTarget = req.yoloOpenCvTarget;
-        if (!det->load(spec, opt, detErr)) {
-            return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
+    if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn" || req.yoloBackend == "ncnn") {
+        ModelRegistry::ensureBuiltinRegistered();
+        auto adapter = ModelRegistry::instance().createDetector(req.yoloBackend);
+        if (!adapter) {
+            return failStatus("yolo_load", "detector_not_found: " + req.yoloBackend);
         }
-    } else if (req.yoloBackend == "ncnn") {
-        auto tryFallbackOpenCvDnn = [&]() -> bool {
-            det = CreateOpenCvDnnYoloFaceDetector();
-            YoloFaceModelSpec fallbackSpec;
-            fallbackSpec.modelPath = req.yoloModelPath;
-            fallbackSpec.configPath = req.yoloConfigPath;
-            fallbackSpec.framework = req.yoloFramework;
-            fallbackSpec.outputName = req.yoloOutputName;
-            return det->load(fallbackSpec, opt, detErr);
-        };
-#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-        NcnnYoloFaceModelSpec ns;
-        ns.paramPath = req.yoloNcnnParam;
-        ns.binPath = req.yoloNcnnBin;
-        ns.inputName = req.yoloNcnnInput;
-        ns.outputName = req.yoloNcnnOutput;
-        ns.threads = req.yoloNcnnThreads;
-        ns.lightmode = req.yoloNcnnLightmode;
-        det = CreateNcnnYoloFaceDetector(ns);
-        YoloFaceModelSpec dummy;
-        if (!det->load(dummy, opt, detErr)) {
-            rklog::logWarn("FaceInferStages", "detectFaces",
-                "ncnn YOLO load failed: " + detErr + ", falling back to OpenCV DNN");
-            if (!tryFallbackOpenCvDnn()) {
-                return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
-            }
+        std::string loadErr;
+        if (!adapter->load(req.yoloModelPath, loadErr)) {
+            return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
         }
-#else
-        rklog::logWarn("FaceInferStages", "detectFaces",
-            "ncnn backend not enabled, falling back to OpenCV DNN");
-        if (!tryFallbackOpenCvDnn()) {
-            return failStatus("yolo_load", detErr.empty() ? "yolo_load_failed" : detErr);
+        ctx.yoloBackendName = adapter->name();
+        const auto td0 = std::chrono::steady_clock::now();
+        ctx.faces = adapter->detect(ctx.img, detErr);
+        const auto td1 = std::chrono::steady_clock::now();
+        m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+        if (!detErr.empty()) {
+            return failStatus("yolo_detect", detErr);
         }
-#endif
+        return okStatus();
     } else if (req.yoloBackend == "qualcomm") {
         rklog::logInfo("FaceInferStages", "yoloBackend", "Qualcomm SDK fallback to CPU... 待补测");
         det = CreateOpenCvDnnYoloFaceDetector();

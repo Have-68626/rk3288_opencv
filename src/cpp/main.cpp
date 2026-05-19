@@ -10,6 +10,7 @@
 #include "FaceAlign.h"
 #include "FaceSearch.h"
 #include "FaceInferencePipeline.h"
+#include "ModelRegistry.h"
 #include "FaceTemplate.h"
 #include "ThresholdPolicy.h"
 #include "Storage.h"
@@ -21,6 +22,7 @@
 #include <cctype>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <csignal>
 #include <atomic>
 #include <sstream>
@@ -1202,6 +1204,34 @@ int main(int argc, char** argv) {
     std::cout << "INFO: app_start version=" << BUILD_ID << std::endl;
 
     std::cout << "Starting RK3288 AI Engine (CLI Mode)..." << std::endl;
+
+    if (argc > 1 && std::string(argv[1]) == "--list-models") {
+        ModelRegistry::ensureBuiltinRegistered();
+        auto& reg = ModelRegistry::instance();
+        auto all = reg.listAll();
+        if (all.empty()) {
+            std::cout << "No models registered." << std::endl;
+            return 0;
+        }
+        std::cout << "\nRegistered models (" << all.size() << "):\n";
+        std::cout << "  " << std::left
+                  << std::setw(20) << "ID"
+                  << std::setw(30) << "Display Name"
+                  << std::setw(14) << "Task Type"
+                  << std::setw(16) << "Recommended"
+                  << "Notes" << std::endl;
+        std::cout << "  " << std::string(110, '-') << std::endl;
+        for (const auto& e : all) {
+            std::cout << "  " << std::left
+                      << std::setw(20) << e.id
+                      << std::setw(30) << e.displayName
+                      << std::setw(14) << e.taskType
+                      << std::setw(16) << e.recommendedFor
+                      << e.notes << std::endl;
+        }
+        std::cout << std::endl;
+        return 0;
+    }
 
     if (argc > 1 && std::string(argv[1]) == "--analyze") {
         if (argc < 4) {
