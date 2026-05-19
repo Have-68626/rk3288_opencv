@@ -56,19 +56,39 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
     };
 
     uint64_t bitlen = 0;
-    uint8_t data[64];
-    while (file.read(reinterpret_cast<char*>(data), 64)) {
-        sha256_transform(state, data);
-        bitlen += 512;
+
+    /*
+     * [Performance Optimization - FileHash block read]
+     * Why: Reading files in extremely small chunks (e.g., 64 bytes) using `std::ifstream::read()` incurs massive syscall and buffer overhead.
+     * Impact: Reading in larger blocks (64KB) yields significant performance gains.
+     * Rollback: Revert to reading 64 bytes directly using `file.read(reinterpret_cast<char*>(data), 64)`.
+     */
+    constexpr size_t BUF_SIZE = 65536; // 64KB
+    std::vector<uint8_t> buffer(BUF_SIZE);
+
+    while (file.read(reinterpret_cast<char*>(buffer.data()), BUF_SIZE)) {
+        for (size_t offset = 0; offset < BUF_SIZE; offset += 64) {
+            sha256_transform(state, buffer.data() + offset);
+        }
+        bitlen += BUF_SIZE * 8;
     }
 
     size_t count = file.gcount();
+    for (size_t offset = 0; offset + 64 <= count; offset += 64) {
+        sha256_transform(state, buffer.data() + offset);
+    }
+
+    size_t rem = count % 64;
     bitlen += count * 8;
-    data[count] = 0x80;
-    if (count < 56) {
-        std::memset(data + count + 1, 0, 56 - (count + 1));
+
+    uint8_t data[64];
+    std::memcpy(data, buffer.data() + (count - rem), rem);
+
+    data[rem] = 0x80;
+    if (rem < 56) {
+        std::memset(data + rem + 1, 0, 56 - (rem + 1));
     } else {
-        std::memset(data + count + 1, 0, 64 - (count + 1));
+        std::memset(data + rem + 1, 0, 64 - (rem + 1));
         sha256_transform(state, data);
         std::memset(data, 0, 56);
     }
