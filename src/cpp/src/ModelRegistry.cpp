@@ -1,6 +1,7 @@
 #include "ModelRegistry.h"
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
+#include "adapters/MobileFaceNetAdapter.h"
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -37,7 +38,7 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "ArcFace 512 维特征提取，LFW 99.8%。精度优先方案，适合门禁/人证比对。RK3288 ncnn 约 8ms/帧。",
          "high_accuracy", 1});
 
-    reg.registerEmbedder("mobilefacenet", []() { return std::unique_ptr<Embedder>(); },
+    reg.registerEmbedder("mobilefacenet", []() { return std::make_unique<MobileFaceNetAdapter>(); },
         {"mobilefacenet", "MobileFaceNet 128D", "recognize",
          "MobileFaceNet 128 维嵌入，推理快 2-3 倍。适合 RK3288 等资源受限设备。需额外下载模型。",
          "high_speed", 2});
