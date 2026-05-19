@@ -535,40 +535,8 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
         return sb.toString();
     }
 
-    private static final Pattern SENSITIVE_KV = Pattern.compile(
-            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret|api[_-]?key)\\b\\s*[:=]\\s*([^\\s,;]+)"
-    );
-    private static final Pattern EMAIL = Pattern.compile("(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b");
-    private static final Pattern PHONE11 = Pattern.compile("\\b1\\d{10}\\b");
-
     private static String redactSensitive(String input) {
-        if (input == null || input.isEmpty()) return input;
-        String out = input;
-
-        Matcher m = SENSITIVE_KV.matcher(out);
-        StringBuffer sb = new StringBuffer();
-        while (m.find()) {
-            String k = m.group(1);
-            String v = m.group(2);
-            String masked = maskValue(v);
-            m.appendReplacement(sb, Matcher.quoteReplacement(k + "=" + masked));
-        }
-        m.appendTail(sb);
-        out = sb.toString();
-
-        out = EMAIL.matcher(out).replaceAll("***@***");
-        out = PHONE11.matcher(out).replaceAll("1**********");
-        return out;
-    }
-
-    private static String maskValue(String v) {
-        if (v == null) return "***";
-        String s = v.trim();
-        if (s.length() <= 4) return "***";
-        int keep = Math.min(2, s.length());
-        String head = s.substring(0, keep);
-        String tail = s.substring(s.length() - keep);
-        return head + "***" + tail;
+        return SensitiveDataUtil.maskSensitiveData(input);
     }
 
     private void writeTextEntry(ZipOutputStream zos, String name, String content) throws IOException {
