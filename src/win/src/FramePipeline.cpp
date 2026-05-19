@@ -141,6 +141,19 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         activeModels_.push_back(m);
         std::fprintf(stderr, "MODEL_REGISTRY_SELF_CHECK [id=%s] path=%s backend=%s status=%s error=%s\n", m.id.c_str(), m.resolvedPath.c_str(), m.backend.c_str(), m.status.c_str(), m.lastError.c_str());
     }
+    // ---- Manifest check ----
+    {
+        std::lock_guard<std::mutex> lock(modelsMu_);
+        for (const auto& m : activeModels_) {
+            const char* match = "unknown";
+            // Known SHA-256 from CREDITS.md: cascade frontal face
+            if (m.id == "cascade_frontalface") {
+                match = (m.hash == "529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d") ? "match" : "mismatch";
+            }
+            std::fprintf(stderr, "MODEL_MANIFEST_CHECK [id=%s] hash=%s manifest_match=%s\n",
+                m.id.c_str(), m.hash.c_str(), match);
+        }
+    }
     running_ = true;
     processThread_ = std::thread(&FramePipeline::processLoop, this);
     return true;

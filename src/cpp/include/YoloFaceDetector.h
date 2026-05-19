@@ -38,6 +38,21 @@ public:
     virtual bool load(const YoloFaceModelSpec& spec, const YoloFaceOptions& opt, std::string& err) = 0;
     virtual FaceDetections detect(const cv::Mat& bgr, std::string& err) = 0;
     virtual const char* backendName() const = 0;
+
+    /**
+     * @brief Checks whether a given backend name is supported by this implementation.
+     * @param name Backend name (e.g. "opencv_dnn", "ncnn").
+     * @return true if supported.
+     */
+    virtual bool supportsBackend(const char* name) const = 0;
+
+    /**
+     * @brief Switches to a different backend at runtime.
+     * @param name Target backend name.
+     * @param err Output error message on failure.
+     * @return true if switch succeeded.
+     */
+    virtual bool switchBackend(const char* name, std::string& err) = 0;
 };
 
 std::unique_ptr<YoloFaceDetector> CreateOpenCvDnnYoloFaceDetector();

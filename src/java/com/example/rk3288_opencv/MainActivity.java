@@ -165,7 +165,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private volatile boolean cancelInitMock = false;
     private boolean firstFrameReceived = false;
     private boolean lastReadyVisible = false;
-    private boolean restartMonitoringOnStart = false;
+    private volatile boolean restartMonitoringOnStart = false;
+    private volatile boolean pendingResumeStart = false;
+    private int surfaceCreatedCount = 0;
     private PermissionStateMachine permissionStateMachine;
     private final MonitoringCoordinator monitoringCoordinator = new MonitoringCoordinator();
     private Bitmap frameBitmap;
@@ -184,7 +186,18 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 nativeSetPreviewSurface(holder.getSurface());
                 previewSurfaceReady = true;
                 lastPreviewRenderOkRealtimeMs = SystemClock.elapsedRealtime();
+                surfaceCreatedCount++;
+                AppLog.d("MainActivity", "surfaceCreated",
+                    "count=" + surfaceCreatedCount + " pendingResume=" + pendingResumeStart +
+                    " engineInit=" + engineInitialized + " isRunning=" + isRunning);
                 if (monitorView != null) monitorView.setVisibility(View.GONE);
+                // Auto-recover: if Engine is ready but monitoring stopped, restart
+                if (pendingResumeStart && engineInitialized && !isRunning && selectedCameraId >= 0) {
+                    pendingResumeStart = false;
+                    AppLog.i("MainActivity", "surfaceCreated",
+                        "Surface ready, resuming monitoring (delay 100ms)");
+                    handler.postDelayed(MainActivity.this::startMonitoring, 100);
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -255,6 +268,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private volatile boolean captureEverPushed = false;
     private volatile long lastPushOkRealtimeMs = 0L;
     private volatile int pushFailStreak = 0;
+
+    // Mock fallback tracking
+    private static final long MOCK_FALLBACK_TIMEOUT_MS = 5000;
+    private final android.os.Handler mockFallbackHandler = new android.os.Handler(Looper.getMainLooper());
+    private final Runnable mockFallbackRunnable = this::performMockFallback;
     private volatile boolean flipXEnabled = false;
     private volatile boolean flipYEnabled = false;
     private volatile boolean flipXHasOverride = false;
@@ -515,6 +533,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 if (preflight != null && !preflight.isEmpty()) {
                     getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_LAST_PREFLIGHT, preflight).apply();
                     AppLog.i("MainActivity", "preflight", preflight.replace('\n', ' '));
+                    if (p.wantMock) {
+                        AppLog.i("MockMode", "runMockPreflight", "Result: " + preflight.replace('\n', ' '));
+                    }
                 }
                 current = monitoringCoordinator.onPreflightFinished(in, preflight);
                 continue;
@@ -600,6 +621,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
         if (wantCamera) {
             startCaptureWatchdog();
+        } else if (wantMock) {
+            AppLog.i("MockMode", "performStartMonitoringFlowEffect",
+                "Mock monitoring started, scheduling fallback check in " + MOCK_FALLBACK_TIMEOUT_MS + "ms");
+            mockFallbackHandler.postDelayed(mockFallbackRunnable, MOCK_FALLBACK_TIMEOUT_MS);
         }
         startPreviewWatchdog();
         updateSystemReadyUi("已启动监控");
@@ -615,6 +640,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void performStopMonitoringFlowEffect() {
         isRunning = false;
         firstFrameReceived = false;
+        mockFallbackHandler.removeCallbacks(mockFallbackRunnable);
         stopCaptureWatchdog();
         stopPreviewWatchdog();
         if (activeCapture != null) {
@@ -636,6 +662,23 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         nativeStop();
         rtmpPusher.stop();
         updateSystemReadyUi("停止监控");
+    }
+
+    private void performMockFallback() {
+        if (!isRunning || firstFrameReceived) return;
+        AppLog.w("MockMode", "performMockFallback",
+            "Mock source not responding after " + MOCK_FALLBACK_TIMEOUT_MS + "ms, falling back to camera");
+        Toast.makeText(this, "Mock 源无响应，自动切换到相机模式", Toast.LENGTH_LONG).show();
+        selectedCameraId = 0;
+        mockFilePath = null;
+        isSpinnerInitialized = true;
+        refreshFlipFromPrefs(true);
+        if (isRunning) {
+            stopMonitoring();
+            handler.postDelayed(this::startMonitoring, 500);
+        } else {
+            initEngine();
+        }
     }
 
     private void handleCaptureAutoChanged(boolean enabled) {
@@ -1413,6 +1456,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     }
                     if (!firstFrameReceived) {
                         firstFrameReceived = true;
+                        mockFallbackHandler.removeCallbacks(mockFallbackRunnable);
                         if (frameBitmap != null) {
                             applyMonitorLayoutRule(frameBitmap.getWidth(), frameBitmap.getHeight());
                         } else {
@@ -1695,6 +1739,40 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 }
                 ext = sanitizeExtension(ext);
 
+                // ---- Magic number pre-check ----
+                String magicCheckErr = null;
+                try {
+                    java.io.InputStream magicIs = getContentResolver().openInputStream(uri);
+                    if (magicIs != null) {
+                        try {
+                            byte[] magic = new byte[16];
+                            int magicN = magicIs.read(magic);
+                            String hexMagic = bytesToHex(magic, Math.max(0, magicN));
+                            AppLog.i("MockMode", "handleMockFileSelection", "Magic bytes: " + hexMagic + " ext=" + ext);
+                            if (!isValidMagicNumber(magic, magicN, ext)) {
+                                magicCheckErr = "不支持的文件格式或文件已损坏（魔数校验失败）";
+                                AppLog.w("MockMode", "handleMockFileSelection",
+                                    "Magic check REJECTED: " + hexMagic + " ext=" + ext);
+                            } else {
+                                AppLog.i("MockMode", "handleMockFileSelection",
+                                    "Magic check PASSED: " + hexMagic + " ext=" + ext);
+                            }
+                        } finally {
+                            try { magicIs.close(); } catch (Throwable ignored) {}
+                        }
+                    }
+                } catch (Throwable t) {
+                    AppLog.w("MockMode", "handleMockFileSelection", "Magic read error: " + t.getMessage());
+                }
+                if (magicCheckErr != null) {
+                    String finalErrMsg = magicCheckErr;
+                    runOnUiThread(() -> {
+                        try { progressDialog.dismiss(); } catch (Throwable ignored) {}
+                        Toast.makeText(MainActivity.this, finalErrMsg, Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
+
                 java.io.File root = null;
                 try {
                     root = getExternalCacheDir();
@@ -1711,6 +1789,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 long lastUiMs = 0L;
                 boolean ok = false;
                 String err = null;
+
+                AppLog.i("MockMode", "handleMockFileSelection",
+                    "Copy start: name=" + saveName + " ext=" + ext +
+                    " totalBytes=" + totalBytes + " dest=" + outFile.getAbsolutePath());
 
                 java.io.InputStream is = null;
                 java.io.BufferedInputStream bis = null;
@@ -1773,6 +1855,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     try { if (is != null) is.close(); } catch (Throwable ignored) {}
                 }
 
+                long elapsedMs = Math.max(1L, SystemClock.elapsedRealtime() - startMs);
+
                 boolean finalOk = ok;
                 String finalErr = err;
                 long finalCopied = copied;
@@ -1782,10 +1866,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     try { progressDialog.dismiss(); } catch (Throwable ignored) {}
                     if (!finalOk) {
                         try { if (outFile.exists()) outFile.delete(); } catch (Throwable ignored) {}
-                        AppLog.e("MainActivity", "handleMockFileSelection", "Mock 文件加载失败: " + finalErr + " copied=" + finalCopied);
+                        AppLog.e("MockMode", "handleMockFileSelection",
+                            "Copy FAILED: err=" + finalErr + " copied=" + finalCopied + " elapsedMs=" + elapsedMs);
                         Toast.makeText(MainActivity.this, "加载失败: " + finalErr, Toast.LENGTH_LONG).show();
                         return;
                     }
+
+                    AppLog.i("MockMode", "handleMockFileSelection",
+                        "Copy COMPLETE: path=" + finalOutPath + " copied=" + finalCopied +
+                        " elapsedMs=" + elapsedMs + " speedKBps=" + (finalCopied / 1024L * 1000L / elapsedMs));
 
                     mockFilePath = finalOutPath;
                     selectedCameraId = -1;
@@ -1820,6 +1909,37 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (s.length() > 10) s = s.substring(0, 10);
         if (!s.matches("^[A-Za-z0-9]+$")) return "";
         return s.toLowerCase(Locale.ROOT);
+    }
+
+    private static String bytesToHex(byte[] bytes, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len && i < bytes.length; i++) {
+            sb.append(String.format(Locale.US, "%02X", bytes[i] & 0xFF));
+            if ((i + 1) % 4 == 0 && i < len - 1) sb.append(' ');
+        }
+        return sb.toString();
+    }
+
+    private static boolean isValidMagicNumber(byte[] magic, int len, String ext) {
+        if (len < 2) return false;
+        // Common file format magic signatures
+        // JPEG: FF D8 FF
+        if (len >= 3 && (magic[0] & 0xFF) == 0xFF && (magic[1] & 0xFF) == 0xD8 && (magic[2] & 0xFF) == 0xFF) return true;
+        // PNG: 89 50 4E 47
+        if (len >= 4 && (magic[0] & 0xFF) == 0x89 && magic[1] == 0x50 && magic[2] == 0x4E && magic[3] == 0x47) return true;
+        // BMP: 42 4D
+        if (len >= 2 && magic[0] == 0x42 && magic[1] == 0x4D) return true;
+        // WEBP (RIFF....WEBP): 52 49 46 46 xx xx xx xx 57 45 42 50
+        if (len >= 12 && magic[0] == 0x52 && magic[1] == 0x49 && magic[2] == 0x46 && magic[3] == 0x46
+            && magic[8] == 0x57 && magic[9] == 0x45 && magic[10] == 0x42 && magic[11] == 0x50) return true;
+        // MP4/M4V (ftyp): xx xx xx xx 66 74 79 70
+        if (len >= 8 && magic[4] == 0x66 && magic[5] == 0x74 && magic[6] == 0x79 && magic[7] == 0x70) return true;
+        // AVI (RIFF....AVI ): 52 49 46 46 xx xx xx xx 41 56 49 20
+        if (len >= 12 && magic[0] == 0x52 && magic[1] == 0x49 && magic[2] == 0x46 && magic[3] == 0x46
+            && magic[8] == 0x41 && magic[9] == 0x56 && magic[10] == 0x49 && magic[11] == 0x20) return true;
+        // Fallback: if the extension is known but magic unknown, accept anyway (allow extension-only check)
+        String knownExts = "jpg,jpeg,png,bmp,webp,mp4,m4v,avi,mov,3gp,mkv,wmv,flv,dat";
+        return knownExts.contains(ext);
     }
 
     private static String formatBytes(long bytes) {
@@ -1903,7 +2023,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 if (sb != null) bitrate = Integer.parseInt(sb);
                 if (sfps != null) fps = Float.parseFloat(sfps);
                 mmr.release();
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                AppLog.w("MockMode", "runMockPreflight", "MediaMetadataRetriever failed: " + t.getMessage());
             }
 
             if (w == null || h == null) {
@@ -1915,7 +2036,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         w = opt.outWidth;
                         h = opt.outHeight;
                     }
-                } catch (Throwable ignored) {
+                } catch (Throwable t) {
+                    AppLog.w("MockMode", "runMockPreflight", "BitmapFactory decodeBounds failed: " + t.getMessage());
                 }
             }
 
@@ -2928,6 +3050,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onPause() {
         super.onPause();
+        // Release camera resources but keep Engine initialized
+        if (activeCapture != null) {
+            try {
+                activeCapture.stop();
+                AppLog.d("MainActivity", "onPause", "Camera released, Engine kept initialized");
+            } catch (Exception ignored) {
+            }
+            activeCapture = null;
+        }
+        pendingResumeStart = (isRunning && selectedCameraId >= 0);
     }
 
     @Override
@@ -2946,7 +3078,22 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 permissionStateMachine.evaluate();
             }
             if (permissionStateMachine != null && permissionStateMachine.isRuntimeGranted() && !isRunning) {
-                handler.postDelayed(this::startMonitoring, 200);
+                // Surface-aware resume: poll for surface readiness (max 1s, 100ms intervals)
+                final long startWaitMs = SystemClock.elapsedRealtime();
+                final long maxWaitMs = 1000;
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        long waited = SystemClock.elapsedRealtime() - startWaitMs;
+                        if (previewSurfaceReady || waited >= maxWaitMs) {
+                            AppLog.i("MainActivity", "onStart",
+                                "Surface ready=" + previewSurfaceReady + " waitedMs=" + waited);
+                            startMonitoring();
+                        } else {
+                            handler.postDelayed(this, 100);
+                        }
+                    }
+                });
             }
         }
     }

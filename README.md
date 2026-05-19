@@ -107,34 +107,41 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 ### 1. ⬜ **[P0] 核心稳定性治理 (Stability & Bug Fixes)**
 - **现状核对**：
   - [Android] 前后台切换后预览画面高概率卡死（热重启无效）。
-  - [Mock] 加载文件模式存在异常闪退风险。
-  - [Logging] 软件日志分析深度不足，缺乏自动化异常特征提取。
-- **目标**：重构渲染 Surface 生命周期管理，实现“感知式”重建；增加 Mock 文件预检与异步解码保护；建立结构化日志审计模型。
-- **验收**：前后台切换 50 次无黑屏；Mock 加载损坏/超规格文件不闪退并有明确报错。
+  - [Mock] 加载文件模式存在异常闪退风险。代码审查与业界 Mock 策略对照（参见 `ErrorLog/cleanup/mock研究.txt`）发现现有实现虽覆盖三阶段但各有缺口：
+    - ① **调用前预检**（Calling）：已实现 `wantMock` 状态机与文件选择器（[MainActivity.java](src/java/com/example/rk3288_opencv/MainActivity.java) `handleMockFileSelection`）→ 缺少文件格式/完整性快速校验，损坏文件与超大文件需等到加载阶段才被发现。
+    - ② **加载时防护**（Loading）：已实现分块读取 1MB 块 + 50MB 大小上限 + OOM catch（[VideoManager.cpp](src/cpp/src/VideoManager.cpp) `open(filePath)` 静态图片加载）→ 缺少总体加载超时机制，大文件在网络流场景下可能阻塞主线程。
+    - ③ **解析后验证**（Parsing）：已实现 `imdecode` 异常捕获 + `bad_alloc` 保护 + 视频文件回退（[VideoManager.cpp](src/cpp/src/VideoManager.cpp) `captureLoop` 中 isMockMode 分支）→ 缺少首帧格式/分辨率/帧率预检，损坏视频文件在 `cap.read()` 时抛出异常。
+    - ④ **测试覆盖**：MonitoringCoordinatorTest 覆盖了部分状态机逻辑（`tests/unit/java/.../MonitoringCoordinatorTest.java`），但缺少面向损坏文件的 fixture 测试。
+  - [Engine] `handleAbnormalEvent` 在两个监控会话中频繁触发约 55 次，形成"处理慢→触发异常→CPU 消耗→处理更慢"的恶性循环。参见 [证据日志分析](docs/analysis/evidence_20170115_analysis.md)。
+- **目标**：重构渲染 Surface 生命周期管理，实现"感知式"重建；按三阶段补齐 Mock 文件加载防护；调查 `handleAbnormalEvent` 触发条件，区分真正的异常与可忽略警告。
+- **验收**：前后台切换 50 次无黑屏；Mock 加载损坏/超规格文件在调用阶段即快速拒绝而非加载后崩溃；`handleAbnormalEvent` 触发频率下降 90% 以上。
 
-### 2. ⬜ **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
+### 2. ⬜ **[P0] 链路加速方案落地 (Acceleration)**
+- **现状核对**：
+  - [CPU-only] 日志分析确认 **所有硬件加速路径均不可用**：Qualcomm SDK 回退（RK_HAVE_QUALCOMM=0）、MPP 硬件解码回退（RK_HAVE_MPP=0）、OpenCL 不支持。Yolo/ArcFace 推理、帧预处理完全由 CPU 承担，这是性能瓶颈的根本原因。参见 [诊断报告](docs/analysis/evidence_20170115_analysis.md)。
+  - [延迟尖峰] CPU-only 下帧分析最大延迟达 37.6ms，25fps（40ms 间隔）余量仅 2.4ms，极易丢帧。
+  - 已有文档与 bench 工具，但主链路缺乏生效证据链。
+- **目标**：启用 MPP 硬件解码（定义 `RK_HAVE_MPP`，配置 MPP 库）；补齐加速开关的 `requested`/`effective`/`evidence` 证据输出；在 RK3288 真机完成实测填表并定稿加速策略。
+- **验收**：日志中明确记录"为何启用/为何回退加速"；启用 MPP 后帧分析 P95 延迟降低 50% 以上；证据日志分析结论闭环。
+
+### 3. ⬜ **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
 - **现状核对**：模型台账已建立但在代码中为静态描述；缺乏运行时模型查询接口；检测参数（minSize 等）未持久化。
 - **目标**：实现运行时模型查询 API (`/api/v1/models`)；支持检测参数的 JSON 持久化；补齐 YOLO 检测后端（ncnn）的热切换与版本校验能力。
 - **验收**：通过 Web UI 实时查看当前加载模型的 hash 与后端状态；参数修改后重启服务不丢失。
 
-### 3. ⬜ **[P0] 自动化测试与 CI 加固 (CI/CD)**
+### 4. ⬜ **[P0] 自动化测试与 CI 加固 (CI/CD)**
 - **现状核对**：当前 CI 缺少 Android 构建/单测、Web 前端测试及文档同步审计自动化。
 - **目标**：扩展 [ci.yml](.github/workflows/ci.yml)，集成 Android job、Web job 及 `node scripts/docs-sync-audit.js` 强制发布门禁；统一归档测试报告与关键产物。
 - **验收**：PR 打开后自动触发全平台闭环验证，失败时精准定位问题点；CI 命中缓存后显著加速。
 
-### 4. ⬜ **[P1] 人员注册与权限系统 (Personnel & Enrollment)**
+### 5. ⬜ **[P1] 人员注册与权限系统 (Personnel & Enrollment)**
 - **现状核对**：仅支持单样本均值注册；缺少质量检查、人员属性（姓名/工号）、权限校验及安全的导入导出。
 - **目标**：建立人员实体模型（personId + profile + 状态机）；增加注册前质量门槛（亮度/角度/清晰度）；支持加密的批量导入导出（DPAPI/Keystore）。
 - **验收**：UI 支持完整的增删改查与权限配置；导入导出文件防篡改且兼容版本演进。
 
-### 5. ⬜ **[P1] 链路加速方案落地 (Acceleration)**
-- **现状核对**：已有文档与 bench 工具，但主链路 OpenCL 存在驱动碎片化风险，缺乏生效证据链。
-- **目标**：补齐加速开关的 `requested`/`effective`/`evidence` 证据输出；在 RK3288/Qualcomm 真机完成实测填表并定稿加速策略。
-- **验收**：日志中明确记录“为何启用/为何回退加速”，性能指标满足 P95 预期。
-
 ### 6. ⬜ **[P1] 工程规范与治理 (Engineering Excellence)**
-- **现状核对**：存在遗留废弃接口；开发流程文档化程度尚需补齐。
-- **目标**：执行废弃代码“零容忍”清理；补齐基础框架、核心算法与开发流程的研究结论。
-- **验收**：代码库无未引用的旧版接口；开发者可根据文档一键复现全链路开发/调试环境。
+- **现状核对**：存在遗留废弃接口；开发流程文档化程度尚需补齐；`initEngine()` 中存在 Engine 初始化双重调用，浪费约 20ms 启动时间。
+- **目标**：执行废弃代码"零容忍"清理；补齐基础框架、核心算法与开发流程的研究结论；消除 Engine 初始化冗余调用。
+- **验收**：代码库无未引用的旧版接口；开发者可根据文档一键复现全链路开发/调试环境；Engine 初始化日志中仅出现一次 `initialize` 调用。
 ## 📄 许可证
 MIT License

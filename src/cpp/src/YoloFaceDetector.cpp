@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -346,6 +347,18 @@ public:
 
     const char* backendName() const override { return "opencv_dnn"; }
 
+    bool supportsBackend(const char* name) const override {
+        return name != nullptr && std::strcmp(name, "opencv_dnn") == 0;
+    }
+
+    bool switchBackend(const char* name, std::string& err) override {
+        if (name != nullptr && std::strcmp(name, "opencv_dnn") == 0) {
+            return true; // already on this backend
+        }
+        err = "OpenCvDnn backend only supports 'opencv_dnn'";
+        return false;
+    }
+
 private:
     cv::dnn::Net net_;
     YoloFaceOptions opt_{};
@@ -481,6 +494,18 @@ public:
     }
 
     const char* backendName() const override { return "ncnn"; }
+
+    bool supportsBackend(const char* name) const override {
+        return name != nullptr && std::strcmp(name, "ncnn") == 0;
+    }
+
+    bool switchBackend(const char* name, std::string& err) override {
+        if (name != nullptr && std::strcmp(name, "ncnn") == 0) {
+            return true;
+        }
+        err = "Ncnn backend only supports 'ncnn'";
+        return false;
+    }
 
 private:
     ncnn::Net net_;

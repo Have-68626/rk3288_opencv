@@ -324,12 +324,22 @@ static bool initMppDecoder(bool requested) {
         rklog::logInfo("Engine", "initMppDecoder", "RK MPP disabled by user config.");
         return false;
     }
-    rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, preparing to load hardware decoder...");
-    // 真实的 MPP 初始化代码写这里
-    return true;
+    rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, probing decoder...");
+    // Probe MPP library availability with a lightweight create/destroy
+    MppCtx ctx = nullptr;
+    MppApi* mpi = nullptr;
+    MPP_RET ret = mpp_create(&ctx, &mpi);
+    if (ret == MPP_OK && ctx) {
+        mpp_destroy(ctx);
+        rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoder probe successful");
+        return true;
+    }
+    rklog::logWarn("Engine", "initMppDecoder", "MPP probe failed: ret=" + std::to_string(ret) + ", fallback to CPU");
+    return false;
 #else
+    (void)requested;
     rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (RK_HAVE_MPP not defined or 0)");
-    return false; // Fallback
+    return false;
 #endif
 }
 
@@ -463,6 +473,7 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
         rklog::logInfo("Engine", __func__, "cameraId<0：跳过 VideoManager 相机打开（预期用于外部帧输入）");
     }
 
+    performAccelSelfCheck();
     return true;
 }
 
@@ -505,6 +516,7 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         return false;
     }
 
+    performAccelSelfCheck();
     return true;
 }
 
@@ -977,12 +989,116 @@ void Engine::setFlip(bool flipX, bool flipY) {
 
 void Engine::handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence) {
     RKLOG_ENTER("Engine");
+
+    bool shouldHandle = false;
+    {
+        std::lock_guard<std::mutex> lock(abnormalEventMutex_);
+
+        long long now = nowMs();
+
+        // Initialize cooldown for this event type if first time seen
+        if (abnormalEventCooldownMs_.find(type) == abnormalEventCooldownMs_.end()) {
+            abnormalEventCooldownMs_[type] = kAbnormalEventCooldownBaseMs;
+        }
+
+        // Check cooldown: skip if within cooldown period
+        auto lastIt = lastAbnormalEventMs_.find(type);
+        if (lastIt != lastAbnormalEventMs_.end()) {
+            long long elapsed = now - lastIt->second;
+            long long cooldown = abnormalEventCooldownMs_[type];
+            if (elapsed < cooldown) {
+                return;
+            }
+            // Reset cooldown if no events for > 1 minute
+            if (elapsed > 60000) {
+                abnormalEventCooldownMs_[type] = kAbnormalEventCooldownBaseMs;
+                abnormalEventCount_[type] = 0;
+                rklog::logWarn("Engine", "handleAbnormalEvent",
+                    "type=" + type + " cooldown reset to base (" +
+                    std::to_string(kAbnormalEventCooldownBaseMs) + "ms) after idle");
+            }
+        }
+
+        // Update last event time
+        lastAbnormalEventMs_[type] = now;
+
+        // Increment count and check rate limit
+        int& count = abnormalEventCount_[type];
+        count++;
+        if (count > kAbnormalEventMaxPerMin) {
+            long long& cd = abnormalEventCooldownMs_[type];
+            cd = std::min(cd * 2, kAbnormalEventCooldownMaxMs);
+            rklog::logWarn("Engine", "handleAbnormalEvent",
+                "type=" + type + " count=" + std::to_string(count) +
+                " exceeded limit, cooldown increased to " + std::to_string(cd) + "ms");
+            count = 0;
+        }
+
+        shouldHandle = true;
+    }  // Release abnormalEventMutex_ before I/O
+
+    if (!shouldHandle) return;
+
+    // Original event handling (disk I/O outside the mutex)
     std::string timestamp = std::to_string(std::time(nullptr));
     std::string imgPath = this->storagePath + type + "_" + timestamp + ".jpg";
-    
-    // Save evidence asynchronously or quickly
+
     if (Storage::saveImage(imgPath, evidence)) {
         eventManager->logEvent(type, desc, imgPath);
         std::cout << "Event Logged: " << desc << std::endl;
     }
+}
+
+void Engine::performAccelSelfCheck() {
+    RKLOG_ENTER("Engine");
+
+    // ncnn
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=ncnn] requested=1 effective=1 evidence=RK_HAVE_NCNN=1");
+#else
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=ncnn] requested=0 effective=0 evidence=RK_HAVE_NCNN=0");
+#endif
+
+    // MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=mpp] requested=1 effective=1 evidence=RK_HAVE_MPP=1");
+#else
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=mpp] requested=0 effective=0 evidence=RK_HAVE_MPP=0");
+#endif
+
+    // Qualcomm
+#if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=qualcomm] requested=1 effective=1 evidence=RK_HAVE_QUALCOMM=1");
+#else
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=qualcomm] requested=0 effective=0 evidence=RK_HAVE_QUALCOMM=0");
+#endif
+
+    // OpenCL
+    bool oclRequested = false;
+    if (const char* envOcl = std::getenv("RK_USE_OPENCL")) {
+        std::string s;
+        for (char c : std::string(envOcl)) {
+            s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        oclRequested = (s == "1" || s == "true" || s == "yes" || s == "on");
+    }
+    bool oclEffective = cv::ocl::useOpenCL();
+    bool oclHave = cv::ocl::haveOpenCL();
+    std::string oclEvidence = "requested=" + std::to_string(oclRequested) +
+        " useOpenCL=" + std::to_string(oclEffective) +
+        " haveOpenCL=" + std::to_string(oclHave);
+    if (oclHave) {
+        try {
+            cv::ocl::Device dev = cv::ocl::Device::getDefault();
+            oclEvidence += " device=" + dev.name() + " vendor=" + dev.vendorName();
+        } catch (...) {}
+    }
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=opencl] " + oclEvidence);
+
+    // libyuv
+#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=libyuv] requested=1 effective=1 evidence=RK_HAVE_LIBYUV=1");
+#else
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=libyuv] requested=0 effective=0 evidence=RK_HAVE_LIBYUV=0");
+#endif
 }
