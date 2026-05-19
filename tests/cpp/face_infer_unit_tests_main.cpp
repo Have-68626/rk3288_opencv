@@ -32,6 +32,9 @@ bool test_face_infer_image_load_failure();
 bool test_face_infer_yolo_load_failure();
 bool test_face_infer_done_no_face();
 bool test_face_infer_done_hit();
+bool test_mock_preflight_rejects_invalid_magic();
+bool test_mock_preflight_rejects_incomplete_file();
+bool test_mock_preflight_rejects_oversize_image();
 
 int main() {
     using namespace rk_face_infer_test;
@@ -40,6 +43,9 @@ int main() {
         {"face_infer_yolo_load_failure", test_face_infer_yolo_load_failure},
         {"face_infer_done_no_face", test_face_infer_done_no_face},
         {"face_infer_done_hit", test_face_infer_done_hit},
+        {"mock_preflight_rejects_invalid_magic", test_mock_preflight_rejects_invalid_magic},
+        {"mock_preflight_rejects_incomplete_file", test_mock_preflight_rejects_incomplete_file},
+        {"mock_preflight_rejects_oversize_image", test_mock_preflight_rejects_oversize_image},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

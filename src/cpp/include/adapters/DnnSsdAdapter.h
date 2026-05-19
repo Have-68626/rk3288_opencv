@@ -1,7 +1,7 @@
 #pragma once
 
 #include "FaceDetector.h"
-#include "DnnSsdFaceDetector.h"
+#include "rk_win/DnnSsdFaceDetector.h"
 
 #include <string>
 

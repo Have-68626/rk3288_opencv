@@ -180,6 +180,10 @@ private:
     std::unordered_map<std::string, long long> lastAbnormalEventMs_;
     std::unordered_map<std::string, int> abnormalEventCount_;
     std::unordered_map<std::string, long long> abnormalEventCooldownMs_;
+    long long abnormalEventSessionTotal_ = 0;
+    long long abnormalEventSessionSuppressed_ = 0;
+    std::unordered_map<std::string, long long> abnormalEventHandledByType_;
+    std::unordered_map<std::string, long long> abnormalEventSuppressedByType_;
     std::mutex abnormalEventMutex_;
 
     struct FaceTrack {

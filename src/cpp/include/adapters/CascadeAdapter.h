@@ -1,7 +1,7 @@
 #pragma once
 
 #include "FaceDetector.h"
-#include "FaceDetector.h"  // rk_win::FaceDetector (Cascade)
+#include "rk_win/FaceDetector.h"
 
 #include <string>
 

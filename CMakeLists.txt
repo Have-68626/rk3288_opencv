@@ -454,6 +454,7 @@ if(NOT RK_SKIP_OPENCV)
         add_executable(face_infer_unit_tests
             "tests/cpp/face_infer_unit_tests_main.cpp"
             "tests/cpp/test_face_infer_pipeline.cpp"
+            "tests/cpp/test_mock_preflight_guards.cpp"
             "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/cpp/src/FaceAlign.cpp"
             "src/cpp/src/FaceInferOutcomeJson.cpp"
@@ -462,18 +463,33 @@ if(NOT RK_SKIP_OPENCV)
             "src/cpp/src/FaceSearch.cpp"
             "src/cpp/src/FaceTemplate.cpp"
             "src/cpp/src/FileHash.cpp"
+            "src/cpp/src/VideoManager.cpp"
+            "tests/cpp/mpp_decoder_stub.cpp"
+            "src/cpp/src/ModelRegistry.cpp"
             "src/cpp/src/NativeLog.cpp"
             "src/cpp/src/ThresholdPolicy.cpp"
             "src/cpp/src/YoloFaceDetector.cpp"
+            "src/cpp/src/adapters/ArcFaceAdapter.cpp"
+            "src/cpp/src/adapters/YoloFaceAdapter.cpp"
+            "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
+            "src/cpp/src/adapters/DnnSsdAdapter.cpp"
+            "src/cpp/src/adapters/CascadeAdapter.cpp"
+            "src/cpp/src/adapters/LbphAdapter.cpp"
+            "src/win/src/DnnSsdFaceDetector.cpp"
+            "src/win/src/FaceDetector.cpp"
+            "src/win/src/LbphEmbedder.cpp"
         )
         target_include_directories(face_infer_unit_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include/rk_win
         )
         if(MSVC)
             target_compile_options(face_infer_unit_tests PRIVATE /utf-8)
         endif()
         if(WIN32)
-            target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+            target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
         endif()
         target_link_libraries(face_infer_unit_tests
             opencv_core
@@ -481,6 +497,8 @@ if(NOT RK_SKIP_OPENCV)
             opencv_imgcodecs
             opencv_calib3d
             opencv_dnn
+            opencv_objdetect
+            opencv_videoio
         )
         add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
     endif()
@@ -749,6 +767,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "tests/win/test_face_metrics.cpp"
         "tests/win/test_lbph_embedder.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "src/cpp/src/FileHash.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/FaceRecognizer.cpp"

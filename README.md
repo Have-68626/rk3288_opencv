@@ -99,6 +99,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | `verify_faces_test_set01.bat` | 人脸检测参数验证 | 依赖 `tests/test_set01/` 测试集 |
 | `run-web-e2e.ps1` | Web SPA 端到端测试 | Cypress E2E + 覆盖率报告 |
 | `bench_camera_adb.ps1` / `.sh` | Android 摄像头基准测试 | 通过 ADB 连接设备测试 |
+| `stability_switch_50_adb.ps1` | Android 前后台稳定性验收（50 次） | 输出到 `tests/reports/stability/<timestamp>/` |
 
 ## 待办列表 (Todo List)
 
@@ -115,6 +116,10 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
   - [Engine] `handleAbnormalEvent` 在两个监控会话中频繁触发约 55 次，形成"处理慢→触发异常→CPU 消耗→处理更慢"的恶性循环。参见 [证据日志分析](docs/analysis/evidence_20170115_analysis.md)。
 - **目标**：重构渲染 Surface 生命周期管理，实现"感知式"重建；按三阶段补齐 Mock 文件加载防护；调查 `handleAbnormalEvent` 触发条件，区分真正的异常与可忽略警告。
 - **验收**：前后台切换 50 次无黑屏；Mock 加载损坏/超规格文件在调用阶段即快速拒绝而非加载后崩溃；`handleAbnormalEvent` 触发频率下降 90% 以上。
+- **状态（三态）**：
+  - **已实现**：`VideoManager` 增加 Mock 调用前预检与统一拒绝原因码（`MOCK_MAGIC_INVALID` / `MOCK_FILE_INCOMPLETE` / `MOCK_OVERSIZE`）；新增 C++ fixture 测试覆盖损坏魔数、不完整文件、超规格文件。
+  - **未验收**：Android 前后台 50 次切换自动化脚本已落地（`scripts/stability_switch_50_adb.ps1`），待真机执行并产出 `tests/reports/stability/<timestamp>/` 证据。
+  - **待补测试**：`handleAbnormalEvent` 会话级统计（总量/分类型/抑制次数）已加日志口径，待补同输入集前后对比数据，验证触发频率下降目标。
 
 ### 2. ⬜ **[P0] 链路加速方案落地 (Acceleration)**
 - **现状核对**：

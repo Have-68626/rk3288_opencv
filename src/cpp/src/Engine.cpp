@@ -508,7 +508,7 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
     }
     if (!videoManager->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
-        rklog::logError("Engine", __func__, "Failed to open mock file");
+        rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager->getLastMockRejectReason());
         return false;
     }
     if (initCancelRequested.load()) {
@@ -991,10 +991,16 @@ void Engine::handleAbnormalEvent(const std::string& type, const std::string& des
     RKLOG_ENTER("Engine");
 
     bool shouldHandle = false;
+    long long sessionTotal = 0;
+    long long sessionSuppressed = 0;
+    long long typeHandled = 0;
+    long long typeSuppressed = 0;
     {
         std::lock_guard<std::mutex> lock(abnormalEventMutex_);
 
         long long now = nowMs();
+        abnormalEventSessionTotal_++;
+        sessionTotal = abnormalEventSessionTotal_;
 
         // Initialize cooldown for this event type if first time seen
         if (abnormalEventCooldownMs_.find(type) == abnormalEventCooldownMs_.end()) {
@@ -1007,6 +1013,19 @@ void Engine::handleAbnormalEvent(const std::string& type, const std::string& des
             long long elapsed = now - lastIt->second;
             long long cooldown = abnormalEventCooldownMs_[type];
             if (elapsed < cooldown) {
+                abnormalEventSessionSuppressed_++;
+                abnormalEventSuppressedByType_[type]++;
+                sessionSuppressed = abnormalEventSessionSuppressed_;
+                typeSuppressed = abnormalEventSuppressedByType_[type];
+                if (typeSuppressed == 1 || (typeSuppressed % 10) == 0) {
+                    rklog::logWarn("Engine", "handleAbnormalEvent",
+                        "type=" + type +
+                        " action=suppressed reason=cooldown elapsed_ms=" + std::to_string(elapsed) +
+                        " cooldown_ms=" + std::to_string(cooldown) +
+                        " session_total=" + std::to_string(sessionTotal) +
+                        " session_suppressed=" + std::to_string(sessionSuppressed) +
+                        " type_suppressed=" + std::to_string(typeSuppressed));
+                }
                 return;
             }
             // Reset cooldown if no events for > 1 minute
@@ -1035,9 +1054,20 @@ void Engine::handleAbnormalEvent(const std::string& type, const std::string& des
         }
 
         shouldHandle = true;
+        abnormalEventHandledByType_[type]++;
+        typeHandled = abnormalEventHandledByType_[type];
+        sessionSuppressed = abnormalEventSessionSuppressed_;
     }  // Release abnormalEventMutex_ before I/O
 
     if (!shouldHandle) return;
+
+    if (typeHandled == 1 || (typeHandled % 10) == 0) {
+        rklog::logInfo("Engine", "handleAbnormalEvent",
+            "type=" + type +
+            " action=handled session_total=" + std::to_string(sessionTotal) +
+            " session_suppressed=" + std::to_string(sessionSuppressed) +
+            " type_handled=" + std::to_string(typeHandled));
+    }
 
     // Original event handling (disk I/O outside the mutex)
     std::string timestamp = std::to_string(std::time(nullptr));

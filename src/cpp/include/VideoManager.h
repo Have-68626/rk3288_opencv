@@ -13,6 +13,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 class MppDecoder;
@@ -44,6 +45,11 @@ public:
      * @return true if successful.
      */
     bool open(const std::string& filePath);
+
+    /**
+     * @brief Calling-phase preflight for mock input. Returns false with a reason code on fast reject.
+     */
+    static bool preflightMockInput(const std::string& filePath, std::string* reasonCode);
 
     /**
      * @brief Closes the camera device.
@@ -87,7 +93,14 @@ public:
      */
     std::string getMockFilePath() const;
 
+    /**
+     * @brief Returns last mock reject/failure reason code for auditing.
+     */
+    std::string getLastMockRejectReason() const;
+
 private:
+    void setMockRejectReason(const std::string& reasonCode, const std::string& detail = "");
+    void clearMockRejectReason();
     void captureLoop();
 
     cv::VideoCapture cap;
@@ -113,4 +126,6 @@ private:
     std::atomic<MockState> mockState{ MockState::NONE };
     int64_t mockLoadTimeoutMs = 30000;
     std::string mockFilePath;
+    std::string lastMockRejectReason_;
+    mutable std::mutex mockMetaMutex_;
 };

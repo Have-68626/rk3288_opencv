@@ -10,10 +10,45 @@
 #ifdef __linux__
 #include <sys/resource.h>
 #endif
+#include <array>
 #include <chrono>
 #include <algorithm>
 #include <vector>
 #include <fstream>
+#include <filesystem>
+#include <cstdint>
+
+namespace {
+
+constexpr std::uintmax_t kMockMaxImageBytes = 50ULL * 1024ULL * 1024ULL;
+
+bool isUrlSource(const std::string& path) {
+    return path.find("http://") == 0 || path.find("https://") == 0 || path.find("rtsp://") == 0 || path.find("rtmp://") == 0;
+}
+
+bool isStaticImageExt(const std::string& ext) {
+    return ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp";
+}
+
+bool hasValidImageMagic(const std::string& ext, const std::array<unsigned char, 16>& magic, size_t len) {
+    if ((ext == "jpg" || ext == "jpeg") && len >= 3) {
+        return magic[0] == 0xFF && magic[1] == 0xD8 && magic[2] == 0xFF;
+    }
+    if (ext == "png" && len >= 8) {
+        return magic[0] == 0x89 && magic[1] == 0x50 && magic[2] == 0x4E && magic[3] == 0x47 &&
+               magic[4] == 0x0D && magic[5] == 0x0A && magic[6] == 0x1A && magic[7] == 0x0A;
+    }
+    if (ext == "bmp" && len >= 2) {
+        return magic[0] == 0x42 && magic[1] == 0x4D;
+    }
+    if (ext == "webp" && len >= 12) {
+        return magic[0] == 0x52 && magic[1] == 0x49 && magic[2] == 0x46 && magic[3] == 0x46 &&
+               magic[8] == 0x57 && magic[9] == 0x45 && magic[10] == 0x42 && magic[11] == 0x50;
+    }
+    return false;
+}
+
+}  // namespace
 
 static const char* mockStateName(VideoManager::MockState s) {
     switch (s) {
@@ -80,6 +115,80 @@ void VideoManager::setTimeoutsMs(int openTimeoutMs, int readTimeoutMs) {
     if (readTimeoutMs > 0) this->readTimeoutMs = readTimeoutMs;
 }
 
+void VideoManager::setMockRejectReason(const std::string& reasonCode, const std::string& detail) {
+    {
+        std::lock_guard<std::mutex> lock(mockMetaMutex_);
+        lastMockRejectReason_ = reasonCode;
+    }
+    (void)detail;
+}
+
+void VideoManager::clearMockRejectReason() {
+    std::lock_guard<std::mutex> lock(mockMetaMutex_);
+    lastMockRejectReason_.clear();
+}
+
+bool VideoManager::preflightMockInput(const std::string& filePath, std::string* reasonCode) {
+    auto setReason = [&](const std::string& code) {
+        if (reasonCode) *reasonCode = code;
+        return false;
+    };
+
+    if (filePath.empty()) {
+        return setReason("MOCK_IO_OPEN_FAILED");
+    }
+
+    std::string ext;
+    const size_t dotPos = filePath.find_last_of(".");
+    if (dotPos != std::string::npos) {
+        ext = filePath.substr(dotPos + 1);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    }
+
+    if (isUrlSource(filePath)) {
+        return true;
+    }
+
+    std::error_code fsec;
+    const bool exists = std::filesystem::exists(filePath, fsec);
+    if (fsec || !exists) {
+        return setReason("MOCK_IO_OPEN_FAILED");
+    }
+
+    const auto fileSize = std::filesystem::file_size(filePath, fsec);
+    if (fsec) {
+        return setReason("MOCK_IO_OPEN_FAILED");
+    }
+
+    if (fileSize < 3) {
+        return setReason("MOCK_FILE_INCOMPLETE");
+    }
+
+    if (!isStaticImageExt(ext)) {
+        return true;
+    }
+
+    if (fileSize > kMockMaxImageBytes) {
+        return setReason("MOCK_OVERSIZE");
+    }
+
+    std::ifstream magicFile(filePath, std::ios::binary);
+    if (!magicFile.is_open()) {
+        return setReason("MOCK_IO_OPEN_FAILED");
+    }
+    std::array<unsigned char, 16> magic{};
+    magicFile.read(reinterpret_cast<char*>(magic.data()), static_cast<std::streamsize>(magic.size()));
+    const size_t magicLen = static_cast<size_t>(std::max<std::streamsize>(0, magicFile.gcount()));
+    if (!hasValidImageMagic(ext, magic, magicLen)) {
+        if (magicLen < 3) {
+            return setReason("MOCK_FILE_INCOMPLETE");
+        }
+        return setReason("MOCK_MAGIC_INVALID");
+    }
+
+    return true;
+}
+
 bool VideoManager::open(int deviceId) {
     RKLOG_ENTER("VideoManager");
     if (isRunning) {
@@ -134,6 +243,7 @@ bool VideoManager::open(const std::string& filePath) {
         return false;
     }
 
+    clearMockRejectReason();
     isMockMode = true;
     isStaticImage = false;
     mockState = MockState::INIT;
@@ -147,8 +257,17 @@ bool VideoManager::open(const std::string& filePath) {
         ext = filePath.substr(dotPos + 1);
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     }
-    
-    if (ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp") {
+
+    {
+        std::string reason;
+        if (!preflightMockInput(filePath, &reason)) {
+            mockState = MockState::FAILED;
+            setMockRejectReason(reason, "calling_phase_reject");
+            return false;
+        }
+    }
+
+    if (isStaticImageExt(ext)) {
         isStaticImage = true;
         mockState = MockState::PREFLIGHT_OK;
         rklog::logInfo("MockMode", "open", "Static image, state=PREFLIGHT_OK ext=" + ext);
@@ -157,6 +276,8 @@ bool VideoManager::open(const std::string& filePath) {
             std::ifstream file(filePath, std::ios::binary | std::ios::ate);
             if (!file.is_open()) {
                 std::cerr << "Failed to open image file: " << filePath << std::endl;
+                mockState = MockState::FAILED;
+                setMockRejectReason("MOCK_IO_OPEN_FAILED", "image_open_failed");
                 return false;
             }
             std::streamsize size = file.tellg();
@@ -165,6 +286,8 @@ bool VideoManager::open(const std::string& filePath) {
             // 内存监控：限制最大图片大小为 50MB (防止解码出几百MB或GB的矩阵)
             if (size > 50LL * 1024LL * 1024LL) { 
                 std::cerr << "Image file too large (" << size << " bytes). Rejected to prevent OOM." << std::endl;
+                mockState = MockState::FAILED;
+                setMockRejectReason("MOCK_OVERSIZE", "bytes=" + std::to_string(static_cast<unsigned long long>(size)));
                 return false;
             }
 
@@ -187,6 +310,7 @@ bool VideoManager::open(const std::string& filePath) {
             if (staticFrame.empty()) {
                 std::cerr << "Failed to decode image: " << filePath << std::endl;
                 mockState = MockState::FAILED;
+                setMockRejectReason("MOCK_DECODE_FAILED", "static_image_decode_failed");
                 rklog::logError("MockMode", "open", "Failed to decode static image");
                 return false;
             }
@@ -200,21 +324,25 @@ bool VideoManager::open(const std::string& filePath) {
         } catch (const std::bad_alloc& e) {
             std::cerr << "OOM exception loading static image: " << e.what() << std::endl;
             mockState = MockState::FAILED;
+            setMockRejectReason("MOCK_OOM", e.what());
             rklog::logError("MockMode", "open", "OOM loading static image: " + std::string(e.what()));
             return false;
         } catch (const cv::Exception& e) {
             std::cerr << "OpenCV exception loading static image: " << e.what() << std::endl;
             mockState = MockState::FAILED;
+            setMockRejectReason("MOCK_DECODE_FAILED", e.what());
             rklog::logError("MockMode", "open", "OpenCV exception: " + std::string(e.what()));
             return false;
         } catch (const std::exception& e) {
             std::cerr << "Exception loading static image: " << e.what() << std::endl;
             mockState = MockState::FAILED;
+            setMockRejectReason("MOCK_UNKNOWN_ERROR", e.what());
             rklog::logError("MockMode", "open", "Exception: " + std::string(e.what()));
             return false;
         } catch (...) {
             std::cerr << "Unknown exception loading static image" << std::endl;
             mockState = MockState::FAILED;
+            setMockRejectReason("MOCK_UNKNOWN_ERROR", "unknown_exception");
             rklog::logError("MockMode", "open", "Unknown exception");
             return false;
         }
@@ -254,6 +382,7 @@ bool VideoManager::open(const std::string& filePath) {
             }
             if (!tmp.isOpened()) {
                 rklog::logError("MockMode", "tryOpen", "Failed to open (timeout or unsupported format)");
+                setMockRejectReason("MOCK_OPEN_FAILED", "try_open_failed");
                 return false;
             }
             rklog::logInfo("MockMode", "tryOpen", "Opened successfully");
@@ -279,11 +408,13 @@ bool VideoManager::open(const std::string& filePath) {
                     rklog::logInfo("MockMode", "open", "Trying backup: " + backup);
                     if (!tryOpen(backup)) {
                         mockState = MockState::FAILED;
+                        setMockRejectReason("MOCK_OPEN_FAILED", "stream_primary_backup_failed");
                         rklog::logError("MockMode", "open", "Backup also failed, state=FAILED");
                         return false;
                     }
                 } else {
                     mockState = MockState::FAILED;
+                    setMockRejectReason("MOCK_OPEN_FAILED", "stream_primary_failed_no_backup");
                     rklog::logError("MockMode", "open", "No backup, state=FAILED");
                     return false;
                 }
@@ -292,6 +423,7 @@ bool VideoManager::open(const std::string& filePath) {
             // Local file — try MPP hardware decoding first
             mockState = MockState::LOADING;
             rklog::logInfo("MockMode", "open", "Opening local file, state=LOADING");
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
             mppDecoder = std::make_unique<MppDecoder>();
             if (mppDecoder->init() && mppDecoder->open(filePath)) {
                 useMppDecode = true;
@@ -312,6 +444,7 @@ bool VideoManager::open(const std::string& filePath) {
                 rklog::logInfo("MockMode", "open", "MPP unavailable, falling back to OpenCV VideoCapture");
                 if (!tryOpen(filePath)) {
                     mockState = MockState::FAILED;
+                    setMockRejectReason("MOCK_OPEN_FAILED", "local_video_open_failed");
                     rklog::logError("MockMode", "open", "Failed to open local video file, state=FAILED");
                     return false;
                 }
@@ -325,6 +458,26 @@ bool VideoManager::open(const std::string& filePath) {
                     rklog::logWarn("MockMode", "open", "cap.set unknown exception");
                 }
             }
+#else
+            useMppDecode = false;
+            mppDecoder.reset();
+            rklog::logInfo("MockMode", "open", "MPP disabled for this build, using OpenCV VideoCapture");
+            if (!tryOpen(filePath)) {
+                mockState = MockState::FAILED;
+                setMockRejectReason("MOCK_OPEN_FAILED", "local_video_open_failed");
+                rklog::logError("MockMode", "open", "Failed to open local video file, state=FAILED");
+                return false;
+            }
+            try {
+                cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
+                cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
+                cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+            } catch (const std::exception& e) {
+                rklog::logWarn("MockMode", "open", "cap.set exception: " + std::string(e.what()));
+            } catch (...) {
+                rklog::logWarn("MockMode", "open", "cap.set unknown exception");
+            }
+#endif
         }
     }
     
@@ -355,6 +508,7 @@ void VideoManager::close() {
     if (isMockMode) {
         mockState = MockState::NONE;
         mockFilePath.clear();
+        clearMockRejectReason();
         if (mppDecoder) {
             mppDecoder->close();
             mppDecoder.reset();
@@ -389,6 +543,11 @@ std::string VideoManager::getMockFilePath() const {
     return mockFilePath;
 }
 
+std::string VideoManager::getLastMockRejectReason() const {
+    std::lock_guard<std::mutex> lock(mockMetaMutex_);
+    return lastMockRejectReason_;
+}
+
 void VideoManager::captureLoop() {
     // Set thread priority to high (Display/Audio priority) to ensure <500ms latency
 #ifdef __linux__
@@ -415,6 +574,7 @@ void VideoManager::captureLoop() {
                                 " ch=" + std::to_string(ch) + " state=RUNNING");
                         } else {
                             mockState = MockState::FAILED;
+                            setMockRejectReason("MOCK_FRAME_INVALID", "mpp_first_frame_invalid");
                             rklog::logError("MockMode", "captureLoop", "MPP first frame invalid, w=" +
                                 std::to_string(tempFrame.cols) + " h=" + std::to_string(tempFrame.rows) +
                                 " ch=" + std::to_string(ch) + " state=FAILED");
@@ -449,6 +609,7 @@ void VideoManager::captureLoop() {
                         " ch=" + std::to_string(ch) + " state=RUNNING");
                 } else {
                     mockState = MockState::FAILED;
+                    setMockRejectReason("MOCK_FRAME_INVALID", "static_frame_invalid");
                     rklog::logError("MockMode", "captureLoop", "Static image invalid, w=" +
                         std::to_string(staticFrame.cols) + " h=" + std::to_string(staticFrame.rows) +
                         " ch=" + std::to_string(ch) + " state=FAILED");
@@ -481,6 +642,7 @@ void VideoManager::captureLoop() {
                                 " ch=" + std::to_string(ch) + " state=RUNNING");
                         } else {
                             mockState = MockState::FAILED;
+                            setMockRejectReason("MOCK_FRAME_INVALID", "video_first_frame_invalid");
                             rklog::logError("MockMode", "captureLoop", "First frame invalid, w=" +
                                 std::to_string(tempFrame.cols) + " h=" + std::to_string(tempFrame.rows) +
                                 " ch=" + std::to_string(ch) + " state=FAILED");
