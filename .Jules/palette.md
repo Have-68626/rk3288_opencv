@@ -7,3 +7,6 @@
 ## 2024-05-24 - Fix Double Focus on Conditional Icon Buttons
 **Learning:** When using a `<span>` wrapper with `tabIndex={0}` to preserve `<Tooltip>` on a disabled `<Button>` in Ant Design, it creates a 'double focus' bug when the button is enabled (users tab to the span, then the button).
 **Action:** Conditionally apply `tabIndex={0}`, `role='button'`, and `aria-disabled={true}` to the `<span>` wrapper *only* when the inner button is actually disabled (e.g., in a loading state). Always pair this with `style={{ display: 'inline-block' }}` to prevent layout shifts or invisible hit-areas.
+## 2025-02-23 - Async Feedback for Select Components
+**Learning:** React/Ant Design `<Select>` components that trigger asynchronous operations (like API calls on `onChange`) lack built-in `loading` prop support in the same way `<Button>` or `<Switch>` do. This can lead to users repeatedly changing selections before the first request finishes, causing race conditions or missing feedback.
+**Action:** Wrap the `onChange` asynchronous call in a `try/catch/finally` block. Use `message.loading('...', 0)` to provide persistent feedback and hide it in the `finally` block. Conditionally disable the `<Select>` component using `disabled={isLoading}` during the async operation to prevent concurrent modifications.
