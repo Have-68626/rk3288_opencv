@@ -42,7 +42,3 @@
 ## 2026-05-07 - Optimize EventManager JSON formatting
 **Learning:** `std::stringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency logging/event pipelines, this becomes a bottleneck.
 **Action:** Replace `std::stringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
-
-## 2026-05-18 - Optimize FileHash block read performance
-**Learning:** Reading files in extremely small chunks (e.g., 64 bytes) using `std::ifstream::read()` incurs massive syscall and buffer overhead when computing SHA256 hashes.
-**Action:** Read file contents in larger blocks (e.g., 64KB) into a pre-allocated vector before feeding 64-byte chunks into the transform function.

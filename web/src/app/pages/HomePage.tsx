@@ -4,6 +4,7 @@ import { useAppStore } from '../state/AppStore'
 
 export function HomePage() {
   const { prefs, serverSettings, refreshServerSettings } = useAppStore()
+  const isLoading = serverSettings.status === 'loading'
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -21,6 +22,16 @@ export function HomePage() {
           type="error"
           showIcon
           message="后端 /api/v1/settings 不可用"
+          action={
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => refreshServerSettings()}
+              loading={isLoading}
+            >
+              重试
+            </Button>
+          }
           description={
             <>
               <div>{serverSettings.error.message}</div>
