@@ -4,6 +4,7 @@ import { useAppStore } from '../state/AppStore'
 
 export function HomePage() {
   const { prefs, serverSettings, refreshServerSettings } = useAppStore()
+  const isLoading = serverSettings.status === 'loading'
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -26,7 +27,7 @@ export function HomePage() {
               size="small"
               type="primary"
               onClick={() => refreshServerSettings()}
-              loading={(serverSettings.status as string) === 'loading'}
+              loading={isLoading}
             >
               重试
             </Button>
