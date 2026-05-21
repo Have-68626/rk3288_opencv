@@ -744,13 +744,21 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
             const bool authed = (!t.stableId.empty() && t.stableId != "Unknown");
             cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
             cv::rectangle(frame, t.bbox, color, 2);
-            std::ostringstream label;
-            label << "T" << t.trackId << " " << (t.stableId.empty() ? "Unknown" : t.stableId);
+
+            std::string label;
+            label.reserve(32);
+            label += "T";
+            label += std::to_string(t.trackId);
+            label += " ";
+            label += (t.stableId.empty() ? "Unknown" : t.stableId);
             if (authed) {
-                label << " " << static_cast<int>(t.stableConfidence * 100) << "%";
+                label += " ";
+                label += std::to_string(static_cast<int>(t.stableConfidence * 100));
+                label += "%";
             }
+
             const cv::Point origin(std::max(0, t.bbox.x), std::max(0, t.bbox.y - 8));
-            cv::putText(frame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+            cv::putText(frame, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
         }
     };
 
@@ -910,26 +918,40 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
             int thickness = (bestAuth && t->trackId == bestAuth->trackId) ? 3 : 2;
             cv::rectangle(frame, t->bbox, color, thickness);
 
-            std::ostringstream label;
-            label << "T" << t->trackId << " " << t->stableId;
+            std::string label;
+            label.reserve(32);
+            label += "T";
+            label += std::to_string(t->trackId);
+            label += " ";
+            label += t->stableId;
             if (authed) {
-                label << " " << static_cast<int>(t->stableConfidence * 100) << "%";
+                label += " ";
+                label += std::to_string(static_cast<int>(t->stableConfidence * 100));
+                label += "%";
             }
+
             const cv::Point origin(std::max(0, t->bbox.x), std::max(0, t->bbox.y - 8));
-            cv::putText(frame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+            cv::putText(frame, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
         }
 
         if (onResultCallback && (now - lastMultiMs > 650)) {
             lastMultiMs = now;
-            std::ostringstream msg;
-            msg << "FACES " << activeTracks.size();
+            std::string msg;
+            msg.reserve(32 + activeTracks.size() * 32);
+            msg += "FACES ";
+            msg += std::to_string(activeTracks.size());
             for (FaceTrack* t : activeTracks) {
-                msg << " T" << t->trackId << "=" << t->stableId;
+                msg += " T";
+                msg += std::to_string(t->trackId);
+                msg += "=";
+                msg += t->stableId;
                 if (t->stableId != "Unknown") {
-                    msg << "(" << static_cast<int>(t->stableConfidence * 100) << "%)";
+                    msg += "(";
+                    msg += std::to_string(static_cast<int>(t->stableConfidence * 100));
+                    msg += "%)";
                 }
             }
-            onResultCallback(msg.str());
+            onResultCallback(msg);
         }
 
         if (bestAuth) {
