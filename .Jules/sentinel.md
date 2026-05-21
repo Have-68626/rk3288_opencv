@@ -17,3 +17,7 @@
 **Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
 **Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
 **Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.
+## 2024-05-23 - Prevent Configuration Poisoning
+**Vulnerability:** In-memory configuration containing transient environment variable overrides was being re-serialized and persisted to disk during configuration updates, causing permanent configuration drift (Poisoning).
+**Learning:** When applying patches, always base them on the pure, known-good serialized disk state rather than an in-memory state that may have merged environment variables.
+**Prevention:** Decouple state by keeping a copy of the pure serialized config (e.g., `lastGoodJsonPretty_`) and using it as the baseline for updates.
