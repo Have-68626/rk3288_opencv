@@ -17,3 +17,7 @@
 **Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
 **Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
 **Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.
+## 2024-05-23 - Thread/Connection Exhaustion DoS in Local HTTP Server
+**Vulnerability:** The `HttpFacesServer` spawned a new detached thread for every accepted connection without any limits.
+**Learning:** Even loopback-bound servers are vulnerable to local DoS if an attacker (e.g. a malicious background script) exhausts resources by opening thousands of concurrent connections.
+**Prevention:** Implement an atomic counter and enforce a strict `MAX_CONNECTIONS` limit before spawning background threads.
