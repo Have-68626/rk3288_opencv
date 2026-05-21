@@ -42,3 +42,6 @@
 ## 2026-05-07 - Optimize EventManager JSON formatting
 **Learning:** `std::stringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency logging/event pipelines, this becomes a bottleneck.
 **Action:** Replace `std::stringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+## 2026-05-18 - Optimize Engine::processFrame string formatting
+**Learning:** `std::ostringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency rendering loops (`Engine::processFrame`), this becomes a bottleneck.
+**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
