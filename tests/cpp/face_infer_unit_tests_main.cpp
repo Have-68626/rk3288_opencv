@@ -36,6 +36,10 @@ bool test_mock_preflight_rejects_invalid_magic();
 bool test_mock_preflight_rejects_incomplete_file();
 bool test_mock_preflight_rejects_oversize_image();
 
+bool test_video_manager_is_url_source_valid_urls();
+bool test_video_manager_is_url_source_local_paths();
+bool test_video_manager_is_url_source_edge_cases();
+
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
@@ -46,6 +50,9 @@ int main() {
         {"mock_preflight_rejects_invalid_magic", test_mock_preflight_rejects_invalid_magic},
         {"mock_preflight_rejects_incomplete_file", test_mock_preflight_rejects_incomplete_file},
         {"mock_preflight_rejects_oversize_image", test_mock_preflight_rejects_oversize_image},
+        {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
+        {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
+        {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

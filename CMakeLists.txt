@@ -455,6 +455,7 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/face_infer_unit_tests_main.cpp"
             "tests/cpp/test_face_infer_pipeline.cpp"
             "tests/cpp/test_mock_preflight_guards.cpp"
+            "tests/cpp/test_video_manager.cpp"
             "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/cpp/src/FaceAlign.cpp"
             "src/cpp/src/FaceInferOutcomeJson.cpp"
