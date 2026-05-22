@@ -17,3 +17,7 @@
 **Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
 **Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
 **Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.
+## 2026-05-18 - Fix FFmpeg command injection vulnerability via argument list parsing
+**Vulnerability:** `FfmpegRtmpPusher` dynamically constructed commands via simple string concatenation and double-quote escaping. This naive escaping (merely escaping double quotes) failed to handle backslashes or shell metacharacters, allowing arbitrary arguments to be injected.
+**Learning:** In Java when integrating with frameworks that parse strings into shell-like arguments (like `FFmpegKit`), manual string concatenation with naive escaping is extremely error-prone and easily broken by inputs containing spaces, quotes, or backslashes.
+**Prevention:** Always collect command arguments into a `List<String>`. To safely serialize them back into a single string for legacy reflection APIs, enclose every argument in single quotes (`'`) and replace internal single quotes with `'\''`.
