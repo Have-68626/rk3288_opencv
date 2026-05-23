@@ -3,6 +3,9 @@ package com.example.rk3288_opencv;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+
 final class FfmpegRtmpPusher {
     private volatile Object session;
 
@@ -11,18 +14,30 @@ final class FfmpegRtmpPusher {
         // Check if input is a file/url or a raw pipe
         boolean isRaw = input.startsWith("pipe:");
         
-        StringBuilder cmd = new StringBuilder();
+        List<String> args = new ArrayList<>();
         
         if (!isRaw) {
             // For files/network streams, loop indefinitely and read at native framerate
-            cmd.append("-stream_loop -1 ");
-            cmd.append("-re ");
-            cmd.append("-i ").append(quote(input)).append(" ");
+            args.add("-stream_loop");
+            args.add("-1");
+            args.add("-re");
+            args.add("-i");
+            args.add(input);
         } else {
             // For raw input (e.g. NV21 from camera via pipe)
             // Assumes 640x480 NV21 @ 30fps
-            cmd.append("-f rawvideo -vcodec rawvideo -s 640x480 -r 30 -pix_fmt nv21 ");
-            cmd.append("-i ").append(quote(input)).append(" ");
+            args.add("-f");
+            args.add("rawvideo");
+            args.add("-vcodec");
+            args.add("rawvideo");
+            args.add("-s");
+            args.add("640x480");
+            args.add("-r");
+            args.add("30");
+            args.add("-pix_fmt");
+            args.add("nv21");
+            args.add("-i");
+            args.add(input);
         }
 
         // Encoding settings for RTMP (FLV container, H.264 video, AAC audio)
@@ -37,12 +52,28 @@ final class FfmpegRtmpPusher {
         // If not, FFmpeg will fail, which is acceptable for "Mock".
         
         if (isRaw) {
-             cmd.append("-c:v libx264 -preset ultrafast -tune zerolatency -f flv ");
+            args.add("-c:v");
+            args.add("libx264");
+            args.add("-preset");
+            args.add("ultrafast");
+            args.add("-tune");
+            args.add("zerolatency");
+            args.add("-f");
+            args.add("flv");
         } else {
-             cmd.append("-c copy -f flv ");
+            args.add("-c");
+            args.add("copy");
+            args.add("-f");
+            args.add("flv");
         }
         
-        cmd.append(quote(rtmpUrl));
+        args.add(rtmpUrl);
+
+        StringBuilder cmd = new StringBuilder();
+        for (int i = 0; i < args.size(); i++) {
+            if (i > 0) cmd.append(" ");
+            cmd.append(quote(args.get(i)));
+        }
 
         try {
             Class<?> kit = Class.forName("com.arthenica.ffmpegkit.FFmpegKit");
@@ -70,7 +101,7 @@ final class FfmpegRtmpPusher {
     }
 
     private static String quote(@NonNull String s) {
-        return "\"" + s.replace("\"", "\\\"") + "\"";
+        return "'" + s.replace("'", "'\\''") + "'";
     }
 
     interface Callback {

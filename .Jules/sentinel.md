@@ -17,3 +17,8 @@
 **Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
 **Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
 **Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.
+
+## 2025-05-23 - Prevent FFmpeg Command Injection in Legacy Wrappers
+**Vulnerability:** FFmpeg commands were constructed by directly appending user-provided RTMP URLs and file paths into a `StringBuilder` space-separated string. This string was then passed to `FFmpegKit.executeAsync(String)`, making the application vulnerable to command injection via shell metacharacters within the URL or path.
+**Learning:** Legacy dependencies like older FFmpegKit AARs often only expose `executeAsync(String)` instead of array-based variants (`executeAsync(String[])`), forcing developers to pass a single string. Direct string concatenation in this scenario trivially leads to command injection if paths or URLs are controlled by users.
+**Prevention:** To prevent command injection while preserving legacy string-based reflection signatures, collect command arguments in a list, escape each by replacing `'` with `'\''` and wrapping the entire argument in single quotes (`'...'`), then join with spaces.
