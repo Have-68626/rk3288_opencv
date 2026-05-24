@@ -45,9 +45,11 @@ cv::Mat FaceRecognizer::cropAndNormalizeFaceGray(const cv::Mat& bgr, const cv::R
     r.width = std::min(bgr.cols - r.x, r.width + padX * 2);
     r.height = std::min(bgr.rows - r.y, r.height + padY * 2);
 
-    cv::Mat crop = bgr(r).clone();
+    // Performance optimization: Avoid redundant clone() by directly passing the read-only ROI to cvtColor.
+    // Why: Saves memory allocation and deep copy overhead during face cropping.
+    // Rollback: Revert to `cv::Mat crop = bgr(r).clone(); cv::cvtColor(crop, gray, cv::COLOR_BGR2GRAY);`
     cv::Mat gray;
-    cv::cvtColor(crop, gray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(bgr(r), gray, cv::COLOR_BGR2GRAY);
     cv::resize(gray, gray, cv::Size(w, h), 0, 0, cv::INTER_LINEAR);
     cv::equalizeHist(gray, gray);
     return gray;

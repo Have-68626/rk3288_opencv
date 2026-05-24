@@ -48,3 +48,7 @@
 ## 2026-05-24 - Optimize memory ops in loop
 **Learning:** Element-wise loops on std::vector buffers can often be safely and elegantly replaced with std::copy, combined with CV_Assert for size validation, yielding small performance improvements without losing type safety.
 **Action:** Use std::copy for linear float array duplication instead of row/col indexing where continuous buffer constraints hold true.
+
+## 2024-05-18 - C++ Mat Clone Bottleneck
+**Learning:** In the Windows local server rendering path (`src/win/src/FaceRecognizer.cpp`), `cv::Mat::clone()` was being unnecessarily called on read-only regions (like cropping for inference). Using the direct continuous Region Of Interest (ROI) when resizing/converting cuts down on heap allocations.
+**Action:** Always verify if a `clone()` is actually necessary when dealing with `cv::Mat` objects inside per-frame inference loops. Pass direct ROIs to OpenCV functions instead, unless structural separation is explicitly required.
