@@ -74,7 +74,7 @@ final class FfmpegRtmpPusher {
 
         try {
             Class<?> kit = Class.forName("com.arthenica.ffmpegkit.FFmpegKit");
-            session = kit.getMethod("executeAsync", String.class).invoke(null, cmdStr.toString());
+            session = kit.getMethod("executeAsync", String[].class).invoke(null, (Object) cmdArgs.toArray(new String[0]));
             if (callback != null) {
                 callback.onCompleted(true, "STARTED");
             }
