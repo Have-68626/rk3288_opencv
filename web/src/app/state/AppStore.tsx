@@ -55,14 +55,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     )
 
     try {
-      let timeoutId: number | undefined
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        timeoutId = setTimeout(() => reject(new Error('Operation timed out (> 5s)')), 5000) as unknown as number
-      )
-      const env = await Promise.race([
-        getServerSettings(prefs).finally(() => clearTimeout(timeoutId)),
-        timeoutPromise
-      ])
+      const env = await getServerSettings(prefs)
 
       if (!env.ok) {
         throw new ApiError(env.error.code, env.error.message, {
