@@ -291,6 +291,7 @@ export function PreviewPage() {
               value={personId}
               maxLength={32}
               showCount
+              allowClear
               onChange={(e) => setPersonId(e.target.value)}
               placeholder="例如：alice"
             />
