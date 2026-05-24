@@ -20,7 +20,8 @@
 namespace rk_win {
 namespace {
 
-constexpr const wchar_t* kProductNameW = L"rk_wcfr";  // TODO: 产品化时可替换为品牌名/应用名
+[[maybe_unused]] constexpr const wchar_t* kProductNameW = L"rk_wcfr"; // Reserved for future visible product/app name
+constexpr const wchar_t* kConfigDirNameW = L"rk_wcfr";                // Internal identifier for local filesystem paths
 constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
@@ -649,7 +650,7 @@ std::filesystem::path WinJsonConfigStore::defaultConfigPath() {
     }
     const std::wstring appdata = getEnvW(L"APPDATA");
     std::filesystem::path base = appdata.empty() ? std::filesystem::current_path() : std::filesystem::path(appdata);
-    base /= kProductNameW;
+    base /= kConfigDirNameW;
     return base / L"config.json";
 }
 
