@@ -27,7 +27,7 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
         (*it)["mean"] >> meanMat;
         meanMat = meanMat.reshape(1, 1);
         e.mean.resize(static_cast<size_t>(meanMat.cols));
-        CV_Assert(e.mean.size() * sizeof(float) == meanMat.total() * meanMat.elemSize());
+        CV_Assert(meanMat.type() == CV_32F && meanMat.isContinuous() && e.mean.size() == (size_t)meanMat.total());
         std::copy(meanMat.ptr<float>(), meanMat.ptr<float>() + meanMat.total(), e.mean.begin());
         if (!e.id.empty() && !e.mean.empty()) {
             persons_.emplace(e.id, std::move(e));
