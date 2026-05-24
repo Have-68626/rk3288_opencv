@@ -27,6 +27,10 @@ bool test_json_lite_surrogate_pairs() {
         expected.push_back(static_cast<char>(0x84));
         expected.push_back(static_cast<char>(0x9E));
 
+
+
+
+
         if (!ok || !out.isString() || out.s != expected) {
             std::cerr << "FAIL: Test 2 - Surrogate pair. err: " << err << " out: " << (out.isString() ? out.s : "not string") << std::endl;
             return false;
@@ -69,6 +73,10 @@ bool test_json_lite_surrogate_pairs() {
         }
     }
 
+
+
+
+
     // Test 7: High surrogate followed by another high surrogate
     {
         bool ok = parseJson("\"\\uD834\\uD834\"", out, err);
@@ -104,6 +112,10 @@ bool test_json_lite_surrogate_pairs() {
             return false;
         }
     }
+
+
+
+
 
     return true;
 }

@@ -3,6 +3,9 @@ package com.example.rk3288_opencv;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+
 final class FfmpegRtmpPusher {
     private volatile Object session;
 
@@ -11,18 +14,30 @@ final class FfmpegRtmpPusher {
         // Check if input is a file/url or a raw pipe
         boolean isRaw = input.startsWith("pipe:");
         
-        StringBuilder cmd = new StringBuilder();
+        List<String> cmdArgs = new ArrayList<>();
         
         if (!isRaw) {
             // For files/network streams, loop indefinitely and read at native framerate
-            cmd.append("-stream_loop -1 ");
-            cmd.append("-re ");
-            cmd.append("-i ").append(quote(input)).append(" ");
+            cmdArgs.add("-stream_loop");
+            cmdArgs.add("-1");
+            cmdArgs.add("-re");
+            cmdArgs.add("-i");
+            cmdArgs.add(input);
         } else {
             // For raw input (e.g. NV21 from camera via pipe)
             // Assumes 640x480 NV21 @ 30fps
-            cmd.append("-f rawvideo -vcodec rawvideo -s 640x480 -r 30 -pix_fmt nv21 ");
-            cmd.append("-i ").append(quote(input)).append(" ");
+            cmdArgs.add("-f");
+            cmdArgs.add("rawvideo");
+            cmdArgs.add("-vcodec");
+            cmdArgs.add("rawvideo");
+            cmdArgs.add("-s");
+            cmdArgs.add("640x480");
+            cmdArgs.add("-r");
+            cmdArgs.add("30");
+            cmdArgs.add("-pix_fmt");
+            cmdArgs.add("nv21");
+            cmdArgs.add("-i");
+            cmdArgs.add(input);
         }
 
         // Encoding settings for RTMP (FLV container, H.264 video, AAC audio)
@@ -37,16 +52,32 @@ final class FfmpegRtmpPusher {
         // If not, FFmpeg will fail, which is acceptable for "Mock".
         
         if (isRaw) {
-             cmd.append("-c:v libx264 -preset ultrafast -tune zerolatency -f flv ");
+             cmdArgs.add("-c:v");
+             cmdArgs.add("libx264");
+             cmdArgs.add("-preset");
+             cmdArgs.add("ultrafast");
+             cmdArgs.add("-tune");
+             cmdArgs.add("zerolatency");
+             cmdArgs.add("-f");
+             cmdArgs.add("flv");
         } else {
-             cmd.append("-c copy -f flv ");
+             cmdArgs.add("-c");
+             cmdArgs.add("copy");
+             cmdArgs.add("-f");
+             cmdArgs.add("flv");
         }
         
-        cmd.append(quote(rtmpUrl));
+        cmdArgs.add(rtmpUrl);
+
+        StringBuilder cmd = new StringBuilder();
+        for (int i = 0; i < cmdArgs.size(); i++) {
+            if (i > 0) cmd.append(" ");
+            cmd.append(escapeFFmpegArgument(cmdArgs.get(i)));
+        }
 
         try {
             Class<?> kit = Class.forName("com.arthenica.ffmpegkit.FFmpegKit");
-            session = kit.getMethod("executeAsync", String.class).invoke(null, cmd.toString());
+            session = kit.getMethod("executeAsync", String[].class).invoke(null, (Object) cmdArgs.toArray(new String[0]));
             if (callback != null) {
                 callback.onCompleted(true, "STARTED");
             }
@@ -69,12 +100,15 @@ final class FfmpegRtmpPusher {
         }
     }
 
-    private static String quote(@NonNull String s) {
-        return "\"" + s.replace("\"", "\\\"") + "\"";
+    // visible for testing
+    static String escapeFFmpegArgument(@NonNull String arg) {
+        if (arg == null) {
+            return "''";
+        }
+        return "'" + arg.replace("'", "'\\''") + "'";
     }
 
     interface Callback {
         void onCompleted(boolean success, @NonNull String code);
     }
 }
-
