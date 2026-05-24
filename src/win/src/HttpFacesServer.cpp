@@ -131,17 +131,20 @@ static std::string utf8FromWideLocal(const std::wstring& ws) {
 }
 
 #if RK_WIN_HAS_OPENCV
-static bool buildJpegWithOverlay(const RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
+static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
     if (rs.bgr.empty()) return false;
-    cv::Mat img = rs.bgr.clone();
+
+    // Performance optimization: RenderState::bgr is already an isolated thread-local copy.
+    // Why: Avoids an expensive and redundant deep copy (clone()) allocating ~6MB per frame.
+    // Rollback: Revert to taking `const RenderState& rs` and doing `cv::Mat img = rs.bgr.clone();`.
     for (const auto& f : rs.faces) {
-        cv::rectangle(img, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        cv::rectangle(rs.bgr, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     }
-    std::vector<int> params;
-    params.push_back(cv::IMWRITE_JPEG_QUALITY);
-    params.push_back(80);
+
+    static const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
+
     std::vector<uchar> buf;
-    if (!cv::imencode(".jpg", img, buf, params)) return false;
+    if (!cv::imencode(".jpg", rs.bgr, buf, params)) return false;
     outJpeg.assign(buf.begin(), buf.end());
     return true;
 }
@@ -218,6 +221,12 @@ void HttpFacesServer::acceptLoop() {
             continue;
         }
 
+        if (activeConnections_ >= MAX_CONNECTIONS) {
+            closesocket(cs);
+            continue;
+        }
+        activeConnections_++;
+
 #ifdef _WIN32
         DWORD timeout = 5000;
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
@@ -230,7 +239,16 @@ void HttpFacesServer::acceptLoop() {
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #endif
 
-        std::thread([this, cs]() { handleClient(static_cast<std::uintptr_t>(cs)); }).detach();
+        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS) {
+            closesocket(cs);
+            continue;
+        }
+
+        activeConnections_++;
+        std::thread([this, cs]() {
+            handleClient(static_cast<std::uintptr_t>(cs));
+            activeConnections_--;
+        }).detach();
     }
 }
 
@@ -785,6 +803,12 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
 }
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
+    struct ConnectionGuard {
+        std::atomic<int>& count;
+        ConnectionGuard(std::atomic<int>& c) : count(c) {}
+        ~ConnectionGuard() { count--; }
+    } guard(activeConnections_);
+
     const SOCKET s = static_cast<SOCKET>(sock);
     HttpRequest req;
     std::string err;
