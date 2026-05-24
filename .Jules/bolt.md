@@ -45,6 +45,6 @@
 ## 2026-05-18 - Optimize Engine::processFrame string formatting
 **Learning:** `std::ostringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency rendering loops (`Engine::processFrame`), this becomes a bottleneck.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
-## 2024-05-30 - Optimize HttpFacesServer buildJpegWithOverlay
-**Learning:** `buildJpegWithOverlay` performed an expensive `cv::Mat::clone()` on `RenderState::bgr` even though `RenderState::bgr` is already an isolated deep copy created by `FramePipeline::tryGetRenderState()`. This redundant copy added significant latency and memory allocation overhead (~6MB per 1080p frame) in the hot loop of the HTTP MJPEG stream.
-**Action:** Remove the `clone()` by changing the signature to `RenderState& rs` (non-const) and drawing bounding boxes directly onto `rs.bgr`.
+## 2026-05-24 - Optimize memory ops in loop
+**Learning:** Element-wise loops on std::vector buffers can often be safely and elegantly replaced with std::copy, combined with CV_Assert for size validation, yielding small performance improvements without losing type safety.
+**Action:** Use std::copy for linear float array duplication instead of row/col indexing where continuous buffer constraints hold true.

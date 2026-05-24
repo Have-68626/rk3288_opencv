@@ -27,9 +27,8 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
         (*it)["mean"] >> meanMat;
         meanMat = meanMat.reshape(1, 1);
         e.mean.resize(static_cast<size_t>(meanMat.cols));
-        for (int i = 0; i < meanMat.cols; i++) {
-            e.mean[static_cast<size_t>(i)] = meanMat.at<float>(0, i);
-        }
+        CV_Assert(meanMat.type() == CV_32F && meanMat.isContinuous() && e.mean.size() == (size_t)meanMat.total());
+        std::copy(meanMat.ptr<float>(), meanMat.ptr<float>() + meanMat.total(), e.mean.begin());
         if (!e.id.empty() && !e.mean.empty()) {
             persons_.emplace(e.id, std::move(e));
         }
@@ -51,9 +50,8 @@ bool FaceDatabase::save(const std::filesystem::path& path) const {
     for (const auto& kv : persons_) {
         const auto& e = kv.second;
         cv::Mat meanMat(1, static_cast<int>(e.mean.size()), CV_32F);
-        for (int i = 0; i < meanMat.cols; i++) {
-            meanMat.at<float>(0, i) = e.mean[static_cast<size_t>(i)];
-        }
+        CV_Assert(e.mean.size() * sizeof(float) == meanMat.total() * meanMat.elemSize());
+        std::copy(e.mean.begin(), e.mean.end(), meanMat.ptr<float>());
         fs << "{";
         fs << "id" << e.id;
         fs << "count" << e.count;

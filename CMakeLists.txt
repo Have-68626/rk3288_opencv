@@ -799,6 +799,27 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         crypt32
     )
     add_test(NAME win_unit_tests COMMAND win_unit_tests)
+
+    add_executable(win_face_database_perf
+        "tests/win/test_face_database_perf.cpp"
+        "src/win/src/FaceDatabase.cpp"
+    )
+    target_include_directories(win_face_database_perf PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+    )
+    target_compile_definitions(win_face_database_perf PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(win_face_database_perf PRIVATE /utf-8)
+    endif()
+    target_link_libraries(win_face_database_perf
+        opencv_core
+        opencv_imgproc
+        opencv_objdetect
+        opencv_imgcodecs
+    )
+    add_test(NAME win_face_database_perf COMMAND win_face_database_perf)
+
 endif()
 
 endif()
