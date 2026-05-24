@@ -75,7 +75,7 @@ export function HomePage() {
         extra={
           <Button
             onClick={handleRefresh}
-            loading={(serverSettings.status as string) === 'loading'}
+            loading={isLoading}
           >
             刷新后端设置
           </Button>
