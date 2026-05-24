@@ -41,6 +41,10 @@ bool test_face_infer_outcome_json_missing_metrics();
 bool test_face_infer_outcome_json_full();
 bool test_face_infer_outcome_json_no_face();
 
+bool test_video_manager_is_url_source_valid_urls();
+bool test_video_manager_is_url_source_local_paths();
+bool test_video_manager_is_url_source_edge_cases();
+
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
