@@ -91,6 +91,10 @@ bool test_nativelog_writes_content() {
     std::string testDir = "test_nativelog_content_456";
     std::string logFile = "rk3288.log";
     cleanupTestDir(testDir, logFile);
+    if (fileExists(testDir)) {
+        std::cout << "test_nativelog_writes_content: Pre-test cleanup failed." << std::endl;
+        return false;
+    }
 
     rklog::setLogDirs(testDir, "", logFile);
     rklog::logInfo("TEST_MOD", "test_content", "Hello Content Write");
