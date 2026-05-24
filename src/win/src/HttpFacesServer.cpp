@@ -131,17 +131,20 @@ static std::string utf8FromWideLocal(const std::wstring& ws) {
 }
 
 #if RK_WIN_HAS_OPENCV
-static bool buildJpegWithOverlay(const RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
+static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
     if (rs.bgr.empty()) return false;
-    cv::Mat img = rs.bgr.clone();
+
+    // Performance optimization: RenderState::bgr is already an isolated thread-local copy.
+    // Why: Avoids an expensive and redundant deep copy (clone()) allocating ~6MB per frame.
+    // Rollback: Revert to taking `const RenderState& rs` and doing `cv::Mat img = rs.bgr.clone();`.
     for (const auto& f : rs.faces) {
-        cv::rectangle(img, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        cv::rectangle(rs.bgr, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     }
-    std::vector<int> params;
-    params.push_back(cv::IMWRITE_JPEG_QUALITY);
-    params.push_back(80);
+
+    static const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
+
     std::vector<uchar> buf;
-    if (!cv::imencode(".jpg", img, buf, params)) return false;
+    if (!cv::imencode(".jpg", rs.bgr, buf, params)) return false;
     outJpeg.assign(buf.begin(), buf.end());
     return true;
 }
