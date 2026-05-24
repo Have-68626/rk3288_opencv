@@ -20,7 +20,8 @@
 namespace rk_win {
 namespace {
 
-constexpr const wchar_t* kProductNameW = L"rk_wcfr";  // TODO: 产品化时可替换为品牌名/应用名
+[[maybe_unused]] constexpr const wchar_t* kProductNameW = L"rk_wcfr"; // Reserved for future visible product/app name
+constexpr const wchar_t* kConfigDirNameW = L"rk_wcfr";                // Internal identifier for local filesystem paths
 constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
@@ -649,7 +650,7 @@ std::filesystem::path WinJsonConfigStore::defaultConfigPath() {
     }
     const std::wstring appdata = getEnvW(L"APPDATA");
     std::filesystem::path base = appdata.empty() ? std::filesystem::current_path() : std::filesystem::path(appdata);
-    base /= kProductNameW;
+    base /= kConfigDirNameW;
     return base / L"config.json";
 }
 
@@ -1219,25 +1220,23 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         return r;
     }
 
-    // 基于当前配置构造 doc，然后深度合并 patch，再校验+落盘
-    AppConfig oldCfg;
+    // 基于已知落盘的纯净 JSON（解耦环境覆盖项），深度合并 patch，再校验+落盘
+    std::string lastJson;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        oldCfg = cfg_;
+        lastJson = lastGoodJsonPretty_;
     }
 
-    // 生成可编辑 doc（允许明文 postUrl 输入，落盘时会再加密）
+    JsonValue baseDoc;
     std::string err;
-    std::vector<std::uint8_t> key;
-    // 这里不需要 key 参与 doc 生成（明文可接受），但校验/解析需要解密时要 key
-    JsonValue baseDoc = toSettingsDocObject(oldCfg, false, false, nullptr, err);
-    if (!err.empty()) {
+    if (!parseJson(lastJson, baseDoc, err)) {
         r.httpStatus = 500;
         r.code = "internal_error";
-        r.message = "构造 settings 失败";
+        r.message = "解析落盘配置失败";
         r.details.push_back(err);
         return r;
     }
+
     deepMergeObject(baseDoc, patch);
 
     // 校验 schema

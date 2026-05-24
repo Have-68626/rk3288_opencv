@@ -33,64 +33,69 @@ static std::string jsonEscape(const std::string& s) {
 
 class JsonWriter {
 public:
+    JsonWriter() { out_.reserve(4096); }
     void beginObject() {
         beginValue_();
-        oss_ << "{";
+        out_ += "{";
         ctx_.push_back(CtxType::Object);
         first_.push_back(true);
     }
     void endObject() {
-        oss_ << "}";
+        out_ += "}";
         if (!ctx_.empty()) ctx_.pop_back();
         if (!first_.empty()) first_.pop_back();
     }
 
     void beginArray() {
         beginValue_();
-        oss_ << "[";
+        out_ += "[";
         ctx_.push_back(CtxType::Array);
         first_.push_back(true);
     }
     void endArray() {
-        oss_ << "]";
+        out_ += "]";
         if (!ctx_.empty()) ctx_.pop_back();
         if (!first_.empty()) first_.pop_back();
     }
 
     void key(const char* k) {
         if (!first_.empty()) {
-            if (!first_.back()) oss_ << ",";
+            if (!first_.back()) out_ += ",";
             first_.back() = false;
         }
-        oss_ << "\"" << jsonEscape(k) << "\":";
+        out_ += "\""; out_ += jsonEscape(k); out_ += "\":";
     }
 
     void string(const std::string& v) {
         beginValue_();
-        oss_ << "\"" << jsonEscape(v) << "\"";
+        out_ += "\""; out_ += jsonEscape(v); out_ += "\"";
     }
     void string(const char* v) {
         beginValue_();
-        oss_ << "\"" << jsonEscape(v ? std::string(v) : std::string()) << "\"";
+        out_ += "\""; out_ += jsonEscape(v ? std::string(v) : std::string()); out_ += "\"";
     }
     void boolean(bool v) {
         beginValue_();
-        oss_ << (v ? "true" : "false");
+        out_ += (v ? "true" : "false");
     }
     void number(double v) {
         beginValue_();
-        oss_ << v;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%g", v);
+        out_ += buf;
     }
     void number(long long v) {
         beginValue_();
-        oss_ << v;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%lld", v);
+        out_ += buf;
     }
     void number(std::uint64_t v) {
         beginValue_();
-        oss_ << v;
+        out_ += std::to_string(v);
     }
 
-    std::string str() const { return oss_.str(); }
+    std::string str() const { return out_; }
 
 private:
     enum class CtxType { Object, Array };
@@ -99,12 +104,12 @@ private:
         if (ctx_.empty() || first_.empty()) return;
         if (ctx_.size() != first_.size()) return;
         if (ctx_.back() == CtxType::Array) {
-            if (!first_.back()) oss_ << ",";
+            if (!first_.back()) out_ += ",";
             first_.back() = false;
         }
     }
 
-    std::ostringstream oss_;
+    std::string out_;
     std::vector<CtxType> ctx_;
     std::vector<bool> first_;
 };
