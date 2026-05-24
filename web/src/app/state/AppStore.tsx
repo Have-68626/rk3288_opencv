@@ -87,7 +87,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
-      message.success('Settings applied')
+      message.success('设置已应用')
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
