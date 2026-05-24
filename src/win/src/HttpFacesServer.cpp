@@ -218,6 +218,12 @@ void HttpFacesServer::acceptLoop() {
             continue;
         }
 
+        if (activeConnections_ >= MAX_CONNECTIONS) {
+            closesocket(cs);
+            continue;
+        }
+        activeConnections_++;
+
 #ifdef _WIN32
         DWORD timeout = 5000;
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
@@ -794,6 +800,12 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
 }
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
+    struct ConnectionGuard {
+        std::atomic<int>& count;
+        ConnectionGuard(std::atomic<int>& c) : count(c) {}
+        ~ConnectionGuard() { count--; }
+    } guard(activeConnections_);
+
     const SOCKET s = static_cast<SOCKET>(sock);
     HttpRequest req;
     std::string err;
