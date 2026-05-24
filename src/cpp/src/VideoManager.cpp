@@ -22,10 +22,6 @@ namespace {
 
 constexpr std::uintmax_t kMockMaxImageBytes = 50ULL * 1024ULL * 1024ULL;
 
-bool isUrlSource(const std::string& path) {
-    return path.find("http://") == 0 || path.find("https://") == 0 || path.find("rtsp://") == 0 || path.find("rtmp://") == 0;
-}
-
 bool isStaticImageExt(const std::string& ext) {
     return ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp";
 }
@@ -68,6 +64,10 @@ VideoManager::VideoManager() : isRunning(false), hasNewFrame(false) {
 
 VideoManager::~VideoManager() {
     close();
+}
+
+bool VideoManager::isUrlSource(const std::string& path) {
+    return path.rfind("rtsp://", 0) == 0 || path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("rtmp://", 0) == 0;
 }
 
 void VideoManager::setUseOpenCL(bool requested) {
@@ -526,8 +526,6 @@ bool VideoManager::getLatestFrame(cv::Mat& outFrame) {
         return false;
     }
     latestFrame.copyTo(outFrame);
-    // Optional: Reset hasNewFrame if we want to enforce consuming only new frames
-    // hasNewFrame = false; 
     return true;
 }
 

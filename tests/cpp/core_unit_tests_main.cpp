@@ -30,6 +30,7 @@ bool runAll(const TestCase* cases, int n) {
 
 bool test_face_search_stable_topk();
 bool test_face_search_cosine_without_normalization();
+bool test_face_search_nan_handling();
 bool test_frame_input_latest_only_keeps_newest();
 bool test_frame_input_bounded_queue_drops_oldest();
 bool test_threshold_policy_version_and_consecutive();
@@ -39,11 +40,16 @@ bool test_event_manager_unique_id();
 bool test_http_faces_server_path_validation();
 bool test_inference_throttle_parse_and_clamp();
 
+bool test_file_hash_known_content();
+bool test_file_hash_empty_file();
+bool test_file_hash_invalid_path();
+
 int main() {
     using namespace rk_core_test;
     const TestCase cases[] = {
         {"face_search_stable_topk", test_face_search_stable_topk},
         {"face_search_cosine_without_normalization", test_face_search_cosine_without_normalization},
+        {"face_search_nan_handling", test_face_search_nan_handling},
         {"frame_input_latest_only_keeps_newest", test_frame_input_latest_only_keeps_newest},
         {"frame_input_bounded_queue_drops_oldest", test_frame_input_bounded_queue_drops_oldest},
         {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
@@ -52,6 +58,9 @@ int main() {
         {"event_manager_format_json", test_event_manager_format_json},
         {"event_manager_unique_id", test_event_manager_unique_id},
         {"http_faces_server_path_validation", test_http_faces_server_path_validation},
+        {"file_hash_known_content", test_file_hash_known_content},
+        {"file_hash_empty_file", test_file_hash_empty_file},
+        {"file_hash_invalid_path", test_file_hash_invalid_path},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

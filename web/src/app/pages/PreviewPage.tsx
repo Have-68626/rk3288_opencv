@@ -35,6 +35,10 @@ export function PreviewPage() {
   const [previewKey, setPreviewKey] = useState(0)
   const [imgError, setImgError] = useState(false)
 
+  const handleRefresh = () => {
+    setImgError(false)
+    setPreviewKey((v) => v + 1)
+  }
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
   const [isFlippingX, setIsFlippingX] = useState(false)
