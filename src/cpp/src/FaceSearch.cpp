@@ -114,6 +114,12 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
             err = "FaceSearchLinearIndex: embedding dim 不一致";
             return false;
         }
+        for (float v : e.embedding) {
+            if (std::isnan(v)) {
+                err = "FaceSearchLinearIndex: embedding 包含 NaN";
+                return false;
+            }
+        }
         norms_.push_back(l2Norm(e.embedding.data(), dim));
     }
 
@@ -132,6 +138,12 @@ std::vector<FaceSearchHit> FaceSearchLinearIndex::searchTopK(const std::vector<f
         err = "FaceSearchLinearIndex: query dim 不匹配";
         return {};
     }
+    for (float v : query) {
+        if (std::isnan(v)) {
+            err = "FaceSearchLinearIndex: query 包含 NaN";
+            return {};
+        }
+    }
     if (topK == 0 || entries_.empty()) return {};
     if (topK > entries_.size()) topK = entries_.size();
 
@@ -147,7 +159,6 @@ std::vector<FaceSearchHit> FaceSearchLinearIndex::searchTopK(const std::vector<f
     for (std::size_t i = 0; i < entries_.size(); i++) {
         const auto& e = entries_[i];
         const float score = cosineSimilarity(query.data(), qn, e.embedding.data(), norms_[i], dim_, opt.assumeL2Normalized);
-        if (std::isnan(score)) continue;
         fastHits.push_back({i, score});
     }
 

@@ -80,3 +80,29 @@ bool test_face_search_cosine_without_normalization() {
     return true;
 }
 
+bool test_face_search_nan_handling() {
+    FaceSearchLinearIndex index;
+    std::string err;
+
+    // Test reset with NaN
+    std::vector<FaceSearchEntry> entries_nan;
+    entries_nan.push_back(FaceSearchEntry{"A", {1.0f, std::nanf(""), 0.0f}});
+    if (index.reset(std::move(entries_nan), 3, err)) return false;
+    if (err != "FaceSearchLinearIndex: embedding 包含 NaN") return false;
+
+    // Test searchTopK with NaN
+    std::vector<FaceSearchEntry> entries;
+    entries.push_back(FaceSearchEntry{"A", {1.0f, 0.0f, 0.0f}});
+    if (!index.reset(std::move(entries), 3, err)) return false;
+
+    FaceSearchOptions opt;
+    opt.tieEpsilon = 1e-6f;
+    opt.assumeL2Normalized = true;
+
+    const std::vector<float> query_nan = {1.0f, std::nanf(""), 0.0f};
+    const auto hits_nan = index.searchTopK(query_nan, 3, opt, err);
+    if (err != "FaceSearchLinearIndex: query 包含 NaN") return false;
+    if (!hits_nan.empty()) return false;
+
+    return true;
+}

@@ -30,6 +30,7 @@ bool runAll(const TestCase* cases, int n) {
 
 bool test_face_search_stable_topk();
 bool test_face_search_cosine_without_normalization();
+bool test_face_search_nan_handling();
 bool test_frame_input_latest_only_keeps_newest();
 bool test_frame_input_bounded_queue_drops_oldest();
 bool test_threshold_policy_version_and_consecutive();
@@ -44,6 +45,7 @@ int main() {
     const TestCase cases[] = {
         {"face_search_stable_topk", test_face_search_stable_topk},
         {"face_search_cosine_without_normalization", test_face_search_cosine_without_normalization},
+        {"face_search_nan_handling", test_face_search_nan_handling},
         {"frame_input_latest_only_keeps_newest", test_frame_input_latest_only_keeps_newest},
         {"frame_input_bounded_queue_drops_oldest", test_frame_input_bounded_queue_drops_oldest},
         {"threshold_policy_version_and_consecutive", test_threshold_policy_version_and_consecutive},
