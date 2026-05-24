@@ -10,7 +10,6 @@
 ## 2025-02-23 - Async Feedback for Select Components
 **Learning:** React/Ant Design `<Select>` components that trigger asynchronous operations (like API calls on `onChange`) lack built-in `loading` prop support in the same way `<Button>` or `<Switch>` do. This can lead to users repeatedly changing selections before the first request finishes, causing race conditions or missing feedback.
 **Action:** Wrap the `onChange` asynchronous call in a `try/catch/finally` block. Use `message.loading('...', 0)` to provide persistent feedback and hide it in the `finally` block. Conditionally disable the `<Select>` component using `disabled={isLoading}` during the async operation to prevent concurrent modifications.
-
-## 2024-05-20 - Adding allowClear and showCount to strict-length Inputs
-**Learning:** For `maxLength` constrained inputs (like a `personId` max 32 chars) in forms, omitting `showCount` makes users blind to how close they are to the limit. Ant Design's `<Input showCount allowClear />` is a massive one-line UX improvement for any registration-type field requiring precision.
-**Action:** Always verify if an Input component with `maxLength` could benefit from `showCount` and `allowClear` for better immediate feedback.
+## 2025-02-23 - Graceful Degradation for MJPEG Streams
+**Learning:** Raw `<img>` elements pointing to continuous streams (like MJPEG) display a jarring broken image icon if the stream connection fails or the backend service is down. This provides no actionable context to the user.
+**Action:** Always wrap volatile image streams and catch `onError` events to trigger a friendly fallback state (like an Ant Design `Empty` component) explaining the failure and offering a clear "Retry" action. Ensure image alternative text (`alt`) is descriptive ("摄像头实时预览" rather than "preview") for screen reader users when the image does render.
