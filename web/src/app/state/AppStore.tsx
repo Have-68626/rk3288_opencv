@@ -63,7 +63,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
-      if (!silent) message.success('Operation successful')
+      if (!silent) message.success('操作成功')
       return true
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
