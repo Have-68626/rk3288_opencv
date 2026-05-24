@@ -1,44 +1,22 @@
+# Bolt Performance Memory
 
-## 2026-04-03 - Optimization with std::partial_sort
-**Learning:** Using std::stable_sort on an entire large vector (e.g., in FaceSearch::searchTopK) when only topK elements are needed is an O(N log N) bottleneck.
-**Action:** Use std::partial_sort for O(N log K) performance when returning Top-K results. For stability, incorporate the element's original index into the comparison function.
-## 2024-04-06 - Avoid committing compiled benchmark binaries
-**Learning:** Writing custom benchmark scripts is a good way to test C++ performance on loops, but adding them to version control pollutes the repository and slows things down.
-**Action:** Do not commit temporary testing files, benchmark scripts, or binaries used for local performance validation to the repository's version history.
-## 2026-04-05 - Use float for embedding distance metrics
-**Learning:** Using `double` for accumulation inside tight loops (like `l2Norm` and `cosineSimilarity` in FaceSearch.cpp) on arrays of `float` creates an unnecessary performance bottleneck due to continuous type promotion and reduced SIMD utilization, especially on ARM Cortex-A17.
-**Action:** Always use `float` accumulation variables when processing `float` arrays in performance-critical loops unless exact double-precision is mathematically required.
-## 2024-05-24 - Vector L2 Normalization Loop Optimization
-**Learning:** Using `double` for accumulation inside tight loops (like `l2NormalizeInplace` in ArcFaceEmbedder.cpp and FaceInferencePipeline.cpp) on arrays of `float` creates an unnecessary performance bottleneck due to continuous type promotion and reduced SIMD utilization, especially on ARM Cortex-A17.
-**Action:** Always use `float` accumulation variables when processing `float` arrays in performance-critical loops unless exact double-precision is mathematically required.
+## Measurement First
+- Benchmark the real production path before changing code. Do not count improvements on cold-path tooling as meaningful application wins.
+- If a hotspot is not covered by an existing benchmark, write a temporary micro-benchmark, measure before and after, and clean it up immediately.
+- Keep benchmark timing boundaries tight. Exclude setup work such as network input staging, extractor creation, or other one-time preparation when the goal is to measure the hot operation itself.
 
-## 2024-05-14 - Optimize TopK Face Search string copying
-**Learning:** During face search, creating `FaceSearchHit` for every item in the dataset involves copying string IDs (which can be long). This is inefficient when only `topK` items are needed and causes unnecessary string allocations and copies in the hot loop.
-**Action:** Use a lightweight `FastHit` struct containing only `index` and `score` during the distance calculation and sorting loop. Map the sorted indices back to `FaceSearchHit` items (and their string IDs) only for the `topK` items after sorting is complete.
+## Verified C++ Performance Patterns
+- Prefer `std::partial_sort` when only Top-K results are needed.
+- Use `float` accumulators in tight loops over `float` arrays unless double precision is truly required.
+- Replace `std::stringstream` with pre-sized `std::string` concatenation in high-frequency event or logging paths when formatting is simple.
+- Avoid redundant `cv::Mat::clone()` calls in read-only or conversion-light hot paths. Reuse buffers or shallow copies when lifetime and layout guarantees allow it.
+- For NCNN image ingestion, prefer native pixel conversion such as `ncnn::Mat::PIXEL_BGR2RGB` over an extra `cv::cvtColor` pass.
 
-## 2026-04-12 - Benchmark Pure Inference Timing Boundary
-**Learning:** Including model input setup functions (like `net.setInput` or `ex.input`) and extractor creation inside the performance timing boundary introduces overhead and noise (jitter). This inflates measurements intended to capture purely the forward-pass or execution time of the network.
-**Action:** When measuring model inference latency, strictly bind the timer immediately before the actual forward execution (e.g., `net.forward()` or `ex.extract()`) and immediately after, excluding any state initialization or memory copying overhead from the measurement.
+## Scope And Safety
+- Optimize code that affects actual application workflows first: inference, rendering, event handling, and frame processing.
+- Keep optimizations readable and local. Do not trade maintainability for speculative micro-gains.
+- When a change depends on layout assumptions such as `isContinuous()` or read-only ownership, document the reason and rollback path in the code near the optimization.
 
-## 2026-04-17 - Avoid cv::cvtColor for NCNN Pixel Conversion
-**Learning:** Using `cv::cvtColor` to swap color channels (e.g., BGR to RGB) before passing a `cv::Mat` to NCNN introduces redundant memory allocation and copy overhead per frame. This is a common bottleneck in tight inference loops.
-**Action:** Use NCNN's native pixel conversion flags (e.g., `ncnn::Mat::PIXEL_BGR2RGB`) within `ncnn::Mat::from_pixels()` directly. Ensure the input `cv::Mat` is continuous (`isContinuous()`) before conversion to avoid access violations.
-## 2025-01-20 - YUV420 to I420 Conversion Pointer Optimization
-**Learning:** Double loops with indexing and multiplications (`col * yPixelStride`) inside tight inner loops for YUV420 pixel extraction generate redundant instructions and prevent compiler vectorization, slowing down end-to-end frame decoding times.
-**Action:** Use sequential pointer arithmetic to traverse image rows and pixels, moving the pointer directly rather than recalculating the memory offset on every iteration.
-
-## 2024-05-18 - 优化帧处理与渲染中的内存分配
-**Learning:** `cv::Mat::clone()` 强制执行深度内存拷贝并分配全新内存块。如果在热门的处理循环（如 `Engine::processFrame`、`FramePipeline::processLoop`）中频繁使用，会导致持续的堆内存分配、较高的内存碎片率以及潜在的 GC 抖动（在跨 JNI 或大量小对象分配时尤为明显）。
-**Action:** 使用预先分配的/持久化的缓冲矩阵（如类成员或被置于循环外部的 `drawBuffer`/`frameBuffer`），并配合 `cv::Mat::copyTo()`，从而仅执行数据覆盖而无需重新分配，这在保证同样线程安全性的同时显著降低了动态分配开销。
-
-## 2024-05-25 - Avoid deep copy for read-only D3D11 texture uploads
-**Learning:** Uploading multi-channel frames like `CV_8UC4` to Direct3D 11 textures in `src/win/src/D3D11Renderer.cpp` is a read-only operation from CPU memory. Performing an explicit `bgr->clone()` creates an unnecessary deep copy of the image memory, causing repetitive multi-megabyte heap allocations and high memory bandwidth overhead per frame.
-**Action:** Use a shallow copy (`bgra = *bgr`) when capturing the frame pointer for D3D11 upload if the source is already continuous and formatted correctly (e.g., `CV_8UC4`).
-
-## 2026-05-01 - Avoid Redundant deep copy when uploading cv::Mat to D3D11 Texture
-**Learning:** Uploading a `cv::Mat` frame to a Direct3D 11 texture (e.g., in `D3D11Renderer.cpp`) is inherently a read-only operation. For multi-channel frames that do not require layout conversion (like `CV_8UC4`), using `cv::Mat::clone()` creates a redundant deep copy of the image, leading to excessive memory allocation (e.g., ~8.3MB per 1080p frame). This causes continuous RSS bloat, high memory bandwidth usage, and latency jitter during the render phase.
-**Action:** Use a shallow copy (e.g., `bgra = *bgr`) instead of `clone()` for read-only `CV_8UC4` frame uploads to eliminate per-frame allocations, while still safely incrementing OpenCV's reference counter to keep the buffer alive.
-
-## 2026-05-07 - Optimize EventManager JSON formatting
-**Learning:** `std::stringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency logging/event pipelines, this becomes a bottleneck.
-**Action:** Replace `std::stringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+## Repo Hygiene For Perf Work
+- Do not commit temporary benchmark scripts, generated binaries, or object files used only for local measurement.
+- Keep performance memory in `.Jules/bolt.md` durable and pattern-based rather than tied to one transient task or measurement run.
