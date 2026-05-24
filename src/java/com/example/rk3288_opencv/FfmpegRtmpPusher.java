@@ -14,30 +14,31 @@ final class FfmpegRtmpPusher {
         // Check if input is a file/url or a raw pipe
         boolean isRaw = input.startsWith("pipe:");
         
-        List<String> args = new ArrayList<>();
+        java.util.List<String> cmdArgs = new java.util.ArrayList<>();
+        List<String> cmdArgs = new ArrayList<>();
         
         if (!isRaw) {
             // For files/network streams, loop indefinitely and read at native framerate
-            args.add("-stream_loop");
-            args.add("-1");
-            args.add("-re");
-            args.add("-i");
-            args.add(input);
+            cmdArgs.add("-stream_loop");
+            cmdArgs.add("-1");
+            cmdArgs.add("-re");
+            cmdArgs.add("-i");
+            cmdArgs.add(input);
         } else {
             // For raw input (e.g. NV21 from camera via pipe)
             // Assumes 640x480 NV21 @ 30fps
-            args.add("-f");
-            args.add("rawvideo");
-            args.add("-vcodec");
-            args.add("rawvideo");
-            args.add("-s");
-            args.add("640x480");
-            args.add("-r");
-            args.add("30");
-            args.add("-pix_fmt");
-            args.add("nv21");
-            args.add("-i");
-            args.add(input);
+            cmdArgs.add("-f");
+            cmdArgs.add("rawvideo");
+            cmdArgs.add("-vcodec");
+            cmdArgs.add("rawvideo");
+            cmdArgs.add("-s");
+            cmdArgs.add("640x480");
+            cmdArgs.add("-r");
+            cmdArgs.add("30");
+            cmdArgs.add("-pix_fmt");
+            cmdArgs.add("nv21");
+            cmdArgs.add("-i");
+            cmdArgs.add(input);
         }
 
         // Encoding settings for RTMP (FLV container, H.264 video, AAC audio)
@@ -52,32 +53,32 @@ final class FfmpegRtmpPusher {
         // If not, FFmpeg will fail, which is acceptable for "Mock".
         
         if (isRaw) {
-            args.add("-c:v");
-            args.add("libx264");
-            args.add("-preset");
-            args.add("ultrafast");
-            args.add("-tune");
-            args.add("zerolatency");
-            args.add("-f");
-            args.add("flv");
+             cmdArgs.add("-c:v");
+             cmdArgs.add("libx264");
+             cmdArgs.add("-preset");
+             cmdArgs.add("ultrafast");
+             cmdArgs.add("-tune");
+             cmdArgs.add("zerolatency");
+             cmdArgs.add("-f");
+             cmdArgs.add("flv");
         } else {
-            args.add("-c");
-            args.add("copy");
-            args.add("-f");
-            args.add("flv");
+             cmdArgs.add("-c");
+             cmdArgs.add("copy");
+             cmdArgs.add("-f");
+             cmdArgs.add("flv");
         }
         
-        args.add(rtmpUrl);
+        cmdArgs.add(rtmpUrl);
 
         StringBuilder cmd = new StringBuilder();
-        for (int i = 0; i < args.size(); i++) {
+        for (int i = 0; i < cmdArgs.size(); i++) {
             if (i > 0) cmd.append(" ");
-            cmd.append(quote(args.get(i)));
+            cmd.append(escapeFFmpegArgument(cmdArgs.get(i)));
         }
 
         try {
             Class<?> kit = Class.forName("com.arthenica.ffmpegkit.FFmpegKit");
-            session = kit.getMethod("executeAsync", String.class).invoke(null, cmd.toString());
+            session = kit.getMethod("executeAsync", String[].class).invoke(null, (Object) cmdArgs.toArray(new String[0]));
             if (callback != null) {
                 callback.onCompleted(true, "STARTED");
             }
@@ -100,12 +101,15 @@ final class FfmpegRtmpPusher {
         }
     }
 
-    private static String quote(@NonNull String s) {
-        return "'" + s.replace("'", "'\\''") + "'";
+    // visible for testing
+    static String escapeFFmpegArgument(@NonNull String arg) {
+        if (arg == null) {
+            return "''";
+        }
+        return "'" + arg.replace("'", "'\\''") + "'";
     }
 
     interface Callback {
         void onCompleted(boolean success, @NonNull String code);
     }
 }
-
