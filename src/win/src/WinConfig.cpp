@@ -223,7 +223,8 @@ AppConfig loadConfigFromIniOrDefault() {
         const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
         if (!envPort.empty()) {
             try {
-                cfg.http.port = std::stoi(envPort);
+                const int p = std::stoi(envPort);
+                if (p >= 1 && p <= 65535) cfg.http.port = p;
             } catch (...) {
             }
         }

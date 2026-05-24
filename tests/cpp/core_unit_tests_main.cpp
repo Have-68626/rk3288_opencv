@@ -40,6 +40,10 @@ bool test_event_manager_unique_id();
 bool test_http_faces_server_path_validation();
 bool test_inference_throttle_parse_and_clamp();
 
+bool test_file_hash_known_content();
+bool test_file_hash_empty_file();
+bool test_file_hash_invalid_path();
+
 int main() {
     using namespace rk_core_test;
     const TestCase cases[] = {
@@ -54,6 +58,9 @@ int main() {
         {"event_manager_format_json", test_event_manager_format_json},
         {"event_manager_unique_id", test_event_manager_unique_id},
         {"http_faces_server_path_validation", test_http_faces_server_path_validation},
+        {"file_hash_known_content", test_file_hash_known_content},
+        {"file_hash_empty_file", test_file_hash_empty_file},
+        {"file_hash_invalid_path", test_file_hash_invalid_path},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
