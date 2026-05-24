@@ -526,8 +526,6 @@ bool VideoManager::getLatestFrame(cv::Mat& outFrame) {
         return false;
     }
     latestFrame.copyTo(outFrame);
-    // Optional: Reset hasNewFrame if we want to enforce consuming only new frames
-    // hasNewFrame = false; 
     return true;
 }
 
