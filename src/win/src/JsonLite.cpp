@@ -149,6 +149,11 @@ struct Parser {
     }
 
     static bool appendUtf8FromCodepoint(std::string& out, std::uint32_t cp) {
+        // Reject surrogate codepoints
+        if (cp >= 0xD800 && cp <= 0xDFFF) {
+            return false;
+        }
+
         if (cp <= 0x7F) {
             out.push_back(static_cast<char>(cp));
             return true;
@@ -215,7 +220,6 @@ struct Parser {
                 case 'r': s.push_back('\r'); break;
                 case 't': s.push_back('\t'); break;
                 case 'u': {
-                    // \uXXXX（仅实现 BMP；若要完整支持代理对，需要额外逻辑。当前配置不依赖此特性）
                     if (end - p < 4) {
                         err = "incomplete \\u escape";
                         return false;
@@ -230,6 +234,34 @@ struct Parser {
                         cp = (cp << 4) | static_cast<std::uint32_t>(hn);
                     }
                     p += 4;
+
+                    if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                        err = fail("isolated low surrogate");
+                        return false;
+                    }
+
+                    if (cp >= 0xD800 && cp <= 0xDBFF) {
+                        if (end - p < 6 || p[0] != '\\' || p[1] != 'u') {
+                            err = fail("isolated high surrogate");
+                            return false;
+                        }
+                        std::uint32_t low = 0;
+                        for (int i = 0; i < 4; i++) {
+                            const int hn = hexNibble(p[2 + i]);
+                            if (hn < 0) {
+                                err = fail("invalid hex in \\u escape for low surrogate");
+                                return false;
+                            }
+                            low = (low << 4) | static_cast<std::uint32_t>(hn);
+                        }
+                        if (low < 0xDC00 || low > 0xDFFF) {
+                            err = fail("expected low surrogate");
+                            return false;
+                        }
+                        p += 6;
+                        cp = ((cp - 0xD800) * 0x400) + (low - 0xDC00) + 0x10000;
+                    }
+
                     if (!appendUtf8FromCodepoint(s, cp)) {
                         err = fail("invalid unicode codepoint");
                         return false;

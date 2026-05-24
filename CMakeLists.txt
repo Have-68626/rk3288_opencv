@@ -126,6 +126,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "src/cpp/src/ThresholdPolicy.cpp"
         "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "tests/win/test_json_lite.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/JsonLite.cpp"
     )
@@ -767,6 +768,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "tests/win/test_face_metrics.cpp"
         "tests/win/test_lbph_embedder.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "tests/win/test_json_lite.cpp"
         "src/cpp/src/FileHash.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/LbphEmbedder.cpp"

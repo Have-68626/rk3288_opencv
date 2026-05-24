@@ -32,6 +32,7 @@ bool runAll(const TestCase* cases, int n) {
 bool test_lbph_embedder_dim_and_distance();
 bool test_face_metrics_confusion_matrix();
 bool test_http_faces_server_path_validation();
+bool test_json_lite_surrogate_pairs();
 
 int main() {
     using namespace rk_win_test;
@@ -39,6 +40,7 @@ int main() {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},
         {"face_metrics_confusion_matrix", test_face_metrics_confusion_matrix},
         {"http_faces_server_path_validation", test_http_faces_server_path_validation},
+        {"json_lite_surrogate_pairs", test_json_lite_surrogate_pairs},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
