@@ -3,6 +3,9 @@ package com.example.rk3288_opencv;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+
 final class FfmpegRtmpPusher {
     private volatile Object session;
 
@@ -12,6 +15,7 @@ final class FfmpegRtmpPusher {
         boolean isRaw = input.startsWith("pipe:");
         
         java.util.List<String> cmdArgs = new java.util.ArrayList<>();
+        List<String> cmdArgs = new ArrayList<>();
         
         if (!isRaw) {
             // For files/network streams, loop indefinitely and read at native framerate
@@ -49,27 +53,27 @@ final class FfmpegRtmpPusher {
         // If not, FFmpeg will fail, which is acceptable for "Mock".
         
         if (isRaw) {
-            cmdArgs.add("-c:v");
-            cmdArgs.add("libx264");
-            cmdArgs.add("-preset");
-            cmdArgs.add("ultrafast");
-            cmdArgs.add("-tune");
-            cmdArgs.add("zerolatency");
-            cmdArgs.add("-f");
-            cmdArgs.add("flv");
+             cmdArgs.add("-c:v");
+             cmdArgs.add("libx264");
+             cmdArgs.add("-preset");
+             cmdArgs.add("ultrafast");
+             cmdArgs.add("-tune");
+             cmdArgs.add("zerolatency");
+             cmdArgs.add("-f");
+             cmdArgs.add("flv");
         } else {
-            cmdArgs.add("-c");
-            cmdArgs.add("copy");
-            cmdArgs.add("-f");
-            cmdArgs.add("flv");
+             cmdArgs.add("-c");
+             cmdArgs.add("copy");
+             cmdArgs.add("-f");
+             cmdArgs.add("flv");
         }
         
         cmdArgs.add(rtmpUrl);
 
-        StringBuilder cmdStr = new StringBuilder();
+        StringBuilder cmd = new StringBuilder();
         for (int i = 0; i < cmdArgs.size(); i++) {
-            if (i > 0) cmdStr.append(" ");
-            cmdStr.append(quote(cmdArgs.get(i)));
+            if (i > 0) cmd.append(" ");
+            cmd.append(escapeFFmpegArgument(cmdArgs.get(i)));
         }
 
         try {
@@ -97,12 +101,15 @@ final class FfmpegRtmpPusher {
         }
     }
 
-    private static String quote(@NonNull String s) {
-        return "'" + s.replace("'", "'\\''") + "'";
+    // visible for testing
+    static String escapeFFmpegArgument(@NonNull String arg) {
+        if (arg == null) {
+            return "''";
+        }
+        return "'" + arg.replace("'", "'\\''") + "'";
     }
 
     interface Callback {
         void onCompleted(boolean success, @NonNull String code);
     }
 }
-
