@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { message } from 'antd'
 
 import type { ServerSettingsDoc } from '../api/types'
 import { getServerSettings, putServerSettings } from '../api/settings'
@@ -54,17 +55,27 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     )
 
     try {
-      const env = await getServerSettings(prefs)
+      let timeoutId: number | undefined
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        timeoutId = setTimeout(() => reject(new Error('Operation timed out (> 5s)')), 5000) as unknown as number
+      )
+      const env = await Promise.race([
+        getServerSettings(prefs).finally(() => clearTimeout(timeoutId)),
+        timeoutPromise
+      ])
+
       if (!env.ok) {
         throw new ApiError(env.error.code, env.error.message, {
           details: env.error.details,
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
+      if (!silent) message.success('Operation successful')
       return true
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
+      if (!silent) message.error(err.message)
       return false
     }
   }, [prefs])
@@ -75,16 +86,26 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       data: prev.data,
     }))
     try {
-      const env = await putServerSettings(prefs, patch)
+      let timeoutId: number | undefined
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        timeoutId = setTimeout(() => reject(new Error('Operation timed out (> 5s)')), 5000) as unknown as number
+      )
+      const env = await Promise.race([
+        putServerSettings(prefs, patch).finally(() => clearTimeout(timeoutId)),
+        timeoutPromise
+      ])
+
       if (!env.ok) {
         throw new ApiError(env.error.code, env.error.message, {
           details: env.error.details,
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
+      message.success('Settings applied')
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
+      message.error(err.message)
       throw err
     }
   }, [prefs])

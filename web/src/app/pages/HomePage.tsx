@@ -1,10 +1,19 @@
-import { Alert, Button, Card, Descriptions, Space, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Space, Typography, message } from 'antd'
 
 import { useAppStore } from '../state/AppStore'
 
 export function HomePage() {
   const { prefs, serverSettings, refreshServerSettings } = useAppStore()
   const isLoading = serverSettings.status === 'loading'
+
+  const handleRefresh = async () => {
+    const hide = message.loading('正在刷新后端设置...', 0)
+    try {
+      await refreshServerSettings()
+    } finally {
+      hide()
+    }
+  }
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -26,7 +35,7 @@ export function HomePage() {
             <Button
               size="small"
               type="primary"
-              onClick={() => refreshServerSettings()}
+              onClick={handleRefresh}
               loading={isLoading}
             >
               重试
@@ -65,7 +74,7 @@ export function HomePage() {
         title="后端 settings（只读摘要）"
         extra={
           <Button
-            onClick={() => refreshServerSettings()}
+            onClick={handleRefresh}
             loading={(serverSettings.status as string) === 'loading'}
           >
             刷新后端设置
