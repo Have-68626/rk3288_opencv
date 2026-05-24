@@ -47,6 +47,13 @@ public:
     bool open(const std::string& filePath);
 
     /**
+     * @brief Checks if the given path is a network stream URL.
+     * @param path The path to check.
+     * @return true if the path is a supported network URL (e.g., http, rtsp).
+     */
+    static bool isUrlSource(const std::string& path);
+
+    /**
      * @brief Calling-phase preflight for mock input. Returns false with a reason code on fast reject.
      */
     static bool preflightMockInput(const std::string& filePath, std::string* reasonCode);
