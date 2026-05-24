@@ -30,7 +30,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Scan workspace junk (dry-run)
         run: node scripts/clean-repo-junk.js scan --ci
       - name: Upload cleanup reports
@@ -77,7 +77,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Run Docs Sync Audit
         run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
@@ -103,7 +103,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "pnpm"
           cache-dependency-path: "web/pnpm-lock.yaml"
 
@@ -193,7 +193,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: clean-repo-junk dry-run scan (CI)
         shell: pwsh

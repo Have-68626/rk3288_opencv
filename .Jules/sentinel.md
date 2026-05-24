@@ -17,7 +17,8 @@
 **Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
 **Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
 **Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.
-## 2024-05-23 - Thread/Connection Exhaustion DoS in Local HTTP Server
-**Vulnerability:** The `HttpFacesServer` spawned a new detached thread for every accepted connection without any limits.
-**Learning:** Even loopback-bound servers are vulnerable to local DoS if an attacker (e.g. a malicious background script) exhausts resources by opening thousands of concurrent connections.
-**Prevention:** Implement an atomic counter and enforce a strict `MAX_CONNECTIONS` limit before spawning background threads.
+
+## 2026-05-20 - Limit HTTP Server Concurrent Connections
+**Vulnerability:** The local HTTP server `HttpFacesServer.cpp` blindly accepted connections and spawned a detached thread for every incoming socket (`std::thread([this, cs]() { handleClient... }).detach()`) without enforcing an upper limit on concurrent connections. A local malicious or misbehaving client could rapidly open thousands of connections, leading to uncontrolled thread spawning, resource exhaustion (Thread Exhaustion DoS), and ultimately crashing the application.
+**Learning:** Even loopback-bound services (like this one on 127.0.0.1) can suffer from denial of service if connection and thread lifetimes aren't bounded. Unbounded thread allocation per connection is dangerous.
+**Prevention:** Track concurrent connections using an atomic counter (`activeConnections_`) and enforce a hard limit (e.g., 64) in the accept loop. Immediately reject connections (via `closesocket()`) if the threshold is reached before spawning a thread. Ensure the counter accurately decrements when the connection handler terminates.

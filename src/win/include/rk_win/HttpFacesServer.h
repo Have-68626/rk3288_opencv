@@ -69,7 +69,7 @@ private:
     std::mutex clientMu_;
 
     std::atomic<int> activeConnections_{0};
-    static constexpr int MAX_CONNECTIONS = 64;
+    static constexpr int MAX_CONCURRENT_CONNECTIONS = 64;
 };
 
 }  // namespace rk_win
