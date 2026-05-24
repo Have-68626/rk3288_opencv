@@ -221,6 +221,12 @@ void HttpFacesServer::acceptLoop() {
             continue;
         }
 
+        if (activeConnections_ >= MAX_CONNECTIONS) {
+            closesocket(cs);
+            continue;
+        }
+        activeConnections_++;
+
 #ifdef _WIN32
         DWORD timeout = 5000;
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
@@ -233,7 +239,16 @@ void HttpFacesServer::acceptLoop() {
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #endif
 
-        std::thread([this, cs]() { handleClient(static_cast<std::uintptr_t>(cs)); }).detach();
+        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS) {
+            closesocket(cs);
+            continue;
+        }
+
+        activeConnections_++;
+        std::thread([this, cs]() {
+            handleClient(static_cast<std::uintptr_t>(cs));
+            activeConnections_--;
+        }).detach();
     }
 }
 
@@ -788,6 +803,12 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
 }
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
+    struct ConnectionGuard {
+        std::atomic<int>& count;
+        ConnectionGuard(std::atomic<int>& c) : count(c) {}
+        ~ConnectionGuard() { count--; }
+    } guard(activeConnections_);
+
     const SOCKET s = static_cast<SOCKET>(sock);
     HttpRequest req;
     std::string err;
