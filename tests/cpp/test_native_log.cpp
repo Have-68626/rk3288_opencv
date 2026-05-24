@@ -60,6 +60,10 @@ bool test_nativelog_creates_directory() {
     std::string testDir = "test_nativelog_dir_123";
     std::string logFile = "rk3288.log";
     cleanupTestDir(testDir, logFile);
+    if (fileExists(testDir)) {
+        std::cout << "test_nativelog_creates_directory: Pre-test cleanup failed." << std::endl;
+        return false;
+    }
 
     rklog::setLogDirs(testDir, "", logFile);
     rklog::logInfo("TEST_MOD", "test_func", "Hello Directory Creation");
