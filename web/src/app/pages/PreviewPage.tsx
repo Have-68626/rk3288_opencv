@@ -96,7 +96,7 @@ export function PreviewPage() {
       <Card
         title="预览"
         extra={
-          <Button onClick={() => setPreviewKey((v) => v + 1)}>刷新预览</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => setPreviewKey((v) => v + 1)}>刷新预览</Button>
         }
       >
         <div style={{ maxWidth: 1100 }}>
