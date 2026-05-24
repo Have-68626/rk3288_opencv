@@ -86,7 +86,9 @@ public:
     }
     void number(long long v) {
         beginValue_();
-        out_ += std::to_string(v);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%lld", v);
+        out_ += buf;
     }
     void number(std::uint64_t v) {
         beginValue_();
