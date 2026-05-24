@@ -45,3 +45,6 @@
 ## 2026-05-18 - Optimize Engine::processFrame string formatting
 **Learning:** `std::ostringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency rendering loops (`Engine::processFrame`), this becomes a bottleneck.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+## 2026-05-24 - Optimize memory ops in loop
+**Learning:** Element-wise loops on std::vector buffers can often be safely and elegantly replaced with std::copy, combined with CV_Assert for size validation, yielding small performance improvements without losing type safety.
+**Action:** Use std::copy for linear float array duplication instead of row/col indexing where continuous buffer constraints hold true.
