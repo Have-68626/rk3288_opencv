@@ -38,6 +38,8 @@ bool test_event_manager_format_json();
 bool test_event_manager_unique_id();
 bool test_http_faces_server_path_validation();
 bool test_inference_throttle_parse_and_clamp();
+bool test_nativelog_creates_directory();
+bool test_nativelog_writes_content();
 
 int main() {
     using namespace rk_core_test;
@@ -52,6 +54,8 @@ int main() {
         {"event_manager_format_json", test_event_manager_format_json},
         {"event_manager_unique_id", test_event_manager_unique_id},
         {"http_faces_server_path_validation", test_http_faces_server_path_validation},
+        {"nativelog_creates_directory", test_nativelog_creates_directory},
+        {"nativelog_writes_content", test_nativelog_writes_content},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
