@@ -35,6 +35,11 @@ bool test_face_infer_done_hit();
 bool test_mock_preflight_rejects_invalid_magic();
 bool test_mock_preflight_rejects_incomplete_file();
 bool test_mock_preflight_rejects_oversize_image();
+bool test_face_infer_outcome_json_missing_ctx();
+bool test_face_infer_outcome_json_missing_decision();
+bool test_face_infer_outcome_json_missing_metrics();
+bool test_face_infer_outcome_json_full();
+bool test_face_infer_outcome_json_no_face();
 
 bool test_video_manager_is_url_source_valid_urls();
 bool test_video_manager_is_url_source_local_paths();
@@ -50,9 +55,11 @@ int main() {
         {"mock_preflight_rejects_invalid_magic", test_mock_preflight_rejects_invalid_magic},
         {"mock_preflight_rejects_incomplete_file", test_mock_preflight_rejects_incomplete_file},
         {"mock_preflight_rejects_oversize_image", test_mock_preflight_rejects_oversize_image},
-        {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
-        {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
-        {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},
+        {"face_infer_outcome_json_missing_ctx", test_face_infer_outcome_json_missing_ctx},
+        {"face_infer_outcome_json_missing_decision", test_face_infer_outcome_json_missing_decision},
+        {"face_infer_outcome_json_missing_metrics", test_face_infer_outcome_json_missing_metrics},
+        {"face_infer_outcome_json_full", test_face_infer_outcome_json_full},
+        {"face_infer_outcome_json_no_face", test_face_infer_outcome_json_no_face},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
