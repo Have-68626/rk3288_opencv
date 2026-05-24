@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Divider,
+  Empty,
   Form,
   Input,
   Popconfirm,
@@ -32,6 +33,12 @@ export function PreviewPage() {
   const [cams, setCams] = useState<LoadState>({ status: 'idle' })
   const [camRetry, setCamRetry] = useState(0)
   const [previewKey, setPreviewKey] = useState(0)
+  const [imgError, setImgError] = useState(false)
+
+  const handleRefresh = () => {
+    setImgError(false)
+    setPreviewKey((v) => v + 1)
+  }
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
   const [isFlippingX, setIsFlippingX] = useState(false)
@@ -96,16 +103,63 @@ export function PreviewPage() {
       <Card
         title="预览"
         extra={
-          <Button onClick={() => setPreviewKey((v) => v + 1)}>刷新预览</Button>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => {
+              setImgError(false)
+              setPreviewKey((v) => v + 1)
+            }}
+          >
+            刷新预览
+          </Button>
         }
       >
-        <div style={{ maxWidth: 1100 }}>
-          <img
-            key={previewKey}
-            src="/api/v1/preview.mjpeg"
-            style={{ width: '100%', borderRadius: 8, border: '1px solid #f0f0f0' }}
-            alt="preview"
-          />
+        <div
+          style={{
+            maxWidth: 1100,
+            minHeight: 240,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            borderRadius: 8,
+            border: '1px solid #f0f0f0',
+            background: '#fafafa',
+            overflow: 'hidden',
+          }}
+        >
+          {imgError ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                <Typography.Text type="secondary">
+                  无法连接到摄像头流，请检查服务状态
+                </Typography.Text>
+              }
+              style={{ margin: '40px 0' }}
+            >
+              <Button
+                type="primary"
+                onClick={() => {
+                  setImgError(false)
+                  setPreviewKey((v) => v + 1)
+                }}
+              >
+                重试
+              </Button>
+            </Empty>
+          ) : (
+            <img
+              key={previewKey}
+              src="/api/v1/preview.mjpeg"
+              style={{
+                width: '100%',
+                display: 'block',
+              }}
+              alt="摄像头实时预览"
+              onError={() => setImgError(true)}
+            />
+          )}
         </div>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 8 }}>
           若看不到画面：确认本地服务已启动，并检查摄像头权限是否允许。
@@ -290,6 +344,8 @@ export function PreviewPage() {
               id="preview-person-id"
               value={personId}
               maxLength={32}
+              showCount
+              allowClear
               onChange={(e) => setPersonId(e.target.value)}
               placeholder="例如：alice"
             />
