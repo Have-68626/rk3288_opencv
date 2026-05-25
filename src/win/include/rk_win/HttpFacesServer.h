@@ -1,8 +1,10 @@
 #pragma once
 
 #include "Compat.h"
+#include "ConnectionQuota.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -68,8 +70,12 @@ private:
     std::filesystem::path docRoot_;
     std::mutex clientMu_;
 
-    std::atomic<int> activeConnections_{0};
     static constexpr int MAX_CONCURRENT_CONNECTIONS = 64;
+    ConnectionQuota quota_{MAX_CONCURRENT_CONNECTIONS};
+    std::vector<std::uintptr_t> clientSocks_;
+    std::atomic<int> activeClients_{0};
+    std::mutex stopMu_;
+    std::condition_variable stopCv_;
 };
 
 }  // namespace rk_win

@@ -122,6 +122,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_threshold_policy.cpp"
         "tests/cpp/test_event_manager.cpp"
         "tests/cpp/test_file_hash.cpp"
+        "tests/cpp/test_connection_quota.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
