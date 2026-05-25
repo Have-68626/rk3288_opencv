@@ -15,7 +15,6 @@ final class FfmpegRtmpPusher {
         boolean isRaw = input.startsWith("pipe:");
         
         java.util.List<String> cmdArgs = new java.util.ArrayList<>();
-        List<String> cmdArgs = new ArrayList<>();
         
         if (!isRaw) {
             // For files/network streams, loop indefinitely and read at native framerate
