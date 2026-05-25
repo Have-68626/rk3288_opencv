@@ -221,7 +221,7 @@ void HttpFacesServer::acceptLoop() {
             continue;
         }
 
-        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS) {
+        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS || activeConnections_.load() < 0) {
             closesocket(cs);
             continue;
         }
