@@ -221,7 +221,7 @@ void HttpFacesServer::acceptLoop() {
             continue;
         }
 
-        if (activeConnections_ >= MAX_CONNECTIONS) {
+        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS) {
             closesocket(cs);
             continue;
         }
@@ -239,15 +239,8 @@ void HttpFacesServer::acceptLoop() {
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #endif
 
-        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS) {
-            closesocket(cs);
-            continue;
-        }
-
-        activeConnections_++;
         std::thread([this, cs]() {
             handleClient(static_cast<std::uintptr_t>(cs));
-            activeConnections_--;
         }).detach();
     }
 }
