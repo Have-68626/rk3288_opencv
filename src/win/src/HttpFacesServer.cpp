@@ -207,6 +207,24 @@ void HttpFacesServer::stop() {
     }
 
     if (acceptThread_.joinable()) acceptThread_.join();
+
+    std::vector<std::uintptr_t> socks;
+    {
+        std::lock_guard<std::mutex> lk(clientMu_);
+        socks = clientSocks_;
+    }
+    for (const auto sp : socks) {
+        const SOCKET s = static_cast<SOCKET>(sp);
+        shutdown(s, SD_BOTH);
+    }
+
+    std::unique_lock<std::mutex> lk(stopMu_);
+    stopCv_.wait(lk, [this]() { return activeClients_.load() == 0; });
+
+    {
+        std::lock_guard<std::mutex> lk2(clientMu_);
+        clientSocks_.clear();
+    }
 }
 
 void HttpFacesServer::acceptLoop() {
@@ -221,11 +239,11 @@ void HttpFacesServer::acceptLoop() {
             continue;
         }
 
-        if (activeConnections_ >= MAX_CONNECTIONS) {
+        auto lease = quota_.tryAcquire();
+        if (!lease.has_value()) {
             closesocket(cs);
             continue;
         }
-        activeConnections_++;
 
 #ifdef _WIN32
         DWORD timeout = 5000;
@@ -239,15 +257,33 @@ void HttpFacesServer::acceptLoop() {
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #endif
 
-        if (activeConnections_.load() >= MAX_CONCURRENT_CONNECTIONS) {
-            closesocket(cs);
-            continue;
+        const auto sockP = static_cast<std::uintptr_t>(cs);
+        {
+            std::lock_guard<std::mutex> lk(clientMu_);
+            clientSocks_.push_back(sockP);
         }
 
-        activeConnections_++;
-        std::thread([this, cs]() {
+        activeClients_++;
+        std::thread([this, cs, lease = std::move(*lease)]() mutable {
+            struct Cleanup {
+                HttpFacesServer* self;
+                std::uintptr_t sockP;
+                ~Cleanup() {
+                    {
+                        std::lock_guard<std::mutex> lk(self->clientMu_);
+                        for (auto it = self->clientSocks_.begin(); it != self->clientSocks_.end(); ++it) {
+                            if (*it == sockP) {
+                                self->clientSocks_.erase(it);
+                                break;
+                            }
+                        }
+                    }
+                    self->activeClients_--;
+                    self->stopCv_.notify_all();
+                }
+            } cleanup{this, static_cast<std::uintptr_t>(cs)};
+
             handleClient(static_cast<std::uintptr_t>(cs));
-            activeConnections_--;
         }).detach();
     }
 }
@@ -803,12 +839,6 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req)
 }
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
-    struct ConnectionGuard {
-        std::atomic<int>& count;
-        ConnectionGuard(std::atomic<int>& c) : count(c) {}
-        ~ConnectionGuard() { count--; }
-    } guard(activeConnections_);
-
     const SOCKET s = static_cast<SOCKET>(sock);
     HttpRequest req;
     std::string err;
