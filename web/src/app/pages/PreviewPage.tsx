@@ -105,10 +105,7 @@ export function PreviewPage() {
         extra={
           <Button
             icon={<ReloadOutlined />}
-            onClick={() => {
-              setImgError(false)
-              setPreviewKey((v) => v + 1)
-            }}
+            onClick={handleRefresh}
           >
             刷新预览
           </Button>
@@ -140,10 +137,7 @@ export function PreviewPage() {
             >
               <Button
                 type="primary"
-                onClick={() => {
-                  setImgError(false)
-                  setPreviewKey((v) => v + 1)
-                }}
+                onClick={handleRefresh}
               >
                 重试
               </Button>
