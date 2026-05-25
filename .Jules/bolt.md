@@ -50,5 +50,5 @@
 **Action:** Use std::copy for linear float array duplication instead of row/col indexing where continuous buffer constraints hold true.
 
 ## 2024-05-18 - C++ Mat Clone Bottleneck
-**Learning:** In the Windows local server rendering path (`src/win/src/FaceRecognizer.cpp`), `cv::Mat::clone()` was being unnecessarily called on read-only regions (like cropping for inference). Using the direct continuous Region Of Interest (ROI) when resizing/converting cuts down on heap allocations.
+**Learning:** In the Windows local server rendering path (`src/win/src/FaceRecognizer.cpp`), `cv::Mat::clone()` was being unnecessarily called on read-only regions (like cropping for inference). Using the direct Region Of Interest (ROI) when resizing/converting cuts down on heap allocations.
 **Action:** Always verify if a `clone()` is actually necessary when dealing with `cv::Mat` objects inside per-frame inference loops. Pass direct ROIs to OpenCV functions instead, unless structural separation is explicitly required.
