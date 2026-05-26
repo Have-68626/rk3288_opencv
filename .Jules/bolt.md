@@ -52,3 +52,7 @@
 ## 2024-05-18 - C++ Mat Clone Bottleneck
 **Learning:** In the Windows local server rendering path (`src/win/src/FaceRecognizer.cpp`), `cv::Mat::clone()` was being unnecessarily called on read-only regions (like cropping for inference). Using the direct Region Of Interest (ROI) when resizing/converting cuts down on heap allocations.
 **Action:** Always verify if a `clone()` is actually necessary when dealing with `cv::Mat` objects inside per-frame inference loops. Pass direct ROIs to OpenCV functions instead, unless structural separation is explicitly required.
+
+## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
+**Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
+**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.

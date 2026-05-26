@@ -35,9 +35,16 @@ std::string nowIso8601Local() {
     localtime_r(&tt, &tm);
 #endif
     const auto ms = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S") << "." << std::setw(3) << std::setfill('0') << ms;
-    return oss.str();
+    char buf[64];
+    std::size_t n = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
+    if (n > 0) {
+        char msBuf[8];
+        std::snprintf(msBuf, sizeof(msBuf), ".%03d", static_cast<int>(ms));
+        std::string s(buf, n);
+        s += msBuf;
+        return s;
+    }
+    return "";
 }
 
 std::string toString(ErrorCategory c) {
@@ -161,26 +168,43 @@ void StructuredLogger::append(const FrameLogEntry& e) {
         headerWritten_ = true;
     }
 
-    std::ostringstream facesJson;
-    facesJson << "[";
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: Replace std::ostringstream with std::string concatenation to avoid virtual calls and locale overhead per frame log.
+     * Impact: Lower CPU usage during JSON logging in the processing loop.
+     * Rollback: Revert back to using std::ostringstream.
+     */
+    std::string facesJson;
+    facesJson.reserve(2 + e.faces.size() * 128);
+    facesJson += "[";
     for (size_t i = 0; i < e.faces.size(); i++) {
-        if (i) facesJson << ",";
+        if (i) facesJson += ",";
         const auto& f = e.faces[i];
-        facesJson << "{"
-                  << "\"x\":" << f.x << ","
-                  << "\"y\":" << f.y << ","
-                  << "\"w\":" << f.w << ","
-                  << "\"h\":" << f.h << ","
-                  << "\"person_id\":\"" << escapeJson(f.personId) << "\","
-                  << "\"distance\":" << f.distance << ","
-                  << "\"confidence\":" << f.confidence
-                  << "}";
+        facesJson += "{";
+        facesJson += "\"x\":";
+        facesJson += std::to_string(f.x);
+        facesJson += ",\"y\":";
+        facesJson += std::to_string(f.y);
+        facesJson += ",\"w\":";
+        facesJson += std::to_string(f.w);
+        facesJson += ",\"h\":";
+        facesJson += std::to_string(f.h);
+        facesJson += ",\"person_id\":\"";
+        facesJson += escapeJson(f.personId);
+        facesJson += "\",\"distance\":";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%g", f.distance);
+        facesJson += buf;
+        facesJson += ",\"confidence\":";
+        std::snprintf(buf, sizeof(buf), "%g", f.confidence);
+        facesJson += buf;
+        facesJson += "}";
     }
-    facesJson << "]";
+    facesJson += "]";
 
     csv_ << escapeCsv(e.tsIso8601) << "," << escapeCsv(e.cameraName) << "," << escapeCsv(e.cameraId) << ","
          << e.frameIndex << "," << e.frameWidth << "," << e.frameHeight << "," << e.fps << ","
-         << static_cast<int>(e.faces.size()) << "," << escapeCsv(facesJson.str()) << ","
+         << static_cast<int>(e.faces.size()) << "," << escapeCsv(facesJson) << ","
          << escapeCsv(toString(e.errorCategory)) << "," << escapeCsv(e.errorCode) << "," << escapeCsv(e.errorMessage) << "\n";
 
     jsonl_ << "{"
@@ -192,7 +216,7 @@ void StructuredLogger::append(const FrameLogEntry& e) {
            << "\"frame_h\":" << e.frameHeight << ","
            << "\"fps\":" << e.fps << ","
            << "\"face_count\":" << static_cast<int>(e.faces.size()) << ","
-           << "\"faces\":" << facesJson.str() << ","
+           << "\"faces\":" << facesJson << ","
            << "\"error_category\":\"" << escapeJson(toString(e.errorCategory)) << "\","
            << "\"error_code\":\"" << escapeJson(e.errorCode) << "\","
            << "\"error_message\":\"" << escapeJson(e.errorMessage) << "\""
