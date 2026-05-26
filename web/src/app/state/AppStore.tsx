@@ -54,6 +54,11 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         : { status: 'loading', data: prev.data },
     )
 
+    let hide: (() => void) | undefined
+    if (!silent) {
+      hide = message.loading('正在刷新后端设置...', 0)
+    }
+
     try {
       const env = await getServerSettings(prefs)
 
@@ -70,6 +75,8 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
       if (!silent) message.error(err.message)
       return false
+    } finally {
+      if (hide) hide()
     }
   }, [prefs])
 
@@ -87,11 +94,9 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
-      message.success('设置已应用')
     } catch (e: unknown) {
       const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
-      message.error(err.message)
       throw err
     }
   }, [prefs])
