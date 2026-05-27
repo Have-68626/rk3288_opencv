@@ -1,3 +1,4 @@
+import { ArrowRightOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Button, Result, Space, Spin, Tooltip, Typography } from 'antd'
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -52,13 +53,14 @@ export function SplashPage() {
               <Space>
                 <Button
                   type="primary"
+                  icon={<ReloadOutlined />}
                   onClick={() => refreshServerSettings()}
                   loading={(serverSettings.status as string) === 'loading'}
                 >
                   重试
                 </Button>
                 <Tooltip title="在未连接后端的情况下进入，部分功能将受限或处于只读状态">
-                  <Button onClick={() => nav(startPageToRoute(prefs.startPage), { replace: true })}>
+                  <Button icon={<ArrowRightOutlined />} onClick={() => nav(startPageToRoute(prefs.startPage), { replace: true })}>
                     继续进入 (离线模式)
                   </Button>
                 </Tooltip>
