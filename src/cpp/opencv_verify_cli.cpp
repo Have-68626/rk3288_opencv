@@ -100,10 +100,9 @@ static std::string jsonEscape(const std::string& s) {
             case '\t': out += "\\t"; break;
             default:
                 if (static_cast<unsigned char>(ch) < 0x20) {
-                    std::ostringstream oss;
-                    oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-                        << static_cast<int>(static_cast<unsigned char>(ch));
-                    out += oss.str();
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(static_cast<unsigned char>(ch)));
+                    out += buf;
                 } else {
                     out += ch;
                 }

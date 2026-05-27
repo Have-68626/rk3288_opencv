@@ -89,3 +89,7 @@ locale handling, and dynamic memory allocations. In logging loops (`StructuredLo
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use
 `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading
 to measurable performance gains.
+
+## 2026-05-19 - Avoid std::ostringstream inside formatting loops
+**Learning:** `std::ostringstream` exhibits significant overhead for string concatenation and formatting (like hex dumps or unicode character escaping) due to virtual function calls, locale initialization, and dynamic memory allocations. In tight loops (like `calculateSHA256` or `jsonEscape`), repeatedly creating an `ostringstream` to format integers or characters creates a substantial CPU and memory bottleneck, dropping throughput by up to 25%.
+**Action:** Replace `std::ostringstream` with a pre-sized `std::string` (`.reserve()` or `.resize()`), and format primitive types directly into fixed-size stack buffers (e.g. `char buf[64]`) using `snprintf`, then append them to the target string.

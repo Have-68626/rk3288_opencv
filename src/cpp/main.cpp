@@ -68,7 +68,11 @@ static std::string jsonEscape(const std::string& s) {
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else if (c < 0x20) out += "?";
+        else if (c < 0x20) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
+            out += buf;
+        }
         else out.push_back(static_cast<char>(c));
     }
     return out;
@@ -284,50 +288,71 @@ static int runYoloFaceDetect(int argc, char** argv) {
     const long long msTotal = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - t0).count();
     const long long tsMs = nowEpochMillis();
 
-    std::ostringstream jout;
-    jout << "{";
-    jout << "\"ok\":" << (ok ? "true" : "false") << ",";
-    jout << "\"backend\":\"" << jsonEscape(backendName.empty() ? a.backend : backendName) << "\",";
-    jout << "\"image\":\"" << jsonEscape(a.imagePath) << "\",";
-    jout << "\"width\":" << img.cols << ",";
-    jout << "\"height\":" << img.rows << ",";
-    jout << "\"input_w\":" << a.opt.inputW << ",";
-    jout << "\"input_h\":" << a.opt.inputH << ",";
-    jout << "\"score_threshold\":" << a.opt.scoreThreshold << ",";
-    jout << "\"nms_iou_threshold\":" << a.opt.nmsIouThreshold << ",";
-    jout << "\"enable_keypoints5\":" << (a.opt.enableKeypoints5 ? "true" : "false") << ",";
-    jout << "\"ms_load\":" << msLoad << ",";
-    jout << "\"ms_detect\":" << msDetect << ",";
-    jout << "\"ms_total\":" << msTotal << ",";
-    jout << "\"timestamp_ms\":" << tsMs << ",";
-    jout << "\"faces\":[";
+    std::string jout;
+    jout.reserve(512 + faces.size() * 128);
+    jout += "{";
+    jout += "\"ok\":"; jout += (ok ? "true" : "false"); jout += ",";
+    jout += "\"backend\":\""; jout += jsonEscape(backendName.empty() ? a.backend : backendName); jout += "\",";
+    jout += "\"image\":\""; jout += jsonEscape(a.imagePath); jout += "\",";
+    jout += "\"width\":"; jout += std::to_string(img.cols); jout += ",";
+    jout += "\"height\":"; jout += std::to_string(img.rows); jout += ",";
+    jout += "\"input_w\":"; jout += std::to_string(a.opt.inputW); jout += ",";
+    jout += "\"input_h\":"; jout += std::to_string(a.opt.inputH); jout += ",";
+
+    char dBuf[64];
+    snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(a.opt.scoreThreshold));
+    jout += "\"score_threshold\":"; jout += dBuf; jout += ",";
+
+    snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(a.opt.nmsIouThreshold));
+    jout += "\"nms_iou_threshold\":"; jout += dBuf; jout += ",";
+
+    jout += "\"enable_keypoints5\":"; jout += (a.opt.enableKeypoints5 ? "true" : "false"); jout += ",";
+    jout += "\"ms_load\":"; jout += std::to_string(msLoad); jout += ",";
+    jout += "\"ms_detect\":"; jout += std::to_string(msDetect); jout += ",";
+    jout += "\"ms_total\":"; jout += std::to_string(msTotal); jout += ",";
+    jout += "\"timestamp_ms\":"; jout += std::to_string(tsMs); jout += ",";
+    jout += "\"faces\":[";
     for (size_t i = 0; i < faces.size(); i++) {
-        if (i > 0) jout << ",";
+        if (i > 0) jout += ",";
         const auto& f = faces[i];
-        jout << "{";
-        jout << "\"bbox\":{";
-        jout << "\"x\":" << f.bbox.x << ",";
-        jout << "\"y\":" << f.bbox.y << ",";
-        jout << "\"w\":" << f.bbox.width << ",";
-        jout << "\"h\":" << f.bbox.height;
-        jout << "},";
-        jout << "\"score\":" << f.score;
+        jout += "{";
+        jout += "\"bbox\":{";
+
+        snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(f.bbox.x));
+        jout += "\"x\":"; jout += dBuf; jout += ",";
+
+        snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(f.bbox.y));
+        jout += "\"y\":"; jout += dBuf; jout += ",";
+
+        snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(f.bbox.width));
+        jout += "\"w\":"; jout += dBuf; jout += ",";
+
+        snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(f.bbox.height));
+        jout += "\"h\":"; jout += dBuf;
+
+        jout += "},";
+
+        snprintf(dBuf, sizeof(dBuf), "%g", static_cast<double>(f.score));
+        jout += "\"score\":"; jout += dBuf;
+
         if (f.keypoints5.has_value()) {
-            jout << ",\"keypoints5\":[";
+            jout += ",\"keypoints5\":[";
             const auto& kps = *f.keypoints5;
             for (size_t j = 0; j < kps.size(); j++) {
-                if (j > 0) jout << ",";
-                jout << "{\"x\":" << kps[j].x << ",\"y\":" << kps[j].y << "}";
+                if (j > 0) jout += ",";
+                char kBuf[128];
+                snprintf(kBuf, sizeof(kBuf), "{\"x\":%g,\"y\":%g}", static_cast<double>(kps[j].x), static_cast<double>(kps[j].y));
+                jout += kBuf;
             }
-            jout << "]";
+            jout += "]";
         }
-        jout << "}";
+        jout += "}";
     }
-    jout << "],";
-    jout << "\"err\":\"" << jsonEscape(err) << "\"";
-    jout << "}";
+    jout += "],";
+    jout += "\"err\":\""; jout += jsonEscape(err); jout += "\"";
+    jout += "}";
 
-    const std::string json = jout.str();
+    const std::string json = jout;
     std::cout << json << std::endl;
 
     std::filesystem::path dir = ok ? std::filesystem::path(a.outDir) : std::filesystem::path("ErrorLog");
