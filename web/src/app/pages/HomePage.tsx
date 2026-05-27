@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Descriptions, Space, Typography, message } from 'antd'
+import { Alert, Button, Card, Descriptions, Space, Typography } from 'antd'
 
 import { useAppStore } from '../state/AppStore'
 
@@ -7,12 +7,7 @@ export function HomePage() {
   const isLoading = serverSettings.status === 'loading'
 
   const handleRefresh = async () => {
-    const hide = message.loading('正在刷新后端设置...', 0)
-    try {
-      await refreshServerSettings()
-    } finally {
-      hide()
-    }
+    await refreshServerSettings()
   }
 
   return (
