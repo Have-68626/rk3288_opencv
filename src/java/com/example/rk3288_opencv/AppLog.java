@@ -234,14 +234,18 @@ final class AppLog {
         // 2. Write to Disk (FileLogSink)
         FileLogSink s = sink;
         if (s != null) {
-            // Apply masking for disk logs unless it's DEBUG/VERBOSE level
-            // This aligns with "Allow full details in DEBUG/VERBOSE" policy
-            if (level.ordinal() >= Level.I.ordinal()) {
-                String maskedLine = SensitiveDataUtil.maskSensitiveData(logLine);
-                s.writeLine(maskedLine);
-            } else {
-                s.writeLine(logLine);
+            String finalLine = logLine;
+            boolean needsMasking = true;
+            if (level.ordinal() < Level.I.ordinal()) {
+                String lower = logLine.toLowerCase(Locale.ENGLISH);
+                needsMasking = lower.contains("pass") || lower.contains("token") ||
+                               lower.contains("auth") || lower.contains("key") ||
+                               lower.contains("secret") || lower.contains("@");
             }
+            if (needsMasking) {
+                finalLine = SensitiveDataUtil.maskSensitiveData(logLine);
+            }
+            s.writeLine(finalLine);
         }
     }
 
