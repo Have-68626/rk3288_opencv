@@ -56,3 +56,6 @@
 ## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
 **Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+## 2026-05-25 - Optimize MJPEG Stream Integer Formatting
+**Learning:** While `snprintf` is required for replacing `std::ostringstream` when dealing with floating-point numbers to maintain format parity (e.g. `%.6g`), it is unnecessarily verbose and manual for simple integer conversions. The C++ standard library `std::to_string()` is perfectly safe, efficient, and idiomatic for integer types like `size_t` when concatenating strings.
+**Action:** Use `std::to_string(value)` instead of `char buf[32]; snprintf(...)` for integer conversions when optimizing string building away from `std::ostringstream`.
