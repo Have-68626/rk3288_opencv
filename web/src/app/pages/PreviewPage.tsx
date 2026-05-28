@@ -49,6 +49,20 @@ export function PreviewPage() {
   const currentH = serverSettings.data?.camera?.height ?? 480
   const currentFps = serverSettings.data?.camera?.fps ?? 30
 
+  const handleEnroll = async () => {
+    if (!personId.trim()) return
+    try {
+      setIsEnrolling(true)
+      await enroll(prefs, { personId })
+      message.success('注册指令已发送')
+      setPersonId('')
+    } catch (e: unknown) {
+      message.error((e as Error)?.message || '注册失败')
+    } finally {
+      setIsEnrolling(false)
+    }
+  }
+
   useEffect(() => {
     let alive = true
     setCams({ status: 'loading' })
@@ -296,8 +310,8 @@ export function PreviewPage() {
                   }
                 }}
               />
-              <label htmlFor="preview-flip-x" style={{ cursor: 'pointer' }}>
-                <Typography.Text>翻转 X</Typography.Text>
+              <label htmlFor="preview-flip-x" style={{ cursor: isFlippingY ? 'not-allowed' : 'pointer' }}>
+                <Typography.Text disabled={isFlippingY}>翻转 X</Typography.Text>
               </label>
             </Space>
             <Space>
@@ -322,8 +336,8 @@ export function PreviewPage() {
                   }
                 }}
               />
-              <label htmlFor="preview-flip-y" style={{ cursor: 'pointer' }}>
-                <Typography.Text>翻转 Y</Typography.Text>
+              <label htmlFor="preview-flip-y" style={{ cursor: isFlippingX ? 'not-allowed' : 'pointer' }}>
+                <Typography.Text disabled={isFlippingX}>翻转 Y</Typography.Text>
               </label>
             </Space>
           </Space>
@@ -343,6 +357,7 @@ export function PreviewPage() {
               showCount
               allowClear
               onChange={(e) => setPersonId(e.target.value)}
+              onPressEnter={handleEnroll}
               placeholder="例如：alice"
             />
           </Form.Item>
@@ -352,18 +367,7 @@ export function PreviewPage() {
               <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
                 <Button
                   type="primary"
-                  onClick={async () => {
-                    try {
-                      setIsEnrolling(true)
-                      await enroll(prefs, { personId })
-                      message.success('注册指令已发送')
-                      setPersonId('')
-                    } catch (e: unknown) {
-                      message.error((e as Error)?.message || '注册失败')
-                    } finally {
-                      setIsEnrolling(false)
-                    }
-                  }}
+                  onClick={handleEnroll}
                   disabled={!personId.trim()}
                   loading={isEnrolling}
                   style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
