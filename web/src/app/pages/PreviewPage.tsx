@@ -42,6 +42,20 @@ export function PreviewPage() {
   const [personId, setPersonId] = useState('')
   const [isEnrolling, setIsEnrolling] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
+
+  const handleEnroll = async () => {
+    if (!personId.trim() || isEnrolling) return
+    try {
+      setIsEnrolling(true)
+      await enroll(prefs, { personId })
+      message.success('注册指令已发送')
+      setPersonId('')
+    } catch (e: unknown) {
+      message.error((e as Error)?.message || '注册失败')
+    } finally {
+      setIsEnrolling(false)
+    }
+  }
   const [isOpeningPrivacy, setIsOpeningPrivacy] = useState(false)
 
   const currentDeviceId = serverSettings.data?.camera?.preferredDeviceId ?? ''
@@ -343,6 +357,7 @@ export function PreviewPage() {
               showCount
               allowClear
               onChange={(e) => setPersonId(e.target.value)}
+              onPressEnter={handleEnroll}
               placeholder="例如：alice"
             />
           </Form.Item>
@@ -352,18 +367,7 @@ export function PreviewPage() {
               <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
                 <Button
                   type="primary"
-                  onClick={async () => {
-                    try {
-                      setIsEnrolling(true)
-                      await enroll(prefs, { personId })
-                      message.success('注册指令已发送')
-                      setPersonId('')
-                    } catch (e: unknown) {
-                      message.error((e as Error)?.message || '注册失败')
-                    } finally {
-                      setIsEnrolling(false)
-                    }
-                  }}
+                  onClick={handleEnroll}
                   disabled={!personId.trim()}
                   loading={isEnrolling}
                   style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
