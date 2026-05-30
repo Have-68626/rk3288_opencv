@@ -56,28 +56,68 @@ std::string scaleModeText(int mode) {
 }  // namespace
 
 std::string buildFacesJson(const FacesSnapshot& s) {
-    std::ostringstream oss;
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: Replace std::ostringstream with std::string concatenation to avoid virtual calls and locale overhead per frame log.
+     * Impact: Lower CPU usage during JSON logging in the processing loop.
+     * Rollback: Revert back to using std::ostringstream.
+     */
+    std::string jsonStr;
+    jsonStr.reserve(256 + s.faces.size() * 128);
+
     const std::uint64_t tsMs = s.timestamp100ns / 10000ULL;
-    oss << "{";
-    oss << "\"timestamp_ms\":" << tsMs << ",";
-    oss << "\"frame\":{\"w\":" << s.frameWidth << ",\"h\":" << s.frameHeight << "},";
-    oss << "\"preview\":{\"w\":" << s.previewWidth << ",\"h\":" << s.previewHeight << ",\"scale_mode\":\"" << scaleModeText(s.previewScaleMode) << "\"},";
-    oss << "\"perf\":{\"infer_ms\":" << s.inferMs << ",\"drop_rate\":" << s.dropRate << ",\"stride\":" << s.stride << "},";
-    oss << "\"faces\":[";
+
+    char buf[32];
+
+    jsonStr += "{\"timestamp_ms\":";
+    jsonStr += std::to_string(tsMs);
+    jsonStr += ",\"frame\":{\"w\":";
+    jsonStr += std::to_string(s.frameWidth);
+    jsonStr += ",\"h\":";
+    jsonStr += std::to_string(s.frameHeight);
+    jsonStr += "},\"preview\":{\"w\":";
+    jsonStr += std::to_string(s.previewWidth);
+    jsonStr += ",\"h\":";
+    jsonStr += std::to_string(s.previewHeight);
+    jsonStr += ",\"scale_mode\":\"";
+    jsonStr += scaleModeText(s.previewScaleMode);
+    jsonStr += "\"},\"perf\":{\"infer_ms\":";
+    std::snprintf(buf, sizeof(buf), "%g", s.inferMs);
+    jsonStr += buf;
+    jsonStr += ",\"drop_rate\":";
+    std::snprintf(buf, sizeof(buf), "%g", s.dropRate);
+    jsonStr += buf;
+    jsonStr += ",\"stride\":";
+    jsonStr += std::to_string(s.stride);
+    jsonStr += "},\"faces\":[";
+
     for (size_t i = 0; i < s.faces.size(); i++) {
         const auto& f = s.faces[i];
         const RectI dr = mapToPreview(f, s);
-        if (i) oss << ",";
-        oss << "{";
-        oss << "\"bbox\":{\"x\":" << f.rect.x << ",\"y\":" << f.rect.y << ",\"w\":" << f.rect.width << ",\"h\":" << f.rect.height << "},";
-        oss << "\"display_bbox\":{\"x\":" << dr.x << ",\"y\":" << dr.y << ",\"w\":" << dr.w << ",\"h\":" << dr.h << "},";
-        oss << "\"confidence\":" << f.confidence;
-        oss << "}";
+        if (i) jsonStr += ",";
+        jsonStr += "{\"bbox\":{\"x\":";
+        jsonStr += std::to_string(f.rect.x);
+        jsonStr += ",\"y\":";
+        jsonStr += std::to_string(f.rect.y);
+        jsonStr += ",\"w\":";
+        jsonStr += std::to_string(f.rect.width);
+        jsonStr += ",\"h\":";
+        jsonStr += std::to_string(f.rect.height);
+        jsonStr += "},\"display_bbox\":{\"x\":";
+        jsonStr += std::to_string(dr.x);
+        jsonStr += ",\"y\":";
+        jsonStr += std::to_string(dr.y);
+        jsonStr += ",\"w\":";
+        jsonStr += std::to_string(dr.w);
+        jsonStr += ",\"h\":";
+        jsonStr += std::to_string(dr.h);
+        jsonStr += "},\"confidence\":";
+        std::snprintf(buf, sizeof(buf), "%g", f.confidence);
+        jsonStr += buf;
+        jsonStr += "}";
     }
-    oss << "]";
-    oss << "}";
-    return oss.str();
+    jsonStr += "]}";
+    return jsonStr;
 }
 
 }  // namespace rk_win
-

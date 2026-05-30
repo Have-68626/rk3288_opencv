@@ -60,26 +60,45 @@ void RenderMetricsLogger::append(const RenderMetricsSample& s) {
     std::lock_guard<std::mutex> lock(mu_);
     if (!out_.is_open()) return;
 
-    std::ostringstream oss;
-    oss << "{"
-        << "\"ts\":\"" << escapeJson(s.tsIso8601) << "\","
-        << "\"rss_bytes\":" << s.rssBytes << ","
-        << "\"handle_count\":" << s.handleCount << ","
-        << "\"present_count\":" << s.renderer.presentCount << ","
-        << "\"present_fail_count\":" << s.renderer.presentFailCount << ","
-        << "\"device_removed_count\":" << s.renderer.deviceRemovedCount << ","
-        << "\"swapchain_recreate_count\":" << s.renderer.swapchainRecreateCount << ","
-        << "\"black_frame_count\":" << s.renderer.blackFrameCount << ","
-        << "\"frame_ms_last\":" << s.renderer.frameTimes.lastMs << ","
-        << "\"frame_ms_p50\":" << s.renderer.frameTimes.p50Ms << ","
-        << "\"frame_ms_p95\":" << s.renderer.frameTimes.p95Ms << ","
-        << "\"frame_ms_p99\":" << s.renderer.frameTimes.p99Ms;
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: Avoid std::ostringstream overhead for render metrics logging in processing loops.
+     * Impact: Reduced formatting overhead per log append.
+     * Rollback: Revert to std::ostringstream concatenation.
+     */
+    std::string s_json;
+    s_json.reserve(256);
+    s_json += "{\"ts\":\"";
+    s_json += escapeJson(s.tsIso8601);
+    s_json += "\",\"rss_bytes\":";
+    s_json += std::to_string(s.rssBytes);
+    s_json += ",\"handle_count\":";
+    s_json += std::to_string(s.handleCount);
+    s_json += ",\"present_count\":";
+    s_json += std::to_string(s.renderer.presentCount);
+    s_json += ",\"present_fail_count\":";
+    s_json += std::to_string(s.renderer.presentFailCount);
+    s_json += ",\"device_removed_count\":";
+    s_json += std::to_string(s.renderer.deviceRemovedCount);
+    s_json += ",\"swapchain_recreate_count\":";
+    s_json += std::to_string(s.renderer.swapchainRecreateCount);
+    s_json += ",\"black_frame_count\":";
+    s_json += std::to_string(s.renderer.blackFrameCount);
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), ",\"frame_ms_last\":%g,\"frame_ms_p50\":%g,\"frame_ms_p95\":%g,\"frame_ms_p99\":%g",
+                  s.renderer.frameTimes.lastMs, s.renderer.frameTimes.p50Ms,
+                  s.renderer.frameTimes.p95Ms, s.renderer.frameTimes.p99Ms);
+    s_json += buf;
 
     if (s.gpuDedicatedBytes && s.gpuSharedBytes) {
-        oss << ",\"gpu_dedicated_bytes\":" << *s.gpuDedicatedBytes << ",\"gpu_shared_bytes\":" << *s.gpuSharedBytes;
+        s_json += ",\"gpu_dedicated_bytes\":";
+        s_json += std::to_string(*s.gpuDedicatedBytes);
+        s_json += ",\"gpu_shared_bytes\":";
+        s_json += std::to_string(*s.gpuSharedBytes);
     }
-    oss << "}\n";
-    out_ << oss.str();
+    s_json += "}\n";
+    out_ << s_json;
 }
 
 std::uint64_t processRssBytes() {
