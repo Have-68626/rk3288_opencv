@@ -928,12 +928,12 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
-            std::ostringstream part;
-            part << "--" << boundary << "\r\n"
-                 << "Content-Type: image/jpeg\r\n"
-                 << "Content-Length: " << jpeg.size() << "\r\n"
-                 << "\r\n";
-            const std::string partHead = part.str();
+
+            // Optimization: Replace std::ostringstream with std::string concatenation.
+            // Avoids virtual dispatch and locale overhead per-frame in the hot MJPEG stream loop.
+            const std::string partHead = "--" + boundary + "\r\n" +
+                                         "Content-Type: image/jpeg\r\n" +
+                                         "Content-Length: " + std::to_string(jpeg.size()) + "\r\n\r\n";
             if (!writeRaw(sock, partHead.data(), partHead.size())) break;
             if (!writeRaw(sock, jpeg.data(), jpeg.size())) break;
             if (!writeRaw(sock, "\r\n", 2)) break;
