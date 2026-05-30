@@ -1,7 +1,7 @@
 #include "MppDecoder.h"
 #include "NativeLog.h"
 
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
 #include <rk_mpi.h>
 #include <mpp.h>
 #include <mpp_err.h>
@@ -14,7 +14,7 @@
 #include <vector>
 
 struct MppDecoder::MppState {
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     MppCtx ctx = nullptr;
     MppApi* mpi = nullptr;
     MppBufferGroup frameGroup = nullptr;
@@ -45,7 +45,7 @@ MppDecoder::~MppDecoder() {
 }
 
 bool MppDecoder::init() {
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     MPP_RET ret = mpp_create(&mpp_->ctx, &mpp_->mpi);
     if (ret != MPP_OK) {
         rklog::logError("MppDecoder", "init", "mpp_create failed: ret=" + std::to_string(ret));
@@ -87,7 +87,7 @@ bool MppDecoder::open(const std::string& filePath) {
         if (!init()) return false;
     }
 
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     mpp_->fileHandle = std::fopen(filePath.c_str(), "rb");
     if (!mpp_->fileHandle) {
         rklog::logError("MppDecoder", "open", "Failed to open file: " + filePath);
@@ -112,7 +112,7 @@ bool MppDecoder::open(const std::string& filePath) {
 bool MppDecoder::read(cv::Mat& outBgr) {
     if (!opened_ || !inited_) return false;
 
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     if (hasFrame_) {
         if (!latestBgr_.empty()) {
             latestBgr_.copyTo(outBgr);
@@ -220,7 +220,7 @@ handle_eos:
 }
 
 void MppDecoder::close() {
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     if (mpp_->fileHandle) {
         std::fclose(mpp_->fileHandle);
         mpp_->fileHandle = nullptr;

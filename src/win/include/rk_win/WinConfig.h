@@ -90,6 +90,7 @@ struct DisplayConfig {
 
 struct AccelerationConfig {
     bool enableOpenCL = false;
+    bool enableLibyuv = false;
     bool enableMpp = false;
     bool enableQualcomm = false;
 };
@@ -97,7 +98,9 @@ struct AccelerationConfig {
 struct ModelConfig {
     std::string detection = "yolo_face";
     std::string recognition = "arcface";
-    std::string backend = "ncnn";
+    std::string backend = "opencv_dnn";
+    std::string detectorBackend = "opencv_dnn";
+    std::string recognitionBackend = "opencv_dnn";
     bool autoFallback = true;
 };
 

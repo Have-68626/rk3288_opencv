@@ -100,6 +100,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_FLIP_X_PREFIX = "pref_flip_x_";
     private static final String PREF_FLIP_Y_PREFIX = "pref_flip_y_";
     private static final String PREF_ACCEL_OPENCL = "pref_accel_opencl";
+    private static final String PREF_ACCEL_LIBYUV = "pref_accel_libyuv";
     private static final String PREF_ACCEL_MPP = "pref_accel_mpp";
     private static final String PREF_ACCEL_QUALCOMM = "pref_accel_qualcomm";
     private static final String PREF_DETECTION_THROTTLE_MODE = "pref_detection_throttle_mode";
@@ -2279,6 +2280,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         try {
             android.system.Os.setenv("RK_USE_OPENCL", prefs.getBoolean(PREF_ACCEL_OPENCL, false) ? "1" : "0", true);
+            android.system.Os.setenv("RK_USE_LIBYUV", prefs.getBoolean(PREF_ACCEL_LIBYUV, true) ? "1" : "0", true);
             android.system.Os.setenv("RK_USE_MPP", prefs.getBoolean(PREF_ACCEL_MPP, false) ? "1" : "0", true);
             android.system.Os.setenv("RK_USE_QUALCOMM", prefs.getBoolean(PREF_ACCEL_QUALCOMM, false) ? "1" : "0", true);
         } catch (Exception e) {

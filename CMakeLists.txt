@@ -123,6 +123,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_event_manager.cpp"
         "tests/cpp/test_file_hash.cpp"
         "tests/cpp/test_connection_quota.cpp"
+        "tests/cpp/test_acceleration_contract.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
@@ -364,10 +365,21 @@ if(NOT RK_SKIP_OPENCV)
     # Explicitly set include directories for rk3288_cli
     target_include_directories(rk3288_cli PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include/rk_win
     )
 
     target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
     target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
+    if(WIN32)
+        target_compile_definitions(rk3288_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_sources(rk3288_cli PRIVATE
+            "src/win/src/DnnSsdFaceDetector.cpp"
+            "src/win/src/FaceDetector.cpp"
+            "src/win/src/LbphEmbedder.cpp"
+        )
+    endif()
     if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
         target_include_directories(rk3288_cli PRIVATE ${libyuv_SOURCE_DIR}/include)
     endif()

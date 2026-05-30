@@ -423,7 +423,7 @@ bool VideoManager::open(const std::string& filePath) {
             // Local file — try MPP hardware decoding first
             mockState = MockState::LOADING;
             rklog::logInfo("MockMode", "open", "Opening local file, state=LOADING");
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
             mppDecoder = std::make_unique<MppDecoder>();
             if (mppDecoder->init() && mppDecoder->open(filePath)) {
                 useMppDecode = true;

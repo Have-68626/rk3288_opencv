@@ -1,5 +1,6 @@
 #include "rk_win/WinJsonConfig.h"
 
+#include "AccelerationContract.h"
 #include "rk_win/JsonLite.h"
 #include "rk_win/WinCrypto.h"
 
@@ -336,9 +337,11 @@ static JsonValue schemaSettingsDoc() {
         m.o["type"] = JsonValue::makeString("object");
         m.o["additionalProperties"] = JsonValue::makeBool(false);
         JsonValue mp = JsonValue::makeObject();
-        mp.o["detection"] = objBoolInt(true, 1, 256);
-        mp.o["recognition"] = objBoolInt(true, 1, 256);
-        mp.o["backend"] = objBoolInt(true, 1, 64);
+        mp.o["detection"] = objStr();
+        mp.o["recognition"] = objStr();
+        mp.o["backend"] = objStr();
+        mp.o["detectorBackend"] = objStr();
+        mp.o["recognitionBackend"] = objStr();
         mp.o["autoFallback"] = objBool();
         m.o["properties"] = std::move(mp);
         props.o["model"] = std::move(m);
@@ -464,11 +467,13 @@ static JsonValue schemaSettingsDoc() {
         a.o["additionalProperties"] = JsonValue::makeBool(false);
         JsonValue req = JsonValue::makeArray();
         req.a.push_back(JsonValue::makeString("enableOpenCL"));
+        req.a.push_back(JsonValue::makeString("enableLibyuv"));
         req.a.push_back(JsonValue::makeString("enableMpp"));
         req.a.push_back(JsonValue::makeString("enableQualcomm"));
         a.o["required"] = std::move(req);
         JsonValue ap = JsonValue::makeObject();
         ap.o["enableOpenCL"] = objBool();
+        ap.o["enableLibyuv"] = objBool();
         ap.o["enableMpp"] = objBool();
         ap.o["enableQualcomm"] = objBool();
         a.o["properties"] = std::move(ap);
@@ -767,7 +772,9 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         JsonValue md = JsonValue::makeObject();
         md.o["detection"] = JsonValue::makeString(cfg.model.detection);
         md.o["recognition"] = JsonValue::makeString(cfg.model.recognition);
-        md.o["backend"] = JsonValue::makeString(cfg.model.backend);
+        md.o["backend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.backend, "opencv_dnn"));
+        md.o["detectorBackend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.detectorBackend, cfg.model.backend));
+        md.o["recognitionBackend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.recognitionBackend, cfg.model.backend));
         md.o["autoFallback"] = JsonValue::makeBool(cfg.model.autoFallback);
         root.o["model"] = std::move(md);
     }
@@ -856,6 +863,7 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
     {
         JsonValue a = JsonValue::makeObject();
         a.o["enableOpenCL"] = JsonValue::makeBool(cfg.acceleration.enableOpenCL);
+        a.o["enableLibyuv"] = JsonValue::makeBool(cfg.acceleration.enableLibyuv);
         a.o["enableMpp"] = JsonValue::makeBool(cfg.acceleration.enableMpp);
         a.o["enableQualcomm"] = JsonValue::makeBool(cfg.acceleration.enableQualcomm);
         root.o["acceleration"] = std::move(a);
@@ -983,9 +991,13 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         std::string s;
         if (getString(*m, "detection", s)) cfg.model.detection = s;
         if (getString(*m, "recognition", s)) cfg.model.recognition = s;
-        if (getString(*m, "backend", s)) cfg.model.backend = s;
+        if (getString(*m, "backend", s)) cfg.model.backend = rk_accel::normalizeBackendName(s, cfg.model.backend);
+        if (getString(*m, "detectorBackend", s)) cfg.model.detectorBackend = rk_accel::normalizeBackendName(s, cfg.model.backend);
+        if (getString(*m, "recognitionBackend", s)) cfg.model.recognitionBackend = rk_accel::normalizeBackendName(s, cfg.model.backend);
         bool b = false;
         if (getBool(*m, "autoFallback", b)) cfg.model.autoFallback = b;
+        if (cfg.model.detectorBackend.empty()) cfg.model.detectorBackend = cfg.model.backend;
+        if (cfg.model.recognitionBackend.empty()) cfg.model.recognitionBackend = cfg.model.backend;
     }
 
     // http
@@ -1070,6 +1082,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     if (const JsonValue* a = doc.find("acceleration"); a && a->isObject()) {
         bool b = false;
         if (getBool(*a, "enableOpenCL", b)) cfg.acceleration.enableOpenCL = b;
+        if (getBool(*a, "enableLibyuv", b)) cfg.acceleration.enableLibyuv = b;
         if (getBool(*a, "enableMpp", b)) cfg.acceleration.enableMpp = b;
         if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }

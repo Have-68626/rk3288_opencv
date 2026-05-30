@@ -3,6 +3,7 @@
  * @brief Implementation of Engine class.
  */
 #include "Engine.h"
+#include "AccelerationContract.h"
 #include "Config.h"
 #include "Storage.h"
 #include "NativeLog.h"
@@ -22,7 +23,16 @@
 #include <libyuv/convert_from.h>
 #endif
 
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
+#include <rk_mpi.h>
+#include <mpp.h>
+#include <mpp_err.h>
+#endif
+
 namespace {
+static bool getEnvBool(const char* envName);
+static const char* throttleModeName(InferenceThrottleMode mode);
+
 static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, std::string& err) {
     const int w = f.width;
     const int h = f.height;
@@ -193,6 +203,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
     };
 
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
+    if (getEnvBool("RK_USE_LIBYUV")) {
     const uint8_t* srcY = f.nv21.data();
     const uint8_t* srcVu = f.nv21.data() + needY;
     const int r = libyuv::NV21ToRGB24(
@@ -209,6 +220,8 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
         return fallbackOpencvNv21();
     }
     return true;
+    }
+    return fallbackOpencvNv21();
 #else
     return fallbackOpencvNv21();
 #endif
@@ -241,34 +254,36 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
             return false;
         }
         outBgr.create(f.height, f.width, CV_8UC3);
+        bool converted = false;
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-        const int w = f.width;
-        const int h = f.height;
-        const int w2 = w / 2;
-        const int h2 = h / 2;
-        const std::size_t ySize = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
-        const std::size_t uvSize = static_cast<std::size_t>(w2) * static_cast<std::size_t>(h2);
-        const uint8_t* y = yuvI420.data;
-        const uint8_t* u = yuvI420.data + ySize;
-        const uint8_t* v = yuvI420.data + ySize + uvSize;
-        const int r = libyuv::I420ToRGB24(
-            y,
-            w,
-            u,
-            w2,
-            v,
-            w2,
-            outBgr.data,
-            static_cast<int>(outBgr.step),
-            w,
-            h
-        );
-        if (r != 0) {
+        if (getEnvBool("RK_USE_LIBYUV")) {
+            const int w = f.width;
+            const int h = f.height;
+            const int w2 = w / 2;
+            const int h2 = h / 2;
+            const std::size_t ySize = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+            const std::size_t uvSize = static_cast<std::size_t>(w2) * static_cast<std::size_t>(h2);
+            const uint8_t* y = yuvI420.data;
+            const uint8_t* u = yuvI420.data + ySize;
+            const uint8_t* v = yuvI420.data + ySize + uvSize;
+            const int r = libyuv::I420ToRGB24(
+                y,
+                w,
+                u,
+                w2,
+                v,
+                w2,
+                outBgr.data,
+                static_cast<int>(outBgr.step),
+                w,
+                h
+            );
+            converted = (r == 0);
+        }
+#endif
+        if (!converted) {
             cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
         }
-#else
-        cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
-#endif
     }
 
     if (rot == 90) {
@@ -297,7 +312,6 @@ static float iou(const cv::Rect& a, const cv::Rect& b) {
     const float uni = static_cast<float>(a.area() + b.area()) - inter;
     return (uni <= 0.0f) ? 0.0f : (inter / uni);
 }
-}  // namespace
 
 
 // [Qualcomm/MPP Backend Feature Placeholder]
@@ -319,7 +333,7 @@ static bool initQualcommDelegate(bool requested) {
 
 // 待补充代码接入: MPP Hardware Decoding
 static bool initMppDecoder(bool requested) {
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     if (!requested) {
         rklog::logInfo("Engine", "initMppDecoder", "RK MPP disabled by user config.");
         return false;
@@ -338,7 +352,7 @@ static bool initMppDecoder(bool requested) {
     return false;
 #else
     (void)requested;
-    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (RK_HAVE_MPP not defined or 0)");
+    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (unsupported platform or RK_HAVE_MPP not defined or 0)");
     return false;
 #endif
 }
@@ -353,6 +367,23 @@ static bool getEnvBool(const char* envName) {
     }
     return false;
 }
+
+static const char* throttleModeName(InferenceThrottleMode mode) {
+    switch (mode) {
+        case InferenceThrottleMode::Off:
+            return "off";
+        case InferenceThrottleMode::Manual:
+            return "manual";
+        case InferenceThrottleMode::Auto:
+            return "auto";
+    }
+    return "off";
+}
+
+static void logAccelSelfCheckStatus(const rk_accel::AccelContractStatus& status) {
+    rklog::logInfo("Engine", "performAccelSelfCheck", rk_accel::formatSelfCheckLine(status));
+}
+}  // namespace
 
 Engine::Engine() 
     : isRunning(false),
@@ -399,6 +430,26 @@ void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
     detIntervalMs.store(clampDetectionIntervalMs(v));
     recThrottleMode.store(m);
     recIntervalMs.store(clampRecognitionIntervalMs(v));
+    rklog::logInfo(
+        "Engine",
+        "updateInferenceThrottle",
+        rk_accel::formatSelfCheckLine({
+            "detection_throttle",
+            m != InferenceThrottleMode::Off,
+            m != InferenceThrottleMode::Off,
+            "ok",
+            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(detIntervalMs.load())
+        }));
+    rklog::logInfo(
+        "Engine",
+        "updateInferenceThrottle",
+        rk_accel::formatSelfCheckLine({
+            "recognition_throttle",
+            m != InferenceThrottleMode::Off,
+            m != InferenceThrottleMode::Off,
+            "ok",
+            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(recIntervalMs.load())
+        }));
 }
 
 InferenceThrottleMode Engine::getInferenceThrottleMode() const {
@@ -412,6 +463,17 @@ int Engine::getInferenceIntervalMs() const {
 void Engine::updateDetectionThrottle(const std::string& mode, int intervalMs) {
     detThrottleMode.store(parseInferenceThrottleMode(mode));
     detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
+    const auto current = detThrottleMode.load();
+    rklog::logInfo(
+        "Engine",
+        "updateDetectionThrottle",
+        rk_accel::formatSelfCheckLine({
+            "detection_throttle",
+            current != InferenceThrottleMode::Off,
+            current != InferenceThrottleMode::Off,
+            "ok",
+            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(detIntervalMs.load())
+        }));
 }
 
 InferenceThrottleMode Engine::getDetectionThrottleMode() const {
@@ -425,6 +487,17 @@ int Engine::getDetectionIntervalMs() const {
 void Engine::updateRecognitionThrottle(const std::string& mode, int intervalMs) {
     recThrottleMode.store(parseInferenceThrottleMode(mode));
     recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
+    const auto current = recThrottleMode.load();
+    rklog::logInfo(
+        "Engine",
+        "updateRecognitionThrottle",
+        rk_accel::formatSelfCheckLine({
+            "recognition_throttle",
+            current != InferenceThrottleMode::Off,
+            current != InferenceThrottleMode::Off,
+            "ok",
+            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(recIntervalMs.load())
+        }));
 }
 
 InferenceThrottleMode Engine::getRecognitionThrottleMode() const {
@@ -1105,25 +1178,73 @@ void Engine::performAccelSelfCheck() {
     RKLOG_ENTER("Engine");
 
     // ncnn
+    logAccelSelfCheckStatus({
+        "ncnn",
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=ncnn] requested=1 effective=1 evidence=RK_HAVE_NCNN=1");
+        true,
+        true,
+        "ok",
+        "RK_HAVE_NCNN=1"
 #else
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=ncnn] requested=0 effective=0 evidence=RK_HAVE_NCNN=0");
+        false,
+        false,
+        "build_disabled",
+        "RK_HAVE_NCNN=0"
 #endif
+    });
 
     // MPP
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=mpp] requested=1 effective=1 evidence=RK_HAVE_MPP=1");
+    {
+        const bool requested = getEnvBool("RK_USE_MPP");
+        const bool effective =
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
+            requested;
 #else
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=mpp] requested=0 effective=0 evidence=RK_HAVE_MPP=0");
+            false;
 #endif
+        logAccelSelfCheckStatus({
+            "mpp",
+            requested,
+            effective,
+            effective ? "ok" :
+#if defined(_WIN32)
+                "unsupported_platform",
+#elif defined(RK_HAVE_MPP) && RK_HAVE_MPP
+                (requested ? "runtime_init_failed" : "build_disabled"),
+#else
+                (requested ? "missing_dependency" : "build_disabled"),
+#endif
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
+            "RK_HAVE_MPP=1"
+#elif defined(_WIN32)
+            "platform=windows"
+#else
+            "RK_HAVE_MPP=0"
+#endif
+        });
+    }
 
     // Qualcomm
+    {
+        const bool requested = getEnvBool("RK_USE_QUALCOMM");
+        const bool effective =
 #if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=qualcomm] requested=1 effective=1 evidence=RK_HAVE_QUALCOMM=1");
+            requested;
 #else
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=qualcomm] requested=0 effective=0 evidence=RK_HAVE_QUALCOMM=0");
+            false;
 #endif
+        logAccelSelfCheckStatus({
+            "qualcomm",
+            requested,
+            effective,
+            effective ? "ok" : (requested ? "missing_dependency" : "build_disabled"),
+#if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
+            "RK_HAVE_QUALCOMM=1"
+#else
+            "RK_HAVE_QUALCOMM=0"
+#endif
+        });
+    }
 
     // OpenCL
     bool oclRequested = false;
@@ -1136,8 +1257,7 @@ void Engine::performAccelSelfCheck() {
     }
     bool oclEffective = cv::ocl::useOpenCL();
     bool oclHave = cv::ocl::haveOpenCL();
-    std::string oclEvidence = "requested=" + std::to_string(oclRequested) +
-        " useOpenCL=" + std::to_string(oclEffective) +
+    std::string oclEvidence = "useOpenCL=" + std::to_string(oclEffective) +
         " haveOpenCL=" + std::to_string(oclHave);
     if (oclHave) {
         try {
@@ -1145,12 +1265,33 @@ void Engine::performAccelSelfCheck() {
             oclEvidence += " device=" + dev.name() + " vendor=" + dev.vendorName();
         } catch (...) {}
     }
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=opencl] " + oclEvidence);
+    logAccelSelfCheckStatus({
+        "opencl",
+        oclRequested,
+        oclEffective,
+        oclEffective ? "ok" : (oclRequested ? "missing_dependency" : "build_disabled"),
+        oclEvidence
+    });
 
     // libyuv
+    {
+        const bool requested = getEnvBool("RK_USE_LIBYUV");
+        const bool effective =
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=libyuv] requested=1 effective=1 evidence=RK_HAVE_LIBYUV=1");
+            requested;
 #else
-    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=libyuv] requested=0 effective=0 evidence=RK_HAVE_LIBYUV=0");
+            false;
 #endif
+        logAccelSelfCheckStatus({
+            "libyuv",
+            requested,
+            effective,
+            effective ? "ok" : (requested ? "missing_dependency" : "build_disabled"),
+#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
+            "RK_HAVE_LIBYUV=1"
+#else
+            "RK_HAVE_LIBYUV=0"
+#endif
+        });
+    }
 }

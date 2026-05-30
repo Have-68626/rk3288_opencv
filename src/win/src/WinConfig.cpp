@@ -1,4 +1,5 @@
 #include "rk_win/WinConfig.h"
+#include "AccelerationContract.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -268,8 +269,22 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.display.anisoLevel = readIniInt(cfg.configPath, L"display", L"aniso_level", cfg.display.anisoLevel);
 
     cfg.acceleration.enableOpenCL = readIniBool(cfg.configPath, L"acceleration", L"enable_opencl", cfg.acceleration.enableOpenCL);
+    cfg.acceleration.enableLibyuv = readIniBool(cfg.configPath, L"acceleration", L"enable_libyuv", cfg.acceleration.enableLibyuv);
     cfg.acceleration.enableMpp = readIniBool(cfg.configPath, L"acceleration", L"enable_mpp", cfg.acceleration.enableMpp);
     cfg.acceleration.enableQualcomm = readIniBool(cfg.configPath, L"acceleration", L"enable_qualcomm", cfg.acceleration.enableQualcomm);
+
+    cfg.model.detection = utf8FromWide(readIniW(cfg.configPath, L"model", L"detection", wFromUtf8(cfg.model.detection).c_str()));
+    cfg.model.recognition = utf8FromWide(readIniW(cfg.configPath, L"model", L"recognition", wFromUtf8(cfg.model.recognition).c_str()));
+    cfg.model.backend = rk_accel::normalizeBackendName(
+        utf8FromWide(readIniW(cfg.configPath, L"model", L"backend", wFromUtf8(cfg.model.backend).c_str())),
+        cfg.model.backend);
+    cfg.model.detectorBackend = rk_accel::normalizeBackendName(
+        utf8FromWide(readIniW(cfg.configPath, L"model", L"detector_backend", wFromUtf8(cfg.model.backend).c_str())),
+        cfg.model.backend);
+    cfg.model.recognitionBackend = rk_accel::normalizeBackendName(
+        utf8FromWide(readIniW(cfg.configPath, L"model", L"recognition_backend", wFromUtf8(cfg.model.backend).c_str())),
+        cfg.model.backend);
+    cfg.model.autoFallback = readIniBool(cfg.configPath, L"model", L"auto_fallback", cfg.model.autoFallback);
 
     return cfg;
 }
@@ -342,8 +357,15 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"display", L"aniso_level", toWStringInt(cfg.display.anisoLevel)) && ok;
 
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_opencl", toWStringInt(cfg.acceleration.enableOpenCL ? 1 : 0)) && ok;
+    ok = writeIniW(cfg.configPath, L"acceleration", L"enable_libyuv", toWStringInt(cfg.acceleration.enableLibyuv ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_mpp", toWStringInt(cfg.acceleration.enableMpp ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_qualcomm", toWStringInt(cfg.acceleration.enableQualcomm ? 1 : 0)) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"detection", wFromUtf8(cfg.model.detection)) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"recognition", wFromUtf8(cfg.model.recognition)) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"backend", wFromUtf8(rk_accel::normalizeBackendName(cfg.model.backend, "opencv_dnn"))) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"detector_backend", wFromUtf8(rk_accel::normalizeBackendName(cfg.model.detectorBackend, "opencv_dnn"))) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"recognition_backend", wFromUtf8(rk_accel::normalizeBackendName(cfg.model.recognitionBackend, "opencv_dnn"))) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"auto_fallback", toWStringInt(cfg.model.autoFallback ? 1 : 0)) && ok;
 
     return ok;
 }
