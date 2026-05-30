@@ -1,0 +1,51 @@
+--- web/src/app/pages/PreviewPage.tsx
++++ web/src/app/pages/PreviewPage.tsx
+@@ -47,6 +47,21 @@
+   const currentDeviceId = serverSettings.data?.camera?.preferredDeviceId ?? ''
+   const currentW = serverSettings.data?.camera?.width ?? 640
+
++  const handleEnroll = async () => {
++    if (!personId.trim()) return
++    try {
++      setIsEnrolling(true)
++      await enroll(prefs, { personId })
++      message.success('注册指令已发送')
++      setPersonId('')
++    } catch (e: unknown) {
++      message.error((e as Error)?.message || '注册失败')
++    } finally {
++      setIsEnrolling(false)
++    }
++  }
++
+   // 获取可用设备
+   useEffect(() => {
+     let mounted = true
+@@ -344,6 +359,7 @@
+               allowClear
+               onChange={(e) => setPersonId(e.target.value)}
+               placeholder="例如：alice"
++              onPressEnter={handleEnroll}
+             />
+           </Form.Item>
+
+@@ -353,19 +369,7 @@
+               <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
+                 <Button
+                   type="primary"
+-                  onClick={async () => {
+-                    try {
+-                      setIsEnrolling(true)
+-                      await enroll(prefs, { personId })
+-                      message.success('注册指令已发送')
+-                      setPersonId('')
+-                    } catch (e: unknown) {
+-                      message.error((e as Error)?.message || '注册失败')
+-                    } finally {
+-                      setIsEnrolling(false)
+-                    }
+-                  }}
++                  onClick={handleEnroll}
+                   disabled={!personId.trim()}
+                   loading={isEnrolling}
+                   style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
