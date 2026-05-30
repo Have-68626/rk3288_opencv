@@ -125,5 +125,18 @@ bool saveConfigToIni(const AppConfig& cfg);
 std::filesystem::path resolvePathFromExeDir(const std::filesystem::path& p);
 std::filesystem::path getExeDir();
 
+// ─── 共享工具函数 ────────────────────────────────────────────
+// 以下函数供 WinConfig.cpp / WinJsonConfig.cpp 共同使用，避免实现漂移。
+
+// 环境变量读取（Windows wide-char 版本）
+std::wstring getEnvW(const wchar_t* name);
+std::string utf8FromWide(const std::wstring& ws);
+std::wstring wideFromUtf8(const std::string& s);
+
+// 推理节流参数规范化
+std::string asciiLower(std::string s);
+std::string normalizeInferenceThrottleMode(std::string s);
+int clampInferenceIntervalMs(int v);
+
 }  // namespace rk_win
 

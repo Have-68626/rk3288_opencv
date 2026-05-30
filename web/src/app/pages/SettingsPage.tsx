@@ -18,6 +18,7 @@ import {
 import { useEffect, useState } from 'react'
 
 import { rotateCryptoKey } from '../api/actions'
+import type { ServerSettingsDoc } from '../api/types'
 import { useAppStore } from '../state/AppStore'
 import { diffPatch } from '../utils/diffPatch'
 
@@ -41,31 +42,42 @@ type ServerFormModel = {
     backoffMaxMs: number
   }
   ui: { windowWidth: number; windowHeight: number; previewScaleMode: number }
+  acceleration: {
+    enableOpenCL: boolean
+    enableLibyuv: boolean
+    enableMpp: boolean
+    enableQualcomm: boolean
+  }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildServerFormModelFromDoc(doc: Record<string, any>): { model: ServerFormModel; postUrlMasked: boolean } {
-  const masked = doc?.poster?.postUrl === '***'
+function buildServerFormModelFromDoc(doc: ServerSettingsDoc): { model: ServerFormModel; postUrlMasked: boolean } {
+  const masked = doc.poster?.postUrl === '***'
   return {
     postUrlMasked: masked,
     model: {
-      http: { enable: !!doc?.http?.enable, port: Number(doc?.http?.port ?? 8080) },
+      http: { enable: !!doc.http?.enable, port: Number(doc.http?.port ?? 8080) },
       log: {
-        logDir: String(doc?.log?.logDir ?? ''),
-        maxFileBytes: Number(doc?.log?.maxFileBytes ?? 10 * 1024 * 1024),
-        maxRollFiles: Number(doc?.log?.maxRollFiles ?? 5),
+        logDir: String(doc.log?.logDir ?? ''),
+        maxFileBytes: Number(doc.log?.maxFileBytes ?? 10 * 1024 * 1024),
+        maxRollFiles: Number(doc.log?.maxRollFiles ?? 5),
       },
       poster: {
-        enable: !!doc?.poster?.enable,
-        postUrl: masked ? '' : String(doc?.poster?.postUrl ?? ''),
-        throttleMs: Number(doc?.poster?.throttleMs ?? 100),
-        backoffMinMs: Number(doc?.poster?.backoffMinMs ?? 200),
-        backoffMaxMs: Number(doc?.poster?.backoffMaxMs ?? 5000),
+        enable: !!doc.poster?.enable,
+        postUrl: masked ? '' : String(doc.poster?.postUrl ?? ''),
+        throttleMs: Number(doc.poster?.throttleMs ?? 100),
+        backoffMinMs: Number(doc.poster?.backoffMinMs ?? 200),
+        backoffMaxMs: Number(doc.poster?.backoffMaxMs ?? 5000),
       },
       ui: {
-        windowWidth: Number(doc?.ui?.windowWidth ?? 1280),
-        windowHeight: Number(doc?.ui?.windowHeight ?? 800),
-        previewScaleMode: Number(doc?.ui?.previewScaleMode ?? 0),
+        windowWidth: Number(doc.ui?.windowWidth ?? 1280),
+        windowHeight: Number(doc.ui?.windowHeight ?? 800),
+        previewScaleMode: Number(doc.ui?.previewScaleMode ?? 0),
+      },
+      acceleration: {
+        enableOpenCL: !!doc.acceleration?.enableOpenCL,
+        enableLibyuv: !!doc.acceleration?.enableLibyuv,
+        enableMpp: !!doc.acceleration?.enableMpp,
+        enableQualcomm: !!doc.acceleration?.enableQualcomm,
       },
     },
   }

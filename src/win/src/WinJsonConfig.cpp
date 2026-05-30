@@ -27,59 +27,6 @@ constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
 
-static std::string asciiLower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
-static std::string normalizeInferenceThrottleMode(std::string s) {
-    s = asciiLower(std::move(s));
-    if (s == "auto" || s == "manual" || s == "off") return s;
-    return "auto";
-}
-
-static int clampInferenceIntervalMs(int v) {
-    return std::clamp(v, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
-}
-
-std::wstring getEnvW(const wchar_t* name) {
-#ifdef _WIN32
-    wchar_t buf[32768];
-    DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-    if (n == 0 || n >= std::size(buf)) return L"";
-    return std::wstring(buf, buf + n);
-#else
-    (void)name;
-    return L"";
-#endif
-}
-
-std::string utf8FromWide(const std::wstring& ws) {
-    if (ws.empty()) return {};
-#ifdef _WIN32
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-#else
-    return std::string(ws.begin(), ws.end());
-#endif
-}
-
-std::wstring wideFromUtf8(const std::string& s) {
-    if (s.empty()) return L"";
-#ifdef _WIN32
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    if (n <= 0) return L"";
-    std::wstring out(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-#else
-    return std::wstring(s.begin(), s.end());
-#endif
-}
-
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
     err.clear();
     out.clear();

@@ -35,6 +35,10 @@ export interface ServerSettingsDoc {
     identifyThreshold: number
     enrollSamples: number
   }
+  inference: {
+    throttleMode: string
+    intervalMs: number
+  }
   dnn: {
     enable: boolean
     modelPath: string
@@ -49,6 +53,14 @@ export interface ServerSettingsDoc {
     confThreshold: number
     backend: number
     target: number
+  }
+  model: {
+    detection: string
+    recognition: string
+    backend: string
+    detectorBackend: string
+    recognitionBackend: string
+    autoFallback: boolean
   }
   http: {
     enable: boolean
@@ -89,6 +101,7 @@ export interface ServerSettingsDoc {
   }
   acceleration: {
     enableOpenCL: boolean
+    enableLibyuv: boolean
     enableMpp: boolean
     enableQualcomm: boolean
   }
