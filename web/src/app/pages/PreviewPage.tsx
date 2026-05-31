@@ -94,6 +94,50 @@ export function PreviewPage() {
 
   const currentFormatKey = `${currentW}x${currentH}@${currentFps}`
 
+  const toggleFlipX = async (v: boolean) => {
+    const original = flipX
+    setFlipX(v)
+    setIsFlippingX(true)
+    try {
+      await setFlip(prefs, { flipX: v, flipY })
+      message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
+    } catch (e: unknown) {
+      setFlipX(original)
+      message.error((e as Error)?.message || '设置 X 轴翻转失败')
+    } finally {
+      setIsFlippingX(false)
+    }
+  }
+
+  const toggleFlipY = async (v: boolean) => {
+    const original = flipY
+    setFlipY(v)
+    setIsFlippingY(true)
+    try {
+      await setFlip(prefs, { flipX, flipY: v })
+      message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
+    } catch (e: unknown) {
+      setFlipY(original)
+      message.error((e as Error)?.message || '设置 Y 轴翻转失败')
+    } finally {
+      setIsFlippingY(false)
+    }
+  }
+
+  const handleEnroll = async () => {
+    if (!personId.trim()) return
+    try {
+      setIsEnrolling(true)
+      await enroll(prefs, { personId })
+      message.success('注册指令已发送')
+      setPersonId('')
+    } catch (e: unknown) {
+      message.error((e as Error)?.message || '注册失败')
+    } finally {
+      setIsEnrolling(false)
+    }
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card
@@ -281,23 +325,17 @@ export function PreviewPage() {
                 loading={isFlippingX}
                 disabled={isFlippingY}
                 aria-label="翻转 X"
-                onChange={async (v) => {
-                  const original = flipX
-                  setFlipX(v)
-                  setIsFlippingX(true)
-                  try {
-                    await setFlip(prefs, { flipX: v, flipY })
-                    message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
-                  } catch (e: unknown) {
-                    setFlipX(original)
-                    message.error((e as Error)?.message || '设置 X 轴翻转失败')
-                  } finally {
-                    setIsFlippingX(false)
-                  }
-                }}
+                onChange={toggleFlipX}
               />
-              <label htmlFor="preview-flip-x" style={{ cursor: 'pointer' }}>
-                <Typography.Text>翻转 X</Typography.Text>
+              <label
+                htmlFor="preview-flip-x"
+                style={{ cursor: isFlippingY ? 'not-allowed' : 'pointer' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (!isFlippingY) toggleFlipX(!flipX);
+                }}
+              >
+                <Typography.Text disabled={isFlippingY}>翻转 X</Typography.Text>
               </label>
             </Space>
             <Space>
@@ -307,23 +345,17 @@ export function PreviewPage() {
                 loading={isFlippingY}
                 disabled={isFlippingX}
                 aria-label="翻转 Y"
-                onChange={async (v) => {
-                  const original = flipY
-                  setFlipY(v)
-                  setIsFlippingY(true)
-                  try {
-                    await setFlip(prefs, { flipX, flipY: v })
-                    message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
-                  } catch (e: unknown) {
-                    setFlipY(original)
-                    message.error((e as Error)?.message || '设置 Y 轴翻转失败')
-                  } finally {
-                    setIsFlippingY(false)
-                  }
-                }}
+                onChange={toggleFlipY}
               />
-              <label htmlFor="preview-flip-y" style={{ cursor: 'pointer' }}>
-                <Typography.Text>翻转 Y</Typography.Text>
+              <label
+                htmlFor="preview-flip-y"
+                style={{ cursor: isFlippingX ? 'not-allowed' : 'pointer' }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (!isFlippingX) toggleFlipY(!flipY);
+                }}
+              >
+                <Typography.Text disabled={isFlippingX}>翻转 Y</Typography.Text>
               </label>
             </Space>
           </Space>
@@ -343,6 +375,7 @@ export function PreviewPage() {
               showCount
               allowClear
               onChange={(e) => setPersonId(e.target.value)}
+              onPressEnter={handleEnroll}
               placeholder="例如：alice"
             />
           </Form.Item>
@@ -352,18 +385,7 @@ export function PreviewPage() {
               <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
                 <Button
                   type="primary"
-                  onClick={async () => {
-                    try {
-                      setIsEnrolling(true)
-                      await enroll(prefs, { personId })
-                      message.success('注册指令已发送')
-                      setPersonId('')
-                    } catch (e: unknown) {
-                      message.error((e as Error)?.message || '注册失败')
-                    } finally {
-                      setIsEnrolling(false)
-                    }
-                  }}
+                  onClick={handleEnroll}
                   disabled={!personId.trim()}
                   loading={isEnrolling}
                   style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
