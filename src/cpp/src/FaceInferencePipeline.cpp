@@ -53,18 +53,32 @@ static std::string buildSimpleErrorJson(bool ok,
                                         const std::string& message,
                                         long long tsMs,
                                         const std::string& imagePath) {
-    std::ostringstream oss;
-    oss << "{";
-    oss << "\"ok\":" << (ok ? "true" : "false") << ",";
-    oss << "\"errorCode\":" << errorCode << ",";
-    oss << "\"stage\":\"" << jsonEscapeMinimal(stage) << "\",";
-    oss << "\"message\":\"" << jsonEscapeMinimal(message) << "\",";
-    oss << "\"timestamp_ms\":" << tsMs;
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: Replace std::ostringstream with std::string concatenation to avoid virtual calls and locale overhead in error JSON building.
+     * Impact: Lower CPU usage during simple JSON formatting.
+     * Rollback: Revert back to using std::ostringstream.
+     */
+    std::string out;
+    out.reserve(256 + stage.size() + message.size() + imagePath.size());
+    out += "{";
+    out += "\"ok\":";
+    out += (ok ? "true" : "false");
+    out += ",\"errorCode\":";
+    out += std::to_string(errorCode);
+    out += ",\"stage\":\"";
+    out += jsonEscapeMinimal(stage);
+    out += "\",\"message\":\"";
+    out += jsonEscapeMinimal(message);
+    out += "\",\"timestamp_ms\":";
+    out += std::to_string(tsMs);
     if (!imagePath.empty()) {
-        oss << ",\"image\":\"" << jsonEscapeMinimal(imagePath) << "\"";
+        out += ",\"image\":\"";
+        out += jsonEscapeMinimal(imagePath);
+        out += "\"";
     }
-    oss << "}";
-    return oss.str();
+    out += "}";
+    return out;
 }
 
 #if RK_CPP_HAS_OPENCV
