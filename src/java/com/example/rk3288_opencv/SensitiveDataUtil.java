@@ -25,6 +25,24 @@ public class SensitiveDataUtil {
     public static String maskSensitiveData(String text) {
         if (text == null || text.isEmpty()) return text;
 
+        // Low-cost pre-check to avoid heavy regex on safe strings
+        String lower = text.toLowerCase();
+        boolean hasDigit = false;
+        boolean hasKeyword = lower.contains("pass") || lower.contains("token") ||
+                lower.contains("auth") || lower.contains("key") ||
+                lower.contains("secret") || lower.contains("@");
+
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isDigit(text.charAt(i))) {
+                hasDigit = true;
+                break;
+            }
+        }
+
+        if (!hasKeyword && !hasDigit) {
+            return text;
+        }
+
         String result = text;
 
         // Mask Phone Numbers: 13812345678 -> 138****5678
