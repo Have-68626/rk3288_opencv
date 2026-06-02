@@ -98,12 +98,16 @@ static std::string guessContentType(const std::string& path) {
 }
 
 static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
-    std::ifstream ifs(p, std::ios::binary);
+    // Performance optimization: Avoid std::ostringstream allocation and copying overhead
+    // by reading directly into a pre-sized string buffer.
+    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
     if (!ifs) return false;
-    std::ostringstream ss;
-    ss << ifs.rdbuf();
-    out = ss.str();
-    return true;
+    auto size = ifs.tellg();
+    if (size < 0) return false;
+    ifs.seekg(0, std::ios::beg);
+    out.resize(static_cast<std::size_t>(size));
+    if (ifs.read(out.data(), size)) return true;
+    return false;
 }
 
 
