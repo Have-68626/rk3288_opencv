@@ -35,3 +35,6 @@
 ## 2026-05-26 - Centralize Global Action UX Feedback
 **Learning:** React state stores that manage global data interactions (like settings refresh or update commands) often lead to duplicate or inconsistent UX feedback if the store applies generic success/error toasts while individual components apply their own context-specific toasts. Conversely, actions triggered from layout components without their own toasts may leave users confused.
 **Action:** Always verify where UX feedback happens for shared actions. Global, repeatable actions (like a full settings refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should NOT emit generic toasts from the store to prevent double notifications.
+## 2024-06-02 - Enter key bypasses disabled state in input-button pairs
+**Learning:** For standalone `<Input>` fields associated with an action button (e.g., registration or search), binding the action to the input's `onPressEnter` event is crucial for keyboard accessibility. However, the Enter key bypasses the button's `disabled` state.
+**Action:** Always manually validate the input (e.g., `!input.trim()`) inside the `onPressEnter` handler to maintain functional parity with the disabled button.
