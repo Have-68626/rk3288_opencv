@@ -284,50 +284,59 @@ static int runYoloFaceDetect(int argc, char** argv) {
     const long long msTotal = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - t0).count();
     const long long tsMs = nowEpochMillis();
 
-    std::ostringstream jout;
-    jout << "{";
-    jout << "\"ok\":" << (ok ? "true" : "false") << ",";
-    jout << "\"backend\":\"" << jsonEscape(backendName.empty() ? a.backend : backendName) << "\",";
-    jout << "\"image\":\"" << jsonEscape(a.imagePath) << "\",";
-    jout << "\"width\":" << img.cols << ",";
-    jout << "\"height\":" << img.rows << ",";
-    jout << "\"input_w\":" << a.opt.inputW << ",";
-    jout << "\"input_h\":" << a.opt.inputH << ",";
-    jout << "\"score_threshold\":" << a.opt.scoreThreshold << ",";
-    jout << "\"nms_iou_threshold\":" << a.opt.nmsIouThreshold << ",";
-    jout << "\"enable_keypoints5\":" << (a.opt.enableKeypoints5 ? "true" : "false") << ",";
-    jout << "\"ms_load\":" << msLoad << ",";
-    jout << "\"ms_detect\":" << msDetect << ",";
-    jout << "\"ms_total\":" << msTotal << ",";
-    jout << "\"timestamp_ms\":" << tsMs << ",";
-    jout << "\"faces\":[";
+    std::string jout;
+    jout.reserve(1024 + faces.size() * 128);
+    jout += "{\"ok\":";
+    jout += ok ? "true" : "false";
+    jout += ",\"backend\":\"";
+    jout += jsonEscape(backendName.empty() ? a.backend : backendName);
+    jout += "\",\"image\":\"";
+    jout += jsonEscape(a.imagePath);
+    jout += "\",\"width\":";
+    jout += std::to_string(img.cols);
+    jout += ",\"height\":";
+    jout += std::to_string(img.rows);
+    jout += ",\"input_w\":";
+    jout += std::to_string(a.opt.inputW);
+    jout += ",\"input_h\":";
+    jout += std::to_string(a.opt.inputH);
+    char buf[256];
+    snprintf(buf, sizeof(buf), ",\"score_threshold\":%g,\"nms_iou_threshold\":%g", a.opt.scoreThreshold, a.opt.nmsIouThreshold);
+    jout += buf;
+    jout += ",\"enable_keypoints5\":";
+    jout += a.opt.enableKeypoints5 ? "true" : "false";
+    jout += ",\"ms_load\":";
+    jout += std::to_string(msLoad);
+    jout += ",\"ms_detect\":";
+    jout += std::to_string(msDetect);
+    jout += ",\"ms_total\":";
+    jout += std::to_string(msTotal);
+    jout += ",\"timestamp_ms\":";
+    jout += std::to_string(tsMs);
+    jout += ",\"faces\":[";
     for (size_t i = 0; i < faces.size(); i++) {
-        if (i > 0) jout << ",";
+        if (i > 0) jout += ",";
         const auto& f = faces[i];
-        jout << "{";
-        jout << "\"bbox\":{";
-        jout << "\"x\":" << f.bbox.x << ",";
-        jout << "\"y\":" << f.bbox.y << ",";
-        jout << "\"w\":" << f.bbox.width << ",";
-        jout << "\"h\":" << f.bbox.height;
-        jout << "},";
-        jout << "\"score\":" << f.score;
+        snprintf(buf, sizeof(buf), "{\"bbox\":{\"x\":%g,\"y\":%g,\"w\":%g,\"h\":%g},\"score\":%g",
+                 static_cast<double>(f.bbox.x), static_cast<double>(f.bbox.y), static_cast<double>(f.bbox.width), static_cast<double>(f.bbox.height), f.score);
+        jout += buf;
         if (f.keypoints5.has_value()) {
-            jout << ",\"keypoints5\":[";
+            jout += ",\"keypoints5\":[";
             const auto& kps = *f.keypoints5;
             for (size_t j = 0; j < kps.size(); j++) {
-                if (j > 0) jout << ",";
-                jout << "{\"x\":" << kps[j].x << ",\"y\":" << kps[j].y << "}";
+                if (j > 0) jout += ",";
+                snprintf(buf, sizeof(buf), "{\"x\":%g,\"y\":%g}", static_cast<double>(kps[j].x), static_cast<double>(kps[j].y));
+                jout += buf;
             }
-            jout << "]";
+            jout += "]";
         }
-        jout << "}";
+        jout += "}";
     }
-    jout << "],";
-    jout << "\"err\":\"" << jsonEscape(err) << "\"";
-    jout << "}";
+    jout += "],\"err\":\"";
+    jout += jsonEscape(err);
+    jout += "\"}";
 
-    const std::string json = jout.str();
+    const std::string json = jout;
     std::cout << json << std::endl;
 
     std::filesystem::path dir = ok ? std::filesystem::path(a.outDir) : std::filesystem::path("ErrorLog");
@@ -569,14 +578,24 @@ static double percentileNearestRank(std::vector<double> v, double q) {
 }
 
 static std::string joinCommandLine(int argc, char** argv) {
-    std::ostringstream oss;
+    std::string out;
+    std::size_t reserveSize = 0;
     for (int i = 0; i < argc; i++) {
-        if (i) oss << " ";
-        const std::string s = argv[i] ? argv[i] : "";
-        if (s.find(' ') != std::string::npos) oss << "\"" << s << "\"";
-        else oss << s;
+        if (argv[i]) reserveSize += std::strlen(argv[i]) + 3;
     }
-    return oss.str();
+    out.reserve(reserveSize);
+    for (int i = 0; i < argc; i++) {
+        if (i) out += " ";
+        const std::string s = argv[i] ? argv[i] : "";
+        if (s.find(' ') != std::string::npos) {
+            out += "\"";
+            out += s;
+            out += "\"";
+        } else {
+            out += s;
+        }
+    }
+    return out;
 }
 
 static std::size_t selectMainFaceIndex(const FaceDetections& faces, const std::string& policy) {

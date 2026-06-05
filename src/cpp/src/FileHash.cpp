@@ -78,11 +78,14 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
     }
     sha256_transform(state, data);
 
-    std::ostringstream oss;
+    std::string out;
+    out.reserve(64);
+    char buf[9];
     for (int i = 0; i < 8; ++i) {
-        oss << std::hex << std::setw(8) << std::setfill('0') << state[i];
+        snprintf(buf, sizeof(buf), "%08x", state[i]);
+        out += buf;
     }
-    return oss.str();
+    return out;
 }
 
 } // namespace rk_wcfr

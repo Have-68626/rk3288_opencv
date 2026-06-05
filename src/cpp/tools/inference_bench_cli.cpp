@@ -251,10 +251,9 @@ static std::string jsonEscape(const std::string &s) {
     else if (c == '\t')
       out += "\\t";
     else if (c < 0x20) {
-      std::ostringstream oss;
-      oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-          << static_cast<int>(c);
-      out += oss.str();
+      char buf[8];
+      snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
+      out += buf;
     } else {
       out.push_back(static_cast<char>(c));
     }

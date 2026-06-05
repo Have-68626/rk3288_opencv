@@ -100,10 +100,9 @@ static std::string jsonEscape(const std::string& s) {
             case '\t': out += "\\t"; break;
             default:
                 if (static_cast<unsigned char>(ch) < 0x20) {
-                    std::ostringstream oss;
-                    oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-                        << static_cast<int>(static_cast<unsigned char>(ch));
-                    out += oss.str();
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(static_cast<unsigned char>(ch)));
+                    out += buf;
                 } else {
                     out += ch;
                 }
@@ -557,13 +556,10 @@ static bool parseParamLine(const std::string& line, std::string& tag, VerifyConf
     }
 
     if (tag.empty()) {
-        std::ostringstream oss;
-        oss << "s" << std::fixed << std::setprecision(2) << out.scaleFactor
-            << "_n" << out.minNeighbors
-            << "_min" << out.minSizePx
-            << "_max" << out.maxSizePx
-            << "_nms" << std::fixed << std::setprecision(2) << out.nmsIou;
-        tag = oss.str();
+        char buf[128];
+        snprintf(buf, sizeof(buf), "s%.2f_n%d_min%d_max%d_nms%.2f",
+                 out.scaleFactor, out.minNeighbors, out.minSizePx, out.maxSizePx, out.nmsIou);
+        tag = buf;
     }
     return true;
 }
