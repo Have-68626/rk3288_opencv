@@ -383,16 +383,32 @@ bool HttpFacesServer::writeRaw(std::uintptr_t sock, const void* data, std::size_
 }
 
 bool HttpFacesServer::writeResponse(std::uintptr_t sock, const HttpResponse& resp) {
-    std::ostringstream os;
-    os << "HTTP/1.1 " << resp.status << " " << (resp.reason.empty() ? statusReason(resp.status) : resp.reason) << "\r\n";
-    os << "Content-Type: " << resp.contentType << "\r\n";
-    os << "Content-Length: " << resp.body.size() << "\r\n";
-    os << "Connection: " << (resp.close ? "close" : "keep-alive") << "\r\n";
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: Replace std::ostringstream with std::string concatenation to avoid virtual calls and dynamic memory allocation overhead.
+     * Rollback: Revert to using std::ostringstream.
+     */
+    std::string head;
+    head.reserve(256 + resp.headers.size() * 64);
+    head += "HTTP/1.1 ";
+    head += std::to_string(resp.status);
+    head += " ";
+    head += resp.reason.empty() ? statusReason(resp.status) : resp.reason;
+    head += "\r\nContent-Type: ";
+    head += resp.contentType;
+    head += "\r\nContent-Length: ";
+    head += std::to_string(resp.body.size());
+    head += "\r\nConnection: ";
+    head += resp.close ? "close" : "keep-alive";
+    head += "\r\n";
     for (const auto& h : resp.headers) {
-        os << h.first << ": " << h.second << "\r\n";
+        head += h.first;
+        head += ": ";
+        head += h.second;
+        head += "\r\n";
     }
-    os << "\r\n";
-    const std::string head = os.str();
+    head += "\r\n";
+
     if (!writeRaw(sock, head.data(), head.size())) return false;
     if (!resp.body.empty() && !writeRaw(sock, resp.body.data(), resp.body.size())) return false;
     return true;
@@ -900,17 +916,23 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
     }
 
     if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
+        /*
+         * [Performance Optimization - string formatting]
+         * Why: Replace std::ostringstream with std::string concatenation to avoid virtual calls and dynamic memory allocation overhead during MJPEG streaming.
+         * Rollback: Revert to using std::ostringstream.
+         */
         const std::string boundary = "rk_boundary";
-        std::ostringstream os;
-        os << "HTTP/1.1 200 OK\r\n"
-           << "Content-Type: multipart/x-mixed-replace; boundary=" << boundary << "\r\n"
-           << "Cache-Control: no-cache\r\n"
-           << "X-Content-Type-Options: nosniff\r\n"
-           << "X-Frame-Options: DENY\r\n"
-           << "Content-Security-Policy: default-src 'none'\r\n"
-           << "Connection: close\r\n"
-           << "\r\n";
-        const std::string head = os.str();
+        std::string head;
+        head.reserve(256);
+        head += "HTTP/1.1 200 OK\r\n";
+        head += "Content-Type: multipart/x-mixed-replace; boundary=";
+        head += boundary;
+        head += "\r\nCache-Control: no-cache\r\n";
+        head += "X-Content-Type-Options: nosniff\r\n";
+        head += "X-Frame-Options: DENY\r\n";
+        head += "Content-Security-Policy: default-src 'none'\r\n";
+        head += "Connection: close\r\n\r\n";
+
         if (!writeRaw(sock, head.data(), head.size())) {
             closesocket(s);
             return;
@@ -928,12 +950,14 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
-            std::ostringstream part;
-            part << "--" << boundary << "\r\n"
-                 << "Content-Type: image/jpeg\r\n"
-                 << "Content-Length: " << jpeg.size() << "\r\n"
-                 << "\r\n";
-            const std::string partHead = part.str();
+            std::string partHead;
+            partHead.reserve(128);
+            partHead += "--";
+            partHead += boundary;
+            partHead += "\r\nContent-Type: image/jpeg\r\nContent-Length: ";
+            partHead += std::to_string(jpeg.size());
+            partHead += "\r\n\r\n";
+
             if (!writeRaw(sock, partHead.data(), partHead.size())) break;
             if (!writeRaw(sock, jpeg.data(), jpeg.size())) break;
             if (!writeRaw(sock, "\r\n", 2)) break;

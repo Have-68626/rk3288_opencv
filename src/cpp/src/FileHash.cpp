@@ -78,11 +78,16 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
     }
     sha256_transform(state, data);
 
-    std::ostringstream oss;
-    for (int i = 0; i < 8; ++i) {
-        oss << std::hex << std::setw(8) << std::setfill('0') << state[i];
-    }
-    return oss.str();
+    /*
+     * [Performance Optimization - string formatting]
+     * Why: Replace std::ostringstream with snprintf to avoid virtual calls and dynamic memory allocation per file hash string generation.
+     * Rollback: Revert to using std::ostringstream.
+     */
+    char buf[65];
+    snprintf(buf, sizeof(buf), "%08x%08x%08x%08x%08x%08x%08x%08x",
+             state[0], state[1], state[2], state[3],
+             state[4], state[5], state[6], state[7]);
+    return std::string(buf);
 }
 
 } // namespace rk_wcfr
