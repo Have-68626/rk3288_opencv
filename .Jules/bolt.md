@@ -56,3 +56,7 @@
 ## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
 **Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+
+## 2026-05-25 - Optimize fixed-width hex formatting
+**Learning:** `std::ostringstream` has significant overhead for simple string formatting due to virtual function calls, locale handling, and dynamic memory allocations. In hashing pipelines where multiple hex parts are concatenated, using a loop with `std::ostringstream` is much slower than a single `snprintf`.
+**Action:** Replace `std::ostringstream` with a fixed-size stack buffer and `snprintf` when formatting fixed-width outputs like SHA-256 hex digests. Ensure the buffer size accommodates all characters and a null terminator.

@@ -78,11 +78,15 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
     }
     sha256_transform(state, data);
 
-    std::ostringstream oss;
-    for (int i = 0; i < 8; ++i) {
-        oss << std::hex << std::setw(8) << std::setfill('0') << state[i];
-    }
-    return oss.str();
+    // Why: std::ostringstream has high overhead for simple fixed-width formatting.
+    // snprintf with a fixed stack buffer avoids virtual dispatch and dynamic memory allocations,
+    // significantly speeding up hex digest generation.
+    // Rollback: Revert to using std::ostringstream with std::hex and std::setw.
+    char buf[65];
+    snprintf(buf, sizeof(buf), "%08x%08x%08x%08x%08x%08x%08x%08x",
+             state[0], state[1], state[2], state[3],
+             state[4], state[5], state[6], state[7]);
+    return std::string(buf);
 }
 
 } // namespace rk_wcfr
