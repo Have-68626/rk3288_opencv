@@ -35,3 +35,7 @@
 ## 2026-05-26 - Centralize Global Action UX Feedback
 **Learning:** React state stores that manage global data interactions (like settings refresh or update commands) often lead to duplicate or inconsistent UX feedback if the store applies generic success/error toasts while individual components apply their own context-specific toasts. Conversely, actions triggered from layout components without their own toasts may leave users confused.
 **Action:** Always verify where UX feedback happens for shared actions. Global, repeatable actions (like a full settings refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should NOT emit generic toasts from the store to prevent double notifications.
+
+## 2024-06-15 - Input field keyboard accessibility
+**Learning:** For standalone inputs paired with action buttons (like registration or search), users naturally expect to press Enter to submit. However, binding `onPressEnter` to an action handler bypasses the disabled state of the corresponding action button.
+**Action:** When adding keyboard support (`onPressEnter`) to standalone input fields, always extract the submission logic into a reusable handler and include manual validation (e.g., `!input.trim()`) at the start of the handler to ensure the functional constraints (like empty checks) are enforced consistently across both mouse and keyboard interactions.
