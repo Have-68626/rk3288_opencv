@@ -291,90 +291,91 @@ struct Parser {
     }
 };
 
-static void writeEscapedString(std::ostringstream& os, const std::string& s) {
-    os << '"';
+static void writeEscapedString(std::string& os, const std::string& s) {
+    os.push_back('"');
     for (unsigned char uc : s) {
         const char c = static_cast<char>(uc);
         switch (c) {
-            case '"': os << "\\\""; break;
-            case '\\': os << "\\\\"; break;
-            case '\b': os << "\\b"; break;
-            case '\f': os << "\\f"; break;
-            case '\n': os << "\\n"; break;
-            case '\r': os << "\\r"; break;
-            case '\t': os << "\\t"; break;
+            case '"': os += "\\\""; break;
+            case '\\': os += "\\\\"; break;
+            case '\b': os += "\\b"; break;
+            case '\f': os += "\\f"; break;
+            case '\n': os += "\\n"; break;
+            case '\r': os += "\\r"; break;
+            case '\t': os += "\\t"; break;
             default:
                 if (uc < 0x20) {
-                    os << "\\u";
+                    os += "\\u00";
                     static const char* hex = "0123456789ABCDEF";
-                    os << "00" << hex[(uc >> 4) & 0xF] << hex[uc & 0xF];
+                    os.push_back(hex[(uc >> 4) & 0xF]);
+                    os.push_back(hex[uc & 0xF]);
                 } else {
-                    os << c;
+                    os.push_back(c);
                 }
                 break;
         }
     }
-    os << '"';
+    os.push_back('"');
 }
 
-static void dump(const JsonValue& v, std::ostringstream& os, bool pretty, int indentSize, int indent) {
+static void dump(const JsonValue& v, std::string& os, bool pretty, int indentSize, int indent) {
     auto nl = [&]() {
         if (!pretty) return;
-        os << "\n";
-        for (int i = 0; i < indent; i++) os << ' ';
+        os.push_back('\n');
+        os.append(indent, ' ');
     };
     auto nlChild = [&]() {
         if (!pretty) return;
-        os << "\n";
-        for (int i = 0; i < indent + indentSize; i++) os << ' ';
+        os.push_back('\n');
+        os.append(indent + indentSize, ' ');
     };
 
     switch (v.type) {
-        case JsonValue::Type::Null: os << "null"; return;
-        case JsonValue::Type::Bool: os << (v.b ? "true" : "false"); return;
+        case JsonValue::Type::Null: os += "null"; return;
+        case JsonValue::Type::Bool: os += (v.b ? "true" : "false"); return;
         case JsonValue::Type::Number: {
             // 输出稳定：整数按整数输出；小数用 fixed + 去尾零，避免科学计数法导致 diff 噪音。
             if (std::fabs(v.n - std::round(v.n)) < 1e-9 && std::fabs(v.n) < 9.22e18) {
-                os << static_cast<long long>(std::llround(v.n));
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(std::llround(v.n)));
+                os += buf;
                 return;
             }
-            std::ostringstream tmp;
-            tmp.setf(std::ios::fixed);
-            tmp.precision(6);
-            tmp << v.n;
-            std::string s = tmp.str();
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%.6f", v.n);
+            std::string s(buf);
             // 去尾零与多余小数点
             while (s.size() > 1 && s.find('.') != std::string::npos && s.back() == '0') s.pop_back();
             if (!s.empty() && s.back() == '.') s.pop_back();
-            os << s;
+            os += s;
             return;
         }
         case JsonValue::Type::String:
             writeEscapedString(os, v.s);
             return;
         case JsonValue::Type::Array: {
-            os << "[";
+            os.push_back('[');
             if (v.a.empty()) {
-                os << "]";
+                os.push_back(']');
                 return;
             }
             for (std::size_t i = 0; i < v.a.size(); i++) {
                 if (i == 0) {
                     nlChild();
                 } else {
-                    os << ",";
+                    os.push_back(',');
                     nlChild();
                 }
                 dump(v.a[i], os, pretty, indentSize, indent + indentSize);
             }
             nl();
-            os << "]";
+            os.push_back(']');
             return;
         }
         case JsonValue::Type::Object: {
-            os << "{";
+            os.push_back('{');
             if (v.o.empty()) {
-                os << "}";
+                os.push_back('}');
                 return;
             }
             std::size_t i = 0;
@@ -382,16 +383,16 @@ static void dump(const JsonValue& v, std::ostringstream& os, bool pretty, int in
                 if (i == 0) {
                     nlChild();
                 } else {
-                    os << ",";
+                    os.push_back(',');
                     nlChild();
                 }
                 writeEscapedString(os, kv.first);
-                os << (pretty ? ": " : ":");
+                os += (pretty ? ": " : ":");
                 dump(kv.second, os, pretty, indentSize, indent + indentSize);
                 i++;
             }
             nl();
-            os << "}";
+            os.push_back('}');
             return;
         }
     }
@@ -432,10 +433,11 @@ bool parseJson(std::string_view text, JsonValue& out, std::string& errOut) {
 }
 
 std::string toJsonString(const JsonValue& v, bool pretty, int indentSize) {
-    std::ostringstream os;
+    std::string os;
+    os.reserve(4096);
     dump(v, os, pretty, indentSize, 0);
-    if (pretty) os << "\n";
-    return os.str();
+    if (pretty) os.push_back('\n');
+    return os;
 }
 
 void deepMergeObject(JsonValue& baseObj, const JsonValue& patchObj) {

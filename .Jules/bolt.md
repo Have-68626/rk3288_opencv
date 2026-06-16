@@ -56,3 +56,6 @@
 ## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
 **Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+## 2026-05-25 - Optimize JsonLite string formatting
+**Learning:** `std::ostringstream` has significant overhead for recursive JSON serialization due to virtual function calls, locale handling, and dynamic memory allocations. In deep `dump` calls, this creates severe CPU and memory overhead. Using pre-sized `std::string` concatenation with `snprintf` drastically improves throughput.
+**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory at the top level, use `operator+=` for concatenation, and use stack buffers with `snprintf` for floating point number conversion, leading to measurable performance gains in recursive formatting logic.
