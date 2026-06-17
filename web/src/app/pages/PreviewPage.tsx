@@ -94,6 +94,20 @@ export function PreviewPage() {
 
   const currentFormatKey = `${currentW}x${currentH}@${currentFps}`
 
+  const handleEnroll = async () => {
+    if (!personId.trim() || isEnrolling) return
+    try {
+      setIsEnrolling(true)
+      await enroll(prefs, { personId })
+      message.success('注册指令已发送')
+      setPersonId('')
+    } catch (e: unknown) {
+      message.error((e as Error)?.message || '注册失败')
+    } finally {
+      setIsEnrolling(false)
+    }
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card
@@ -343,6 +357,7 @@ export function PreviewPage() {
               showCount
               allowClear
               onChange={(e) => setPersonId(e.target.value)}
+              onPressEnter={handleEnroll}
               placeholder="例如：alice"
             />
           </Form.Item>
@@ -352,18 +367,7 @@ export function PreviewPage() {
               <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
                 <Button
                   type="primary"
-                  onClick={async () => {
-                    try {
-                      setIsEnrolling(true)
-                      await enroll(prefs, { personId })
-                      message.success('注册指令已发送')
-                      setPersonId('')
-                    } catch (e: unknown) {
-                      message.error((e as Error)?.message || '注册失败')
-                    } finally {
-                      setIsEnrolling(false)
-                    }
-                  }}
+                  onClick={handleEnroll}
                   disabled={!personId.trim()}
                   loading={isEnrolling}
                   style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
