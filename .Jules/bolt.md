@@ -56,3 +56,7 @@
 ## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
 **Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+
+## 2026-05-25 - Optimize full file reads using std::ifstream
+**Learning:** Reading a full file into a buffer using `std::ostringstream` combined with `ifs.rdbuf()` introduces unnecessary overhead due to memory reallocation, copying, and virtual dispatch. This can degrade performance, especially on systems reading large or numerous files (e.g., serving static web assets).
+**Action:** Use a pre-sized `std::string` buffer by opening the file with `std::ios::ate`, querying its exact size via `ifs.tellg()`, reserving space via `out.resize()`, rewinding via `ifs.seekg(0, std::ios::beg)`, and reading directly into the string buffer via `ifs.read(out.data(), size)`.
