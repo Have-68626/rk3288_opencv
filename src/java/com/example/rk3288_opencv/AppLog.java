@@ -196,13 +196,46 @@ final class AppLog {
         log(Level.F, module, function, msg, t);
     }
 
+
+    private static boolean needsMasking(String msg, Throwable t) {
+        if (t != null) return true;
+        if (msg == null) return false;
+
+        for (int i = 0; i < msg.length(); i++) {
+            char c = msg.charAt(i);
+            if ((c >= '0' && c <= '9') || c == '@') {
+                return true;
+            }
+        }
+
+        return containsIgnoreCase(msg, "pass") ||
+               containsIgnoreCase(msg, "pwd") ||
+               containsIgnoreCase(msg, "token") ||
+               containsIgnoreCase(msg, "auth") ||
+               containsIgnoreCase(msg, "key") ||
+               containsIgnoreCase(msg, "secret") ||
+               containsIgnoreCase(msg, "bearer");
+    }
+
+    private static boolean containsIgnoreCase(String str, String searchStr) {
+        if (str == null || searchStr == null) return false;
+        int len = searchStr.length();
+        int max = str.length() - len;
+        for (int i = 0; i <= max; i++) {
+            if (str.regionMatches(true, i, searchStr, 0, len)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static void log(@NonNull Level level,
                     @NonNull String module,
                     @NonNull String function,
                     @NonNull String msg,
                     @Nullable Throwable t) {
         // [RK3288] Log Strategy:
-        // DEBUG/VERBOSE: Full details allowed (no masking).
+        // DEBUG/VERBOSE logs are masked before writing to disk to prevent credential leaks.
         // INFO/WARN/ERROR: Keep concise. Masking is applied for non-DEBUG builds or if configured.
         // See docs/RK3288_CONSTRAINTS.md and README.md for disclaimer.
 
@@ -234,11 +267,11 @@ final class AppLog {
         // 2. Write to Disk (FileLogSink)
         FileLogSink s = sink;
         if (s != null) {
-            // Apply masking for disk logs unless it's DEBUG/VERBOSE level
-            // This aligns with "Allow full details in DEBUG/VERBOSE" policy
-            if (level.ordinal() >= Level.I.ordinal()) {
-                String maskedLine = SensitiveDataUtil.maskSensitiveData(logLine);
-                s.writeLine(maskedLine);
+            // Security: Universally mask sensitive data before writing to disk.
+            // For INFO+ logs, apply masking unconditionally to preserve old behavior.
+            // For DEBUG/VERBOSE logs, use a low-cost substring pre-check to avoid CPU regressions.
+            if (level.ordinal() >= Level.I.ordinal() || needsMasking(msg, t)) {
+                s.writeLine(SensitiveDataUtil.maskSensitiveData(logLine));
             } else {
                 s.writeLine(logLine);
             }

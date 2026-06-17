@@ -71,3 +71,7 @@ concurrent connection cap.
 manual ad-hoc increments/decrements in thread dispatch blocks creates complex desynchronization bugs.
 **Prevention:** Rely strictly on scoped RAII guards for decrementing connection counts inside thread lifetimes, and
 ensure exactly one matching increment exists before the thread spawns.
+## 2024-05-24 - Universally mask DEBUG/VERBOSE logs without introducing CPU regressions
+**Vulnerability:** DEBUG and VERBOSE logs were intentionally bypassing credential masking (`SensitiveDataUtil.maskSensitiveData`) before writing to disk in `AppLog.java`, posing a risk of sensitive data leaks in debug builds or full-log dumps.
+**Learning:** Naively applying expensive Regex masking (like ID card or token detection) to all high-frequency debug logs causes severe Garbage Collection (GC) and CPU overhead on constrained devices (like RK3288). Conversely, attempting to optimize this with keyword heuristics (e.g., checking if the message contains "token" or "pass") is dangerous because it bypasses masking for sensitive data that lacks those exact keywords. Furthermore, using `String.toLowerCase()` creates unnecessary string allocations.
+**Prevention:** To safely apply masking globally without degrading performance, implement a strictly allocation-free pre-check. By directly scanning the raw message string for numbers, `@` symbols, or doing case-insensitive character matching (`regionMatches`), we avoid `toLowerCase()` allocations and avoid accidentally bypassing valid sensitive data, enabling secure logging without performance penalties.
