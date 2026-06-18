@@ -56,3 +56,6 @@
 ## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
 **Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
 **Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+## 2026-06-18 - Optimize HttpFacesServer MJPEG multipart string formatting
+**Learning:** Generating HTTP multipart boundary headers using `std::ostringstream` inside the streaming loop (`/api/v1/preview.mjpeg`) creates unnecessary overhead due to virtual calls, locale handling, and memory reallocations on every single frame. This contributes to streaming latency and CPU load.
+**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` along with `std::to_string()` for numerical values to format the MJPEG headers more efficiently without virtual dispatch overhead.
