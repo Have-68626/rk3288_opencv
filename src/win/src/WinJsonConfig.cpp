@@ -30,14 +30,22 @@ constexpr int kInferenceIntervalMaxMs = 500;
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
     err.clear();
     out.clear();
-    std::ifstream ifs(p, std::ios::binary);
+    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
     if (!ifs) {
         err = "无法读取文件: " + p.string();
         return false;
     }
-    std::ostringstream ss;
-    ss << ifs.rdbuf();
-    out = ss.str();
+    auto size = ifs.tellg();
+    if (size < 0) {
+        err = "无法获取文件大小: " + p.string();
+        return false;
+    }
+    out.resize(static_cast<std::size_t>(size));
+    ifs.seekg(0, std::ios::beg);
+    if (size > 0 && !ifs.read(out.data(), size)) {
+        err = "读取文件失败: " + p.string();
+        return false;
+    }
     return true;
 }
 
