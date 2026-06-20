@@ -928,12 +928,13 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
-            std::ostringstream part;
-            part << "--" << boundary << "\r\n"
-                 << "Content-Type: image/jpeg\r\n"
-                 << "Content-Length: " << jpeg.size() << "\r\n"
-                 << "\r\n";
-            const std::string partHead = part.str();
+            std::string partHead;
+            partHead.reserve(128);
+            partHead += "--";
+            partHead += boundary;
+            partHead += "\r\nContent-Type: image/jpeg\r\nContent-Length: ";
+            partHead += std::to_string(jpeg.size());
+            partHead += "\r\n\r\n";
             if (!writeRaw(sock, partHead.data(), partHead.size())) break;
             if (!writeRaw(sock, jpeg.data(), jpeg.size())) break;
             if (!writeRaw(sock, "\r\n", 2)) break;
