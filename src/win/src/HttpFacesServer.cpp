@@ -98,11 +98,24 @@ static std::string guessContentType(const std::string& path) {
 }
 
 static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
-    std::ifstream ifs(p, std::ios::binary);
+    // Performance optimization: Open with std::ios::ate to get file size directly.
+    // Why: Avoids std::ostringstream reallocation and virtual function overhead,
+    // reducing time and memory overhead when serving large files like web frontend assets.
+    // Rollback: Revert to `std::ostringstream ss; ss << ifs.rdbuf(); out = ss.str();`.
+    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
     if (!ifs) return false;
-    std::ostringstream ss;
-    ss << ifs.rdbuf();
-    out = ss.str();
+
+    std::streamsize size = ifs.tellg();
+    if (size < 0) return false; // Handle potential tellg() errors on some systems
+
+    ifs.seekg(0, std::ios::beg);
+    out.resize(static_cast<std::size_t>(size));
+
+    if (size > 0) {
+        if (!ifs.read(out.data(), size)) {
+            return false;
+        }
+    }
     return true;
 }
 
