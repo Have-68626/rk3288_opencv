@@ -45,6 +45,13 @@ bool test_video_manager_is_url_source_valid_urls();
 bool test_video_manager_is_url_source_local_paths();
 bool test_video_manager_is_url_source_edge_cases();
 
+bool test_int8_yolo_face_registered();
+bool test_int8_arcface_registered();
+bool test_int8_mobilefacenet_registered();
+bool test_int8_yolo_face_creates_detector();
+bool test_int8_arcface_creates_embedder();
+bool test_int8_mobilefacenet_creates_embedder();
+
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
@@ -60,6 +67,12 @@ int main() {
         {"face_infer_outcome_json_missing_metrics", test_face_infer_outcome_json_missing_metrics},
         {"face_infer_outcome_json_full", test_face_infer_outcome_json_full},
         {"face_infer_outcome_json_no_face", test_face_infer_outcome_json_no_face},
+        {"int8_yolo_face_registered", test_int8_yolo_face_registered},
+        {"int8_arcface_registered", test_int8_arcface_registered},
+        {"int8_mobilefacenet_registered", test_int8_mobilefacenet_registered},
+        {"int8_yolo_face_creates_detector", test_int8_yolo_face_creates_detector},
+        {"int8_arcface_creates_embedder", test_int8_arcface_creates_embedder},
+        {"int8_mobilefacenet_creates_embedder", test_int8_mobilefacenet_creates_embedder},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

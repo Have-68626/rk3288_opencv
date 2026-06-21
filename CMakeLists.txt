@@ -109,6 +109,8 @@ endif()
 
 # Include directories
 include_directories(src/cpp/include)
+include_directories(src/cpp/include/adapters)
+include_directories(src/win/include)
 
 option(RK_SKIP_OPENCV "跳过 OpenCV 构建（仅可用于不依赖 OpenCV 的目标，如 core_unit_tests）" OFF)
 option(RK_BUILD_CORE_UNIT_TESTS "Build core unit tests" ON)
@@ -307,7 +309,13 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
 if(ANDROID)
     # 1. Android JNI Shared Library
     if(NOT RK_SKIP_OPENCV)
-        add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib.cpp")
+        add_library(native-lib SHARED
+            ${CORE_SOURCES}
+            "src/cpp/native-lib.cpp"
+            "src/win/src/FaceDetector.cpp"
+            "src/win/src/LbphEmbedder.cpp"
+            "src/win/src/DnnSsdFaceDetector.cpp"
+        )
         # Link Libraries for JNI
         target_link_libraries(
             native-lib
@@ -342,6 +350,8 @@ if(ANDROID)
     # Explicitly set include directories for native-lib
     target_include_directories(native-lib PRIVATE 
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
     )
 
     target_compile_definitions(native-lib PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
@@ -360,7 +370,13 @@ endif()
 
 if(NOT RK_SKIP_OPENCV)
     # 2. Native Executable (CLI) for RK3288 (and Host Testing)
-    add_executable(rk3288_cli "src/cpp/main.cpp" ${CORE_SOURCES})
+    add_executable(rk3288_cli
+        "src/cpp/main.cpp"
+        ${CORE_SOURCES}
+        "src/win/src/FaceDetector.cpp"
+        "src/win/src/LbphEmbedder.cpp"
+        "src/win/src/DnnSsdFaceDetector.cpp"
+    )
 
     # Explicitly set include directories for rk3288_cli
     target_include_directories(rk3288_cli PRIVATE
@@ -374,11 +390,6 @@ if(NOT RK_SKIP_OPENCV)
     target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
     if(WIN32)
         target_compile_definitions(rk3288_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-        target_sources(rk3288_cli PRIVATE
-            "src/win/src/DnnSsdFaceDetector.cpp"
-            "src/win/src/FaceDetector.cpp"
-            "src/win/src/LbphEmbedder.cpp"
-        )
     endif()
     if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
         target_include_directories(rk3288_cli PRIVATE ${libyuv_SOURCE_DIR}/include)
@@ -472,6 +483,7 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/test_face_infer_outcome_json.cpp"
             "tests/cpp/test_mock_preflight_guards.cpp"
             "tests/cpp/test_video_manager.cpp"
+            "tests/cpp/test_int8_quantization.cpp"
             "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/cpp/src/FaceAlign.cpp"
             "src/cpp/src/FaceInferOutcomeJson.cpp"
