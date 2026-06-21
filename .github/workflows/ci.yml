@@ -59,6 +59,16 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build_ci --output-on-failure
 
+      - name: Install OpenCV headers (cross-platform smoke test)
+        run: sudo apt-get install -y libopencv-dev
+
+      - name: Compile-check cross-platform source files
+        run: |
+          CXXFLAGS="-std=c++17 -c -o /dev/null -Isrc/win/include -Isrc/cpp/include $(pkg-config --cflags opencv4)"
+          g++ $CXXFLAGS src/win/src/FaceDetector.cpp
+          g++ $CXXFLAGS src/win/src/LbphEmbedder.cpp
+          g++ $CXXFLAGS src/win/src/DnnSsdFaceDetector.cpp
+
       - name: Upload Test Reports
         if: always()
         uses: actions/upload-artifact@v4
