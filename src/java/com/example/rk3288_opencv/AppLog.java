@@ -234,9 +234,16 @@ final class AppLog {
         // 2. Write to Disk (FileLogSink)
         FileLogSink s = sink;
         if (s != null) {
-            // Apply masking for disk logs unless it's DEBUG/VERBOSE level
-            // This aligns with "Allow full details in DEBUG/VERBOSE" policy
-            if (level.ordinal() >= Level.I.ordinal()) {
+            boolean mightHaveSensitive = false;
+            int len = logLine.length();
+            for (int i = 0; i < len; i++) {
+                char c = logLine.charAt(i);
+                if ((c >= '0' && c <= '9') || c == '@' || c == ':' || c == '=') {
+                    mightHaveSensitive = true;
+                    break;
+                }
+            }
+            if (mightHaveSensitive) {
                 String maskedLine = SensitiveDataUtil.maskSensitiveData(logLine);
                 s.writeLine(maskedLine);
             } else {
