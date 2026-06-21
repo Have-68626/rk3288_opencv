@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """INT8 量化脚本：将 FP32 ncnn 模型转换为 INT8 量化模型。"""
+from __future__ import annotations
+
 import argparse
 import json
 import os
