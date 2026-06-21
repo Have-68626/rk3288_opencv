@@ -216,6 +216,24 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
     std::string detErr;
     std::unique_ptr<YoloFaceDetector> det;
 
+    // INT8 量化模型优先选择
+    if (req.int8Enabled) {
+        ModelRegistry::ensureBuiltinRegistered();
+        auto int8Det = ModelRegistry::instance().createDetector("yolo_face_int8");
+        if (int8Det) {
+            std::string loadErr;
+            if (int8Det->load(req.yoloModelPath, loadErr)) {
+                ctx.yoloBackendName = std::string(int8Det->name()) + " (INT8)";
+                const auto td0 = std::chrono::steady_clock::now();
+                ctx.faces = int8Det->detect(ctx.img, detErr);
+                const auto td1 = std::chrono::steady_clock::now();
+                m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+                if (detErr.empty()) return okStatus();
+            }
+            // INT8 加载失败，回退到 FP32
+        }
+    }
+
     if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn" || req.yoloBackend == "ncnn") {
         ModelRegistry::ensureBuiltinRegistered();
         auto adapter = ModelRegistry::instance().createDetector(req.yoloBackend);
@@ -318,6 +336,33 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         const auto te1 = std::chrono::steady_clock::now();
         m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
         return okStatus();
+    }
+
+    // INT8 量化模型优先选择
+    if (req.int8Enabled) {
+        ModelRegistry::ensureBuiltinRegistered();
+        // 按优先级尝试 INT8 识别器
+        const char* int8EmbedderIds[] = {"arcface_int8", "mobilefacenet_int8"};
+        for (const char* eId : int8EmbedderIds) {
+            auto int8Emb = ModelRegistry::instance().createEmbedder(eId);
+            if (int8Emb) {
+                std::string loadErr;
+                if (int8Emb->load(req.arcModelPath, loadErr)) {
+                    std::string embedErr;
+                    auto e = int8Emb->embed(ctx.aligned112, embedErr);
+                    if (e.has_value()) {
+                        ctx.embedding = std::move(*e);
+                        ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
+                        ctx.embeddingFake = false;
+                        ctx.arcBackendName = std::string(int8Emb->name()) + " (INT8)";
+                        const auto te1 = std::chrono::steady_clock::now();
+                        m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+                        return okStatus();
+                    }
+                }
+                // INT8 加载/推理失败，尝试下一个
+            }
+        }
     }
 
     ArcFaceEmbedderConfig cfg;
