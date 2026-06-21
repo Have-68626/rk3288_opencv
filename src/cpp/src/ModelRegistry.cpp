@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <filesystem>
 #include <unordered_map>
 
 ModelRegistry& ModelRegistry::instance() {
@@ -59,6 +60,39 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "LBP 直方图识别器，轻量但精度有限（<90%）。Windows 管线默认识别器。",
          "high_speed", 3});
 #endif
+
+    // INT8 量化模型注册 — 需要 INT8 模型文件存在才注册
+    auto fileExists = [](const std::string& path) -> bool {
+        std::error_code ec;
+        return std::filesystem::exists(path, ec) && !ec;
+    };
+
+    if (fileExists("models/yolo_face_int8_ncnn/yolo_face_int8.param")) {
+        reg.registerDetector("yolo_face_int8", []() {
+            return std::make_unique<YoloFaceAdapter>();
+        },
+        {"yolo_face_int8", "YOLO Face INT8", "detect",
+         "YOLOv5 INT8 量化模型，ncnn 后端。体积小、推理快，适合 RK3288 等资源受限设备。",
+         "high_speed", 2});
+    }
+
+    if (fileExists("models/arcface_int8_ncnn/arcface_int8.param")) {
+        reg.registerEmbedder("arcface_int8", []() {
+            return std::make_unique<ArcFaceAdapter>();
+        },
+        {"arcface_int8", "ArcFace INT8 128D", "recognize",
+         "ArcFace INT8 量化模型，128 维嵌入。推理快、体积小，适合嵌入式部署。",
+         "high_speed", 2});
+    }
+
+    if (fileExists("models/mobilefacenet_int8_ncnn/mobilefacenet_int8.param")) {
+        reg.registerEmbedder("mobilefacenet_int8", []() {
+            return std::make_unique<MobileFaceNetAdapter>();
+        },
+        {"mobilefacenet_int8", "MobileFaceNet INT8 128D", "recognize",
+         "MobileFaceNet INT8 量化模型，128 维嵌入。极轻量，适合资源极度受限设备。",
+         "high_speed", 3});
+    }
 }
 
 void ModelRegistry::registerDetector(const std::string& id, DetectorFactory factory, const ModelEntry& entry) {
