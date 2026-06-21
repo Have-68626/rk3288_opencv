@@ -102,6 +102,7 @@ struct ModelConfig {
     std::string detectorBackend = "opencv_dnn";
     std::string recognitionBackend = "opencv_dnn";
     bool autoFallback = true;
+    bool int8Enabled = false;  // 启用 INT8 量化模型推理
 };
 
 struct AppConfig {
