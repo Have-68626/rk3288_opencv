@@ -723,6 +723,7 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         md.o["detectorBackend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.detectorBackend, cfg.model.backend));
         md.o["recognitionBackend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.recognitionBackend, cfg.model.backend));
         md.o["autoFallback"] = JsonValue::makeBool(cfg.model.autoFallback);
+        md.o["int8Enabled"] = JsonValue::makeBool(cfg.model.int8Enabled);
         root.o["model"] = std::move(md);
     }
 
@@ -943,6 +944,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*m, "recognitionBackend", s)) cfg.model.recognitionBackend = rk_accel::normalizeBackendName(s, cfg.model.backend);
         bool b = false;
         if (getBool(*m, "autoFallback", b)) cfg.model.autoFallback = b;
+        if (getBool(*m, "int8Enabled", b)) cfg.model.int8Enabled = b;
         if (cfg.model.detectorBackend.empty()) cfg.model.detectorBackend = cfg.model.backend;
         if (cfg.model.recognitionBackend.empty()) cfg.model.recognitionBackend = cfg.model.backend;
     }
