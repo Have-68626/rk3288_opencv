@@ -45,6 +45,9 @@ bool test_video_manager_is_url_source_valid_urls();
 bool test_video_manager_is_url_source_local_paths();
 bool test_video_manager_is_url_source_edge_cases();
 
+bool test_int8_precision_detection_iou();
+bool test_int8_precision_arcface_similarity();
+
 bool test_int8_yolo_face_registered();
 bool test_int8_arcface_registered();
 bool test_int8_mobilefacenet_registered();
@@ -73,6 +76,8 @@ int main() {
         {"int8_yolo_face_creates_detector", test_int8_yolo_face_creates_detector},
         {"int8_arcface_creates_embedder", test_int8_arcface_creates_embedder},
         {"int8_mobilefacenet_creates_embedder", test_int8_mobilefacenet_creates_embedder},
+        {"int8_precision_detection_iou", test_int8_precision_detection_iou},
+        {"int8_precision_arcface_similarity", test_int8_precision_arcface_similarity},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

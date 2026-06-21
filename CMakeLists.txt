@@ -529,6 +529,9 @@ if(NOT RK_SKIP_OPENCV)
             opencv_objdetect
             opencv_videoio
         )
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/yolo_face_int8_ncnn/yolo_face_int8.param")
+            target_compile_definitions(face_infer_unit_tests PRIVATE RK_HAVE_INT8_MODELS=1)
+        endif()
         add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
     endif()
 endif()
