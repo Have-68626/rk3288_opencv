@@ -162,13 +162,14 @@ private:
 
 public:
     bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
+        if (!pipe) return false;
         std::uint64_t seq = 0;
-        const bool changed = pipe ? pipe->waitFacesSeqChanged(lastSeq_, 1000, seq) : false;
+        const bool changed = pipe->waitFacesSeqChanged(lastSeq_, 1000, seq);
         if (!running) return false;
         if (changed) {
             lastSeq_ = seq;
             FacesSnapshot snap;
-            if (pipe && pipe->snapshotFaces(snap)) {
+            if (pipe->snapshotFaces(snap)) {
                 const std::string body = buildFacesJson(snap);
                 std::string evt = "data: " + body + "\n\n";
                 return server_->writeRaw(sock, evt.data(), evt.size());
