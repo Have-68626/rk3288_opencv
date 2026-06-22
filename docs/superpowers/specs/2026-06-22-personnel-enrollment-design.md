@@ -189,6 +189,7 @@
 
 `PersonProfile`
 
+- `personUuid`
 - `personId`
 - `displayName`
 - `alias`
@@ -202,10 +203,16 @@
 - `siteId`
 - `remark`
 
+说明：
+
+- `personUuid` 是系统内部不可变主键，用于支持后续改名、编号调整、重复人合并、跨端同步和审计追溯。
+- `personId` 是业务可读标识，默认保持唯一，但允许在受控条件下修改；所有内部关联和模板绑定均以 `personUuid` 为准。
+
 ### 5.2 生物模板对象
 
 `BiometricProfile`
 
+- `personUuid`
 - `personId`
 - `templateId`
 - `embeddingDigest`
@@ -229,7 +236,7 @@
 - `allowedSites[]`
 - `allowedDevices[]`
 - `lastLoginAt`
-- `passwordHash or local secret binding`
+- `passwordHash` 或本地口令绑定摘要
 
 ### 5.4 策略对象
 
@@ -265,7 +272,11 @@
 - `Draft`：人员档案刚创建，尚未具备注册条件。
 - `PendingEnrollment`：等待发起采集。
 - `Enrolling`：已进入采集会话，系统正在收集样本。
-- `PendingReview`：样本与模板已生成，等待确认。
+- `DuplicateSuspected`：检测到高相似历史人员，等待人工判断是否重复人或合并。
+- `SyncPending`：Android 离线采集完成，等待回传 Windows 主控端。
+- `SyncFailed`：离线包回传失败，需要重试或人工处理。
+- `PendingReview`：命中高风险规则或策略要求人工确认，等待确认。
+- `ReviewRejected`：人工审核驳回，需要重新采集或修正档案。
 - `Active`：注册完成，可参与识别。
 - `Suspended`：暂时冻结，不参与正常通行或授权识别。
 - `PendingDeletion`：进入删除保护期。
@@ -277,7 +288,11 @@
 Draft
   -> PendingEnrollment
   -> Enrolling
+  -> DuplicateSuspected
+  -> SyncPending
+  -> SyncFailed
   -> PendingReview
+  -> ReviewRejected
   -> Active
   -> Suspended
   -> Active
@@ -289,9 +304,20 @@ Draft
 
 - `Draft -> PendingEnrollment`：必须具备最小建档字段。
 - `PendingEnrollment -> Enrolling`：操作员发起采集会话，系统分配 `sessionId`。
-- `Enrolling -> PendingReview`：样本数量达标，且清晰度、亮度、姿态、单人脸约束通过。
+- `Enrolling -> Active`：默认策略下，样本数量达标、质量检查通过、未命中重复人风险，允许自动入库并直接生效。
+- `Enrolling -> DuplicateSuspected`：重复人检测命中高相似目标，需要人工判定是合并、覆盖还是重新注册。
+- `Enrolling -> PendingReview`：命中高风险规则、策略要求人工确认、或现场端回传需要最终复核时进入待审。
+- `Enrolling -> SyncPending`：Android 离线采集完成后，生成加密回传包等待主控端导入。
+- `SyncPending -> PendingReview`：离线包成功回传到 Windows 后，由主控端完成最终校验。
+- `SyncPending -> SyncFailed`：离线包导入失败、签名校验失败、版本不兼容时进入失败状态。
+- `SyncFailed -> PendingEnrollment`：问题处理后重新发起采集或重新回传。
+- `DuplicateSuspected -> PendingReview`：人工确认需要继续审核后进入待审。
+- `DuplicateSuspected -> Active`：人工确认不是重复人，允许入库生效。
+- `DuplicateSuspected -> Draft`：人工确认档案错误或需要合并，回退建档阶段处理。
 - `Enrolling -> PendingEnrollment`：采集超时、多脸、遮挡、质量不足时回退。
 - `PendingReview -> Active`：确认入库成功。
+- `PendingReview -> ReviewRejected`：人工审核驳回。
+- `ReviewRejected -> PendingEnrollment`：修正档案或重新采集后再次进入注册流程。
 - `Active -> Suspended`：人员临时停用或风险控制触发。
 - `Suspended -> Active`：管理员恢复。
 - `Active/Suspended -> PendingDeletion -> Deleted`：删除采用两阶段处理，降低误删风险。
@@ -305,8 +331,9 @@ Draft
 3. 预览流内进行质量检测与连续稳定帧筛选。
 4. 调用现有识别器生成模板。
 5. 执行重复人检测。
-6. 通过确认后写入模板主库，状态变为 `Active`。
-7. 写入审计日志。
+6. 若质量合格且未命中重复人风险，则默认允许自动入库，直接写入模板主库并转为 `Active`。
+7. 若命中重复人风险或策略要求人工确认，则转入 `DuplicateSuspected` 或 `PendingReview`。
+8. 全流程写入审计日志。
 
 #### Android 现场端流程
 
@@ -315,8 +342,9 @@ Draft
 3. 启动本地采集会话并通过 JNI 复用共享 C++ 识别能力。
 4. 本地完成质量检测与模板暂存。
 5. 若在线，回传 Windows 主控端入库；若离线，则生成加密缓存包等待回传。
-6. 回传成功后由 Windows 主控端完成最终确认和入库。
-7. 全流程记录 Android 端和 Windows 端双侧审计事件。
+6. 在线模式下，若未命中重复人和高风险规则，允许主控端自动入库；否则转待审。
+7. 离线模式下，回传成功后由 Windows 主控端完成最终校验，可按策略自动入库或转人工审核。
+8. 全流程记录 Android 端和 Windows 端双侧审计事件。
 
 ### 6.5 注册质量门槛
 
@@ -382,6 +410,40 @@ Draft
 - 高风险接口需要记录更细粒度审计信息。
 - 后续若启用特殊场景模式，可通过策略开关局部放宽 Android 端能力，但必须显式配置。
 
+### 7.6 账号初始化与离线鉴权闭环
+
+#### 首个管理员初始化
+
+- 系统首次启动时，由 Windows 主控端进入启动向导。
+- 启动向导负责创建首个 `system_admin` 账号，并初始化本地鉴权配置、口令摘要、设备信任标记和基础策略。
+- 在首个管理员创建完成前，高风险接口默认不可用，避免系统处于“无主但可操作”状态。
+- 首个管理员创建完成后，生成初始化审计记录，并写入本地引导完成标记。
+
+#### 本地登录模型
+
+- Windows 端采用本地账号 + 口令摘要校验的轻量登录模型。
+- Android 端采用本地登录令牌 + 设备绑定 + 权限快照的受限登录模型。
+- 所有会话都必须带 `sessionId`、`operatorId`、`policyVersion`、`expiresAt`。
+
+#### Android 离线鉴权规则
+
+- Android 在线登录后，从 Windows 主控端获取签名的权限快照，快照中包含：
+  - `operatorId`
+  - `roles`
+  - `allowedActions`
+  - `deviceId`
+  - `issuedAt`
+  - `expiresAt`
+  - `policyVersion`
+- 离线状态下，Android 只允许在快照有效期内执行受限动作。
+- 一旦快照过期、设备不匹配、策略版本不匹配或签名校验失败，Android 自动降级为只读或安全模式。
+- 离线模式下，Android 仅允许登录后继续执行低风险动作和采集缓存，不允许执行角色变更、删除、导出、清库、密钥轮换等高风险操作。
+
+#### 特殊场景说明
+
+- 若现场确有需要在 Android 端放宽能力，必须通过 Windows 主控端显式下发策略，并记录审计。
+- Android 永远不作为首个管理员创建端，也不作为策略主编辑端。
+
 ## 8. 数据安全与合规保障方案
 
 ### 8.1 存储分层
@@ -425,6 +487,44 @@ Draft
 - 密钥轮换、清库
 - Android 离线采集包生成与回传
 
+### 8.6 数据迁移与兼容策略
+
+#### 唯一事实来源
+
+- 人员主数据的唯一事实来源是 `personnel_store`。
+- 模板主数据的唯一事实来源是 `biometric_store`。
+- 现有 `FaceDatabase` 不再继续扩展为人员系统主库，而是降级为：
+  - 旧版本导入来源
+  - 兼容阶段的运行时缓存或派生索引
+
+#### 主键与兼容规则
+
+- 新系统内部统一使用 `personUuid` 作为不可变主键。
+- 旧 `personId` 作为业务标识保留，并在迁移时为每个历史条目分配新的 `personUuid`。
+- 历史识别结果、审计记录、模板记录都需要支持 `personUuid + personId` 双字段兼容，以保证老数据可追溯。
+
+#### 迁移阶段划分
+
+1. 阶段一：导入兼容
+- 系统首次发现只有旧 `FaceDatabase` 而无新存储时，执行一次性导入。
+- 导入规则：每个旧 `PersonEntry` 生成一个 `personUuid`，写入 `personnel_store` 和 `biometric_store`。
+- 导入完成后保留原始库备份和迁移清单。
+
+2. 阶段二：新库主写
+- 所有人员注册、冻结、删除、合并、改名都只写入新存储。
+- 识别运行期如仍依赖旧型索引结构，则由新存储派生生成兼容运行时缓存，不再反向以旧库存储为准。
+- 禁止长期双写两套主库，避免数据分叉。
+
+3. 阶段三：兼容退出
+- 当识别链路完全切换到新存储适配层后，`FaceDatabase` 仅保留导入工具角色。
+
+#### 回滚策略
+
+- 导入前备份原始 `FaceDatabase`。
+- 导入后生成迁移清单，记录 `personUuid <-> personId` 映射。
+- 若新存储加载失败或迁移中断，系统回退到只读兼容模式，继续使用旧库提供识别能力，并阻止新注册写入，直到迁移修复完成。
+- 回滚期间不得让 Android 端继续回传自动入库，避免新旧数据继续分叉。
+
 ## 9. 与现有系统的集成对接方案
 
 ### 9.1 与 Windows 本地服务集成
@@ -436,6 +536,8 @@ Draft
   - `/api/v1/enrollment/*`
   - `/api/v1/roles/*`
   - `/api/v1/audit/*`
+- 新增启动引导接口：
+  - `/api/v1/setup/bootstrap`
 - 高风险接口统一接入授权检查。
 
 ### 9.2 与 Web SPA 集成
@@ -456,6 +558,7 @@ Android 端新增或补齐以下能力：
 - 现场采集流程。
 - 离线缓存包管理。
 - 轻量识别和值守能力。
+- 签名权限快照校验与过期处理。
 
 Android 端不作为主配置和主策略维护端，仅作为受限执行端。
 
@@ -474,10 +577,14 @@ Android 端不作为主配置和主策略维护端，仅作为受限执行端。
 - 人员、模板、账号、策略、审计对象模型
 - Win/Android 共享状态码、错误码、事件码
 - Windows 端 API 骨架
+- `personUuid` 引入与旧库迁移清单设计
+- 启动向导与首个管理员初始化流程
 
 验收标准：
 
 - 可以完成人员建档和列表查询
+- 可以通过启动向导创建首个管理员
+- 可以识别并导入旧 `FaceDatabase` 为新模型
 - 现有识别、预览、配置功能不回归
 
 ### 里程碑 M2：Windows 主控端闭环
@@ -504,10 +611,12 @@ Android 端不作为主配置和主策略维护端，仅作为受限执行端。
 - 现场注册采集
 - 轻量识别与值守
 - 离线回传
+- 离线权限快照校验
 
 验收标准：
 
 - Android 端可在受限权限下发起采集并回写结果
+- 离线状态下仅能在快照有效期内执行受限动作
 - 权限不足时能够明确拦截并给出原因
 
 ### 里程碑 M4：特殊场景增强
@@ -529,10 +638,13 @@ Android 端不作为主配置和主策略维护端，仅作为受限执行端。
 ### 11.1 功能验收
 
 - 人员可在 Win 或 Android 端发起注册流程。
+- 默认策略下，质量合格且未命中重复人风险时允许自动入库。
 - 注册成功后状态正确变为 `Active`，失败时有明确错误码和回退状态。
 - 未授权账号不能执行高风险接口。
 - Android 端默认不能执行清库、密钥轮换、角色变更等高风险动作。
 - 删除、导出、角色变更均可追溯到操作者和设备端。
+- 系统首次启动时可通过启动向导创建首个管理员。
+- 历史 `personId` 数据迁移后可稳定映射到新的 `personUuid`，且不影响现有识别能力。
 
 ### 11.2 非功能验收
 
@@ -597,6 +709,28 @@ Android 端不作为主配置和主策略维护端，仅作为受限执行端。
 
 - 将人员主档、模板、权限、审计拆仓存储。
 - 对旧结构仅做兼容迁移，不继续扩展其职责。
+
+### 风险 6：离线 Android 权限快照失效后仍继续执行
+
+问题：
+
+- Android 端若没有有效期、签名和设备绑定校验，离线状态下可能长期持有过期权限。
+
+应对：
+
+- 对权限快照加入签名、设备绑定和过期时间。
+- 快照失效后自动降级为只读或安全模式。
+
+### 风险 7：自动入库放大误注册风险
+
+问题：
+
+- 默认允许自动入库后，如果质量门槛或重复人检测不稳，误入库风险会提高。
+
+应对：
+
+- 自动入库仅在质量门槛通过且未命中重复人规则时启用。
+- 命中高相似度、离线回传异常、高风险策略时强制转人工审核。
 
 ## 13. 结论
 
