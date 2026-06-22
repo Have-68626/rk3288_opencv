@@ -2,11 +2,13 @@
 
 #include "Compat.h"
 #include "ConnectionQuota.h"
+#include "JsonLite.h"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -45,6 +47,21 @@ private:
         bool close = true;
     };
 
+    struct Route {
+        const char* path;
+        const char* method;
+        HttpResponse (HttpFacesServer::*handler)(const HttpRequest&);
+    };
+
+    // 流式会话基类：提取 SSE/MJPEG 共享的"写头→循环写帧→关闭"模式
+    class StreamSession {
+    public:
+        virtual ~StreamSession() = default;
+        virtual std::string contentType() const = 0;
+        virtual bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) = 0;
+        virtual int idleMs() const = 0;
+    };
+
     void acceptLoop();
     void handleClient(std::uintptr_t sock);
     bool readRequest(std::uintptr_t sock, HttpRequest& out, std::string& err);
@@ -56,8 +73,28 @@ private:
     HttpResponse handleStaticOrFallback(const HttpRequest& req);
 
     static HttpResponse jsonOk(const std::string& bodyJson);
+    static HttpResponse jsonOk(JsonValue data);
     static HttpResponse jsonErr(int httpStatus, const std::string& code, const std::string& message,
                                 const std::vector<std::string>& details = {});
+
+    // 端点 handler（由 Route 表调度）
+    HttpResponse onHealth(const HttpRequest& req);
+    HttpResponse onModels(const HttpRequest& req);
+    HttpResponse onModelReload(const HttpRequest& req);
+    HttpResponse onAcceleration(const HttpRequest& req);
+    HttpResponse onOpenApi(const HttpRequest& req);
+    HttpResponse onSettings(const HttpRequest& req);
+    HttpResponse onCryptoRotate(const HttpRequest& req);
+    HttpResponse onFaces(const HttpRequest& req);
+    HttpResponse onCameras(const HttpRequest& req);
+    HttpResponse onCameraFlip(const HttpRequest& req);
+    HttpResponse onEnroll(const HttpRequest& req);
+    HttpResponse onDbClear(const HttpRequest& req);
+    HttpResponse onPrivacyOpen(const HttpRequest& req);
+    HttpResponse onPreviewJpg(const HttpRequest& req);
+
+    // 流式会话
+    void runStream(std::uintptr_t sock, std::unique_ptr<StreamSession> session);
 
     std::atomic<bool> running_{false};
     FramePipeline* pipe_ = nullptr;
