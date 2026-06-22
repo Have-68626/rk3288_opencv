@@ -389,8 +389,8 @@ void HttpFacesServer::acceptLoop() {
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&kSocketTimeoutMs), sizeof(kSocketTimeoutMs));
 #else
         struct timeval tv;
-        tv.tv_sec = 5;
-        tv.tv_usec = 0;
+        tv.tv_sec = kSocketTimeoutMs / 1000;
+        tv.tv_usec = (kSocketTimeoutMs % 1000) * 1000;
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #endif
