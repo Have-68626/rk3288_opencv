@@ -553,9 +553,9 @@ if(NOT RK_SKIP_OPENCV)
         target_compile_definitions(ncnn_precision_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
         if(MSVC)
             target_compile_options(ncnn_precision_test PRIVATE /utf-8)
-            # ncnn.lib 使用动态 CRT (/MD)，此处单独匹配
+            # 本地构建的 ncnn.lib 使用静态 CRT (/MT)，与项目默认一致
             set_target_properties(ncnn_precision_test PROPERTIES
-                MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+                MSVC_RUNTIME_LIBRARY "MultiThreaded")
         endif()
         target_link_libraries(ncnn_precision_test
             opencv_core
