@@ -30,6 +30,23 @@
 namespace rk_win {
 namespace {
 
+// ──── 命名常量（替代散落魔法数字）───────────────────────────
+constexpr int kRecvBufSize = 2048;
+constexpr std::size_t kMaxHeaderSize = 64 * 1024;
+constexpr std::size_t kMaxBodySize = 1024 * 1024;
+constexpr std::size_t kSendChunkSize = 1u << 20;   // 1 MiB
+#ifdef _WIN32
+constexpr DWORD kSocketTimeoutMs = 5000;
+#else
+constexpr int kSocketTimeoutMs = 5000;
+#endif
+constexpr int kSsePollMs = 1000;
+constexpr int kSseIdleMs = 100;
+constexpr auto kSseKeepaliveSec = std::chrono::seconds(10);
+constexpr int kMjpegIdleMs = 100;
+constexpr int kStaticCacheMaxAge = 31536000;        // 1 year
+constexpr int kAcceptRetryMs = 50;
+
 // RAII 封装 SOCKET: 析构时自动 closesocket, 消除手动关闭遗漏风险
 struct SocketGuard {
     SOCKET s = INVALID_SOCKET;
@@ -110,11 +127,13 @@ static std::string guessContentType(const std::string& path) {
 }
 
 static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
-    std::ifstream ifs(p, std::ios::binary);
+    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
     if (!ifs) return false;
-    std::ostringstream ss;
-    ss << ifs.rdbuf();
-    out = ss.str();
+    const auto sz = ifs.tellg();
+    if (sz <= 0) { out.clear(); return true; }
+    ifs.seekg(0, std::ios::beg);
+    out.resize(static_cast<std::size_t>(sz));
+    ifs.read(out.data(), static_cast<std::streamsize>(sz));
     return true;
 }
 
@@ -182,7 +201,7 @@ public:
     using StreamSession::StreamSession;
 
     std::string contentType() const override { return "text/event-stream; charset=utf-8"; }
-    int idleMs() const override { return 100; }
+    int idleMs() const override { return kSseIdleMs; }
 
 private:
     std::uint64_t lastSeq_ = 0;
@@ -192,7 +211,7 @@ public:
     bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
         if (!pipe) return false;
         std::uint64_t seq = 0;
-        const bool changed = pipe->waitFacesSeqChanged(lastSeq_, 1000, seq);
+        const bool changed = pipe->waitFacesSeqChanged(lastSeq_, kSsePollMs, seq);
         if (!running) return false;
         if (changed) {
             lastSeq_ = seq;
@@ -204,7 +223,7 @@ public:
             }
         } else {
             const auto now = std::chrono::steady_clock::now();
-            if (now - lastKeep_ > std::chrono::seconds(10)) {
+            if (now - lastKeep_ > kSseKeepaliveSec) {
                 const std::string ka = ": keepalive\n\n";
                 lastKeep_ = now;
                 return server_->writeRaw(sock, ka.data(), ka.size());
@@ -241,6 +260,7 @@ public:
         if (!server_->writeRaw(sock, "\r\n", 2)) return false;
 #else
         (void)sock; (void)pipe; (void)running;
+        return false;  // 无 OpenCV 时无法编码 JPEG, 终止流
 #endif
         return true;
     }
@@ -354,7 +374,7 @@ void HttpFacesServer::acceptLoop() {
         SOCKET cs = accept(ls, reinterpret_cast<sockaddr*>(&caddr), &clen);
         if (cs == INVALID_SOCKET) {
             if (!running_) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(kAcceptRetryMs));
             continue;
         }
 
@@ -365,9 +385,8 @@ void HttpFacesServer::acceptLoop() {
         }
 
 #ifdef _WIN32
-        DWORD timeout = 5000;
-        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&kSocketTimeoutMs), sizeof(kSocketTimeoutMs));
+        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&kSocketTimeoutMs), sizeof(kSocketTimeoutMs));
 #else
         struct timeval tv;
         tv.tv_sec = 5;
@@ -413,11 +432,11 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
 
     std::string buf;
     buf.reserve(8192);
-    char tmp[2048];
+    char tmp[kRecvBufSize];
     const SOCKET s = static_cast<SOCKET>(sock);
 
     auto findHeaderEnd = [&]() -> std::size_t { return buf.find("\r\n\r\n"); };
-    while (buf.size() < 64 * 1024) {
+    while (buf.size() < kMaxHeaderSize) {
         const int r = recv(s, tmp, static_cast<int>(sizeof(tmp)), 0);
         if (r <= 0) {
             err = "recv_failed";
@@ -469,7 +488,7 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
             break;
         }
     }
-    if (contentLen > 1024 * 1024) {
+    if (contentLen > kMaxBodySize) {
         err = "body_too_large";
         return false;
     }
@@ -493,7 +512,7 @@ bool HttpFacesServer::writeRaw(std::uintptr_t sock, const void* data, std::size_
     const char* p = static_cast<const char*>(data);
     std::size_t left = n;
     while (left > 0) {
-        const int w = send(s, p, static_cast<int>(std::min<std::size_t>(left, 1u << 20)), 0);
+        const int w = send(s, p, static_cast<int>(std::min<std::size_t>(left, kSendChunkSize)), 0);
         if (w <= 0) return false;
         p += w;
         left -= static_cast<std::size_t>(w);
@@ -616,7 +635,7 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
     r.contentType = guessContentType(rel);
     r.body = std::move(body);
     if (startsWith(rel, "/assets/") || rel.find(".js") != std::string::npos || rel.find(".css") != std::string::npos) {
-        r.headers.push_back({"Cache-Control", "public, max-age=31536000, immutable"});
+        r.headers.push_back({"Cache-Control", "public, max-age=" + std::to_string(kStaticCacheMaxAge) + ", immutable"});
     } else {
         r.headers.push_back({"Cache-Control", "no-cache"});
     }
