@@ -16,6 +16,9 @@ export type ApiEnvelope<T> = ApiOk<T> | ApiErr
 
 export type ServerSettingsSchemaVersion = 1
 
+// Helper type for deeply partial objects
+export type DeepPartial<T> = T extends object ? { [P in keyof T]?: DeepPartial<T[P]> } : T;
+
 // 对齐后端 WinJsonConfigStore::buildSettingsJson() 的输出（见 src/win/src/WinJsonConfig.cpp）。
 // 注意：这里是“脱敏输出”版本；敏感字段（例如 poster.postUrl）在后端可能会被脱敏/加密落盘。
 export interface ServerSettingsDoc {
@@ -148,4 +151,3 @@ export interface ReloadResult {
   id: string
   status: string
 }
-

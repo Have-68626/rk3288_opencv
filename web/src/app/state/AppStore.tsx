@@ -2,7 +2,7 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react'
 import { message } from 'antd'
 
-import type { ServerSettingsDoc } from '../api/types'
+import type { ServerSettingsDoc, DeepPartial } from '../api/types'
 import { getServerSettings, putServerSettings } from '../api/settings'
 import type { LocalPrefs } from './prefs'
 import { defaultPrefs, loadPrefs, savePrefs } from './prefs'
@@ -20,7 +20,7 @@ interface AppStore {
 
   serverSettings: ServerSettingsState
   refreshServerSettings: (opts?: { silent?: boolean }) => Promise<boolean>
-  updateServerSettings: (patch: Partial<ServerSettingsDoc>) => Promise<void>
+  updateServerSettings: (patch: DeepPartial<ServerSettingsDoc>) => Promise<void>
 }
 
 const Ctx = createContext<AppStore | null>(null)
@@ -80,7 +80,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [prefs])
 
-  const updateServerSettings = useCallback(async (patch: Partial<ServerSettingsDoc>) => {
+  const updateServerSettings = useCallback(async (patch: DeepPartial<ServerSettingsDoc>) => {
     setServerSettings((prev) => ({
       status: 'loading',
       data: prev.data,
