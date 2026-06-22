@@ -42,3 +42,7 @@
 **Vulnerability:** While an atomic connection guard existed, a logical flaw caused `activeConnections_` to be incremented twice per connection and decremented in uncoordinated contexts (the detached thread lambda and `handleClient`'s `ConnectionGuard`). This would eventually cause the counter to wrap negative and permanently break the concurrent connection cap.
 **Learning:** Concurrent resource accounting must be strictly balanced. Mixing RAII guards (`ConnectionGuard`) with manual ad-hoc increments/decrements in thread dispatch blocks creates complex desynchronization bugs.
 **Prevention:** Rely strictly on scoped RAII guards for decrementing connection counts inside thread lifetimes, and ensure exactly one matching increment exists before the thread spawns.
+## 2026-06-22 - Enforce global redaction of sensitive credentials at rest
+**Vulnerability:** Passwords, tokens, and authorization keys were only redacted during log export (in `LogViewerActivity.java`) but were written to disk in plain text by `AppLog.java`, risking credential exposure if local logs were compromised.
+**Learning:** Redaction rules defined in UI/export layers often miss the primary persistent storage layer.
+**Prevention:** Centralize all sensitive data masking rules (e.g., in `SensitiveDataUtil.java`) and apply them at the point of ingestion/logging before data hits the disk.
