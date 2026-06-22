@@ -170,9 +170,9 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
 | 子项 | 状态 | 备注 |
 |:----|:----:|:-----|
-| `initEngine()` 双重调用治理 | 🟡 部分完成 | Java 侧 `engineInitialized` 标志已加，但仍有 9 个调用点，入口处未防护 |
-| 废弃代码清理 | ❌ 未开始 | 未做系统性清理 |
-| 开发流程文档 | 🟡 部分完成 | `AGENTS.md` + `README.md` 覆盖构建/测试/CI，未达"一键复现" |
+| `initEngine()` 双重调用治理 | 🟡 部分完成 | C++ 侧 ✅（`Engine.h` `atomic<bool>` exchange 守卫），Java 侧 🟡（`engineInitialized` 已加，9 个调用点入口未防护） |
+| 废弃代码清理 | ✅ 已完成 | `native-lib-stub.cpp` 删除 11 个废弃 JNI 存根，`native-lib.cpp` 删除无 Java 声明的 `nativePushFrameNV21`/`NV21Bytes` |
+| 开发流程文档 | ✅ 已完成 | `DEVELOP.md` 已补充构建变体/测试框架/构建要点/INT8 量化/加速契约，覆盖构建→测试→CI 全链路 |
 | `Engine::initialize()` 调用次数验证 | 🟡 未验证 | 缺少运行时日志断言验证 |
 
 ### 7. ✅ **[P2] 多模型集成与切换策略 (Model Diversity)**
@@ -189,7 +189,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | **YuNet (OpenCV)** | ✅ 已完成 | `YuNetAdapter` 封装 `cv::FaceDetectorYN`，注册为 `yunet` |
 | **SFace 128D** | ✅ 已完成 | `SFaceAdapter` 封装 `cv::FaceRecognizerSF`，注册为 `sface` |
 | **SCRFD/RetinaFace (det_10g)** | ✅ 已完成 | `RetinaFaceAdapter` FPN 多尺度解码 + NMS，注册为 `retinaface_scrfd` |
-| **Windows ArcFace ONNX** | 🟡 部分完成 | `ArcFaceWinRecognizer` 已创建（复用 `ArcFaceAdapter` + OpenCV DNN），待 FramePipeline 集成 |
+| **Windows ArcFace ONNX** | ✅ 已完成 | `ArcFaceWinRecognizer` 实现 `IRecognizer` 接口，`FramePipeline` 通过 `cfg_.model.recognition` 分支集成 |
 | RK3288 INT8 加速实测 | ❌ 缺失 | 代码完成，缺真机 P95 延迟数据 |
 
 > **RK3288 部署建议分级**（基于估算，待实测验证）：
