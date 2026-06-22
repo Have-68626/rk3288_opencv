@@ -9,7 +9,6 @@ final class NativeBridge {
     }
 
     static native void nativeConfigureLog(String internalDir, String externalDir, String filename);
-    static native boolean nativeInitFile(String filePath);
 
     static native String nativeInferFaceFromImage(
             String imagePath,

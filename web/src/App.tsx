@@ -8,9 +8,18 @@ import { PreviewPage } from './app/pages/PreviewPage'
 import { SettingsPage } from './app/pages/SettingsPage'
 import { SplashPage } from './app/pages/SplashPage'
 import { AppStoreProvider, useAppStore } from './app/state/AppStore'
+import { ErrorBoundary } from './app/ui/ErrorBoundary'
 import { MainLayout } from './app/ui/MainLayout'
 
 function AntdAndRouteRoot() {
+  return (
+    <ErrorBoundary>
+      <AntdAndRouteInner />
+    </ErrorBoundary>
+  )
+}
+
+function AntdAndRouteInner() {
   const { prefs } = useAppStore()
 
   const resolvedThemeMode =

@@ -384,7 +384,6 @@ bool copyDirectBytes(JNIEnv* env, jobject byteBuffer, std::size_t needBytes, std
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
-JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
         JNIEnv* env,
         jobject /* this */,
@@ -461,7 +460,6 @@ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888Bytes(
         JNIEnv* env,
         jobject /* this */,

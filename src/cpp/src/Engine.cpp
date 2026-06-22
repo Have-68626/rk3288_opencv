@@ -535,6 +535,7 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
     // 3. Init BioAuth
     if (!bioAuth->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
+        return false;
     }
 
     if (cameraId >= 0) {
@@ -581,6 +582,7 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
     // 3. Init BioAuth
     if (!bioAuth->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
+        return false;
     }
 
     // 4. Init Mock Source

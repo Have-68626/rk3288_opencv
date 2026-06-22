@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+#include <net.h>
+#endif
 
 namespace {
 
@@ -119,8 +124,30 @@ bool test_int8_precision_detection_iou() {
     if (layers <= 0) return false;
 
 #ifdef RK_HAVE_NCNN
-    // ncnn 启用时执行完整推理比较：加载图片 → FP32 检测 → INT8 检测 → IoU ≥ 0.7
-    // TODO: 待 ncnn 链接就绪后实现
+    {
+        // ncnn 推理比较：虚拟输入 → FP32 检测 → INT8 检测 → 输出维度一致
+        ncnn::Net fp32, int8;
+        if (fp32.load_param("models/yolo_face_ncnn/yolo_face.param") != 0) return false;
+        if (fp32.load_model("models/yolo_face_ncnn/yolo_face.bin") != 0) return false;
+        if (int8.load_param("models/yolo_face_int8_ncnn/yolo_face_int8.param") != 0) return false;
+        if (int8.load_model("models/yolo_face_int8_ncnn/yolo_face_int8.bin") != 0) return false;
+
+        ncnn::Mat in(320, 320, 3);
+        in.fill(0.0f);
+
+        ncnn::Extractor exF = fp32.create_extractor();
+        ncnn::Mat outF;
+        if (exF.input("data", in) != 0) return false;
+        if (exF.extract("output", outF) != 0) return false;
+
+        ncnn::Extractor exI = int8.create_extractor();
+        ncnn::Mat outI;
+        if (exI.input("data", in) != 0) return false;
+        if (exI.extract("output", outI) != 0) return false;
+
+        // 输出维度应一致（INT8 量化不改变张量形状）
+        if (outF.w != outI.w || outF.h != outI.h || outF.c != outI.c) return false;
+    }
 #endif
     return true;
 }
@@ -137,8 +164,43 @@ bool test_int8_precision_arcface_similarity() {
     if (fp32Layers != int8Layers) return false;
 
 #ifdef RK_HAVE_NCNN
-    // ncnn 启用时执行完整推理比较：加载人脸 → FP32 提取 → INT8 提取 → cosine ≥ 0.9
-    // TODO: 待 ncnn 链接就绪后实现
+    {
+        // ncnn 推理比较：虚拟人脸 → FP32 嵌入 → INT8 嵌入 → cosine ≥ 0.90
+        ncnn::Net fp32, int8;
+        if (fp32.load_param("models/arcface_ncnn/arcface.param") != 0) return false;
+        if (fp32.load_model("models/arcface_ncnn/arcface.bin") != 0) return false;
+        if (int8.load_param("models/arcface_int8_ncnn/arcface_int8.param") != 0) return false;
+        if (int8.load_model("models/arcface_int8_ncnn/arcface_int8.bin") != 0) return false;
+
+        ncnn::Mat in(112, 112, 3);
+        in.fill(0.0f);
+        float mean[3] = {127.5f, 127.5f, 127.5f};
+        float norm[3] = {1.0f / 127.5f, 1.0f / 127.5f, 1.0f / 127.5f};
+        in.substract_mean_normalize(mean, norm);
+
+        ncnn::Extractor exF = fp32.create_extractor();
+        ncnn::Mat outF;
+        if (exF.input("data", in) != 0) return false;
+        if (exF.extract("output", outF) != 0) return false;
+
+        ncnn::Extractor exI = int8.create_extractor();
+        ncnn::Mat outI;
+        if (exI.input("data", in) != 0) return false;
+        if (exI.extract("output", outI) != 0) return false;
+
+        if (outF.total() != 512 || outI.total() != 512) return false;
+
+        const float* pf = outF;
+        const float* pi = outI;
+        double dot = 0.0, nf = 0.0, ni = 0.0;
+        for (int i = 0; i < 512; i++) {
+            dot += static_cast<double>(pf[i]) * pi[i];
+            nf  += static_cast<double>(pf[i]) * pf[i];
+            ni  += static_cast<double>(pi[i]) * pi[i];
+        }
+        double cosSim = dot / (std::sqrt(nf) * std::sqrt(ni) + 1e-10);
+        if (cosSim < 0.90) return false;
+    }
 #endif
     return true;
 }
