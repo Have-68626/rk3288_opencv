@@ -30,6 +30,18 @@
 namespace rk_win {
 namespace {
 
+// RAII 封装 SOCKET: 析构时自动 closesocket, 消除手动关闭遗漏风险
+struct SocketGuard {
+    SOCKET s = INVALID_SOCKET;
+    explicit SocketGuard(SOCKET s_) : s(s_) {}
+    ~SocketGuard() { if (s != INVALID_SOCKET) closesocket(s); }
+    SocketGuard(const SocketGuard&) = delete;
+    SocketGuard& operator=(const SocketGuard&) = delete;
+    SocketGuard(SocketGuard&& other) noexcept : s(other.s) { other.s = INVALID_SOCKET; }
+    SocketGuard& operator=(SocketGuard&& other) noexcept { if (this != &other) { if (s != INVALID_SOCKET) closesocket(s); s = other.s; other.s = INVALID_SOCKET; } return *this; }
+    void release() { s = INVALID_SOCKET; }
+};
+
 struct WsaGuard {
     bool ok = false;
     WsaGuard() {
@@ -663,8 +675,6 @@ HttpFacesServer::HttpResponse HttpFacesServer::onModels(const HttpRequest&) {
             am.o["id"] = JsonValue::makeString(mSnap.id);
             am.o["displayName"] = JsonValue::makeString(mSnap.displayName);
             am.o["taskType"] = JsonValue::makeString(mSnap.taskType);
-            am.o["configuredPath"] = JsonValue::makeString(mSnap.configuredPath);
-            am.o["resolvedPath"] = JsonValue::makeString(mSnap.resolvedPath);
             am.o["backend"] = JsonValue::makeString(mSnap.backend);
             if (!mSnap.hash.empty()) am.o["hash"] = JsonValue::makeString(mSnap.hash);
             am.o["status"] = JsonValue::makeString(mSnap.status);
@@ -764,18 +774,22 @@ HttpFacesServer::HttpResponse HttpFacesServer::onOpenApi(const HttpRequest&) {
 HttpFacesServer::HttpResponse HttpFacesServer::onSettings(const HttpRequest& req) {
     if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
     if (req.method == "GET") {
-        const std::string redacted = settings_->currentRedactedJsonPretty();
-        std::ostringstream os;
-        os << "{\"ok\":true,\"data\":" << redacted << "}";
-        return jsonOk(os.str());
+        JsonValue doc;
+        std::string perr;
+        if (!parseJson(settings_->currentRedactedJsonPretty(), doc, perr)) {
+            return jsonErr(500, "settings_parse_error", "设置数据解析失败", {perr});
+        }
+        return jsonOk(std::move(doc));
     }
     if (req.method == "PUT") {
         const auto res = settings_->updateFromJsonBody(req.body);
         if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "invalid_request" : res.code, res.message, res.details);
-        const std::string redacted = settings_->currentRedactedJsonPretty();
-        std::ostringstream os;
-        os << "{\"ok\":true,\"data\":" << redacted << "}";
-        return jsonOk(os.str());
+        JsonValue doc;
+        std::string perr;
+        if (!parseJson(settings_->currentRedactedJsonPretty(), doc, perr)) {
+            return jsonErr(500, "settings_parse_error", "设置数据解析失败", {perr});
+        }
+        return jsonOk(std::move(doc));
     }
     return jsonErr(405, "method_not_allowed", "仅支持 GET/PUT");
 }
@@ -890,7 +904,7 @@ HttpFacesServer::HttpResponse HttpFacesServer::onPreviewJpg(const HttpRequest&) 
 // ──── 流式会话 ───────────────────────────────────────────────
 
 void HttpFacesServer::runStream(std::uintptr_t sock, std::unique_ptr<StreamSession> session) {
-    const SOCKET s = static_cast<SOCKET>(sock);
+    SocketGuard sg(static_cast<SOCKET>(sock));
     const std::string ct = session->contentType();
     std::ostringstream os;
     os << "HTTP/1.1 200 OK\r\n"
@@ -902,21 +916,17 @@ void HttpFacesServer::runStream(std::uintptr_t sock, std::unique_ptr<StreamSessi
        << "Connection: keep-alive\r\n"
        << "\r\n";
     const std::string head = os.str();
-    if (!writeRaw(sock, head.data(), head.size())) {
-        closesocket(s);
-        return;
-    }
+    if (!writeRaw(sock, head.data(), head.size())) return;
     while (running_) {
         if (!session->writeFrame(sock, pipe_, running_)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(session->idleMs()));
     }
-    closesocket(s);
 }
 
 // ──── 客户端处理 ─────────────────────────────────────────────
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
-    const SOCKET s = static_cast<SOCKET>(sock);
+    SocketGuard sg(static_cast<SOCKET>(sock));
     HttpRequest req;
     std::string err;
 
@@ -927,24 +937,24 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
         r.contentType = "application/json; charset=utf-8";
         r.body = jsonErr(r.status, "invalid_request", "请求解析失败", {err}).body;
         (void)writeResponse(sock, r);
-        closesocket(s);
         return;
     }
 
-    // 流式端点：handleClient 中直接接管 socket 生命周期
+    // 流式端点：runStream 接管 socket 生命周期
     if ((req.path == "/api/faces/stream" || req.path == "/api/v1/faces/stream") && req.method == "GET") {
+        sg.release();
         runStream(sock, std::make_unique<SseSession>(this));
         return;
     }
 
     if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
+        sg.release();
         runStream(sock, std::make_unique<MjpegSession>(this));
         return;
     }
 
     const HttpResponse resp = handleRequest(req);
     (void)writeResponse(sock, resp);
-    closesocket(s);
 }
 
 }  // namespace rk_win
