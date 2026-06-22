@@ -150,6 +150,8 @@ static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& out
 namespace {
 class SseSession : public HttpFacesServer::StreamSession {
 public:
+    using StreamSession::StreamSession;
+
     std::string contentType() const override { return "text/event-stream; charset=utf-8"; }
     int idleMs() const override { return 100; }
 
@@ -159,9 +161,6 @@ private:
 
 public:
     bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
-        auto* self = reinterpret_cast<HttpFacesServer*>(this);
-        (void)self;
-
         std::uint64_t seq = 0;
         const bool changed = pipe ? pipe->waitFacesSeqChanged(lastSeq_, 1000, seq) : false;
         if (!running) return false;
@@ -171,14 +170,14 @@ public:
             if (pipe && pipe->snapshotFaces(snap)) {
                 const std::string body = buildFacesJson(snap);
                 std::string evt = "data: " + body + "\n\n";
-                return self->writeRaw(sock, evt.data(), evt.size());
+                return server_->writeRaw(sock, evt.data(), evt.size());
             }
         } else {
             const auto now = std::chrono::steady_clock::now();
             if (now - lastKeep_ > std::chrono::seconds(10)) {
                 const std::string ka = ": keepalive\n\n";
                 lastKeep_ = now;
-                return self->writeRaw(sock, ka.data(), ka.size());
+                return server_->writeRaw(sock, ka.data(), ka.size());
             }
         }
         return true;
@@ -187,6 +186,8 @@ public:
 
 class MjpegSession : public HttpFacesServer::StreamSession {
 public:
+    using StreamSession::StreamSession;
+
     std::string contentType() const override {
         return "multipart/x-mixed-replace; boundary=rk_boundary";
     }
@@ -194,7 +195,6 @@ public:
 
     bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
 #if RK_WIN_HAS_OPENCV
-        auto* self = reinterpret_cast<HttpFacesServer*>(this);
         if (!pipe) return false;
         RenderState rs;
         if (!pipe->tryGetRenderState(rs)) return true;
@@ -206,9 +206,9 @@ public:
            << "Content-Length: " << jpeg.size() << "\r\n"
            << "\r\n";
         const std::string part = os.str();
-        if (!self->writeRaw(sock, part.data(), part.size())) return false;
-        if (!self->writeRaw(sock, jpeg.data(), jpeg.size())) return false;
-        if (!self->writeRaw(sock, "\r\n", 2)) return false;
+        if (!server_->writeRaw(sock, part.data(), part.size())) return false;
+        if (!server_->writeRaw(sock, jpeg.data(), jpeg.size())) return false;
+        if (!server_->writeRaw(sock, "\r\n", 2)) return false;
 #else
         (void)sock; (void)pipe; (void)running;
 #endif
@@ -914,12 +914,12 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
 
     // 流式端点：handleClient 中直接接管 socket 生命周期
     if ((req.path == "/api/faces/stream" || req.path == "/api/v1/faces/stream") && req.method == "GET") {
-        runStream(sock, std::make_unique<SseSession>());
+        runStream(sock, std::make_unique<SseSession>(this));
         return;
     }
 
     if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
-        runStream(sock, std::make_unique<MjpegSession>());
+        runStream(sock, std::make_unique<MjpegSession>(this));
         return;
     }
 

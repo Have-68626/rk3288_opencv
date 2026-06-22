@@ -56,10 +56,14 @@ private:
     // 流式会话基类：提取 SSE/MJPEG 共享的"写头→循环写帧→关闭"模式
     class StreamSession {
     public:
+        explicit StreamSession(HttpFacesServer* server) : server_(server) {}
         virtual ~StreamSession() = default;
         virtual std::string contentType() const = 0;
         virtual bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) = 0;
         virtual int idleMs() const = 0;
+
+    protected:
+        HttpFacesServer* server_;
     };
 
     void acceptLoop();
