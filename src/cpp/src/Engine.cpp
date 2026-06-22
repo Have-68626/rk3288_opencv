@@ -236,13 +236,10 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
     }
 
     const int rot = ((f.meta.rotationDegrees % 360) + 360) % 360;
-    int effectiveW = f.width;
-    int effectiveH = f.height;
-    if (rot == 90 || rot == 270) {
-        std::swap(effectiveW, effectiveH);
-    }
-    if (effectiveW > 1920 || effectiveH > 1080) {
-        err = "超规格输入: " + std::to_string(effectiveW) + "x" + std::to_string(effectiveH);
+    // 检查物理分辨率（旋转前），而非旋转后尺寸——传感器面积不变
+    // 竖屏 90°/270° 时交换宽高会导致 1080×1920 被误判超规格
+    if (f.width > 1920 || f.height > 1920) {
+        err = "超规格输入: " + std::to_string(f.width) + "x" + std::to_string(f.height);
         return false;
     }
 
@@ -719,7 +716,7 @@ void Engine::stop() {
     initialized_.store(false);
     RKLOG_ENTER("Engine");
     isRunning = false;
-    videoManager->close();
+    if (videoManager) videoManager->close();
     if (externalInput) {
         externalInput->clear();
     }
@@ -863,8 +860,7 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
     if (!shouldDetect) {
         drawTracks();
         stats.inferMs = static_cast<double>(nowMs() - inferStart);
-        long long postStart = nowMs();
-        stats.postMs = static_cast<double>(nowMs() - postStart);
+        stats.postMs = 0.0;  // 未执行后处理, 显式标记而非 ≈0ms 假象
         long long renderStart = nowMs();
         {
             std::lock_guard<std::mutex> lock(renderMutex);
@@ -891,11 +887,9 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
     std::vector<BioAuth::FaceAuthResult> results;
     bool faceDetected = bioAuth->verifyMulti(frame, results, 4, shouldRecognize);
     stats.inferMs = static_cast<double>(nowMs() - inferStart);
-    long long postStart = nowMs();
-
     if ((!faceDetected || results.empty()) && !faceTracks.empty()) {
         drawTracks();
-        stats.postMs = static_cast<double>(nowMs() - postStart);
+        stats.postMs = 0.0;  // 无实际后处理, 显式标记
         long long renderStart = nowMs();
         {
             std::lock_guard<std::mutex> lock(renderMutex);
@@ -958,20 +952,27 @@ void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
         t.lastSeenMs = now;
 
         if (shouldRecognize) {
-            const std::string rawId = results[i].identity.isAuthenticated ? results[i].identity.id : "Unknown";
+            const bool authed = results[i].identity.isAuthenticated;
+            const std::string rawId = authed ? results[i].identity.id : "Unknown";
             const float rawConf = results[i].identity.confidence;
 
-            if (rawId == t.lastId) {
+            // 已稳定认证的跟踪永不接受非认证覆盖
+            const bool hasStableAuth = (!t.stableId.empty() && t.stableId != "Unknown");
+
+            if (authed && rawId == t.lastId) {
                 t.lastIdStreak++;
-            } else {
+            } else if (authed) {
                 t.lastId = rawId;
                 t.lastIdStreak = 1;
+            } else {
+                // 非认证帧只清零 streak, 不清 lastId → 保留已认证 track
+                t.lastIdStreak = 0;
             }
 
-            if (t.lastIdStreak >= stableFrames) {
+            if (authed && t.lastIdStreak >= stableFrames) {
                 t.stableId = rawId;
                 t.stableConfidence = rawConf;
-            } else if (t.stableId.empty()) {
+            } else if (!hasStableAuth && t.stableId.empty()) {
                 t.stableId = rawId;
                 t.stableConfidence = rawConf;
             }
@@ -1082,11 +1083,12 @@ bool Engine::getRenderFrame(cv::Mat& outFrame) {
     return getRenderFrame(outFrame, seq);
 }
 
-bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& outSeq) {
+bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& inOutSeq) {
     std::lock_guard<std::mutex> lock(renderMutex);
     if (renderFrame.empty()) return false;
+    if (renderFrameSeq == inOutSeq) return false;  // 无新帧
     renderFrame.copyTo(outFrame);
-    outSeq = renderFrameSeq;
+    inOutSeq = renderFrameSeq;
     return true;
 }
 
