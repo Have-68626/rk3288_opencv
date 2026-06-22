@@ -132,6 +132,7 @@ private:
     std::atomic<MonitoringMode> currentMode;
     std::atomic<bool> externalInputEnabled;
     std::atomic<bool> initCancelRequested{false};
+    std::atomic<bool> initialized_{false};
     std::atomic<bool> flipXEnabled{false};
     std::atomic<bool> flipYEnabled{false};
     std::atomic<InferenceThrottleMode> detThrottleMode{InferenceThrottleMode::Off};

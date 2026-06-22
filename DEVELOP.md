@@ -114,7 +114,66 @@ rk3288_opencv/
 .\gradlew.bat --no-daemon clean assembleDebug testDebugUnitTest
 ```
 
-### 4.2 依赖状态
+### 4.2 C++ 构建变体
+
+项目支持多种 CMake 构建配置：
+
+| 配置 | 生成器 | 适用场景 |
+|:-----|:-------|:---------|
+| `build_ci` | `Ninja` | 快速 C++ 单元测试，无 OpenCV（`-DRK_SKIP_OPENCV=ON`） |
+| `build_win` | `Visual Studio 17 2022 -A x64` | 完整构建（OpenCV + ncnn），运行全量测试 |
+
+#### 无 OpenCV 构建（core_unit_tests）
+
+```powershell
+cmake -S . -B build_ci -G "Ninja" -DRK_SKIP_OPENCV=ON
+cmake --build build_ci --target core_unit_tests
+ctest --test-dir build_ci -C Debug --output-on-failure
+```
+
+#### 完整 Windows 构建
+
+```powershell
+cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 `
+  -DOPENCV_ROOT="path\to\opencv" -DOPENCV_CONTRIB_ROOT="path\to\opencv_contrib" `
+  -DRK_ENABLE_NCNN=ON
+cmake --build build_win --config Release --target win_unit_tests face_infer_unit_tests
+ctest --test-dir build_win -C Release --output-on-failure
+```
+
+#### 可用构建目标
+
+| 目标 | 说明 | OpenCV |
+|:-----|:------|:------:|
+| `core_unit_tests` | 核心模块单元测试（17 项） | ❌ 不需要 |
+| `face_infer_unit_tests` | 人脸推理管线测试（20 项，含 INT8） | ✅ 需要 |
+| `ncnn_precision_test` | ncnn 推理精度对比测试（2 项） | ✅ 需要 |
+| `win_unit_tests` | Windows 服务单元测试 | ✅ 需要 |
+| `win_local_service` | Windows 本地服务（默认入口） | ✅ 需要 |
+| `win_face_eval_cli` / `win_face_bench_cli` | 测评与基准 CLI | ✅ 需要 |
+
+### 4.3 测试框架
+
+项目使用**自定义 `bool` 函数**（非 Google Test）。每个测试文件声明 `bool test_xxx()` 函数并注册到对应 `*_main.cpp` 的 `TestCase` 表中：
+
+```cpp
+using TestFn = bool (*)();
+struct TestCase { const char* name; TestFn fn; };
+```
+
+输出格式：`TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`。
+
+### 4.4 构建要点
+
+- **`OPENCV_ROOT`** 必须指向 OpenCV **源码**（非安装目录），CMakeLists.txt 会校验其内部 `CMakeLists.txt`
+- **`OPENCV_CONTRIB_ROOT`** 提供 `opencv_face` 模块，完整构建必须设置
+- **`RK_SKIP_OPENCV=ON`** 跳过 OpenCV 构建（仅用于 `core_unit_tests`）
+- **`RK_ENABLE_NCNN=ON`** 启用 ncnn 后端（Android 默认开启，Windows 需手动指定）
+- **MSVC** 必须使用 `-G "Visual Studio 17 2022" -A x64`
+- **Gradle** 始终使用 `--no-daemon`（Gradle 9.0-milestone-1 预发布版稳定性问题）
+- **`JAVA_HOME`** 建议设到 JDK 17+，否则 Gradle 会使用 PATH 中的 java
+
+### 4.5 依赖状态
 详细的依赖列表、版本要求及安装指南请参考：[CREDITS.md](CREDITS.md)。
 
 ---
@@ -147,7 +206,31 @@ rk3288_opencv/
 2. 更新 [CHANGELOG.md](CHANGELOG.md)。
 3. 打上版本 Tag 并产出构建物。
 
-### 6.4 调试与排障 (Debugging)
+### 6.4 加速契约模式 (Acceleration Contract)
+
+每个加速器（MPP、ncnn、libyuv、Qualcomm、OpenCL）使用 `requested` / `effective` / `evidence` / `reason` 四字段模式，在 `Engine::performAccelSelfCheck()` 或 `inference_bench_cli` 中输出：
+
+| 字段 | 含义 | 示例值 |
+|:-----|:------|:-------|
+| `requested` | 用户/配置是否请求启用 | `true` |
+| `effective` | 实际是否生效 | `false` |
+| `evidence` | 生效/回退的证据 | `RK_HAVE_NCNN=0` |
+| `reason` | 固定原因码 | `build_disabled` |
+
+固定原因码：`ok`、`build_disabled`、`unsupported_platform`、`missing_dependency`、`missing_model`、`runtime_init_failed`、`unsupported_input`。
+
+### 6.5 INT8 量化说明
+
+INT8 量化工具链位于 `scripts/quantize_ncnn_int8.py`，使用两步流程：
+
+1. **ncnn2table** — 使用校准图片生成校准表（calibration table）
+2. **ncnn2int8** — 使用校准表将 FP32 权重量化为 INT8
+
+支持的模型：SCRFD（检测）、ArcFace/SFace（识别）、MobileFaceNet（轻量识别）。
+
+量化后模型文件存放于 `models/` 目录（gitignored），通过 `ModelRegistry` 条件注册（文件存在时才注册），运行时由 `FaceInferStages` 根据 `int8Enabled` 配置自动选择。
+
+### 6.6 调试与排障 (Debugging)
 - **Android**: 使用 `adb logcat | grep rk3288_opencv` 查看实时日志；关键错误会记录在 `/sdcard/Android/data/<pkg>/files/ErrorLog/`。
 - **Windows**: 本地服务日志位于 `%APPDATA%\rk_wcfr\logs\`；可通过 Web UI 的仪表盘查看服务状态。
 - **Native**: 核心算法异常会输出到标准错误流 (stderr)，在 Windows CLI 或 Android logcat 中均可见。

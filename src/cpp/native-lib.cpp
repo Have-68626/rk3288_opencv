@@ -384,50 +384,7 @@ bool copyDirectBytes(JNIEnv* env, jobject byteBuffer, std::size_t needBytes, std
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameNV21(
-        JNIEnv* env,
-        jobject /* this */,
-        jobject nv21Buffer,
-        jint width,
-        jint height,
-        jint rowStrideY,
-        jlong timestampNs,
-        jint rotationDegrees,
-        jboolean mirrored) {
-    if (!g_engine) return JNI_FALSE;
-
-    ExternalFrame f;
-    f.format = ExternalFrameFormat::NV21;
-    f.width = width;
-    f.height = height;
-    f.meta.timestampNs = static_cast<int64_t>(timestampNs);
-    f.meta.rotationDegrees = rotationDegrees;
-    f.meta.mirrored = (mirrored == JNI_TRUE);
-    f.nv21RowStrideY = rowStrideY > 0 ? rowStrideY : width;
-
-    if (width <= 0 || height <= 0 || f.nv21RowStrideY < width) {
-        rklog::logWarn(TAG, __func__, "nativePushFrameNV21 参数非法");
-        return JNI_FALSE;
-    }
-
-    const std::size_t needY = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>(height);
-    const std::size_t needUV = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>((height + 1) / 2);
-    const std::size_t need = needY + needUV;
-
-    // JNI 所有权：这里做深拷贝，保证 Java 侧复用/释放 Buffer 不会导致 Native 悬挂指针。
-    if (!copyDirectBytes(env, nv21Buffer, need, f.nv21)) {
-        rklog::logWarn(TAG, __func__, "nativePushFrameNV21 需要 DirectByteBuffer 且容量足够");
-        return JNI_FALSE;
-    }
-
-    const bool ok = g_engine->pushExternalFrame(std::move(f));
-    if (!ok) {
-        return JNI_FALSE;
-    }
-    return JNI_TRUE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
+JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
         JNIEnv* env,
         jobject /* this */,
@@ -504,51 +461,7 @@ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameNV21Bytes(
-        JNIEnv* env,
-        jobject /* this */,
-        jbyteArray nv21Bytes,
-        jint width,
-        jint height,
-        jint rowStrideY,
-        jlong timestampNs,
-        jint rotationDegrees,
-        jboolean mirrored) {
-    if (!g_engine) return JNI_FALSE;
-    if (!nv21Bytes) return JNI_FALSE;
-
-    ExternalFrame f;
-    f.format = ExternalFrameFormat::NV21;
-    f.width = width;
-    f.height = height;
-    f.meta.timestampNs = static_cast<int64_t>(timestampNs);
-    f.meta.rotationDegrees = rotationDegrees;
-    f.meta.mirrored = (mirrored == JNI_TRUE);
-    f.nv21RowStrideY = rowStrideY > 0 ? rowStrideY : width;
-
-    if (width <= 0 || height <= 0 || f.nv21RowStrideY < width) {
-        rklog::logWarn(TAG, __func__, "nativePushFrameNV21Bytes 参数非法");
-        return JNI_FALSE;
-    }
-
-    const std::size_t needY = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>(height);
-    const std::size_t needUV = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>((height + 1) / 2);
-    const std::size_t need = needY + needUV;
-
-    const jsize len = env->GetArrayLength(nv21Bytes);
-    if (len < 0 || static_cast<std::size_t>(len) < need) {
-        rklog::logWarn(TAG, __func__, "nativePushFrameNV21Bytes 缓冲区长度不足");
-        return JNI_FALSE;
-    }
-
-    f.nv21.resize(need);
-    env->GetByteArrayRegion(nv21Bytes, 0, static_cast<jsize>(need),
-                            reinterpret_cast<jbyte*>(f.nv21.data()));
-
-    return g_engine->pushExternalFrame(std::move(f)) ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
+JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888Bytes(
         JNIEnv* env,
         jobject /* this */,

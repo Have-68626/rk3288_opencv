@@ -509,6 +509,10 @@ int Engine::getRecognitionIntervalMs() const {
 }
 
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
+    if (initialized_.exchange(true)) {
+        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
+        return true;
+    }
     RKLOG_ENTER("Engine");
     initCancelRequested.store(false);
     videoManager->setCancelToken(&initCancelRequested);
@@ -551,6 +555,10 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
 }
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
+    if (initialized_.exchange(true)) {
+        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
+        return true;
+    }
     RKLOG_ENTER("Engine");
     initCancelRequested.store(false);
     videoManager->setCancelToken(&initCancelRequested);
@@ -704,6 +712,7 @@ void Engine::run() {
 }
 
 void Engine::stop() {
+    initialized_.store(false);
     RKLOG_ENTER("Engine");
     isRunning = false;
     videoManager->close();
