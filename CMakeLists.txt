@@ -534,6 +534,31 @@ if(NOT RK_SKIP_OPENCV)
         endif()
         add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
     endif()
+
+    # 独立 ncnn 精度测试：仅链接 ncnn + OpenCV，不含适配器代码
+    if(NOT ANDROID AND RK_HAVE_NCNN AND RK_NCNN_TARGET)
+        add_executable(ncnn_precision_test
+            "tests/cpp/ncnn_precision_test.cpp"
+        )
+        find_path(_ncnn_include ncnn/net.h PATHS "${NCNN_DIR}/include" NO_DEFAULT_PATH)
+        target_include_directories(ncnn_precision_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+            ${_ncnn_include})
+        target_compile_definitions(ncnn_precision_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(ncnn_precision_test PRIVATE /utf-8)
+            # ncnn.lib 使用动态 CRT (/MD)，此处单独匹配
+            set_target_properties(ncnn_precision_test PROPERTIES
+                MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+        endif()
+        target_link_libraries(ncnn_precision_test
+            opencv_core
+            opencv_imgproc
+            opencv_imgcodecs
+            ${RK_NCNN_TARGET}
+        )
+        add_test(NAME ncnn_precision_test COMMAND ncnn_precision_test)
+    endif()
 endif()
 
 if(NOT RK_SKIP_OPENCV)

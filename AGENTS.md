@@ -11,14 +11,15 @@
 
 ## Essential build quirks
 
-- **`OPENCV_ROOT`** must point to OpenCV **source** (not install), set via env or `-D` flag; CMakeLists.txt validates presence and checks for `CMakeLists.txt` inside
+- **`OPENCV_ROOT`** must point to OpenCV **source** (not install), set via env or `-D` flag; CMakeLists.txt validates presence and checks for `CMakeLists.txt` inside. **`OPENCV_CONTRIB_ROOT`** is also required for the `opencv_face` module (face recognition); set both for full builds.
 - **`RK_SKIP_OPENCV=ON`** — for building `core_unit_tests` without OpenCV (CI uses this); in Gradle pass as `-PRK_SKIP_OPENCV=true`. Uses mock stubs at `deps/opencv/` to satisfy linking without real OpenCV headers.
 - **`RK_ENABLE_NCNN=ON`** — enables ncnn; `RK_NCNN_FETCHCONTENT=ON` for auto-download
 - **MSVC** must use `-G "Visual Studio 17 2022" -A x64`; MSVC needs `/utf-8` compile flag (set in CMakeLists.txt)
-- **Android**: separate `NCNN_DIR_ARMv7`/`NCNN_DIR_ARM64` for per-ABI ncnn paths (hardcoded `D:/ProgramData/NCNN/ncnn-20260113-android-vulkan` in `app/build.gradle`)
+- **Android**: separate `NCNN_DIR_ARMv7`/`NCNN_DIR_ARM64` for per-ABI ncnn paths (hardcoded `D:/ProgramData/NCNN/ncnn-20260113-android-vulkan` in `app/build.gradle`); default ABIs are `armeabi-v7a` + `arm64-v8a` only — pass `-PRK_ENABLE_X86_64=true` to add x86_64. Java source/target is 11.
+- **FFmpegKit AAR** (`app/libs/ffmpeg-kit.aar`) is optional — only needed for RTMP streaming; if absent, RTMP is disabled but face recognition still works.
 - **RK MPP**: set `RK_MPP_HOME` env or files go to `deps/rk_mpp/` (known path `D:\ProgramData\rkmpp\mpp-1.0.11`); auto‑fallback to CPU on missing headers (`RK_HAVE_MPP=0`)
-- **Gradle wrapper** is `gradle-9.0-milestone-1` (pre‑release, experimental)
-- **Web build outputs** to `src/win/app/webroot/` (consumed by Windows local service at runtime); these built assets **are tracked in git**; `pnpm -C web dev` proxies `/api` to `http://127.0.0.1:8080`
+- **Gradle wrapper** is `gradle-9.0-milestone-1` (pre‑release, experimental); CI uses Java 17 (Temurin) for the Android job.
+- **Web build outputs** to `src/win/app/webroot/` (consumed by Windows local service at runtime); these built assets **are tracked in git**; `pnpm -C web dev` proxies `/api` to `http://127.0.0.1:8080` (override via `VITE_DEV_PROXY_TARGET` env)
 
 ## CI pipeline (`.github/workflows/ci.yml`)
 
@@ -76,6 +77,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - **Qualcomm SNPE**: optional, falls back to CPU if headers not in `deps/qualcomm_snpe/include` or `$QUALCOMM_HOME`
 - **OpenAPI spec** at `docs/windows-web-spa/openapi.yaml` documents the REST API
 - **Missing DNN model files**: legacy INI (`config/windows_camera_face_recognition.ini`) references `opencv_face_detector_uint8.pb` and `.pbtxt` — Windows DNN face detection is non-functional without manual download
+- **Other AI-agent working dirs** (`.trae/specs/`, `.Jules/`, `.codegraph/`): these are other agents' scratch/spec history, not source of truth; don't treat them as authoritative docs
 
 ## Conventions
 
