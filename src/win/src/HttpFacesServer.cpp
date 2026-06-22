@@ -133,12 +133,13 @@ static std::string utf8FromWideLocal(const std::wstring& ws) {
 #if RK_WIN_HAS_OPENCV
 static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
     if (rs.bgr.empty()) return false;
+    cv::Mat img = rs.bgr.clone();
     for (const auto& f : rs.faces) {
-        cv::rectangle(rs.bgr, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        cv::rectangle(img, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     }
     static const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
     std::vector<uchar> buf;
-    if (!cv::imencode(".jpg", rs.bgr, buf, params)) return false;
+    if (!cv::imencode(".jpg", img, buf, params)) return false;
     outJpeg.assign(buf.begin(), buf.end());
     return true;
 }
