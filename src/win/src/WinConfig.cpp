@@ -191,6 +191,7 @@ AppConfig loadConfigFromIniOrDefault() {
 
     cfg.recognition.cascadePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"cascade_path", L"assets/lbpcascade_frontalface.xml")));
     cfg.recognition.databasePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"database_path", L"storage/win_face_db.yml")));
+    cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"arcface_model_path", L"models/arcface_w600k_r50.onnx")));
     cfg.recognition.minFaceSizePx = readIniInt(cfg.configPath, L"recognition", L"min_face_size_px", cfg.recognition.minFaceSizePx);
     cfg.recognition.identifyThreshold = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold", cfg.recognition.identifyThreshold);
     cfg.recognition.enrollSamples = readIniInt(cfg.configPath, L"recognition", L"enroll_samples", cfg.recognition.enrollSamples);
@@ -304,6 +305,7 @@ bool saveConfigToIni(const AppConfig& cfg) {
 
     ok = writeIniW(cfg.configPath, L"recognition", L"cascade_path", cfg.recognition.cascadePath.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"database_path", cfg.recognition.databasePath.wstring()) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"arcface_model_path", cfg.recognition.arcFaceModelPath.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"min_face_size_px", toWStringInt(cfg.recognition.minFaceSizePx)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold", toWStringDouble(cfg.recognition.identifyThreshold)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"enroll_samples", toWStringInt(cfg.recognition.enrollSamples)) && ok;

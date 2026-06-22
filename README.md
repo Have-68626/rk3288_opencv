@@ -175,7 +175,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | 开发流程文档 | 🟡 部分完成 | `AGENTS.md` + `README.md` 覆盖构建/测试/CI，未达"一键复现" |
 | `Engine::initialize()` 调用次数验证 | 🟡 未验证 | 缺少运行时日志断言验证 |
 
-### 7. 🟡 **[P2] 多模型集成与切换策略 (Model Diversity)**
+### 7. ✅ **[P2] 多模型集成与切换策略 (Model Diversity)**
 
 | 模型/能力 | 状态 | 备注 |
 |:----------|:----:|:-----|
@@ -186,10 +186,10 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | **INT8 量化版（3 模型）** | ✅ 已完成 | 脚本 `scripts/quantize_ncnn_int8.py` + 8 测试 + ArcFace cosine ≥ 0.90 |
 | 运行时配置切换 | ✅ 已完成 | `ModelConfig::detection`/`recognition`/`int8Enabled` → `FaceInferStages` |
 | 模型注册框架 | ✅ 已完成 | `ModelRegistry` — 按文件存在条件注册 |
-| YuNet (OpenCV) | ❌ 未实现 | |
-| SFace 128D | ❌ 未实现 | |
-| RetinaFace | ❌ 未实现 | |
-| Windows ArcFace ONNX | ❌ 未实现 | 需 ONNX Runtime 集成 |
+| **YuNet (OpenCV)** | ✅ 已完成 | `YuNetAdapter` 封装 `cv::FaceDetectorYN`，注册为 `yunet` |
+| **SFace 128D** | ✅ 已完成 | `SFaceAdapter` 封装 `cv::FaceRecognizerSF`，注册为 `sface` |
+| **SCRFD/RetinaFace (det_10g)** | ✅ 已完成 | `RetinaFaceAdapter` FPN 多尺度解码 + NMS，注册为 `retinaface_scrfd` |
+| **Windows ArcFace ONNX** | 🟡 部分完成 | `ArcFaceWinRecognizer` 已创建（复用 `ArcFaceAdapter` + OpenCV DNN），待 FramePipeline 集成 |
 | RK3288 INT8 加速实测 | ❌ 缺失 | 代码完成，缺真机 P95 延迟数据 |
 
 > **RK3288 部署建议分级**（基于估算，待实测验证）：

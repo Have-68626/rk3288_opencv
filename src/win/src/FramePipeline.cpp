@@ -1,4 +1,5 @@
 #include "rk_win/FramePipeline.h"
+#include "rk_win/ArcFaceWinRecognizer.h"
 
 #include "rk_win/DnnSsdFaceDetector.h"
 #include "rk_win/OverlayRenderer.h"
@@ -29,6 +30,7 @@ std::string utf8FromWide(const std::wstring& ws) {
 #else
     return std::string(ws.begin(), ws.end());
 #endif
+}
 
 void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     if (bgr.empty()) return;
@@ -38,11 +40,15 @@ void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     else if (flipY) code = 0;
     else code = 1;
     cv::flip(bgr, bgr, code);
+}
+
+}  // namespace (anon)
 
 FramePipeline::FramePipeline() = default;
 
 FramePipeline::~FramePipeline() {
     shutdown();
+}
 
 bool FramePipeline::initialize(const AppConfig& cfg) {
     cfg_ = cfg;
@@ -56,7 +62,16 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         activeModels_.clear();
 
     const std::string cascadeUtf8 = cfg_.recognition.cascadePath.string();
-    bool cascadeOk = recognizer_.initialize(cascadeUtf8, cfg_.recognition.databasePath, cfg_.recognition.minFaceSizePx, cfg_.recognition.identifyThreshold);
+    bool cascadeOk = false;
+    if (cfg_.model.recognition == "arcface") {
+        auto arcRec = std::make_unique<ArcFaceWinRecognizer>();
+        cascadeOk = arcRec->initialize(cascadeUtf8, cfg_.recognition.databasePath, cfg_.recognition.arcFaceModelPath.string(), cfg_.recognition.minFaceSizePx, cfg_.recognition.identifyThreshold);
+        recognizer_ = std::move(arcRec);
+    } else {
+        auto lbpRec = std::make_unique<FaceRecognizer>();
+        cascadeOk = lbpRec->initialize(cascadeUtf8, cfg_.recognition.databasePath, cfg_.recognition.minFaceSizePx, cfg_.recognition.identifyThreshold);
+        recognizer_ = std::move(lbpRec);
+    }
     if (!cascadeOk) {
         render_.status = "识别模块初始化失败（请检查 cascade_path 与 database_path）";
 
@@ -67,9 +82,13 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         m.taskType = "detect_recognize_pipeline";
         m.configuredPath = cascadeUtf8;
         m.resolvedPath = cascadeUtf8;
-        m.backend = "opencv_cascade";
-        m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.cascadePath);
-        m.status = cascadeOk ? "loaded" : (std::filesystem::exists(cfg_.recognition.cascadePath) ? "failed" : "missing");
+        m.backend = cfg_.model.recognition == "arcface" ? "opencv_dnn_arcface" : "opencv_cascade";
+        if (cfg_.model.recognition == "arcface") {
+            m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.arcFaceModelPath.string());
+        } else {
+            m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.cascadePath);
+        }
+        m.status = cascadeOk ? "loaded" : "failed";
         m.isInUse = !cfg_.dnn.enable;
         if (!cascadeOk) m.lastError = "初始化失败 (cascade_path 或 database_path 有误)";
         std::lock_guard<std::mutex> lock(modelsMu_);
@@ -157,6 +176,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
     running_ = true;
     processThread_ = std::thread(&FramePipeline::processLoop, this);
     return true;
+}
 
 void FramePipeline::shutdown() {
     running_ = false;
@@ -166,6 +186,7 @@ void FramePipeline::shutdown() {
     if (captureThread_.joinable()) captureThread_.join();
     if (processThread_.joinable()) processThread_.join();
     logger_.close();
+}
 
 std::vector<CameraDevice> FramePipeline::devices() const {
     std::lock_guard<std::mutex> lock(mu_);
@@ -613,8 +634,8 @@ void FramePipeline::processLoop() {
                     ev->append(bad ? "stride_degrade" : "stride_recover", oss.str());
 
         if (clearDbRequested_.exchange(false)) {
-            recognizer_.clearDb();
-            recognizer_.saveDb();
+            recognizer_->clearDb();
+            recognizer_->saveDb();
             render_.status = "已清空人脸库";
 
         if (enrollRequested_.load()) {
@@ -626,12 +647,12 @@ void FramePipeline::processLoop() {
                 remaining = enrollRemaining_;
             if (remaining > 0) {
                 int taken = 0;
-                if (recognizer_.enrollFromFrame(pid, frame, 1, taken) && taken > 0) {
+                if (recognizer_->enrollFromFrame(pid, frame, 1, taken) && taken > 0) {
                     {
                         std::lock_guard<std::mutex> lock(mu_);
                         enrollRemaining_ -= taken;
                         remaining = enrollRemaining_;
-                    recognizer_.saveDb();
+                    recognizer_->saveDb();
             if (remaining <= 0) {
                 enrollRequested_ = false;
                 render_.status = "注册完成: " + pid;
@@ -658,7 +679,7 @@ void FramePipeline::processLoop() {
                     m.accepted = false;
                     lastDetections.push_back(std::move(m));
             matches = lastDetections;
-            matches = recognizer_.identify(frame);
+            matches = recognizer_->identify(frame);
 
         frame.copyTo(drawBuffer); cv::Mat& draw = drawBuffer;
         drawFacesOverlay(draw, matches);

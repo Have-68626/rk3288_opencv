@@ -1,4 +1,5 @@
 #include "rk_win/ArcFaceWinRecognizer.h"
+#include "rk_win/FaceRecognizer.h"
 
 #include <opencv2/imgproc.hpp>
 

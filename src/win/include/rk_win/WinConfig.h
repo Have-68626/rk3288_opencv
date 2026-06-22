@@ -17,6 +17,7 @@ struct CameraConfig {
 struct RecognitionConfig {
     std::filesystem::path cascadePath;
     std::filesystem::path databasePath;
+    std::filesystem::path arcFaceModelPath;
     int minFaceSizePx = 60;
     double identifyThreshold = 55.0;
     int enrollSamples = 12;

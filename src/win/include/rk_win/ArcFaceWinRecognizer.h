@@ -2,7 +2,7 @@
 
 #include "FaceDatabase.h"
 #include "FaceDetector.h"
-#include "FaceRecognizer.h"
+#include "IRecognizer.h"
 
 #include "Compat.h"
 #include <ArcFaceEmbedder.h>
@@ -12,19 +12,19 @@
 
 namespace rk_win {
 
-class ArcFaceWinRecognizer {
+class ArcFaceWinRecognizer : public IRecognizer {
 public:
     bool initialize(const std::string& cascadePath, const std::filesystem::path& dbPath,
                     const std::string& arcFaceModelPath, int minFaceSizePx, double identifyThreshold);
 
-    std::vector<FaceMatch> identify(const cv::Mat& bgr);
-    bool enrollFromFrame(const std::string& personId, const cv::Mat& bgr, int samplesToTake, int& samplesTakenOut);
+    std::vector<FaceMatch> identify(const cv::Mat& bgr) override;
+    bool enrollFromFrame(const std::string& personId, const cv::Mat& bgr, int samplesToTake, int& samplesTakenOut) override;
 
-    bool saveDb() const;
-    void clearDb();
-    double threshold() const;
-    void setThreshold(double t);
-    std::vector<std::string> personIds() const;
+    bool saveDb() const override;
+    void clearDb() override;
+    double threshold() const override;
+    void setThreshold(double t) override;
+    std::vector<std::string> personIds() const override;
 
 private:
     static cv::Rect pickLargest(const std::vector<cv::Rect>& faces);

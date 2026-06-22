@@ -62,7 +62,7 @@ ctest --test-dir build_win -C Release
 # Face inference tests (needs OpenCV + OPENCV_CONTRIB_ROOT)
 cmake --build build_win --config Release --target face_infer_unit_tests
 
-# ncnn precision test (standalone, dynamic CRT /MD to match ncnn.lib)
+# ncnn precision test (standalone, static CRT /MT, needs ncnn + OpenCV)
 cmake --build build_win --config Release --target ncnn_precision_test
 
 # Web
@@ -97,9 +97,9 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - **Script**: `scripts/quantize_ncnn_int8.py` — two-step flow (ncnn2table → ncnn2int8). Supports `--table-only`/`--quant-only`.
 - **Models**: SCRFD (detection, via PNNX from `det_10g.onnx`), ArcFace (recognition), MobileFaceNet (lightweight). Model directory names use `scrfd` (not `yolo_face`).
 - **Model binaries are gitignored** (`models/*` excludes `.gitkeep`). Generate locally via the quantize script.
-- **Calibration images**: 172 face images from `deps/WIDER_train/` (not `tests/test_set01/` in practice).
+- **Calibration images**: 172 face images from `deps/WIDER_train/` (not `tests/test_set01/` in practice). Contents of `deps/WIDER_train/` and `deps/insightface/` are gitignored (only `.gitkeep` tracked) — download WIDER Face dataset separately.
 - **Precision tests**: 8 structural tests (`test_int8_*.cpp`) have `fileExists()` skip — pass when models absent. `ncnn_precision_test` (standalone) enables full inference comparison; ArcFace cosine similarity target ≥ 0.90.
-- **CRT workaround**: `ncnn_precision_test` uses `MultiThreadedDLL` (`/MD`) to match ncnn.lib linking (project default is static CRT `/MT`).
+- **CRT**: project default is static CRT (`/MT`). `ncnn_precision_test` also uses static CRT (`MultiThreaded`), matching the global default (no workaround needed).
 - **SCRFD → PNNX note**: ncnn2int8 cannot handle `splitncnn` nodes (multi-scale detection heads). Only PNNX-direct output (optlevel=2) produces clean graphs for INT8 quantization.
 - **Android**: INT8 tests are structural only (fileExists skip). `ncnn_precision_test` is NOT built on Android.
 

@@ -204,6 +204,7 @@ static JsonValue schemaSettingsDoc() {
         JsonValue req = JsonValue::makeArray();
         req.a.push_back(JsonValue::makeString("cascadePath"));
         req.a.push_back(JsonValue::makeString("databasePath"));
+        req.a.push_back(JsonValue::makeString("arcFaceModelPath"));
         req.a.push_back(JsonValue::makeString("minFaceSizePx"));
         req.a.push_back(JsonValue::makeString("identifyThreshold"));
         req.a.push_back(JsonValue::makeString("enrollSamples"));
@@ -211,6 +212,7 @@ static JsonValue schemaSettingsDoc() {
         JsonValue rp = JsonValue::makeObject();
         rp.o["cascadePath"] = objStr();
         rp.o["databasePath"] = objStr();
+        rp.o["arcFaceModelPath"] = objStr();
         rp.o["minFaceSizePx"] = objBoolInt(true, 10, 10000);
         {
             JsonValue t = JsonValue::makeObject();
@@ -681,6 +683,7 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         JsonValue r = JsonValue::makeObject();
         r.o["cascadePath"] = JsonValue::makeString(cfg.recognition.cascadePath.string());
         r.o["databasePath"] = JsonValue::makeString(cfg.recognition.databasePath.string());
+        r.o["arcFaceModelPath"] = JsonValue::makeString(cfg.recognition.arcFaceModelPath.string());
         r.o["minFaceSizePx"] = JsonValue::makeNumber(cfg.recognition.minFaceSizePx);
         r.o["identifyThreshold"] = JsonValue::makeNumber(cfg.recognition.identifyThreshold);
         r.o["enrollSamples"] = JsonValue::makeNumber(cfg.recognition.enrollSamples);
@@ -826,6 +829,7 @@ static AppConfig defaultAppConfig() {
     // 路径默认与旧 INI 兼容：相对路径以 exeDir 为基准（见 WinConfig::resolvePathFromExeDir）
     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
     cfg.recognition.databasePath = resolvePathFromExeDir(L"storage/win_face_db.yml");
+    cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(L"models/arcface_w600k_r50.onnx");
     cfg.dnn.modelPath = resolvePathFromExeDir(L"storage/models/opencv_face_detector_uint8.pb");
     cfg.dnn.configPath = resolvePathFromExeDir(L"storage/models/opencv_face_detector.pbtxt");
     cfg.log.logDir = resolvePathFromExeDir(L"storage/win_logs");
@@ -894,6 +898,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         double v = 0;
         if (getString(*r, "cascadePath", s)) cfg.recognition.cascadePath = resolvePathFromExeDir(s);
         if (getString(*r, "databasePath", s)) cfg.recognition.databasePath = resolvePathFromExeDir(s);
+        if (getString(*r, "arcFaceModelPath", s)) cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(s);
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
         if (getNumber(*r, "enrollSamples", v)) cfg.recognition.enrollSamples = static_cast<int>(v);

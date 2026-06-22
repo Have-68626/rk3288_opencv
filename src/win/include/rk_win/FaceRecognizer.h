@@ -2,6 +2,7 @@
 
 #include "FaceDatabase.h"
 #include "FaceDetector.h"
+#include "IRecognizer.h"
 #include "LbphEmbedder.h"
 
 #include "Compat.h"
@@ -43,20 +44,20 @@ struct FaceMatch {
     bool accepted = false;
 };
 
-class FaceRecognizer {
+class FaceRecognizer : public IRecognizer {
 public:
     bool initialize(const std::string& cascadePath, const std::filesystem::path& dbPath, int minFaceSizePx, double identifyThreshold);
 
-    std::vector<FaceMatch> identify(const cv::Mat& bgr);
-    bool enrollFromFrame(const std::string& personId, const cv::Mat& bgr, int samplesToTake, int& samplesTakenOut);
+    std::vector<FaceMatch> identify(const cv::Mat& bgr) override;
+    bool enrollFromFrame(const std::string& personId, const cv::Mat& bgr, int samplesToTake, int& samplesTakenOut) override;
 
-    bool saveDb() const;
-    void clearDb();
+    bool saveDb() const override;
+    void clearDb() override;
 
-    double threshold() const;
-    void setThreshold(double t);
+    double threshold() const override;
+    void setThreshold(double t) override;
 
-    std::vector<std::string> personIds() const;
+    std::vector<std::string> personIds() const override;
 
 private:
     static cv::Rect pickLargest(const std::vector<cv::Rect>& faces);
