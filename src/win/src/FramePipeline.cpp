@@ -418,6 +418,7 @@ void FramePipeline::requestClearDb() {
     clearDbRequested_ = true;
 
 bool FramePipeline::tryGetRenderState(RenderState& out) {
+    std::lock_guard<std::mutex> lock(renderMu_);
     if (render_.bgr.empty()) return false;
     render_.bgr.copyTo(out.bgr);
     out.faces = render_.faces;
@@ -428,10 +429,11 @@ bool FramePipeline::tryGetRenderState(RenderState& out) {
     out.timestamp100ns = render_.timestamp100ns;
     out.status = render_.status;
     return true;
+}
 
 bool FramePipeline::snapshotFaces(FacesSnapshot& out) {
-    {
-        if (render_.bgr.empty()) return false;
+    std::lock_guard<std::mutex> lock(renderMu_);
+    if (render_.bgr.empty()) return false;
         out.faces = render_.faces;
         out.frameWidth = render_.bgr.cols;
         out.frameHeight = render_.bgr.rows;
@@ -439,12 +441,15 @@ bool FramePipeline::snapshotFaces(FacesSnapshot& out) {
         out.inferMs = render_.inferMs;
         out.dropRate = render_.dropRate;
         out.stride = render_.stride;
+    }
     {
         std::lock_guard<std::mutex> lock(previewMu_);
         out.previewWidth = previewW_;
         out.previewHeight = previewH_;
         out.previewScaleMode = previewScaleMode_;
+    }
     return true;
+}
 
 std::uint64_t FramePipeline::currentFacesSeq() const {
     std::lock_guard<std::mutex> lock(facesSeqMu_);
@@ -452,6 +457,9 @@ std::uint64_t FramePipeline::currentFacesSeq() const {
 
 bool FramePipeline::waitFacesSeqChanged(std::uint64_t lastSeq, int timeoutMs, std::uint64_t& outSeq) const {
     std::unique_lock<std::mutex> lock(facesSeqMu_);
+    facesSeqCv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this, lastSeq] {
+        return facesSeq_ != lastSeq;
+    });
     outSeq = facesSeq_;
     return facesSeq_ != lastSeq;
 
@@ -599,7 +607,8 @@ void FramePipeline::processLoop() {
         {
             std::unique_lock<std::mutex> lock(frameMu_);
             if (!running_) break;
-            if (!hasFrame_) continue;
+            frameCv_.wait_for(lock, std::chrono::milliseconds(1000), [this]{ return hasFrame_ || !running_; });
+            if (!hasFrame_ || !running_) continue;
             latestFrame_.copyTo(frame);
             ts = latestFrameTs_;
             hasFrame_ = false;
@@ -626,7 +635,9 @@ void FramePipeline::processLoop() {
             if (cfg_.dnn.enable && dnn_ && dnn_->ready()) {
                 if (bad) {
                     if (detectStride_ < 8) detectStride_++;
+                } else {
                     if (detectStride_ > 1) detectStride_--;
+                }
             if (detectStride_ != prevStride) {
                 EventLogger* ev = nullptr;
                 {
@@ -712,6 +723,7 @@ void FramePipeline::processLoop() {
         logger_.append(le);
 
         {
+            std::lock_guard<std::mutex> lock(renderMu_);
             render_.bgr = std::move(draw);
             render_.faces = std::move(matches);
             render_.fps = fps;
