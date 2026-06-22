@@ -153,17 +153,20 @@ public:
     std::string contentType() const override { return "text/event-stream; charset=utf-8"; }
     int idleMs() const override { return 100; }
 
+private:
+    std::uint64_t lastSeq_ = 0;
+    std::chrono::steady_clock::time_point lastKeep_ = std::chrono::steady_clock::now();
+
+public:
     bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
         auto* self = reinterpret_cast<HttpFacesServer*>(this);
         (void)self;
-        static std::uint64_t lastSeq = 0;
-        static auto lastKeep = std::chrono::steady_clock::now();
 
         std::uint64_t seq = 0;
-        const bool changed = pipe ? pipe->waitFacesSeqChanged(lastSeq, 1000, seq) : false;
+        const bool changed = pipe ? pipe->waitFacesSeqChanged(lastSeq_, 1000, seq) : false;
         if (!running) return false;
         if (changed) {
-            lastSeq = seq;
+            lastSeq_ = seq;
             FacesSnapshot snap;
             if (pipe && pipe->snapshotFaces(snap)) {
                 const std::string body = buildFacesJson(snap);
@@ -172,9 +175,9 @@ public:
             }
         } else {
             const auto now = std::chrono::steady_clock::now();
-            if (now - lastKeep > std::chrono::seconds(10)) {
+            if (now - lastKeep_ > std::chrono::seconds(10)) {
                 const std::string ka = ": keepalive\n\n";
-                lastKeep = now;
+                lastKeep_ = now;
                 return self->writeRaw(sock, ka.data(), ka.size());
             }
         }
