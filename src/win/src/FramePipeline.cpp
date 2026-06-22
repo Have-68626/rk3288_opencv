@@ -191,10 +191,12 @@ void FramePipeline::shutdown() {
 std::vector<CameraDevice> FramePipeline::devices() const {
     std::lock_guard<std::mutex> lock(mu_);
     return devices_;
+}
 
 std::vector<CameraFormat> FramePipeline::formatsForDeviceIndex(int index) const {
     std::lock_guard<std::mutex> lock(mu_);
     return devices_[static_cast<size_t>(index)].formats;
+}
 
 bool FramePipeline::startCameraByIndex(int deviceIndex, int formatIndex) {
     if (deviceIndex < 0) return false;
@@ -230,7 +232,9 @@ std::optional<int> FramePipeline::findExactFormatIndexLocked(int deviceIndex, in
     for (size_t i = 0; i < fmts.size(); i++) {
         const auto& f = fmts[i];
         if (f.width == width && f.height == height && f.fps == fps) return static_cast<int>(i);
+    }
     return std::nullopt;
+}
 
 CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex, const CameraFormat& desired, int maxTotalMs) {
     using clock = std::chrono::steady_clock;

@@ -192,10 +192,6 @@ private:
     int cameraSignal_ = 0;
     CameraOpenResult lastCameraOpenResult_{};
 
-    std::mutex detectorSignalMu_;
-    std::condition_variable detectorSignalCv_;
-    int detectorSignal_ = 0;
-
     mutable std::mutex previewMu_;
     int previewW_ = 0;
     int previewH_ = 0;
