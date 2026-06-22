@@ -1,0 +1,47 @@
+#pragma once
+
+#include "FaceDetector.h"
+
+#include <opencv2/dnn.hpp>
+
+#include <memory>
+#include <string>
+#include <vector>
+
+class RetinaFaceAdapter : public FaceDetector {
+public:
+    RetinaFaceAdapter();
+    ~RetinaFaceAdapter() override;
+
+    bool load(const std::string& modelPath, std::string& err) override;
+    FaceDetections detect(const cv::Mat& bgr, std::string& err) override;
+    const char* name() const override;
+
+private:
+    struct AnchorCfg {
+        int stride;
+        std::vector<int> baseSize;
+        std::vector<float> ratios;
+        std::vector<float> scales;
+    };
+
+    void generateAnchors(int stride, const std::vector<int>& baseSize,
+                         const std::vector<float>& ratios, const std::vector<float>& scales,
+                         int featW, int featH, std::vector<std::vector<float>>& anchors);
+    float intersectArea(float ax1, float ay1, float ax2, float ay2,
+                        float bx1, float by1, float bx2, float by2);
+    void nms(std::vector<FaceDetection>& dets, float threshold);
+
+    cv::dnn::Net net_;
+    int inputW_ = 640;
+    int inputH_ = 640;
+    float confThreshold_ = 0.5f;
+    float nmsThreshold_ = 0.4f;
+    int topK_ = 5000;
+    bool loaded_ = false;
+    std::string currentName_;
+    std::vector<AnchorCfg> anchorCfgs_;
+
+    // FPN 各层输出名称（SCRFD/det_10g 约定）
+    std::vector<std::string> outputNames_;
+};

@@ -4,6 +4,7 @@
 #include "adapters/MobileFaceNetAdapter.h"
 #include "adapters/YuNetAdapter.h"
 #include "adapters/SFaceAdapter.h"
+#include "adapters/RetinaFaceAdapter.h"
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -62,6 +63,11 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "LBP 直方图识别器，轻量但精度有限（<90%）。Windows 管线默认识别器。",
          "high_speed", 3});
 #endif
+
+    reg.registerDetector("retinaface_scrfd", []() { return std::make_unique<RetinaFaceAdapter>(); },
+        {"retinaface_scrfd", "SCRFD/RetinaFace (det_10g)", "detect",
+         "SCRFD 架构，640x640 输入，FPN 多尺度。WiderFace 96.1%。PNNX 转换 ONNX 模型。",
+         "high_accuracy", 1});
 
     reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
         {"yunet", "YuNet Face Detector", "detect",
