@@ -176,12 +176,14 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 
     auto fallbackOpencvNv21 = [&]() {
         if (stride == w) {
-            cv::Mat yuv(h + uvH, w, CV_8UC1, const_cast<uint8_t*>(f.nv21.data()));
+            // 复制 const 数据到临时缓冲区, 避免 const_cast UB
+            std::vector<uint8_t> nv21Copy(f.nv21.begin(), f.nv21.end());
+            cv::Mat yuv(h + uvH, w, CV_8UC1, nv21Copy.data());
             cv::cvtColor(yuv, outBgr, cv::COLOR_YUV2BGR_NV21);
             return true;
         }
 
-        thread_local cv::Mat packedYuv;
+        cv::Mat packedYuv;
         packedYuv.create(h + uvH, w, CV_8UC1);
 
         for (int row = 0; row < h; row++) {
@@ -249,7 +251,7 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
             return false;
         }
     } else {
-        thread_local cv::Mat yuvI420;
+        cv::Mat yuvI420;
         if (!fillI420FromYuv420888(f, yuvI420, err)) {
             return false;
         }

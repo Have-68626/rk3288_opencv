@@ -23,6 +23,7 @@ static std::thread g_engineThread;
 static std::mutex g_engineThreadMutex;
 static JavaVM* g_vm = nullptr;
 static jobject g_activity = nullptr;
+static std::mutex g_activityMutex;
 static std::mutex g_previewMutex;
 static ANativeWindow* g_previewWindow = nullptr;
 static std::atomic<uint64_t> g_previewGeneration{0};
@@ -66,7 +67,12 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
 }
 
 void sendRecognitionResult(const std::string& result) {
-    if (!g_vm || !g_activity) return;
+    jobject activityLocal;
+    {
+        std::lock_guard<std::mutex> lock(g_activityMutex);
+        activityLocal = g_activity;
+    }
+    if (!g_vm || !activityLocal) return;
 
     JNIEnv* env;
     int getEnvStat = g_vm->GetEnv((void**)&env, JNI_VERSION_1_6);
@@ -79,11 +85,14 @@ void sendRecognitionResult(const std::string& result) {
         attached = true;
     }
 
-    jclass cls = env->GetObjectClass(g_activity);
+    jclass cls = env->GetObjectClass(activityLocal);
     jmethodID mid = env->GetMethodID(cls, "onNativeResult", "(Ljava/lang/String;)V");
     if (mid) {
         jstring jStr = env->NewStringUTF(result.c_str());
-        env->CallVoidMethod(g_activity, mid, jStr);
+        env->CallVoidMethod(activityLocal, mid, jStr);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
         env->DeleteLocalRef(jStr);
     }
 
@@ -106,9 +115,12 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
 
     stopAndJoinEngineThreadIfRunning();
 
-    // Update global activity ref
-    if (g_activity) env->DeleteGlobalRef(g_activity);
-    g_activity = env->NewGlobalRef(thiz);
+    // Update global activity ref (受 g_activityMutex 保护)
+    {
+        std::lock_guard<std::mutex> lock(g_activityMutex);
+        if (g_activity) env->DeleteGlobalRef(g_activity);
+        g_activity = env->NewGlobalRef(thiz);
+    }
     const char* path = filePath ? env->GetStringUTFChars(filePath, nullptr) : nullptr;
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
     const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
@@ -265,9 +277,12 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
 
     stopAndJoinEngineThreadIfRunning();
 
-    // Update global activity ref
-    if (g_activity) env->DeleteGlobalRef(g_activity);
-    g_activity = env->NewGlobalRef(thiz);
+    // Update global activity ref (受 g_activityMutex 保护)
+    {
+        std::lock_guard<std::mutex> lock(g_activityMutex);
+        if (g_activity) env->DeleteGlobalRef(g_activity);
+        g_activity = env->NewGlobalRef(thiz);
+    }
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
     const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
 

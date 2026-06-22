@@ -87,6 +87,11 @@ function putToCache(strategy: CacheStrategy, key: string, json: unknown) {
   }
 }
 
+// 运行时校验：确认 JSON 是对象且含 ok 字段（与后端 ApiEnvelope 对齐）
+function isValidEnvelope(raw: unknown): raw is Record<string, unknown> {
+  return typeof raw === 'object' && raw !== null && 'ok' in raw
+}
+
 export async function fetchJson<T>(
   input: string,
   init: RequestInit & {
@@ -101,7 +106,9 @@ export async function fetchJson<T>(
     const hit = getFromCache(init.cacheStrategy, cacheKey)
     if (hit !== undefined) {
       log(init.logLevel, 'debug', '[api] cache hit', cacheKey)
-      return hit as T
+      if (isValidEnvelope(hit)) { return hit as T }
+      // 缓存数据格式不匹配（版本变更），忽略缓存
+      log(init.logLevel, 'warn', '[api] cache format mismatch, discarding')
     }
   }
 
@@ -119,7 +126,7 @@ export async function fetchJson<T>(
     })
 
     const text = await res.text()
-    const json = text ? (JSON.parse(text) as unknown) : null
+    const json: unknown = text ? JSON.parse(text) : null
     if (!res.ok) {
       // 后端使用统一 envelope：{ok:false,error:{code,message,details?}}
       const errObj = json as Record<string, unknown>
@@ -136,6 +143,9 @@ export async function fetchJson<T>(
       putToCache(init.cacheStrategy, cacheKey, json)
     }
 
+    if (!isValidEnvelope(json)) {
+      throw new ApiError('invalid_response', 'API 响应缺少统一 envelope 结构')
+    }
     return json as T
   } catch (e: unknown) {
     const err = e as Error
