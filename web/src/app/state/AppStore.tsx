@@ -20,7 +20,7 @@ interface AppStore {
 
   serverSettings: ServerSettingsState
   refreshServerSettings: (opts?: { silent?: boolean }) => Promise<boolean>
-  updateServerSettings: (patch: Partial<ServerSettingsDoc>) => Promise<void>
+  updateServerSettings: (patch: import('../api/types').DeepPartial<ServerSettingsDoc>) => Promise<void>
 }
 
 const Ctx = createContext<AppStore | null>(null)
@@ -80,7 +80,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [prefs])
 
-  const updateServerSettings = useCallback(async (patch: Partial<ServerSettingsDoc>) => {
+  const updateServerSettings = useCallback(async (patch: import('../api/types').DeepPartial<ServerSettingsDoc>) => {
     setServerSettings((prev) => ({
       status: 'loading',
       data: prev.data,
