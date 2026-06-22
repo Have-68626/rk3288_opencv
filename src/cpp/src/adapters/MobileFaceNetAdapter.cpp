@@ -80,7 +80,6 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
     in.substract_mean_normalize(meanVals, normVals);
 
     ncnn::Extractor ex = net_.create_extractor();
-    ex.set_num_threads(1);
 
     if (ex.input("data", in) != 0) {
         err = "mobilefacenet: input failed";
@@ -100,7 +99,7 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
     }
 
     std::vector<float> embedding(128);
-    std::memcpy(embedding.data(), out.ptr<float>(), 128 * sizeof(float));
+    std::memcpy(embedding.data(), (const float*)out.data, 128 * sizeof(float));
 
     // L2 normalize for correct cosine similarity comparison
     float sqSum = 0.0f;

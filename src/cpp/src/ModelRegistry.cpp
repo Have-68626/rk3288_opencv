@@ -2,6 +2,8 @@
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
 #include "adapters/MobileFaceNetAdapter.h"
+#include "adapters/YuNetAdapter.h"
+#include "adapters/SFaceAdapter.h"
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -60,6 +62,16 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "LBP 直方图识别器，轻量但精度有限（<90%）。Windows 管线默认识别器。",
          "high_speed", 3});
 #endif
+
+    reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
+        {"yunet", "YuNet Face Detector", "detect",
+         "OpenCV FaceDetectorYN，320x320 输入。多尺度 FPN+SSH，WiderFace 91.5%。OpenCV 内置，无需额外模型依赖。",
+         "balanced", 3});
+
+    reg.registerEmbedder("sface", []() { return std::make_unique<SFaceAdapter>(); },
+        {"sface", "SFace 128D", "recognize",
+         "SFace 128 维特征提取，CPU 上最快的识别模型。OpenCV contrib face 模块内置。",
+         "high_speed", 2});
 
     // INT8 量化模型注册 — 需要 INT8 模型文件存在才注册
     auto fileExists = [](const std::string& path) -> bool {

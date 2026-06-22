@@ -4,6 +4,10 @@
 
 #include <string>
 
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+#include <net.h>
+#endif
+
 /**
  * @brief Adapter wrapping a MobileFaceNet ncnn model into the unified Embedder interface.
  *

@@ -501,6 +501,8 @@ if(NOT RK_SKIP_OPENCV)
             "src/cpp/src/adapters/ArcFaceAdapter.cpp"
             "src/cpp/src/adapters/YoloFaceAdapter.cpp"
             "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
+            "src/cpp/src/adapters/YuNetAdapter.cpp"
+            "src/cpp/src/adapters/SFaceAdapter.cpp"
             "src/cpp/src/adapters/DnnSsdAdapter.cpp"
             "src/cpp/src/adapters/CascadeAdapter.cpp"
             "src/cpp/src/adapters/LbphAdapter.cpp"
@@ -518,11 +520,7 @@ if(NOT RK_SKIP_OPENCV)
             target_compile_options(face_infer_unit_tests PRIVATE /utf-8)
         endif()
         if(WIN32)
-            # WIN32 下 face_infer_unit_tests 强制设为 RK_HAVE_NCNN=0：
-            # 适配器代码（ArcFaceEmbedder、MobileFaceNetAdapter）依赖新版 ncnn API
-            # （set_num_threads、Mat::begin 等），而预编译 ncnn-20260113 包接口过旧。
-            # ncnn 推理精度验证由独立目标 ncnn_precision_test 承担。
-            target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=0 RK_HAVE_MPP=0)
+            target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
         endif()
         target_link_libraries(face_infer_unit_tests
             opencv_core
@@ -533,6 +531,9 @@ if(NOT RK_SKIP_OPENCV)
             opencv_objdetect
             opencv_videoio
         )
+        if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
+            target_link_libraries(face_infer_unit_tests ${RK_NCNN_TARGET})
+        endif()
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/yolo_face_int8_ncnn/yolo_face_int8.param")
             target_compile_definitions(face_infer_unit_tests PRIVATE RK_HAVE_INT8_MODELS=1)
         endif()

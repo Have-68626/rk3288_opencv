@@ -258,7 +258,6 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         in.substract_mean_normalize(meanVals, normVals);
 
         ncnn::Extractor ex = ncnn_->net.create_extractor();
-        ex.set_num_threads(std::max(1, cfg_.ncnnThreads));
         if (ex.input(cfg_.ncnnInput.c_str(), in) != 0) {
             if (err) *err = "ArcFaceEmbedder: ncnn input 失败";
             return std::nullopt;
@@ -279,7 +278,7 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         ArcFaceEmbedding emb;
         emb.modelVersion = cfg_.modelVersion;
         emb.preprocessVersion = cfg_.preprocessVersion;
-        emb.values.assign(out.begin(), out.begin() + ArcFaceEmbedding::kDim);
+        emb.values.assign((const float*)out.data, (const float*)out.data + ArcFaceEmbedding::kDim);
         if (!l2NormalizeInplace(emb.values)) {
             if (err) *err = "ArcFaceEmbedder: L2 归一化失败";
             return std::nullopt;
