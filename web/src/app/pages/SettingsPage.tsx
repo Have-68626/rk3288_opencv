@@ -1,16 +1,19 @@
-import {
+﻿import {
   Alert,
   Button,
   Card,
   Collapse,
+  Descriptions,
   Form,
   Input,
   InputNumber,
   Popconfirm,
   Select,
-  Switch,
   Space,
+  Spin,
+  Switch,
   Tabs,
+  Tag,
   Tooltip,
   Typography,
   message,
@@ -18,7 +21,8 @@ import {
 import { useEffect, useState } from 'react'
 
 import { rotateCryptoKey } from '../api/actions'
-import type { ServerSettingsDoc } from '../api/types'
+import { getModels, reloadModel } from '../api/models'
+import type { ActiveModelInfo, ModelsResponse, ServerSettingsDoc } from '../api/types'
 import { useAppStore } from '../state/AppStore'
 import { diffPatch } from '../utils/diffPatch'
 
@@ -90,6 +94,31 @@ export function SettingsPage() {
   const [serverBaseline, setServerBaseline] = useState<ServerFormModel | null>(null)
   const [postUrlMasked, setPostUrlMasked] = useState(false)
   const [isRotatingKey, setIsRotatingKey] = useState(false)
+
+  // 模型状态
+  const [modelsData, setModelsData] = useState<ModelsResponse | null>(null)
+  const [modelsStatus, setModelsStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+  const [modelsError, setModelsError] = useState('')
+  const [reloadingId, setReloadingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setModelsStatus('loading')
+    getModels(prefs)
+      .then((env) => {
+        if (env.ok) {
+          setModelsData(env.data)
+          setModelsStatus('loaded')
+        } else {
+          setModelsError(env.error.message)
+          setModelsStatus('error')
+        }
+      })
+      .catch((e) => {
+        setModelsError(e?.message || '获取模型状态失败')
+        setModelsStatus('error')
+      })
+  }, [prefs])
+
 
   // 本地设置：用 onValuesChange 实时生效（减少“点保存但忘了”的坑）
   useEffect(() => {
@@ -295,6 +324,105 @@ export function SettingsPage() {
                     <Form.Item label="Qualcomm SNPE 推理加速" name={['acceleration', 'enableQualcomm']} valuePropName="checked">
                       <Switch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
+                  </Space>
+                ),
+              },
+              {
+                key: 'models',
+                label: '模型状态 (Model Status)',
+                children: (
+                  <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    {modelsStatus === 'loading' ? (
+                      <Spin tip="正在获取模型状态..." />
+                    ) : modelsStatus === 'error' ? (
+                      <Alert type="error" showIcon message="获取失败" description={modelsError} />
+                    ) : modelsData ? (
+                      <>
+                        {/* 摘要 */}
+                        <Space wrap size={[4, 8]}>
+                          <Tag>支持 {modelsData.summary.totalSupported}</Tag>
+                          <Tag>已配置 {modelsData.summary.totalConfigured}</Tag>
+                          <Tag color="green">已加载 {modelsData.summary.totalLoaded}</Tag>
+                          {modelsData.summary.totalFailed > 0 && (
+                            <Tag color="red">失败 {modelsData.summary.totalFailed}</Tag>
+                          )}
+                          {modelsData.summary.totalMissing > 0 && (
+                            <Tag color="orange">缺失 {modelsData.summary.totalMissing}</Tag>
+                          )}
+                        </Space>
+
+                        {/* 活跃模型 */}
+                        {modelsData.activeModels.map((m: ActiveModelInfo) => (
+                          <Card
+                            key={m.id}
+                            size="small"
+                            title={
+                              <Space>
+                                <span>{m.displayName}</span>
+                                <Tag
+                                  color={m.status === 'loaded' ? 'green' : m.status === 'failed' ? 'red' : 'orange'}
+                                  style={{ marginRight: 0 }}
+                                >
+                                  {m.status === 'loaded' ? '已加载' : m.status === 'failed' ? '失败' : '缺失'}
+                                </Tag>
+                                {m.isInUse && <Tag color="blue">使用中</Tag>}
+                              </Space>
+                            }
+                            extra={
+                              <Button
+                                size="small"
+                                loading={reloadingId === m.id}
+                                disabled={reloadingId !== null}
+                                onClick={async () => {
+                                  setReloadingId(m.id)
+                                  try {
+                                    const env = await reloadModel(prefs, m.id)
+                                    if (env.ok) {
+                                      message.success(`已请求重载 ${m.displayName}`)
+                                      // 刷新模型状态
+                                      const refreshed = await getModels(prefs)
+                                      if (refreshed.ok) setModelsData(refreshed.data)
+                                    } else {
+                                      message.error(env.error.message)
+                                    }
+                                  } catch (e: unknown) {
+                                    message.error((e as Error)?.message || '重载失败')
+                                  } finally {
+                                    setReloadingId(null)
+                                  }
+                                }}
+                              >
+                                重载
+                              </Button>
+                            }
+                          >
+                            <Descriptions size="small" column={2}>
+                              <Descriptions.Item label="ID">{m.id}</Descriptions.Item>
+                              <Descriptions.Item label="后端">{m.backend}</Descriptions.Item>
+                              {m.hash && <Descriptions.Item label="Hash">{m.hash.substring(0, 16)}...</Descriptions.Item>}
+                              {m.modelVersion && <Descriptions.Item label="版本">{m.modelVersion}</Descriptions.Item>}
+                              <Descriptions.Item label="配置路径" span={2}>
+                                <Typography.Text copyable style={{ fontSize: 12 }}>{m.configuredPath}</Typography.Text>
+                              </Descriptions.Item>
+                              {m.resolvedPath && (
+                                <Descriptions.Item label="实际路径" span={2}>
+                                  <Typography.Text copyable style={{ fontSize: 12 }}>{m.resolvedPath}</Typography.Text>
+                                </Descriptions.Item>
+                              )}
+                              {m.lastError && (
+                                <Descriptions.Item label="错误信息" span={2}>
+                                  <Typography.Text type="danger" style={{ fontSize: 12 }}>{m.lastError}</Typography.Text>
+                                </Descriptions.Item>
+                              )}
+                            </Descriptions>
+                          </Card>
+                        ))}
+
+                        {modelsData.activeModels.length === 0 && (
+                          <Typography.Text type="secondary">暂无活跃模型（管线未启动或无配置）</Typography.Text>
+                        )}
+                      </>
+                    ) : null}
                   </Space>
                 ),
               },

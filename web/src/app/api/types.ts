@@ -107,3 +107,45 @@ export interface ServerSettingsDoc {
   }
 }
 
+// --- GET /api/v1/models ---
+export interface ModelInfo {
+  id: string
+  displayName: string
+  taskType: string
+  notes: string
+  recommendedFor: string
+}
+
+export interface ActiveModelInfo {
+  id: string
+  displayName: string
+  taskType: string
+  configuredPath: string
+  resolvedPath: string
+  backend: string
+  hash?: string
+  status: 'loaded' | 'failed' | 'missing'
+  isInUse: boolean
+  modelVersion?: string
+  lastError?: string
+}
+
+export interface ModelSummary {
+  totalSupported: number
+  totalConfigured: number
+  totalLoaded: number
+  totalFailed: number
+  totalMissing: number
+}
+
+export interface ModelsResponse {
+  supportedModels: ModelInfo[]
+  activeModels: ActiveModelInfo[]
+  summary: ModelSummary
+}
+
+export interface ReloadResult {
+  id: string
+  status: string
+}
+

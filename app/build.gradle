@@ -56,6 +56,9 @@ android {
                         cmakeArgs.add("-DOPENCV_CONTRIB_ROOT=${opencvContribRoot}")
                     }
                 }
+                // 禁用 libyuv：该库从 chromium.googlesource.com 通过 FetchContent 下载，
+                // 但国内网络环境不稳定，容易超时失败。libyuv 为可选加速，不影响核心功能。
+                cmakeArgs.add("-DRK_ENABLE_LIBYUV=OFF")
                 // ncnn 本地路径（避免 FetchContent 网络下载）
                 // ncnn Android 包按 ABI 分目录，不同 ABI 用不同的 NCNN_DIR
                 def ncnnRoot = "D:/ProgramData/NCNN/ncnn-20260113-android-vulkan"
