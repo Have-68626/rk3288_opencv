@@ -109,10 +109,26 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
 
 static std::string escapeJsonString(std::string_view s) {
     std::string out;
-    out.reserve(s.size() + 8);
+    out.reserve(s.size() + s.size() / 4);
     for (char c : s) {
-        if (c == '"' || c == '\\') out.push_back('\\');
-        out.push_back(c);
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    out += buf;
+                } else {
+                    out.push_back(c);
+                }
+                break;
+        }
     }
     return out;
 }
@@ -789,25 +805,26 @@ HttpFacesServer::HttpResponse HttpFacesServer::onFaces(const HttpRequest&) {
 HttpFacesServer::HttpResponse HttpFacesServer::onCameras(const HttpRequest&) {
     if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
     const auto devs = pipe_->devices();
-    std::ostringstream os;
-    os << "{\"ok\":true,\"data\":{\"devices\":[";
+    JsonValue devices = JsonValue::makeArray();
     for (size_t i = 0; i < devs.size(); i++) {
-        if (i) os << ",";
-        os << "{"
-           << "\"index\":" << i << ","
-           << "\"name\":\"" << escapeJsonString(utf8FromWideLocal(devs[i].name)) << "\","
-           << "\"deviceId\":\"" << escapeJsonString(utf8FromWideLocal(devs[i].deviceId)) << "\","
-           << "\"formats\":[";
-        for (size_t j = 0; j < devs[i].formats.size(); j++) {
-            if (j) os << ",";
-            const auto& f = devs[i].formats[j];
-            os << "{\"w\":" << f.width << ",\"h\":" << f.height << ",\"fps\":" << f.fps << "}";
+        JsonValue d = JsonValue::makeObject();
+        d.o["index"] = JsonValue::makeNumber(static_cast<double>(i));
+        d.o["name"] = JsonValue::makeString(utf8FromWideLocal(devs[i].name));
+        d.o["deviceId"] = JsonValue::makeString(utf8FromWideLocal(devs[i].deviceId));
+        JsonValue formats = JsonValue::makeArray();
+        for (const auto& f : devs[i].formats) {
+            JsonValue fmt = JsonValue::makeObject();
+            fmt.o["w"] = JsonValue::makeNumber(static_cast<double>(f.width));
+            fmt.o["h"] = JsonValue::makeNumber(static_cast<double>(f.height));
+            fmt.o["fps"] = JsonValue::makeNumber(static_cast<double>(f.fps));
+            formats.a.push_back(std::move(fmt));
         }
-        os << "]"
-           << "}";
+        d.o["formats"] = std::move(formats);
+        devices.a.push_back(std::move(d));
     }
-    os << "]}}";
-    return jsonOk(os.str());
+    JsonValue data = JsonValue::makeObject();
+    data.o["devices"] = std::move(devices);
+    return jsonOk(std::move(data));
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::onCameraFlip(const HttpRequest& req) {
