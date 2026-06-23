@@ -132,9 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ##### HIGH (30 项)
 | # | 模块 | 文件 | 问题 |
 |---|------|------|------|
-| HR-08 | JNI | `native-lib.cpp:60` | `JNI_OnUnload` 未 join 引擎线程 |
-| HR-09 | Android | `Camera2CaptureController.java:315` | `imageReader` stop 后 NPE |
-| HR-10 | Android | `CameraXCaptureController.java:89,161` | `provider` 字段无同步 |
+| HR-08 | JNI | `native-lib.cpp:60` | `JNI_OnUnload` 未 join 引擎线程 | ✅ 已修 |
+| HR-09 | Android | `Camera2CaptureController.java:315` | `imageReader` stop 后 NPE | ✅ 已修 |
+| HR-10 | Android | `CameraXCaptureController.java:89,161` | `provider` 字段无同步 | ✅ 已修 |
 | HR-11 | Android | `MainActivity.java:2337` | `nativeInit(-1,...)` 硬编码 |
 | HR-12 | Android | `FileLogSink.java:78` | 持锁 sleep(10) |
 | HR-13 | Web | `AppStore.tsx:71` | 状态层耦合 UI toast |

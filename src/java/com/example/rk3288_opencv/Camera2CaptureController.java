@@ -310,6 +310,10 @@ final class Camera2CaptureController implements CaptureController {
     private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
+            if (imageReader == null) {
+                camera.close();
+                return;
+            }
             cameraDevice = camera;
             try {
                 Surface surface = imageReader.getSurface();

@@ -59,6 +59,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 }
 
 JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
+    stopAndJoinEngineThreadIfRunning();
     std::lock_guard<std::mutex> lock(g_previewMutex);
     if (g_previewWindow) {
         ANativeWindow_release(g_previewWindow);
