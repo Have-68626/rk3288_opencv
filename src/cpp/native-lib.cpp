@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <cstdint>
+#include <cstdlib>
 #include <atomic>
 #include <string>
 #include <thread>
@@ -293,17 +294,40 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
     if (storage) env->ReleaseStringUTFChars(storagePath, storage);
 
-    // Java 层 cameraId 已改为 String，null 表示外部输入
+    // Java 层 cameraId 已改为 String
+    //   null         → 外部帧输入（camIdInt = -1）
+    //   纯数字        → 相机索引（camIdInt = 数值）
+    //   文件路径      → 调用 initialize(string filePath) 重载
+    //   其他非法格式 → 返回 false
+    bool useFilePathInit = false;
+    std::string camIdStr;
     int camIdInt = -1;
     if (cameraId) {
         const char* camStr = env->GetStringUTFChars(cameraId, nullptr);
         if (camStr) {
-            camIdInt = std::atoi(camStr);
+            camIdStr = camStr;
             env->ReleaseStringUTFChars(cameraId, camStr);
+        }
+        if (!camIdStr.empty()) {
+            // 判断是否为文件路径：包含 . / \ 视为文件路径
+            bool isFilePath = camIdStr.find('.') != std::string::npos ||
+                              camIdStr.find('/') != std::string::npos ||
+                              camIdStr.find('\\') != std::string::npos;
+            if (isFilePath) {
+                useFilePathInit = true;
+            } else {
+                // 尝试解析为整数
+                char* end = nullptr;
+                long val = std::strtol(camIdStr.c_str(), &end, 10);
+                if (end == camIdStr.c_str() || *end != '\0' || val < 0) {
+                    LOGE("Invalid cameraId format: %s", camIdStr.c_str());
+                    return JNI_FALSE;
+                }
+                camIdInt = static_cast<int>(val);
+            }
         }
     }
 
-    LOGI("Initializing Engine with Camera ID: %d...", camIdInt);
     if (!g_engine) {
         g_engine = std::make_unique<Engine>();
     }
@@ -311,11 +335,22 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     g_cancelInit.store(false);
     g_engine->clearCancelInit();
     g_engine->setOnResultCallback(sendRecognitionResult);
-    
+
+    if (useFilePathInit) {
+        LOGI("Initializing Engine with file path: %s...", camIdStr.c_str());
+        try {
+            return g_engine->initialize(camIdStr, cascadeStr, storageStr);
+        } catch (const std::exception& e) {
+            LOGE("Engine::initialize(filePath) threw: %s", e.what());
+            return JNI_FALSE;
+        }
+    }
+
+    LOGI("Initializing Engine with Camera ID: %d...", camIdInt);
     try {
         return g_engine->initialize(camIdInt, cascadeStr, storageStr);
     } catch (const std::exception& e) {
-        LOGE("Engine::initialize threw std::exception: %s", e.what());
+        LOGE("Engine::initialize(cameraId) threw: %s", e.what());
         return JNI_FALSE;
     } catch (...) {
         LOGE("Engine::initialize threw unknown exception");
