@@ -113,7 +113,12 @@ if(MSVC)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now -fPIE -pie")
+    # -fPIE/-pie 仅适用于 Linux/Android (ELF), MinGW/Cygwin 等非 ELF 平台会链接失败
+    if(UNIX AND NOT APPLE)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now -fPIE -pie")
+    else()
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
+    endif()
 endif()
 
 # Include directories — applied per-target below (not globally)
@@ -597,7 +602,7 @@ if(NOT RK_SKIP_OPENCV)
             target_compile_options(ncnn_precision_test PRIVATE /utf-8)
             # 本地构建的 ncnn.lib 使用静态 CRT (/MT)，与项目默认一致
             set_target_properties(ncnn_precision_test PROPERTIES
-                MSVC_RUNTIME_LIBRARY "MultiThreaded")
+                MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         endif()
         target_link_libraries(ncnn_precision_test
             opencv_core
@@ -946,6 +951,10 @@ endif()
 if(TARGET win_face_bench_cli)
     install(TARGETS win_face_bench_cli RUNTIME DESTINATION bin)
 endif()
+
+# Common OpenCV library lists for test/CLI targets (reduces 10+ repetitions)
+set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc opencv_imgcodecs opencv_objdetect)
+set(RK_OPENCV_CORE_DNN_LIBS ${RK_OPENCV_CORE_LIBS} opencv_dnn)
 
 # Apply per-target includes and definitions (replacing global include_directories / add_definitions)
 foreach(t ${RK_ENGINE_TARGETS})

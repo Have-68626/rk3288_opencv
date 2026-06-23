@@ -290,6 +290,7 @@ AppConfig loadConfigFromIniOrDefault() {
         utf8FromWide(readIniW(cfg.configPath, L"model", L"recognition_backend", wideFromUtf8(cfg.model.backend).c_str())),
         cfg.model.backend);
     cfg.model.autoFallback = readIniBool(cfg.configPath, L"model", L"auto_fallback", cfg.model.autoFallback);
+    cfg.model.int8Enabled = readIniBool(cfg.configPath, L"model", L"int8_enabled", cfg.model.int8Enabled);
 
     return cfg;
 }
@@ -372,6 +373,7 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"model", L"detector_backend", wideFromUtf8(rk_accel::normalizeBackendName(cfg.model.detectorBackend, "opencv_dnn"))) && ok;
     ok = writeIniW(cfg.configPath, L"model", L"recognition_backend", wideFromUtf8(rk_accel::normalizeBackendName(cfg.model.recognitionBackend, "opencv_dnn"))) && ok;
     ok = writeIniW(cfg.configPath, L"model", L"auto_fallback", toWStringInt(cfg.model.autoFallback ? 1 : 0)) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"int8_enabled", toWStringInt(cfg.model.int8Enabled ? 1 : 0)) && ok;
 
     return ok;
 }

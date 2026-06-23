@@ -8,10 +8,12 @@
 
 namespace rk_win {
 
+#include <cstdint>
+
 struct PersonEntry {
     std::string id;
     std::vector<float> mean;
-    int count = 0;
+    std::int64_t count = 0;
 };
 
 class FaceDatabase {
