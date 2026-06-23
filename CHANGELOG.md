@@ -166,11 +166,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-43 | 构建 | `gradle.properties:19` | 单线程 workers | ✅ 已修 |
 | HR-44 | 脚本 | `run-web-e2e.ps1:31` | Vite 无就绪检查 | ✅ 已修 |
 | HR-45 | 脚本 | `quantize_ncnn_int8.py:61` | 硬编码回退路径 | ✅ 已修 |
-| HR-46 | 脚本 | `build_android.bat:24` | NDK 版本硬编码 |
-| HR-47 | FaceInfer | `FaceInferencePipeline.cpp:112` | 审计文件毫秒碰撞 |
-| HR-48 | FaceInfer | `FaceInferStages.cpp:232,362` | INT8→FP32 降级无日志 |
-| HR-49 | FaceInfer | `FaceInferStages.cpp:92` | 每帧全量 gallery 重新解析 |
-| HR-50 | 适配器 | `LbphAdapter.cpp:8` | `load()` 忽略 `modelPath` |
+| HR-46 | 脚本 | `build_android.bat:24` | NDK 版本硬编码 | ✅ 已修 |
+| HR-47 | FaceInfer | `FaceInferencePipeline.cpp:112` | 审计文件毫秒碰撞 | ✅ 已修 |
+| HR-48 | FaceInfer | `FaceInferStages.cpp:232,362` | INT8→FP32 降级无日志 | ✅ 已修 |
+| HR-49 | FaceInfer | `FaceInferStages.cpp:92` | 每帧全量 gallery 重新解析 | ✅ 已修 |
+| HR-50 | 适配器 | `LbphAdapter.cpp:8` | `load()` 忽略 `modelPath` | ✅ 已修 |
 | HR-51 | 适配器 | `CascadeAdapter.cpp:33` | 所有检测 score=1.0 |
 | HR-52 | 适配器 | `MobileFaceNetAdapter.cpp:48` | `num_threads=1` 硬编码 |
 | HR-53 | 适配器 | 多个 `*Adapter.cpp` | `cv::dnn` 调用无 try/catch |

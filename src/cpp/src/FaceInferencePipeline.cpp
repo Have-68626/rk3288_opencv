@@ -109,8 +109,9 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         FaceInferMetrics m;
         ctx.arcBackendName = req.arcBackend;
 
+        static std::atomic<std::uint64_t> s_auditSeq{0};
         const auto makeAuditFilename = [&]() {
-            return std::string("face_infer_") + std::to_string(tsMs) + ".json";
+            return std::string("face_infer_") + std::to_string(tsMs) + "_" + std::to_string(s_auditSeq++) + ".json";
         };
 
         const auto finalizeTotalMs = [&]() {

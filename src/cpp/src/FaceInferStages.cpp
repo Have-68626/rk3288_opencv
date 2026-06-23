@@ -230,7 +230,7 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
                 m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
                 if (detErr.empty()) return okStatus();
             }
-            // INT8 加载失败，回退到 FP32
+            rklog::logWarn("FaceInferStages", "detectFaces", "INT8 detector failed: " + loadErr + ", falling back to FP32");
         }
     }
 
@@ -360,7 +360,7 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
                         return okStatus();
                     }
                 }
-                // INT8 加载/推理失败，尝试下一个
+                rklog::logWarn("FaceInferStages", "computeEmbedding", "INT8 embedder failed, falling back to FP32");
             }
         }
     }
@@ -424,11 +424,30 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
 }
 
 FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, FaceInferContext& ctx) {
+    // Simple mtime-based cache to avoid re-reading unchanged gallery on every frame
+    static std::string s_lastDir;
+    static std::filesystem::file_time_type s_lastMtime;
+    static std::vector<FaceSearchEntry> s_cachedEntries;
+    static std::vector<std::string> s_cachedWarnings;
+
+    std::error_code ec;
+    auto currentMtime = std::filesystem::exists(req.galleryDir, ec)
+        ? std::filesystem::last_write_time(req.galleryDir, ec) : std::filesystem::file_time_type{};
+    if (!ec && currentMtime == s_lastMtime && req.galleryDir == s_lastDir && !s_cachedEntries.empty()) {
+        ctx.galleryEntries = s_cachedEntries;
+        ctx.galleryWarnings = s_cachedWarnings;
+        return okStatus();
+    }
+
     std::string galleryErr;
     if (!loadGalleryDir(req.galleryDir, ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
         ctx.galleryEntries.clear();
         return failStatus("gallery_load", galleryErr.empty() ? "gallery_load_failed" : galleryErr);
     }
+    s_lastDir = req.galleryDir;
+    s_lastMtime = currentMtime;
+    s_cachedEntries = ctx.galleryEntries;
+    s_cachedWarnings = ctx.galleryWarnings;
     return okStatus();
 }
 

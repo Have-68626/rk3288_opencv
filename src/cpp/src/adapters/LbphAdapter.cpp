@@ -1,4 +1,5 @@
 #include "adapters/LbphAdapter.h"
+#include "NativeLog.h"
 
 #include <opencv2/imgproc.hpp>
 
@@ -6,7 +7,11 @@ LbphAdapter::LbphAdapter() = default;
 LbphAdapter::~LbphAdapter() = default;
 
 bool LbphAdapter::load(const std::string& modelPath, std::string& err) {
-    (void)modelPath;
+    // LBPH embedder does not load any model file — it computes histograms from
+    // face pixels directly. The modelPath is accepted for interface compatibility
+    // but is intentionally ignored.
+    rklog::logInfo("LbphAdapter", "load",
+        "LBPH embedder initialized (no model file needed, path ignored: " + modelPath + ")");
     loaded_ = true;
     currentName_ = "lbph";
     return true;
