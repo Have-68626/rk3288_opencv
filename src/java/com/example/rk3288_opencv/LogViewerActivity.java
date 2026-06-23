@@ -430,7 +430,7 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
                 }
             }
             try {
-                p.waitFor(5, TimeUnit.SECONDS);
+                p.waitFor();
             } catch (Throwable ignored) {
             }
             if (pidOut.length() > 0) {
@@ -458,7 +458,7 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
                 }
             }
             try {
-                p.waitFor(5, TimeUnit.SECONDS);
+                p.waitFor();
             } catch (Throwable ignored) {
             }
 
