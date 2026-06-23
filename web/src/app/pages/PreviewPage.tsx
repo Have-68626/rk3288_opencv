@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { CameraDeviceInfo } from '../api/cameras'
 import { getCameras } from '../api/cameras'
+import type { ServerSettingsDoc } from '../api/types'
 import { clearDb, enroll, openPrivacySettings, setFlip } from '../api/actions'
 import { getErrorMessage } from '../api/error'
 import { useAppStore } from '../state/AppStore'
@@ -230,7 +231,7 @@ export function PreviewPage() {
               onChange={async (deviceId) => {
                 const hide = message.loading('正在切换摄像头...', 0)
                 try {
-                  await updateServerSettings({ camera: { preferredDeviceId: deviceId } })
+                  await updateServerSettings({ camera: { preferredDeviceId: deviceId } } as Partial<ServerSettingsDoc>)
                   message.success('切换摄像头成功')
                 } catch (e: unknown) {
                   message.error(getErrorMessage(e) || '切换摄像头失败')
@@ -260,7 +261,7 @@ export function PreviewPage() {
                       height: Number(m[2]),
                       fps: Number(m[3]),
                     },
-                  })
+                  } as Partial<ServerSettingsDoc>)
                   message.success('更改分辨率成功')
                 } catch (e: unknown) {
                   message.error(getErrorMessage(e) || '更改分辨率失败')
