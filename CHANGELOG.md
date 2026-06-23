@@ -113,9 +113,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | MR-16 | FaceDB | `e.count` int 溢出 | ✅ 已修 |
 | MR-19 | 构建 | OpenCV 列表重复 10+ 次 | ✅ 已修 |
 | MR-20 | 构建 | `-fPIE` 在链接器标志中 | ✅ 已修 |
-| MR-22 | D3D11 | `pushFrameTime` 每帧 O(N log N) | 🔴 Open |
-| MR-27 | Config | `MOTION_THRESHOLD` 为 640×480 的绝对值 | 🔴 Open |
-| MR-38 | 日志 | `std::endl` 强制 flush | 🔴 Open |
+| MR-22 | D3D11 | `pushFrameTime` 每帧 O(N log N) | ✅ 已修 |
+| MR-27 | Config | `MOTION_THRESHOLD` 为 640×480 的绝对值 | ✅ 已修 |
+| MR-38 | 日志 | `std::endl` 强制 flush | ✅ 已修 |
 | MR-41 | Input | `timeoutMs=0` 永久阻塞 | 🔴 Open |
 | MR-47 | 脚本 | `docs-sync-audit.js:148` — `extractHeadUpdateTime` 正则 `[\s*]*` 意外匹配字面 `*` | 🔴 Open |
 | MR-48 | 第三方 | `civetweb/LICENSE.md:93,124` — 标题去重附加中文全角 `（2）`，应使用 ASCII `(2)` | 🔴 Open |
