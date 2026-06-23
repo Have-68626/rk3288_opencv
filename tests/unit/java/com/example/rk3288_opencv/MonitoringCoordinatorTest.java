@@ -16,7 +16,7 @@ public class MonitoringCoordinatorTest {
     @Test
     public void startWithoutInputShowsToastAndDisablesStart() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(-1, null, true);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(null, null, true);
 
         MonitoringCoordinator.Decision d = c.onStartRequested(in, null);
 
@@ -33,7 +33,7 @@ public class MonitoringCoordinatorTest {
     @Test
     public void startCameraWithoutPermissionRequestsPermission() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(0, null, false);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, false);
 
         MonitoringCoordinator.Decision d = c.onStartRequested(in, null);
 
@@ -48,7 +48,7 @@ public class MonitoringCoordinatorTest {
     @Test
     public void startMockWithoutPermissionStillInitsEngine() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(-1, "/tmp/mock.mp4", false);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(null, "/tmp/mock.mp4", false);
 
         MonitoringCoordinator.Decision d = c.onStartRequested(in, null);
 
@@ -72,7 +72,7 @@ public class MonitoringCoordinatorTest {
     @Test
     public void engineReadyContinuesStartFlow() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(-1, "/tmp/mock.mp4", false);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(null, "/tmp/mock.mp4", false);
 
         c.onStartRequested(in, null);
         MonitoringCoordinator.Decision d = c.onEngineInitResult(in, true, true);
@@ -92,7 +92,7 @@ public class MonitoringCoordinatorTest {
     @Test
     public void captureFailureTriggersRestartWithBackoff() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(0, null, true);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
 
         c.onEngineInitResult(in, true, false);
         c.onMonitoringStarted(in, true, "Camera2", CaptureScheme.CAMERA2);
@@ -118,12 +118,12 @@ public class MonitoringCoordinatorTest {
     @Test
     public void permissionLostStopsMonitoringAndShowsSettingsDialog() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(0, null, true);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
 
         c.onEngineInitResult(in, true, false);
         c.onMonitoringStarted(in, true, "Camera2", CaptureScheme.CAMERA2);
 
-        MonitoringCoordinator.Inputs noPerm = new MonitoringCoordinator.Inputs(0, null, false);
+        MonitoringCoordinator.Inputs noPerm = new MonitoringCoordinator.Inputs("0", null, false);
         MonitoringCoordinator.Decision d = c.onPermissionStateChanged(noPerm, false, List.of(Manifest.permission.CAMERA), "DENIED");
 
         boolean hasStop = false;
@@ -139,7 +139,7 @@ public class MonitoringCoordinatorTest {
     @Test
     public void overlayVisibleOnlyWhenReadyRunningAndFirstFrame() {
         MonitoringCoordinator c = new MonitoringCoordinator();
-        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs(0, null, true);
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
 
         c.onEngineInitResult(in, true, false);
         c.onMonitoringStarted(in, true, "Camera2", CaptureScheme.CAMERA2);

@@ -278,11 +278,11 @@ final class MonitoringCoordinator {
     synchronized Decision onPermissionStateChanged(Inputs in, boolean runtimeGranted, List<String> missingPermissionsOrNull, String stateNameOrNull) {
         boolean allowMock = in.allowMockEvenWithoutPermission();
         if (!runtimeGranted) {
-            if (in.selectedCameraId >= 0) {
+            if (in.selectedCameraId != null && !in.selectedCameraId.isEmpty()) {
                 engineState = EngineState.NOT_READY;
                 firstFrameReceived = false;
             }
-            if (runState == RunState.RUNNING && in.selectedCameraId >= 0) {
+            if (runState == RunState.RUNNING && in.selectedCameraId != null && !in.selectedCameraId.isEmpty()) {
                 runState = RunState.STOPPED;
                 lastStoppedReasonOrNull = "安全模式: " + (stateNameOrNull == null ? "" : stateNameOrNull);
                 List<Effect> fx = new ArrayList<>();
