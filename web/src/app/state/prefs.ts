@@ -90,5 +90,9 @@ export function loadPrefs(): LocalPrefs {
 }
 
 export function savePrefs(next: LocalPrefs) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    // 写入失败（localStorage 满/禁用）不应阻断使用；静默忽略
+  }
 }

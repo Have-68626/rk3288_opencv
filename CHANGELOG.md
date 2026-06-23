@@ -198,10 +198,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-75 | Android | `LogDetailActivity.java:67` | ExecutorService 未 shutdown | ✅ 已修 |
 | HR-76 | Android | `LogViewerActivity.java:417` | logcat pipe 死锁 | ✅ 已修 |
 | HR-77 | Web | `cameras.ts + actions.ts` | API 路径忽略 `VITE_API_BASE` | ✅ 已修 |
-| HR-78 | Web | `prefs.ts:92` | `savePrefs` 无 try/catch |
-| HR-79 | 基准 | `inference_bench_cli.cpp:444` | 预处理计时测零工作 |
-| HR-80 | 基准 | `inference_bench_cli.cpp:939` | NaN/Inf 输出非法 JSON |
-| HR-81 | 基准 | `FaceInferOutcomeJson.cpp:84` | `%g` 可输出 NaN/Inf |
+| HR-78 | Web | `prefs.ts:92` | `savePrefs` 无 try/catch | ✅ 已修 |
+| HR-79 | 基准 | `inference_bench_cli.cpp:444,613,785` | 预处理计时测零工作 | ✅ 已修 |
+| HR-80 | 基准 | `inference_bench_cli.cpp:939` | NaN/Inf 输出非法 JSON | ✅ 已修 |
+| HR-81 | 基准 | `FaceInferOutcomeJson.cpp:84` | `%g` 可输出 NaN/Inf | ✅ 已修 |
 
 ##### MEDIUM (20 项)
 | # | 模块 | 问题 |

@@ -1,4 +1,4 @@
-#include <algorithm>
+﻿#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -442,9 +442,8 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      // Preprocessing hoisted outside loop to prevent redundant memory allocations
-      const auto t1 = clock::now();
       net.setInput(blob);
+      const auto t1 = clock::now();
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -610,9 +609,8 @@ static std::optional<Record> runQualcommBench(const Args &args,
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      // Preprocessing hoisted outside loop to prevent redundant memory allocations
-      const auto t1 = clock::now();
       net.setInput(blob);
+      const auto t1 = clock::now();
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -782,10 +780,9 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   ncnn::Extractor ex = net.create_extractor();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     const auto t0 = clock::now();
-    // Preprocessing hoisted outside loop to prevent redundant memory allocations
-    const auto t1 = clock::now();
 
     if (ex.input(args.ncnnInput.c_str(), in) == 0) {
+      const auto t1 = clock::now();
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -936,7 +933,7 @@ static bool writeJson(const std::filesystem::path &path, std::uint64_t ts,
       << ",";
   out << "\"input_w\":" << args.inputW << ",";
   out << "\"input_h\":" << args.inputH << ",";
-  out << "\"scale\":" << args.scale << ",";
+  out << "\"scale\":" << (std::isfinite(args.scale) ? std::to_string(args.scale) : "null") << ",";
   out << "\"mean_b\":" << args.meanB << ",";
   out << "\"mean_g\":" << args.meanG << ",";
   out << "\"mean_r\":" << args.meanR << ",";
@@ -1025,7 +1022,7 @@ static bool writeJson(const std::filesystem::path &path, std::uint64_t ts,
     out << "\"ncnn_lightmode\":" << (r.ncnnLightmode ? "true" : "false") << ",";
     out << "\"input_w\":" << r.inputW << ",";
     out << "\"input_h\":" << r.inputH << ",";
-    out << "\"scale\":" << r.scale << ",";
+    out << "\"scale\":" << (std::isfinite(r.scale) ? std::to_string(r.scale) : "null") << ",";
     out << "\"mean_b\":" << r.meanB << ",";
     out << "\"mean_g\":" << r.meanG << ",";
     out << "\"mean_r\":" << r.meanR << ",";
