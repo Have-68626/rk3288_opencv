@@ -55,7 +55,7 @@ wait_for_lines() {
     fi
     sleep 1
   done
-  return 0
+  return 1  # timeout — caller can detect failure
 }
 
 extract_int() {
@@ -68,7 +68,10 @@ for ((i=1; i<=iterations; i++)); do
   "${adb_bin}" "${adb_args[@]}" shell am force-stop "${package_name}" >/dev/null 2>&1 || true
   "${adb_bin}" "${adb_args[@]}" shell am start -n "${package_name}/${activity_name}" --ez BENCH true --ei BENCH_ITERATION "${i}" >/dev/null 2>&1 || true
 
-  lines="$(wait_for_lines)"
+  lines="$(wait_for_lines)" || true
+  if [[ -z "${lines}" ]]; then
+    printf "[%s] Iteration %s: timeout waiting for logcat output\n" "$(date -Iseconds)" "${i}" >&2
+  fi
   ttff="$(printf "%s\n" "${lines}" | extract_int "TTFF_MS")"
   capture_ok="$(printf "%s\n" "${lines}" | extract_int "CAPTURE_OK")"
   capture_fail="$(printf "%s\n" "${lines}" | extract_int "CAPTURE_FAIL")"

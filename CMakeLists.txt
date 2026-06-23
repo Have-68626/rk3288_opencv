@@ -10,6 +10,14 @@ add_compile_definitions(BUILD_ID="${APP_BUILD_ID}")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ccache (build cache, auto-detect when available)
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "ccache detected: ${CCACHE_PROGRAM}")
+endif()
+
 if(MSVC)
     # ⚠️ 重要：Windows 构建器架构配置
     # 当前构建器：${CMAKE_GENERATOR_PLATFORM} (通常为 x86 或 x64)

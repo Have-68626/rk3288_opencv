@@ -199,6 +199,14 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 校验 preset 与 fp32_dir 一致
+    model_key = args.model.lower().replace("_", "")
+    dir_key = os.path.basename(os.path.normpath(args.fp32_dir)).lower().replace("_", "").replace("-", "")
+    if model_key not in dir_key:
+        print(f"错误：--model '{args.model}' 与 --fp32-dir '{args.fp32_dir}' 不匹配", file=sys.stderr)
+        print(f"      期望 fp32_dir 包含 '{args.model}'", file=sys.stderr)
+        sys.exit(1)
+
     fp32_param, fp32_bin = find_fp32_model(args.fp32_dir)
 
     # ---- Step 1：生成校准表 ----
