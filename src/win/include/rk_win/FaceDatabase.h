@@ -6,9 +6,9 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rk_win {
-
 #include <cstdint>
+
+namespace rk_win {
 
 struct PersonEntry {
     std::string id;

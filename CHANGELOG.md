@@ -62,10 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
 
-### Code Review (2026-06-23, Consolidated) — 修复记录 + 全部未决问题
-> 6 轮审查累计覆盖项目全量源代码。以下为完整修复记录和未决问题总表。
+### Code Review (2026-06-23, Round 7 / Consolidated) — 修复记录 + 全部未决问题
+> 7 轮审查累计覆盖项目全量源代码。Round 7（b1bd373）为文档维护审计，未发现实质性新缺陷。
 
 #### ✅ 已修复确认
+> 含 Round 1-8 全部已修复记录。CRITICAL (28项) + HIGH (69项) + MEDIUM (35项) 已全部在 Round 4-8 的 30 个 fix commits 中修复。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -104,151 +105,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
 
-#### 🔴 未决问题 — 按严重性分类
+#### 🔴 未决问题
 
-##### CRITICAL (已全部修复)
-| # | 模块 | 文件 | 问题 |
+##### MEDIUM (9 项)
+| # | 模块 | 问题 | 状态 |
 |---|------|------|------|
-| CR-24 | 人脸识别 | `FaceDatabase.cpp:82`, `FaceRecognizer.cpp:83` | `persons_` map + `identifyThreshold_` 双数据竞争（无锁读写）| ✅ 已修 |
-| CR-25 | 人脸识别 | `FaceSearch.cpp:106` | `reset()` 失败后索引状态损坏 | ✅ 已修 |
-| CR-26 | 安全 | `JsonLite.cpp:248` | JSON 递归解析无深度限制 → 栈溢出可被利用 | ✅ 已修 |
-| CR-27 | 安全 | `WinCrypto.cpp:144` | AES-GCM 密钥未 `SecureZeroMemory` | ✅ 已修 |
-| CR-28 | 安全 | `WinJsonConfig.cpp:1357` | TOCTOU 竞态 — 配置变更被覆盖 | ✅ 已修 |
-| CR-29 | 安全 | `WinCrypto.cpp:181` | AES-256-GCM 无 AAD → 字段可被交换 | ✅ 已修 |
-| CR-30 | BioAuth | `BioAuth.cpp` 全局 | 零线程安全 — 并发 `verify()` 数据竞争 | ✅ 已修 |
-| CR-31 | BioAuth | `BioAuth.cpp:101,186` | 置信度归一化公式本质错误 → 拒真率接近 100% | ✅ 已修 |
-| CR-32 | MotionDetector | `MotionDetector.cpp` 全局 | 零线程安全 — `detect()` 与 `getMotionMask()` 竞态 | ✅ 已修 |
-| CR-33 | MotionDetector | `MotionDetector.cpp:43` | `getMotionMask()` 浅拷贝 → 共享缓冲区被覆写 | ✅ 已修 |
-| CR-41 | FaceInfer | `FaceInferStages.cpp:451` | `assumeL2Normalized` 硬编码 → 非归一化模型检索静默错误 | ✅ 已修 |
-| CR-42 | FaceInfer | `ModelRegistry.cpp:18` | `ensureBuiltinRegistered` 无 `call_once` → 并发 UB | ✅ 已修 |
-| CR-43 | 适配器 | 全部 9 个 `*Adapter.cpp` | 全线零线程安全 | ✅ 已修 |
-| CR-44 | 适配器 | `ArcFaceAdapter.cpp:44`, `YoloFaceAdapter.cpp:47` | ncnn→OpenCV 回退传递 `.param` 文件 | ✅ 已修 |
-| CR-45 | 适配器 | `ArcFaceAdapter.cpp:25`, `MobileFaceNetAdapter.cpp:20` | 路径拼接硬编码 `/` → Windows 不兼容 | ✅ 已修 |
-| CR-46 | 日志 | `EventManager.cpp:57` | `static mt19937` 无锁 → uid 重复/死锁 | ✅ 已修 |
-| CR-47 | 日志 | `Storage.cpp:64` | `appendLog` 无锁并发 → 日志损坏 | ✅ 已修 |
-| CR-48 | 日志 | `EventManager.cpp:34` | `formatEventJson` JSON 未转义 → 非法 JSON | ✅ 已修 |
-| CR-49 | MPP | `MppDecoder.cpp:133` | `chunkBuf_` 复用 → MPP 未消费时 `fread` 覆写 | ✅ 已修 |
-| CR-50 | MPP | `VideoManager.cpp:585` | MPP 回退 OpenCV 未校验 `cap.isOpened()` → 空转 | ✅ 已修 |
-| CR-51 | MPP | `VideoManager.cpp:660` | 摄像头读取失败无限重试 | ✅ 已修 |
-
-##### HIGH (已全部修复)
-| # | 模块 | 文件 | 问题 |
-|---|------|------|------|
-| HR-08 | JNI | `native-lib.cpp:60` | `JNI_OnUnload` 未 join 引擎线程 | ✅ 已修 |
-| HR-09 | Android | `Camera2CaptureController.java:315` | `imageReader` stop 后 NPE | ✅ 已修 |
-| HR-10 | Android | `CameraXCaptureController.java:89,161` | `provider` 字段无同步 | ✅ 已修 |
-| HR-11 | Android | `MainActivity.java:2337` | `nativeInit(-1,...)` 硬编码 | ✅ 已修 |
-| HR-12 | Android | `FileLogSink.java:78` | 持锁 sleep(10) | ✅ 已修 |
-| HR-13 | Web | `AppStore.tsx:71` | 状态层耦合 UI toast | ✅ 已修 |
-| HR-14 | Web | 全局 | `(e as Error)?.message` 模式 15 次 | ✅ 已修 |
-| HR-15 | Web | `SplashPage.tsx:29` | useEffect 缺依赖 | ✅ 已修 |
-| HR-21 | Windows | `MfCamera.cpp:292` | 负 stride 溢出 | ✅ 已修 |
-| HR-22 | Windows | `MfCamera.cpp:224` | IMFMediaSource 打开失败未 Shutdown | ✅ 已修 |
-| HR-23 | Windows | `OverlayRenderer.cpp:51,64` | 每帧 6MB clone | ✅ 已修 |
-| HR-24 | Windows | `D3D11Renderer.cpp:732` | `Map()` 失败无设备恢复 | ✅ 已修 |
-| HR-25 | Windows | `FramePipeline.cpp:533` | 重连参数陈旧 | ✅ 已修 |
-| HR-26 | 安全 | `WinJsonConfig.cpp:30` | `readFileAll` 无大小限制 | ✅ 已修 |
-| HR-27 | 安全 | `JsonLite.cpp:414` | `parseJson` 无长度限制 | ✅ 已修 |
-| HR-28 | 安全 | `WinJsonConfig.cpp:1093` | 备份无轮转 | ✅ 已修 |
-| HR-29 | 安全 | `WinJsonConfig.cpp:72` | fallback 非原子 | ✅ 已修 |
-| HR-30 | 安全 | `WinJsonConfig.cpp:1065` | 错误信息泄露 | ✅ 已修 |
-| HR-31 | 人脸识别 | `FaceDetector.cpp:21` | CascadeClassifier 非线程安全 | ✅ 已修 |
-| HR-32 | 人脸识别 | `FaceSearch.cpp:42,55` | NEON 16 字节对齐崩溃 | ✅ 已修 |
-| HR-33 | 人脸识别 | `FaceRecognizer.cpp:97` | `identifyThreshold_` 读写竞争 | ✅ 已修（CR-24） |
-| HR-34 | 人脸识别 | `FaceInferStages.cpp:440` | `std::move` 导致空 gallery | ✅ 已修 |
-| HR-35 | 构建 | `CMakeLists.txt` | 无 `install()` 目标 | ✅ 已修 |
-| HR-36 | 构建 | `CMakeLists.txt:111` | 全局 `include_directories()` | ✅ 已修 |
-| HR-37 | 构建 | `CMakeLists.txt:85` | 废弃 `add_definitions()` | ✅ 已修 |
-| HR-38 | 构建 | `CMakeLists.txt:305` | `file(GLOB_RECURSE)` | ✅ 已修 |
-| HR-39 | BioAuth | `BioAuth.cpp:95,183` | ROI 无边界限制 | ✅ 已修 |
-| HR-40 | BioAuth | `BioAuth.cpp:72,129` | `detectMultiScale` 魔数 | ✅ 已修 |
-| HR-41 | MotionDetector | `MotionDetector.cpp:16` | 假设 BGR 输入 | ✅ 已修 |
-| HR-42 | 构建 | `app/build.gradle` | 版本硬编码无 catalog | ✅ 已修 |
-| HR-43 | 构建 | `gradle.properties:19` | 单线程 workers | ✅ 已修 |
-| HR-44 | 脚本 | `run-web-e2e.ps1:31` | Vite 无就绪检查 | ✅ 已修 |
-| HR-45 | 脚本 | `quantize_ncnn_int8.py:61` | 硬编码回退路径 | ✅ 已修 |
-| HR-46 | 脚本 | `build_android.bat:24` | NDK 版本硬编码 | ✅ 已修 |
-| HR-47 | FaceInfer | `FaceInferencePipeline.cpp:112` | 审计文件毫秒碰撞 | ✅ 已修 |
-| HR-48 | FaceInfer | `FaceInferStages.cpp:232,362` | INT8→FP32 降级无日志 | ✅ 已修 |
-| HR-49 | FaceInfer | `FaceInferStages.cpp:92` | 每帧全量 gallery 重新解析 | ✅ 已修 |
-| HR-50 | 适配器 | `LbphAdapter.cpp:8` | `load()` 忽略 `modelPath` | ✅ 已修 |
-| HR-51 | 适配器 | `CascadeAdapter.cpp:33` | 所有检测 score=1.0 | ✅ 已修 |
-| HR-52 | 适配器 | `MobileFaceNetAdapter.cpp:48` | `num_threads=1` 硬编码 | ✅ 已修 |
-| HR-53 | 适配器 | 多个 `*Adapter.cpp` | `cv::dnn` 调用无 try/catch | ✅ 已修 |
-| HR-54 | 日志 | `NativeLog.cpp:144` | 持锁阻塞 IO | ✅ 已修 |
-| HR-55 | 日志 | `NativeLog.cpp:121` | `write()` 返回值未检查 | ✅ 已修 |
-| HR-56 | 日志 | `NativeLog.cpp:69` | 路径仅按 `/` 分割 | ✅ 已修 |
-| HR-57 | 日志 | `NativeLog.cpp:95` | 轮换非原子 | ✅ 已修 |
-| HR-58 | 日志 | `NativeLog.cpp:113` | 每次日志 open/write/close | ✅ 已修 |
-| HR-59 | 日志 | `EventManager.cpp:57` | 32 位 ID 碰撞 | ✅ 已修 `cf90288` |
-| HR-60 | FaceAlign | `FaceAlign.cpp:15` | NaN bbox → UB | ✅ 已修 `cf90288` |
-| HR-61 | FaceTemplate | `FaceTemplate.cpp:74` | `serialize` 未更新 `h.dim` | ✅ 已修 `cf90288` |
-| HR-62 | FileHash | `FileHash.cpp:60` | SHA-256 64B/次 syscall | ✅ 已修 `cf90288` |
-| HR-63 | MPP | `VideoManager.cpp:549` | `cancelToken` 从未被检查 | ✅ 已修 `cf90288` |
-| HR-64 | MPP | `VideoManager.cpp:298` | 1MB 栈分配 | ✅ 已修 `cf90288` |
-| HR-65 | MPP | `MppDecoder.cpp:147,193` | BUFFER_FULL 数据丢失 | ✅ 已修 `cf90288` |
-| HR-66 | 脚本 | `ci.yml:287` | `yolo_face` → `scrfd` CI 量化从未成功 | ✅ 已修 `d2ec0cb` |
-| HR-67 | 脚本 | `verify_opencv_host.bat:42` | `OPENCV_CONTRIB_ROOT` 无验证 | ✅ 已修 `d2ec0cb` |
-| HR-68 | 脚本 | `verify_faces_test_set01.bat:45` | 同上 | ✅ 已修 `d2ec0cb` |
-| HR-69 | 脚本 | `stability_switch_50_adb.ps1:57` | 已废弃 `dumpsys` API | ✅ 已修 `d2ec0cb` |
-| HR-70 | 构建 | `app/build.gradle:64` | 硬编码 ncnn 路径 | ✅ 已修 `d2ec0cb` |
-| HR-71 | 构建 | `app/build.gradle:108` | `minifyEnabled false` | ✅ 已修 `d2ec0cb` |
-| HR-72 | 构建 | `app/build.gradle:109` | proguard 文件缺失 | ✅ 已修 `d2ec0cb` |
-| HR-73 | Android | `StatusService.java:48` | overlay 权限绕过后显示 | ✅ 已修 |
-| HR-74 | Android | `LogViewerActivity.java:63` | ExecutorService 未 shutdown | ✅ 已修 |
-| HR-75 | Android | `LogDetailActivity.java:67` | ExecutorService 未 shutdown | ✅ 已修 |
-| HR-76 | Android | `LogViewerActivity.java:417` | logcat pipe 死锁 | ✅ 已修 |
-| HR-77 | Web | `cameras.ts + actions.ts` | API 路径忽略 `VITE_API_BASE` | ✅ 已修 |
-| HR-78 | Web | `prefs.ts:92` | `savePrefs` 无 try/catch | ✅ 已修 |
-| HR-79 | 基准 | `inference_bench_cli.cpp:444,613,785` | 预处理计时测零工作 | ✅ 已修 |
-| HR-80 | 基准 | `inference_bench_cli.cpp:939` | NaN/Inf 输出非法 JSON | ✅ 已修 |
-| HR-81 | 基准 | `FaceInferOutcomeJson.cpp:84` | `%g` 可输出 NaN/Inf | ✅ 已修 |
-
-##### MEDIUM (42 项)
-| # | 模块 | 问题 |
-|---|------|------|
-| MR-05 | Engine | 两个 `initialize()` 重载 40 行重复 |
-| MR-06 | Engine | `catch(...){}` 静默吞异常 |
-| MR-07 | JNI | `thread_local lastSeq` 线程切换重复帧 |
-| MR-08 | Android | `selectedCameraId` int 局限 |
-| MR-09 | Web | `memoryCache` 无驱逐 |
-| MR-10 | Web | API 路径字符串分散 4 模块 |
-| MR-11 | Web | Vite 模板残留 CSS | ✅ 已修 |
-| MR-12 | 测试 | 15+ 组件零测试覆盖 | ✅ 已修 |
-| MR-13 | 测试 | 资源清理不完整 | ✅ 已修 |
-| MR-14 | FaceInfer | `loadGallery` 每帧磁盘 IO | ✅ 已修 |
-| MR-15 | FaceInfer | `ModelRegistry` 无内部同步 | ✅ 已修 |
-| MR-16 | FaceDB | `e.count` int 溢出 |
-| MR-17 | 配置 | `int8Enabled` INI 缺失 |
-| MR-18 | 构建 | `ncnn_precision_test` CRT Debug 缺失 |
-| MR-19 | 构建 | OpenCV 列表重复 10+ 次 |
-| MR-20 | 构建 | `-fPIE` 在链接器标志中 |
-| MR-21 | 构建 | 无 CMakePresets.json |
-| MR-22 | D3D11 | `pushFrameTime` 每帧 O(N log N) |
-| MR-23 | Windows | `MfCamera.cpp:103` 裸指针 |
-| MR-24 | Windows | `FramePipeline.cpp:576` 热路径内存抖动 |
-| MR-25 | BioAuth | `detectMultiScale` 参数不可配置 |
-| MR-26 | BioAuth | 全局 `equalizeHist` |
-| MR-27 | Config | `MOTION_THRESHOLD` 为 640×480 的绝对值 |
-| MR-28 | Motion | `cv::Mat` 永不释放 |
-| MR-29 | 构建 | ncnn 无条件 ON |
-| MR-30 | 构建 | `jetifier=true` |
-| MR-31 | 构建 | 无构建缓存 |
-| MR-32 | 构建 | `universalApk true` |
-| MR-33 | 脚本 | `quantize` 未校验 preset |
-| MR-34 | 脚本 | `wait_for_lines` 超时返 0 |
-| MR-35 | FaceInfer | `std::move` 后空 gallery |
-| MR-36 | FaceInfer | `g_builtinRegistered` 不安全 |
-| MR-37 | 适配器 | RetinaFace 锚点未预计算 |
-| MR-38 | 日志 | `std::endl` 强制 flush |
-| MR-39 | 日志 | `.json` 应为 `.jsonl` |
-| MR-40 | MPP | 循环播放未 reset |
-| MR-41 | Input | `timeoutMs=0` 永久阻塞 |
-| MR-42 | VideoMgr | `open()` 255 行复杂度 |
-| MR-43 | FileHash | 裸 `uint32_t` |
-| MR-44 | FaceAlign | `inliers` 分配不读 |
-| MR-45 | FaceAlign | 5 点每帧堆分配 |
-| MR-46 | FaceTemplate | header reserve 偏差 1 |
+| MR-16 | FaceDB | `e.count` int 溢出 | ✅ 已修 |
+| MR-19 | 构建 | OpenCV 列表重复 10+ 次 | ✅ 已修 |
+| MR-20 | 构建 | `-fPIE` 在链接器标志中 | ✅ 已修 |
+| MR-22 | D3D11 | `pushFrameTime` 每帧 O(N log N) | 🔴 Open |
+| MR-27 | Config | `MOTION_THRESHOLD` 为 640×480 的绝对值 | 🔴 Open |
+| MR-38 | 日志 | `std::endl` 强制 flush | 🔴 Open |
+| MR-41 | Input | `timeoutMs=0` 永久阻塞 | 🔴 Open |
+| MR-47 | 脚本 | `docs-sync-audit.js:148` — `extractHeadUpdateTime` 正则 `[\s*]*` 意外匹配字面 `*` | 🔴 Open |
+| MR-48 | 第三方 | `civetweb/LICENSE.md:93,124` — 标题去重附加中文全角 `（2）`，应使用 ASCII `(2)` | 🔴 Open |
 
 #### Findings Lifecycle Rules
 - **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复
@@ -288,13 +158,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1-beta.1] - 2026-04-16
 
-<a id="added-2"></a>
-### Added（2）
+### Added
 - **Build System**: 向 Windows / CLI 的 CMake 构建链路中注入了 `BUILD_ID` 宏，使得二进制产物、评估工具（`win_face_eval_cli` / `inference_bench_cli`）以及应用启动日志都能输出一致的版本号。
 - **Documentation**: 在 `CREDITS.md` 中新增了完整的**模型台账 (Model Inventory)**，明确了 OpenCV DNN 模型和 LBP 级联分类器的来源、部署路径与开源许可证。
 
-<a id="changed-2"></a>
-### Changed（2）
+### Changed
 - **Versioning**: 升级全端版本号至 `v0.1beta1` (Android `versionCode 3`)，彻底消除 Android 构建、CMake 产物与文档之间的版本漂移。
 - **Documentation**: 全面校准 `DEVELOP.md`，更新了包含 `web/` 的最新目录结构与前端技术栈（React 18 + AntD 5）。
 - **Configuration**: 明确 `%APPDATA%\rk_wcfr\config.json` 为 Windows 端配置的唯一事实来源 (Source of Truth)，并在旧版 `config/windows_camera_face_recognition.ini` 中添加了废弃/迁移警告及模型下载指引。
@@ -306,8 +174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta.0] - 2026-04-15
 
-<a id="added-3"></a>
-### Added（3）
+### Added
 - **Documentation**: 全面重构 `DEVELOP.md`，采用标准化 Markdown、中英双语术语与工程化改进。
 - **Examples**: 新增 `docs/examples/` 目录，包含 RK3288 平台的 8 个可编译 C++ 示例：
   - `01_v4l2_capture.cpp`: 直接使用 V4L2 + MMAP 采集摄像头。
@@ -322,13 +189,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Checklists**: 新增 `docs/checklist/acceptance.md`，涵盖开发、测试与发布阶段验收清单。
 - **Quick Start**: 在 `DEVELOP.md` 中新增快速开始脚本指南与依赖矩阵。
 
-<a id="removed-2"></a>
-### Removed（2）
+### Removed
 - **Legacy SDK**: 移除 `ColorOsSdkBridge`、`PlayIntegrityChecker`、`GmsDetector`、`PrivilegedCommandGate` 与 `DevicePolicy`，消除无效依赖。
 - **Security**: 移除 `SecurityEventLogger` 作为 SDK 清理的一部分。
 
-<a id="changed-3"></a>
-### Changed（3）
+### Changed
 - **Device Profiling**: 简化 `DeviceProfile`，聚焦于硬件数据采集（Build info、Memory/Storage）。
 - **Documentation**: 在 `DEVELOP.md` 第 4.6 节新增简化版设备画像任务（待实现）。
 - **Structure**: 重构 `DEVELOP.md` 为"概述 → 环境 → 核心开发 → 高级/排障"结构。
@@ -336,8 +201,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Style**: 强制执行严格 Markdown 标准与中英双语术语。
 - **日志目录**: 错误日志目录统一为 `ErrorLog/`（区分大小写），不再兼容 `errorlog/`。
 
-<a id="documented-2"></a>
-### Documented（2）
+### Documented
 - **Roadmap**: 将 `README.md` 中已完成的待办项迁移到 `CHANGELOG.md` 以保持可追溯性。
 - **README 待办（完成项 1–15）**：从 `README.md` 清理迁移至此处归档（README 仅保留未完成待办 16+）。
   - 1. **[P0] 非 RK3288 设备：高分辨率/高帧率输入的稳定性与兼容性治理**（输入端强制 ≤1080p@60fps；超规格自动降档/拒绝并提示）
@@ -403,24 +267,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.0] - 2026-02-09
 
-<a id="added-4"></a>
-### Added（4）
+### Added
 - **System**: `PermissionStateMachine`，用于 Android 13+ 的健壮权限处理。
 - **Logging**: `AppLog` / `FileLogSink` / `NativeLog` 双路径存储与自动回滚。
 - **Monitoring**: `StatsRepository`，通过 `StatusService` 实现实时 FPS/CPU/MEM 监控。
 
-<a id="changed-4"></a>
-### Changed（4）
+### Changed
 - **UI**: 改进 `LogViewerActivity`，支持导出与敏感数据脱敏。
 - **Camera**: 动态摄像头发现与热插拔支持。
 
 ## [1.1.0] - 2026-02-09
 
-<a id="added-5"></a>
-### Added（5）
+### Added
 - **Compatibility**: 优化 `AndroidManifest.xml` 以适配非工业 Android 设备。
 - **Debug**: 修复 `main.cpp` CLI 构建问题。
 
-<a id="fixed-2"></a>
-### Fixed（2）
+### Fixed
 - **Build**: 向 `main.cpp` 添加 `<string>` 头文件以修复编译错误。
