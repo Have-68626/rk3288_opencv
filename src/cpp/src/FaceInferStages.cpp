@@ -425,6 +425,7 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
 
 FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, FaceInferContext& ctx) {
     // Simple mtime-based cache to avoid re-reading unchanged gallery on every frame
+    static std::mutex s_cacheMu;
     static std::string s_lastDir;
     static std::filesystem::file_time_type s_lastMtime;
     static std::vector<FaceSearchEntry> s_cachedEntries;
@@ -433,10 +434,13 @@ FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, F
     std::error_code ec;
     auto currentMtime = std::filesystem::exists(req.galleryDir, ec)
         ? std::filesystem::last_write_time(req.galleryDir, ec) : std::filesystem::file_time_type{};
-    if (!ec && currentMtime == s_lastMtime && req.galleryDir == s_lastDir && !s_cachedEntries.empty()) {
-        ctx.galleryEntries = s_cachedEntries;
-        ctx.galleryWarnings = s_cachedWarnings;
-        return okStatus();
+    {
+        std::lock_guard<std::mutex> lock(s_cacheMu);
+        if (!ec && currentMtime == s_lastMtime && req.galleryDir == s_lastDir && !s_cachedEntries.empty()) {
+            ctx.galleryEntries = s_cachedEntries;
+            ctx.galleryWarnings = s_cachedWarnings;
+            return okStatus();
+        }
     }
 
     std::string galleryErr;
@@ -444,10 +448,13 @@ FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, F
         ctx.galleryEntries.clear();
         return failStatus("gallery_load", galleryErr.empty() ? "gallery_load_failed" : galleryErr);
     }
-    s_lastDir = req.galleryDir;
-    s_lastMtime = currentMtime;
-    s_cachedEntries = ctx.galleryEntries;
-    s_cachedWarnings = ctx.galleryWarnings;
+    {
+        std::lock_guard<std::mutex> lock(s_cacheMu);
+        s_lastDir = req.galleryDir;
+        s_lastMtime = currentMtime;
+        s_cachedEntries = ctx.galleryEntries;
+        s_cachedWarnings = ctx.galleryWarnings;
+    }
     return okStatus();
 }
 
