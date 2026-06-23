@@ -92,7 +92,7 @@ lsqlite3 License
 ------
 
 <a id="included-only-if-built-with-lua-and-sqlite-support-2"></a>
-### Included only if built with Lua and SQLite support.（2）
+### Included only if built with Lua and SQLite support.(2)
 
 > Copyright (C) 2002-2016 Tiago Dionizio, Doug Currie
 > All rights reserved.
@@ -123,7 +123,7 @@ Lua File System License
 ------
 
 <a id="included-only-if-built-with-lua-support-2"></a>
-### Included only if built with Lua support.（2）
+### Included only if built with Lua support.(2)
 
 <https://github.com/keplerproject/luafilesystem/blob/master/LICENSE>
 

@@ -145,10 +145,10 @@ function splitMarkdownBlocks(md) {
 function extractHeadUpdateTime(md) {
   const head = md.split(/\r?\n/).slice(0, 60).join("\n");
   const patterns = [
-    /最后更新[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /更新时间[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /更新日期[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /last\s+updated[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /最后更新[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /更新时间[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /更新日期[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /last\s+updated[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
   ];
   for (const re of patterns) {
     const m = head.match(re);
