@@ -554,10 +554,13 @@ void VideoManager::captureLoop() {
 
     cv::Mat tempFrame;
     bool firstFrameValidated = false;
+    int consecutiveReadFailures = 0;
+    constexpr int kMaxConsecutiveReadFailures = 300;  // ~3s at 10ms sleep
     while (isRunning) {
         // MPP hardware decoding branch (mock mode video files)
         if (isMockMode && useMppDecode && mppDecoder) {
             if (mppDecoder->read(tempFrame)) {
+                consecutiveReadFailures = 0;
                 std::lock_guard<std::mutex> lock(frameMutex);
                 if (!tempFrame.empty()) {
                     if (!firstFrameValidated && isMockMode) {
@@ -583,10 +586,13 @@ void VideoManager::captureLoop() {
                     hasNewFrame = true;
                 }
             } else if (!mppDecoder->isOpened()) {
-                // MPP decoding failed or EOS, try to re-init
+                // MPP decoding failed or EOS, fall back to VideoCapture
                 rklog::logWarn("MockMode", "captureLoop", "MPP decode failed, falling back to VideoCapture");
                 useMppDecode = false;
                 mppDecoder.reset();
+                if (!cap.isOpened()) {
+                    cap.open(mockFilePath);
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
             continue;
@@ -625,6 +631,7 @@ void VideoManager::captureLoop() {
 
         try {
             if (cap.read(tempFrame)) {
+                consecutiveReadFailures = 0;
                 std::lock_guard<std::mutex> lock(frameMutex);
                 if (!tempFrame.empty()) {
                     // First frame validation for mock mode video sources
@@ -658,16 +665,23 @@ void VideoManager::captureLoop() {
                     hasNewFrame = true;
                 }
             } else {
-                // Handle EOF or Error
-                if (isMockMode && cap.isOpened()) {
-                    // Rewind for video loop
-                    // Attempt to seek to frame 0
-                    cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                consecutiveReadFailures++;
+                if (!cap.isOpened() || consecutiveReadFailures >= kMaxConsecutiveReadFailures) {
+                    rklog::logError("VideoManager", "captureLoop",
+                        "Camera read failed " + std::to_string(consecutiveReadFailures) +
+                        " consecutive times, stopping capture");
+                    if (isMockMode) {
+                        if (cap.isOpened()) {
+                            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                            consecutiveReadFailures = 0;
+                        } else {
+                            isRunning = false;
+                        }
+                    } else {
+                        isRunning = false;
+                    }
                     continue;
                 }
-                
-                // Handle read error or stream end
-                // std::cerr << "Warning: Failed to read frame from camera." << std::endl;
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         } catch (const std::exception& e) {

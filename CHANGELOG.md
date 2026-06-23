@@ -122,12 +122,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | CR-43 | 适配器 | 全部 9 个 `*Adapter.cpp` | 全线零线程安全 | ✅ 已修 |
 | CR-44 | 适配器 | `ArcFaceAdapter.cpp:44`, `YoloFaceAdapter.cpp:47` | ncnn→OpenCV 回退传递 `.param` 文件 | ✅ 已修 |
 | CR-45 | 适配器 | `ArcFaceAdapter.cpp:25`, `MobileFaceNetAdapter.cpp:20` | 路径拼接硬编码 `/` → Windows 不兼容 | ✅ 已修 |
-| CR-46 | 日志 | `EventManager.cpp:57` | `static mt19937` 无锁 → uid 重复/死锁 |
-| CR-47 | 日志 | `Storage.cpp:64` | `appendLog` 无锁并发 → 日志损坏 |
-| CR-48 | 日志 | `EventManager.cpp:34` | `formatEventJson` JSON 未转义 → 非法 JSON |
-| CR-49 | MPP | `MppDecoder.cpp:133` | `chunkBuf_` 复用 → MPP 未消费时 `fread` 覆写 |
-| CR-50 | MPP | `VideoManager.cpp:585` | MPP 回退 OpenCV 未校验 `cap.isOpened()` → 空转 |
-| CR-51 | MPP | `VideoManager.cpp:660` | 摄像头读取失败无限重试 |
+| CR-46 | 日志 | `EventManager.cpp:57` | `static mt19937` 无锁 → uid 重复/死锁 | ✅ 已修 |
+| CR-47 | 日志 | `Storage.cpp:64` | `appendLog` 无锁并发 → 日志损坏 | ✅ 已修 |
+| CR-48 | 日志 | `EventManager.cpp:34` | `formatEventJson` JSON 未转义 → 非法 JSON | ✅ 已修 |
+| CR-49 | MPP | `MppDecoder.cpp:133` | `chunkBuf_` 复用 → MPP 未消费时 `fread` 覆写 | ✅ 已修 |
+| CR-50 | MPP | `VideoManager.cpp:585` | MPP 回退 OpenCV 未校验 `cap.isOpened()` → 空转 | ✅ 已修 |
+| CR-51 | MPP | `VideoManager.cpp:660` | 摄像头读取失败无限重试 | ✅ 已修 |
 
 ##### HIGH (30 项)
 | # | 模块 | 文件 | 问题 |

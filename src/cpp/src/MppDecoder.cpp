@@ -73,7 +73,6 @@ bool MppDecoder::init() {
     }
 
     inited_ = true;
-    chunkBuf_.resize(kChunkSize);
     rklog::logInfo("MppDecoder", "init", "MPP decoder initialized successfully");
     return true;
 #else
@@ -127,12 +126,14 @@ bool MppDecoder::read(cv::Mat& outBgr) {
         mpp_packet_new(&packet);
 
         if (mpp_->fileHandle && !mpp_->eos) {
-            size_t bytesRead = std::fread(chunkBuf_.data(), 1, kChunkSize, mpp_->fileHandle);
+            auto buf = std::make_shared<std::vector<uint8_t>>(kChunkSize);
+            size_t bytesRead = std::fread(buf->data(), 1, kChunkSize, mpp_->fileHandle);
             if (bytesRead > 0) {
                 fileReadOffset_ += static_cast<int64_t>(bytesRead);
-                mpp_packet_set_data(packet, chunkBuf_.data());
+                mpp_packet_set_data(packet, buf->data());
                 mpp_packet_set_size(packet, bytesRead);
                 mpp_packet_set_length(packet, bytesRead);
+                pendingBufs_.push_back(std::move(buf));
             }
             if (std::feof(mpp_->fileHandle) || bytesRead == 0) {
                 mpp_->eos = true;
@@ -144,8 +145,10 @@ bool MppDecoder::read(cv::Mat& outBgr) {
         }
 
         MPP_RET putRet = mpp_->mpi->decode_put_packet(mpp_->ctx, packet);
+        mpp_packet_destroy(packet);
+        pendingBufs_.clear();
+
         if (putRet != MPP_OK && putRet != MPP_ERR_BUFFER_FULL) {
-            mpp_packet_destroy(packet);
             if (mpp_->eos) break;
             continue;
         }
@@ -161,7 +164,6 @@ bool MppDecoder::read(cv::Mat& outBgr) {
                 bool eos = mpp_frame_get_eos(frame);
                 mpp_frame_deinit(&frame);
                 if (eos) {
-                    mpp_packet_destroy(packet);
                     goto handle_eos;
                 }
                 continue;
@@ -189,8 +191,6 @@ bool MppDecoder::read(cv::Mat& outBgr) {
             mpp_frame_deinit(&frame);
             if (gotFrame) break;
         }
-
-        mpp_packet_destroy(packet);
 
         if (hasFrame_) {
             if (!latestBgr_.empty()) {
@@ -240,7 +240,7 @@ void MppDecoder::close() {
     reachedEos_ = false;
     fileReadOffset_ = 0;
     fileSize_ = 0;
-    chunkBuf_.clear();
+    pendingBufs_.clear();
     latestBgr_ = cv::Mat();
     rklog::logInfo("MppDecoder", "close", "MPP decoder closed");
 }

@@ -5,6 +5,7 @@
 #include "EventManager.h"
 #include "Storage.h"
 #include "Config.h"
+#include <cstdio>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -31,33 +32,52 @@ void EventManager::logEvent(const std::string& type, const std::string& descript
     Storage::appendLog(logFile, jsonLog);
 }
 
+static std::string escapeJson(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size() + 8);
+    for (unsigned char c : raw) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
+
 std::string EventManager::formatEventJson(const AppEvent& event) {
-    /*
-     * [Performance Optimization - string formatting]
-     * Why: Avoid high overhead of std::stringstream (virtual calls and locale overhead).
-     * Impact: Significantly reduces CPU usage and memory fragmentation during high-frequency event logging.
-     * Rollback: Revert to std::stringstream concatenation.
-     */
     std::string s;
     s.reserve(64 + event.eventId.size() + event.type.size() + event.description.size() + 20 + event.snapshotPath.size());
     s += "{\"id\": \"";
-    s += event.eventId;
+    s += escapeJson(event.eventId);
     s += "\", \"type\": \"";
-    s += event.type;
+    s += escapeJson(event.type);
     s += "\", \"desc\": \"";
-    s += event.description;
+    s += escapeJson(event.description);
     s += "\", \"ts\": ";
     s += std::to_string(event.timestamp);
     s += ", \"img\": \"";
-    s += event.snapshotPath;
+    s += escapeJson(event.snapshotPath);
     s += "\"}";
     return s;
 }
 
 std::string EventManager::generateUniqueId() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<uint32_t> dis;
+    static thread_local std::random_device rd;
+    static thread_local std::mt19937 gen(rd());
+    static thread_local std::uniform_int_distribution<uint32_t> dis;
     static const char hex_chars[] = "0123456789abcdef";
 
     /*
