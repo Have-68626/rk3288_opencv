@@ -119,7 +119,7 @@ public:
     int getRecognitionIntervalMs() const;
 
 private:
-    void processFrame(cv::Mat& frame, double decodeMs);
+    void processFrame(const cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
     void performAccelSelfCheck();
 

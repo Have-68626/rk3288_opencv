@@ -10,6 +10,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **HttpFacesServer**: SseSession::writeFrame 缺 pipe 空指针检查，修复空转泄漏（`454a7e0`）
+- **HttpFacesServer**: buildJpegWithOverlay 直接修改 rs.bgr → 多线程数据竞争，改用 clone() 隔离副本（`7c4a04b`）
+- **HttpFacesServer**: StreamSession 指针转型未定义行为 — 构造函数注入 server 替换 reinterpret_cast（`68f6cfd`）
+- **HttpFacesServer**: SseSession 静态变量（lastSeq/lastKeep）改为成员变量，修复多连接帧同步异常（`8c824bc`）
+- **HttpFacesServer**: `escapeJsonString` 补全控制字符转义（`\b`/`\f`/`\n`/`\r`/`\t`/`\uXXXX`）（`4a13def`）
+- **HttpFacesServer**: `onCameras` 改为 JsonValue 树构建，补全安全响应头（`4a13def`）
+- **HttpFacesServer**: 新增 SocketGuard RAII 封装，消除 9 处手动 closesocket（`b83545a`）
+- **HttpFacesServer**: `onSettings` 改用 parseJson+jsonOk，消除手工 JSON 拼接（`b83545a`）
+- **HttpFacesServer**: `onModels` 移除 configuredPath/resolvedPath 路径泄露（`b83545a`）
+- **HttpFacesServer**: 8 处魔法数字提取为命名常量（`acd6f93`）
+- **HttpFacesServer**: MjpegSession 无 OpenCV 时返回 false 终止流（`acd6f93`）
+- **HttpFacesServer**: `readFileBinary` 改用 seekg+read 取代 ostringstream（`acd6f93`）
+- **All**: 5 项 Round 2 Code Review 问题修复（`c4724e6`）:
+  - `native-lib.cpp` 重复 `JNIEXPORT jboolean JNICALL`（CR-06 ✅）
+  - `Engine.cpp` bioAuth 初始化失败后 `return false`（CR-04 ✅）
+  - `NativeBridge.java` 删除无实现声明 `nativeInitFile`（CR-08 ✅）
+  - 新增 `ErrorBoundary.tsx` Web SPA 全局错误边界（CR-13 ✅）
+  - `test_int8_quantization.cpp` 增强测试有效性
+- **Round 2 剩余修复（工作区未提交）**:
+  - `native-lib.cpp` 添加 `g_activityMutex` 保护全局 JNI 引用（CR-09 ✅）
+  - `native-lib.cpp` `sendRecognitionResult` 添加 ExceptionCheck（CR-07 ✅）
+  - `Engine.cpp` 移除 `const_cast`，NV21 → BGR 改用本地副本（CR-03 ✅）
+  - `Engine.cpp` `thread_local cv::Mat` 改为局部变量（CR-05 ✅）
+  - `web/http.ts` 缓存命中/API 响应添加 `isValidEnvelope` 运行时校验（CR-10/CR-11 ✅）
+  - `web/AppStore.tsx` `patch: unknown` 改为 `patch: Partial<ServerSettingsDoc>`（CR-12 ✅）
+
+### Refactored
+- **HttpFacesServer**: 端点注册表 + 流式会话抽象，`handleApi()` 从 348 行缩减至 24 行，总计 -343 行（`3c576bc`）
+
 ### Added
 - **Documentation**: 新增 `DEVELOP.md` 附录 A "代码速查"，整合原 `CODE_WIKI.md` 的关键类与函数参考。
 
@@ -29,6 +59,326 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/perf/stutter-investigation-report.md`（临时调试产物）
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
+
+### Code Review (2026-06-22, Round 2)
+> 持续代码审查跟踪表。Round 1（HttpFacesServer）所有 8 项已修复。Round 2 覆盖 Engine 核心、JNI/Android、测试、Web 前端。
+
+#### 上轮修复确认
+| # | Round 1 问题 | 修复 commit | 状态 |
+|---|------------|-------------|------|
+| CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | ✅ Fixed |
+| CR-02 | `onCameras` 手工拼接 JSON 缺安全头 | `4a13def` | ✅ Fixed |
+| HR-01 | 无 RAII socket 封装 | `b83545a` | ✅ Fixed |
+| HR-02 | `onSettings` 手工拼接 JSON | `b83545a` | ✅ Fixed |
+| HR-03 | `onModels` 文件路径泄露 | `b83545a` | ✅ Fixed |
+| MR-01 | 8 处魔法数字 | `acd6f93` | ✅ Fixed |
+| MR-02 | MjpegSession 空转循环 | `acd6f93` | ✅ Fixed |
+| MR-03 | `readFileBinary` 低效实现 | `acd6f93` | ✅ Fixed |
+
+#### 本轮新发现
+
+##### CRITICAL
+
+**Engine 核心**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-03 | `src/cpp/Engine.cpp:179` | `const_cast` 绕过 NV21 常量性 — `cv::Mat` 可能修改 const 数据，UB | 🟢 Resolved (uncommitted) |
+| CR-04 | `src/cpp/Engine.cpp:536,582` | `bioAuth->initialize()` 失败后继续执行 → 后续 `verifyMulti()` 崩溃 | ✅ `c4724e6` |
+| CR-05 | `src/cpp/Engine.cpp:184,252` | `thread_local cv::Mat` 异常提前返回时残留旧状态 → 不确定性恢复 | 🟢 Resolved (uncommitted) |
+
+**JNI/Android**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-06 | `src/cpp/native-lib.cpp:387,464` | 重复 `JNIEXPORT jboolean JNICALL` 声明属性 → MSVC/clang 编译失败 | ✅ `c4724e6` |
+| CR-07 | `src/cpp/native-lib.cpp:86` | `sendRecognitionResult` 无 `ExceptionCheck` → JNI env 中毒后静默失败 | 🟢 Resolved (uncommitted) |
+| CR-08 | `src/java/.../NativeBridge.java:12` | `nativeInitFile(String)` 声明无 C++ 实现 → `UnsatisfiedLinkError` 崩溃 | ✅ `c4724e6` |
+| CR-09 | `src/cpp/native-lib.cpp:110,269` | `g_activity` 无同步写（UI线程）读（引擎线程）→ 数据竞争 | 🟢 Resolved (uncommitted) |
+
+**Web SPA**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-10 | `web/src/http.ts:104` | 缓存类型不安全转型 `as T` — 旧缓存版本产生静默垃圾数据 | 🟢 Resolved (uncommitted) |
+| CR-11 | `web/src/http.ts:139` | API 响应 `as T` 无运行时校验 → 后端格式变更时静默出错 | 🟢 Resolved (uncommitted) |
+| CR-12 | `web/src/AppStore.tsx:23,83` | `updateServerSettings` 参数 `patch: unknown` → 任何拼写错误通过编译 | 🟢 Resolved (uncommitted) |
+| CR-13 | Web 全局 | 无 React Error Boundary → 任何组件崩溃导致整个 SPA 白屏 | ✅ `c4724e6` |
+
+**测试**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-14 | `tests/cpp/test_int8_quantization.cpp` | 6 个 INT8 测试静默通过（模型文件 gitignored → 永远 skip），其中 2 个含未实现 TODO | 🟡 Partially fixed in `c4724e6` |
+| CR-15 | `tests/cpp/face_infer_unit_tests_main.cpp:44` | 3 个 test_video_manager 函数声明但未注册到 cases[] → 死代码永不执行 | 🔴 Open |
+| CR-16 | `tests/cpp/core_unit_tests_main.cpp:63` + `win_unit_tests_main.cpp:41` | `test_http_faces_server_path_validation` 注册在两个测试套件 → 重复执行 | 🔴 Open |
+
+##### HIGH
+
+**Engine 核心**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-04 | `src/cpp/src/Engine.cpp:425` | `updateInferenceThrottle()` 覆盖检测/识别两套节流为相同值 | ✅ 已修 |
+| HR-05 | `src/cpp/src/Engine.cpp:688` | `fprintf/fclose` 每 30 帧阻塞写入 CSV（热路径 IO） | ✅ 已修 |
+| HR-06 | `src/cpp/src/Engine.cpp:664` | 百分位计算 `v[-1]` 越界风险（`v.size()==0` 时） | ✅ 已修 |
+| HR-07 | `src/cpp/src/Engine.cpp:761` | `processFrame(cv::Mat&)` 用可变引用但实际只读 → 误导性签名 | ✅ 已修 |
+
+**JNI/Android**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-08 | `src/cpp/native-lib.cpp:60` | `JNI_OnUnload` 未 join 引擎线程 → 库卸载后线程访问释放代码 | 🔴 Open |
+| HR-09 | `src/java/.../Camera2CaptureController.java:315` | `imageReader` 在 stop() 后 NPE 风险（异步 onOpened 竞争） | 🔴 Open |
+| HR-10 | `src/java/.../CameraXCaptureController.java:89,161` | `provider` 字段读写无同步（set 在 lambda，get 在 stop） | 🔴 Open |
+| HR-11 | `src/java/.../MainActivity.java:2337` | `nativeInit(-1,...)` 硬编码 cameraId -1，应为 `selectedCameraId` | 🔴 Open |
+| HR-12 | `src/java/.../FileLogSink.java:78` | 持锁时 `SystemClock.sleep(10)` → 阻塞所有日志写入 | 🔴 Open |
+
+**Web SPA**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-13 | `web/src/AppStore.tsx:71` | `refreshServerSettings` 耦合 UI toast → 不可测试、不能无头调用 | 🔴 Open |
+| HR-14 | 全局 | `(e as Error)?.message` 模式重复 ~15 次 → `throw "string"` 时显示 "undefined" | 🔴 Open |
+| HR-15 | `web/src/SplashPage.tsx:29` | useEffect 缺依赖 `refreshServerSettings`/`prefs.startPage` → 导航行为过时 | 🔴 Open |
+
+**测试**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-16 | `tests/cpp/test_face_infer_outcome_json.cpp` | Null 守卫测试仅传 nullptr → 未覆盖部分结构/混合有效数据场景 | 🔴 Open |
+| HR-17 | `tests/win/test_face_metrics.cpp` | `accumulate()` 函数定义在匿名空间中测试自身 → 非生产代码 | 🔴 Open |
+| HR-18 | 多数测试文件 | `return false` 无诊断信息 → 失败时无法定位断言点 | 🔴 Open |
+| HR-19 | `tests/cpp/mpp_decoder_stub.cpp` | 编译占位文件放在 tests/ 中 → 应移至 deps/stubs | 🔴 Open |
+
+##### MEDIUM
+
+| # | 模块 | 问题 | 状态 |
+|---|------|------|------|
+| MR-04 | `src/cpp/Engine.cpp` | 10+ 硬编码魔数（1200ms/0.3f/3帧/650ms/800ms/60s 等） | 🔴 Open |
+| MR-05 | `src/cpp/Engine.cpp:511` | 两个 `initialize()` 重载间 ~40 行逐字重复 | 🔴 Open |
+| MR-06 | `src/cpp/Engine.cpp:1275` | `catch(...){}` 静默吞异常无日志 | 🔴 Open |
+| MR-07 | `src/cpp/native-lib.cpp:555` | `thread_local lastSeq` 线程切换时重复发送帧 | 🔴 Open |
+| MR-08 | `src/java/.../MainActivity.java:245` | `selectedCameraId` 用 int → 部分设备 USB 相机 ID 非纯数字 | 🔴 Open |
+| MR-09 | `web/src/http.ts:40` | `memoryCache` Map 无驱逐策略 → 无限增长 | 🔴 Open |
+| MR-10 | `web/src/cameras.ts,actions.ts,models.ts,settings.ts` | API 路径字符串在 4 个模块中重复分散 | 🔴 Open |
+| MR-11 | `web/src/index.css:54` | `#root { width: 1126px }` + Vite 模板残留 CSS → 宽屏溢出 | 🔴 Open |
+| MR-12 | 测试全局 | 大量缺失测试覆盖：FaceDatabase, FaceRecognizer, WinConfig, YoloFaceDetector, ArcFaceEmbedder 等 15+ 生产组件零用例 | 🔴 Open |
+| MR-13 | 测试全局 | 资源清理不完整（tempfile 泄漏、部分创建后未清理） | 🔴 Open |
+
+##### Repository Hygiene（状态更新）
+| # | 问题 | 状态 |
+|---|------|------|
+| RH-01 | 403 个 AI 生成远程僵尸分支 | 🔴 Open |
+| RH-02 | 本地 bugfix 未推送 | ✅ Fixed |
+| RH-03 | `.codegraph/` 未加入 `.gitignore` | 🔴 Open |
+| RH-04 | CI `yolo_face` 引用 | 🔴 Open |
+| RH-05 | Gradle 9.0-milestone-1 实验版 | 🟡 Monitoring |
+| RH-06 | webroot JS bundle 跟踪 | 🟡 Known |
+| RH-07 | `tests/cpp/ncnn_precision_test.cpp:222` 检测测试即使推理失败也 pass | 🔴 Open |
+
+##### CRITICAL
+
+**帧管线 & 媒体捕获**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-17 | `src/win/src/FramePipeline.cpp:191–end` | **88 个缺失闭合大括号** — 每个函数体从 line 191 起全部缺少 `}`，无法编译 | 🔴 Open |
+| CR-18 | `src/win/src/FramePipeline.cpp:271` | **未声明变量 `prevDesired`** — 赋值给一个从未定义/声明的变量 | 🔴 Open |
+| CR-19 | `src/win/src/FramePipeline.cpp:473,474` | **未声明变量 `d` 和 `f`** — 用于重连逻辑，未 declaration | 🔴 Open |
+| CR-20 | `src/win/src/FramePipeline.cpp:477,480` | **未定义函数 `openOnce()`** — 调用不存在的方法 | 🔴 Open |
+| CR-21 | `src/win/src/FramePipeline.cpp:416` | `tryGetRenderState()` 无锁读取 `render_` — `processLoop()` 写端持有 `renderMu_`，读端无锁 | 🔴 Open |
+| CR-22 | `src/win/src/FramePipeline.cpp:597` | `processLoop()` busy-wait `if (!hasFrame_) continue;` — 无帧时 100% CPU 空转 | 🔴 Open |
+| CR-23 | `src/win/src/FramePipeline.cpp:449` | `waitFacesSeqChanged()` 忽略 `timeoutMs` — 从不真正等待，函数名与行为不符 | 🔴 Open |
+
+**人脸识别管线**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-24 | `src/win/src/FaceDatabase.cpp:82` | `persons_` map 数据竞争 — `updateMean()` 写入时 `identify()` 在 FaceRecognizer 中并发迭代 | 🔴 Open |
+| CR-25 | `src/cpp/src/FaceSearch.cpp:106` | `reset()` 失败后索引状态损坏 — `norms_` 部分填充而 `entries_` 仍为旧数据 | 🔴 Open |
+
+**配置 & 加密系统**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-26 | `src/win/src/JsonLite.cpp:248` | JSON 递归解析无深度限制 → 深度嵌套输入导致栈溢出（可被 API 端点利用） | 🔴 Open |
+| CR-27 | `src/win/src/WinCrypto.cpp:144` | AES-GCM 密钥材料未 `SecureZeroMemory` → 内存转储/页面文件可恢复密钥 | 🔴 Open |
+| CR-28 | `src/win/src/WinJsonConfig.cpp:1357` | `reloadFromDisk` TOCTOU 竞态 — 两次锁之间 `updateFromJsonBody` 的变更被静默覆盖 | 🔴 Open |
+| CR-29 | `src/win/src/WinCrypto.cpp:181` | AES-256-GCM 未使用 AAD → 攻击者可交换加密字段（如 `postUrl` 与其他字段互换） | 🔴 Open |
+
+##### HIGH
+
+**帧管线 & 媒体捕获**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-20 | `src/win/src/FramePipeline.cpp:498` 多处 | `render_.status` 字符串赋值无锁，同时有读者 | 🔴 Open |
+| HR-21 | `src/win/src/MfCamera.cpp:292` | 负 stride 溢出 — MF 返回负值（bottom-up）时转换为大 UINT32,传给 `cv::Mat` 错误 | 🔴 Open |
+| HR-22 | `src/win/src/MfCamera.cpp:224` | IMFMediaSource 打开失败时未调用 Shutdown() → 资源泄漏 | 🔴 Open |
+| HR-23 | `src/win/src/OverlayRenderer.cpp:51,64` | 每帧全分辨率 clone() (~6MB) + addWeighted → 30fps 时 180MB/s 分配 | 🔴 Open |
+| HR-24 | `src/win/src/D3D11Renderer.cpp:732` | `Map()` 失败不触发设备丢失恢复 — 只有 `Present()` 有恢复路径 | 🔴 Open |
+| HR-25 | `src/win/src/FramePipeline.cpp:533` | 重连使用陈旧参数 — `d`/`f` 在循环入口一次性捕获，运行中配置变更不生效 | 🔴 Open |
+
+**配置 & 加密**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-26 | `src/win/src/WinJsonConfig.cpp:30` | `readFileAll` 无输入大小限制 → 恶意 config.json 可导致 OOM | 🔴 Open |
+| HR-27 | `src/win/src/JsonLite.cpp:414` | `parseJson` 无输入长度限制 | 🔴 Open |
+| HR-28 | `src/win/src/WinJsonConfig.cpp:1093` | 备份无轮转（单 `.bak`）→ 配置损坏时备份也损坏，无法回滚 | 🔴 Open |
+| HR-29 | `src/win/src/WinJsonConfig.cpp:72` | `moveReplaceWriteThrough` fallback 非原子 → 崩溃后残留零长度文件 | 🔴 Open |
+| HR-30 | `src/win/src/WinJsonConfig.cpp:1065` | `buildSettingsJson` 错误信息泄露到 JSON 输出 → 可能通过 HTTP 响应暴露内部错误 | 🔴 Open |
+
+**人脸识别管线**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-31 | `src/win/src/FaceDetector.cpp:21` | CascadeClassifier detectMultiScale 非线程安全（内部可变状态） | 🔴 Open |
+| HR-32 | `src/cpp/src/FaceSearch.cpp:42,55` | NEON vld1q_f32 需 16 字节对齐，`std::vector<float>` 仅 4 字节 → Cortex-A17 上 SIGBUS | 🔴 Open |
+| HR-33 | `src/win/src/FaceRecognizer.cpp:97` | `identifyThreshold_` 读写数据竞争 — `double` 非原子 | 🔴 Open |
+| HR-34 | `src/cpp/src/FaceInferStages.cpp:440` | 错误时 `std::move` 导致 `ctx.galleryEntries` 为空，阻塞重试 | 🔴 Open |
+
+**构建系统**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-35 | `CMakeLists.txt` 全局 | 无 `install()` 目标 → `cmake --install` 无输出 | 🔴 Open |
+| HR-36 | `CMakeLists.txt:111` | 全局 `include_directories()` 污染所有 target，包括 OpenCV 跳过时仍继承头文件路径 | 🔴 Open |
+| HR-37 | `CMakeLists.txt:85` | 使用已废弃 `add_definitions()` 替代 `add_compile_definitions()` | 🔴 Open |
+| HR-38 | `CMakeLists.txt:305` | `file(GLOB_RECURSE)` 固件源文件 → 新文件不被自动检测 | 🔴 Open |
+
+##### MEDIUM
+
+| # | 模块 | 问题 | 状态 |
+|---|------|------|------|
+| MR-14 | `src/cpp/src/FaceInferStages.cpp:426` | `loadGallery()` 每次 `runFaceInferOnce()` 重新解析全部模板文件（每帧磁盘 IO） | 🔴 Open |
+| MR-15 | `src/cpp/include/ModelRegistry.h:41` | Singleton 无内部同步 → 并发 `createDetector()`/`createEmbedder()` Map 竞争 | 🔴 Open |
+| MR-16 | `src/win/src/FaceDatabase.cpp:94` | `e.count` 使用 `int` → 溢出风险 | 🔴 Open |
+| MR-17 | `src/win/src/WinConfig.cpp` | `model.int8Enabled` 在 INI 加载/保存中缺失 | 🔴 Open |
+| MR-18 | `CMakeLists.txt:557` | `ncnn_precision_test` CRT 缺少 Debug 后缀 → Debug 构建链接错误 | 🔴 Open |
+| MR-19 | `CMakeLists.txt` 全局 | 10+ 个 OpenCV lib 列表重复；`/utf-8` 和 `NOMINMAX` 各重复 9+ 次 | 🔴 Open |
+| MR-20 | `CMakeLists.txt:106` | `-fPIE` 放在链接器标志中（应为编译器标志） | 🔴 Open |
+| MR-21 | `CMakeLists.txt` | 无 `CMakePresets.json` → 4+ 构建配置需开发者手动输入 | 🔴 Open |
+| MR-22 | `D3D11Renderer.cpp:493` | `pushFrameTime()` 每帧 O(N) erase + O(N log N) sort 4096 元素 | 🔴 Open |
+| MR-23 | `MfCamera.cpp:103` | `Impl*` 裸指针 `new/delete` → 构造函数抛出后泄漏 | 🔴 Open |
+| MR-24 | `FramePipeline.cpp:576` | 每帧 `FrameLogEntry` 分配释放 → 热路径内存抖动 | 🔴 Open |
+
+##### CRITICAL (Round 4)
+
+**BioAuth & MotionDetector**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-30 | `BioAuth.h:68` + `BioAuth.cpp` 全局 | **零线程安全** — `faceCascade`, `faceRecognizer`, `isModelLoaded` 无任何同步，并发 `verify()` 数据竞争 | 🔴 Open |
+| CR-31 | `BioAuth.cpp:101,186` | **置信度归一化公式本质错误** — LBPH 距离无界，`(100.0 - conf) / 100.0` 截断到 [0,1]，阈值 0.92 拒绝几乎所有真实匹配 | 🔴 Open |
+| CR-32 | `MotionDetector.h:28` + `MotionDetector.cpp` 全局 | **零线程安全** — `prevFrame`/`motionMask`/`grayFrame` 等可变状态无锁，并发 `detect()` 写 + `getMotionMask()` 读竞态 | 🔴 Open |
+| CR-33 | `MotionDetector.cpp:43` | `getMotionMask()` 返回浅拷贝 `cv::Mat` → 调用者持有共享缓冲区引用时，后续 `detect()` 写入同一缓冲区 | 🔴 Open |
+
+**Android 构建系统**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-34 | `app/build.gradle:64` | **硬编码绝对路径** `D:/ProgramData/NCNN/ncnn-20260113-android-vulkan` → 其他机器构建失败 | 🔴 Open |
+| CR-35 | `app/build.gradle:108` | `minifyEnabled false` → release APK 无 R8 混淆/优化/压缩，可被轻易逆向 | 🔴 Open |
+| CR-36 | `app/build.gradle:109` | 引用的 `proguard-rules.pro` 文件不存在 → 开启 R8 后构建立即失败 | 🔴 Open |
+
+**脚本工具**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-37 | `.github/workflows/ci.yml:287` | `quantize_ncnn_int8.py --model yolo_face` — `yolo_face` 不是有效 preset（应为 `scrfd`）→ CI 量化步骤**从未成功执行** | 🔴 Open |
+| CR-38 | `scripts/verify_opencv_host.bat:42` | `OPENCV_CONTRIB_ROOT` 未定义检查 → CMake 收到空字符串，静默跳过 `opencv_face` 模块 | 🔴 Open |
+| CR-39 | `scripts/verify_faces_test_set01.bat:45` | 同上 — `OPENCV_CONTRIB_ROOT` 无验证 | 🔴 Open |
+| CR-40 | `scripts/stability_switch_50_adb.ps1:57` | 使用已废弃 `dumpsys window windows`（Android 12+ 替代为 `dumpsys window displays`）→ 新设备返回空数据 | 🔴 Open |
+
+**FaceInferencePipeline**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-41 | `src/cpp/src/FaceInferStages.cpp:451` | `assumeL2Normalized = true` 硬编码 → 若模型输出未 L2 归一化，检索结果静默错误 | 🔴 Open |
+| CR-42 | `src/cpp/src/ModelRegistry.cpp:18` | `ensureBuiltinRegistered()` 无 `mutex`/`call_once` 保护 → 并发首次调用时 `unordered_map` 数据竞争 | 🔴 Open |
+
+##### HIGH (Round 4)
+
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-39 | `BioAuth.cpp:95,183` | 人脸 ROI 无边界限制 → 靠近边缘的检测框导致 `cv::Mat` 越界 / OpenCV assert 崩溃 | 🔴 Open |
+| HR-40 | `BioAuth.cpp:72,129` | `detectMultiScale` 魔数 `1.1, 3, Size(60,60)` — 60×60 最小脸在 640×480 上需占 1.6% 画面，广角监控漏检小脸 | 🔴 Open |
+| HR-41 | `MotionDetector.cpp:16` | 假设输入 BGR — `COLOR_BGR2GRAY` 在灰度/RGBA 输入时抛出异常 | 🔴 Open |
+| HR-42 | `app/build.gradle` 多处 | 所有依赖版本硬编码为字面量字符串，无版本目录（version catalog）→ 版本更新需逐行修改 | 🔴 Open |
+| HR-43 | `gradle.properties:19` | `org.gradle.workers.max=1` 强制单线程执行 → 多核机器构建性能浪费 | 🔴 Open |
+| HR-44 | `scripts/run-web-e2e.ps1:31` | Vite 启动后固定 `Start-Sleep 3`，无就绪检查 → 慢 CI runner 上 Cypress 连不上 | 🔴 Open |
+| HR-45 | `scripts/quantize_ncnn_int8.py:61` | `C:/ncnn/tools/quantize/` 硬编码回退路径 → 非标准安装用户获得误导性 "not found" | 🔴 Open |
+| HR-46 | `scripts/build_android.bat:24` | NDK 版本号硬编码 `27.0.12077973` / `25.1.8937393` → 其他 NDK 版本导致 `NDK_ROOT` 未设置 | 🔴 Open |
+| HR-47 | `FaceInferencePipeline.cpp:112` | `makeAuditFilename` 使用毫秒时间戳 → 同毫秒多调用的审计文件静默覆盖 | 🔴 Open |
+| HR-48 | `FaceInferStages.cpp:232,362` | INT8→FP32 降级无日志 → 运维人员不知 INT8 未生效 | 🔴 Open |
+| HR-49 | `FaceInferStages.cpp:92` | `loadGalleryDir` 每次 `runFaceInferOnce` 重新解析全部模板文件 → 5000+ 模板时大量 I/O | 🔴 Open |
+
+##### MEDIUM (Round 4)
+
+| # | 模块 | 问题 | 状态 |
+|---|------|------|------|
+| MR-25 | `BioAuth.cpp:72,129` | `detectMultiScale` 参数不可配置 | 🔴 Open |
+| MR-26 | `BioAuth.cpp:69` | 无条件全局 `equalizeHist` → 低光照放大噪声，良好光照冲淡对比度 | 🔴 Open |
+| MR-27 | `Config.h:44,47` | `MOTION_THRESHOLD=25`, `MIN_MOTION_AREA=500` 为 640×480 的绝对像素值 → 分辨率变化后灵敏度过高/低 | 🔴 Open |
+| MR-28 | `MotionDetector.cpp` | `cv::Mat` 成员对象生命周期内永不释放 → RK3288 受限内存下浪费 | 🔴 Open |
+| MR-29 | `app/build.gradle:64` | `RK_ENABLE_NCNN=ON` 无条件设置，即使 `skipOpencv=true` | 🔴 Open |
+| MR-30 | `gradle.properties:14` | `android.enableJetifier=true` — 所有依赖已使用 AndroidX，无需 Jetifier，拖慢构建 | 🔴 Open |
+| MR-31 | `gradle.properties` | 未开启 Gradle 构建缓存/配置缓存 | 🔴 Open |
+| MR-32 | `app/build.gradle:72` | ABI split 开启 `universalApk true` → 拆包减大小的收益被抵消 | 🔴 Open |
+| MR-33 | `scripts/quantize_ncnn_int8.py:96` | `run_ncnn2table` 未校验 preset 必须字段 → 新增模型时 `KeyError` 崩溃 | 🔴 Open |
+| MR-34 | `scripts/bench_camera_adb.sh:58` | `wait_for_lines` 超时返回 0 → 调用者获得空数据静默记录 `,,,,` | 🔴 Open |
+| MR-35 | `FaceInferStages.cpp:440` | `std::move(ctx.galleryEntries)` 后状态未指定 → 后续新增 gallery 读取代码静默获取空向量 | 🔴 Open |
+| MR-36 | `ModelRegistry.cpp:23` | `static bool g_builtinRegistered` 文件作用域 → 不安全的单例注册守卫 | 🔴 Open |
+
+##### CRITICAL (Round 5)
+
+**适配器（9 个模型适配器全线）**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-43 | 所有 `*Adapter.cpp` | **全部 9 个适配器零线程安全** — `loaded_`/`inner_`/`net_` 无锁读写，并发 `load()` 与 `detect()`/`embed()` 数据竞争 | 🔴 Open |
+| CR-44 | `ArcFaceAdapter.cpp:44`, `YoloFaceAdapter.cpp:47` | ncnn 回退 OpenCV 时传递 `.param` 文件 → OpenCV 无法加载此格式，**静默失败** | 🔴 Open |
+| CR-45 | `ArcFaceAdapter.cpp:25`, `MobileFaceNetAdapter.cpp:20` | 路径拼接硬编码 `'/'` → Windows 上 `\` 不被识别 | 🔴 Open |
+
+**事件管理 & 日志**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-46 | `EventManager.cpp:57` | `static std::mt19937 gen` 无锁线程不安全 → RNG 内部状态损坏，uid 重复或死锁 | 🔴 Open |
+| CR-47 | `Storage.cpp:64` | `appendLog` 无锁并发调用 → 日志行交织或文件损坏 | 🔴 Open |
+| CR-48 | `EventManager.cpp:34` | `formatEventJson` JSON 字符串未转义 → 描述/路径含 `"` 等字符时生成非法 JSON | 🔴 Open |
+
+**帧输入管线**
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| CR-49 | `MppDecoder.cpp:133` | `chunkBuf_` 单个缓冲区被所有 packet 复用 → MPP 未消费时 `fread` 覆写待处理数据，解码损坏 | 🔴 Open |
+| CR-50 | `VideoManager.cpp:585` | MPP 回退 OpenCV 时未校验 `cap.isOpened()` → 无帧空转 | 🔴 Open |
+| CR-51 | `VideoManager.cpp:660` | 摄像头读取失败无限重试（10ms sleep，无计数器）→ 设备断开后永久空转 | 🔴 Open |
+
+##### HIGH (Round 5)
+
+| # | 文件 | 问题 | 状态 |
+|---|------|------|------|
+| HR-50 | `LbphAdapter.cpp:8` | `load()` 完全忽略 `modelPath` 且始终成功 → 无法检测加载失败 | 🔴 Open |
+| HR-51 | `CascadeAdapter.cpp:33` | 所有检测结果硬编码 `score=1.0f` → 下游阈值逻辑误导 | 🔴 Open |
+| HR-52 | `MobileFaceNetAdapter.cpp:48` | `net_.opt.num_threads = 1` 硬编码 → 多核设备推理速度受限 | 🔴 Open |
+| HR-53 | 多个 `*Adapter.cpp` | `cv::dnn::readNet` 等可能抛出，无 `try/catch` → 异常导致进程终止 | 🔴 Open |
+| HR-54 | `NativeLog.cpp:144` | 持锁时执行阻塞文件 I/O（ensureDir/rotateIfNeeded/write）→ 所有日志线程串行化 | 🔴 Open |
+| HR-55 | `NativeLog.cpp:121` | `write()` 返回值未检查 → 部分写入导致日志静默截断 | 🔴 Open |
+| HR-56 | `NativeLog.cpp:69` | `ensureDir` 仅按 `/` 分割路径 → Windows 上路径分隔符 `\` 不识别 | 🔴 Open |
+| HR-57 | `NativeLog.cpp:95` | 日志轮换非原子 → 崩溃时日志文件损坏 | 🔴 Open |
+| HR-58 | `NativeLog.cpp:113` | 每次日志调用 `open/write/close` → 日志密集型路径性能极差 | 🔴 Open |
+| HR-59 | `EventManager.cpp:57` | 32 位事件 ID → 约 77k 事件后 50% 碰撞概率 | 🔴 Open |
+| HR-60 | `FaceAlign.cpp:15` | NaN bbox → `static_cast<int>(NaN)` 未定义行为 | 🔴 Open |
+| HR-61 | `FaceTemplate.cpp:74` | `serializeFaceTemplate` 未更新 `h.dim` → 非 512-dim 嵌入时数据损坏 | 🔴 Open |
+| HR-62 | `FileHash.cpp:60` | SHA-256 每次 64 字节 `read()` → 100MB 模型产生 ~160 万次 syscall | 🔴 Open |
+| HR-63 | `VideoManager.cpp:549` | `cancelToken` 在 `captureLoop` 中从未被检查 → 取消请求被忽略 | 🔴 Open |
+| HR-64 | `VideoManager.cpp:298` | `char chunk[1024*1024]` 栈上分配 1MB → RK3288 栈溢出风险（默认 2MB） | 🔴 Open |
+| HR-65 | `MppDecoder.cpp:147,193` | `MPP_ERR_BUFFER_FULL` 时销毁未消费 packet → 解码数据间隙 | 🔴 Open |
+
+##### MEDIUM (Round 5)
+
+| # | 模块 | 问题 | 状态 |
+|---|------|------|------|
+| MR-37 | `RetinaFaceAdapter.cpp:212` | `generateAnchors()` 每次 `detect()` 调用（输入固定后可预计算） | 🔴 Open |
+| MR-38 | `Storage.cpp:68` | `std::endl` 每次日志行强制 `flush` → 低吞吐场景 I/O 放大 | 🔴 Open |
+| MR-39 | `EventManager.cpp:26` | 日志文件扩展名 `.json` 但格式实为 JSON Lines → 工具解析失败 | 🔴 Open |
+| MR-40 | `MppDecoder.cpp:209` | 循环播放未调用 `mpi->reset()` → DPB 残留旧参考帧 | 🔴 Open |
+| MR-41 | `FrameInputChannel.cpp:108` | `timeoutMs=0` 时 `wait_for` 阻塞永久 → API 陷阱 | 🔴 Open |
+| MR-42 | `VideoManager.cpp:238` | `open()` 函数 255 行、4 层嵌套、5 个 try/catch → 维护负担 | 🔴 Open |
+| MR-43 | `FileHash.cpp:12` | 裸 `uint32_t` 无 `std::` 前缀 → 部分编译器编译失败 | 🔴 Open |
+| MR-44 | `FaceAlign.cpp:91` | `estimateAffinePartial2D` 分配 `inliers` 但从不读取 | 🔴 Open |
+| MR-45 | `FaceAlign.cpp:83` | 5 点对齐每帧堆分配 `vector` → 静态大小可用数组 | 🔴 Open |
+| MR-46 | `FaceTemplate.cpp:78` | header reserve 长度 24 与实际 23 字节偏差 1 | 🔴 Open |
+
+#### Findings Lifecycle Rules
+- **🔴 Open** — 已报告未处理
+- **🟡 Stale** — 已知但不紧急 / 可接受
+- **🟡 Monitoring** — 持续观察
+- **🟢 Resolved** — 已修复但未提交
+- **✅ Fixed** — 已提交修复
+- **⏸️ Deferred** — 推迟评估
 
 ### Archived
 - **Technical Plans**: 以下 AI Agent 执行计划已归档至本 CHANGELOG：

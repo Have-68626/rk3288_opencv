@@ -424,11 +424,10 @@ Engine::~Engine() {
 
 void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
     const auto m = parseInferenceThrottleMode(mode);
-    const int v = clampInferenceIntervalMs(intervalMs);
     detThrottleMode.store(m);
-    detIntervalMs.store(clampDetectionIntervalMs(v));
+    detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
     recThrottleMode.store(m);
-    recIntervalMs.store(clampRecognitionIntervalMs(v));
+    recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
     rklog::logInfo(
         "Engine",
         "updateInferenceThrottle",
@@ -690,12 +689,19 @@ void Engine::run() {
                     std::string outDir = envOutDir ? envOutDir : "tests/metrics";
                     std::string outPath = outDir + "/engine_perf.csv";
 
-                    FILE* f = fopen(outPath.c_str(), "a");
-                    if (f) {
+                    {
+                        std::ostringstream csv;
                         for (const auto& s : perfHistory) {
-                            fprintf(f, "%f,%f,%f,%f,%f,%lld\n", s.decodeMs, s.preMs, s.inferMs, s.postMs, s.renderMs, s.rssBytes);
+                            csv << s.decodeMs << ',' << s.preMs << ',' << s.inferMs << ','
+                                << s.postMs << ',' << s.renderMs << ',' << s.rssBytes << '\n';
                         }
-                        fclose(f);
+                        std::thread([outPath, csvStr = csv.str()]() {
+                            FILE* f = fopen(outPath.c_str(), "a");
+                            if (f) {
+                                fwrite(csvStr.data(), 1, csvStr.size(), f);
+                                fclose(f);
+                            }
+                        }).detach();
                     }
                     perfHistory.clear();
                 }
@@ -758,7 +764,7 @@ bool Engine::pushExternalFrame(ExternalFrame frame) {
     return true;
 }
 
-void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
+void Engine::processFrame(const cv::Mat& inputFrame, double decodeMs) {
     FramePerfStats stats;
     stats.decodeMs = decodeMs;
 
