@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <mutex>
 #include <unordered_map>
 
 ModelRegistry& ModelRegistry::instance() {
@@ -20,11 +21,10 @@ ModelRegistry& ModelRegistry::instance() {
     return reg;
 }
 
-static bool g_builtinRegistered = false;
+static std::once_flag g_builtinRegisteredFlag;
 
 void ModelRegistry::ensureBuiltinRegistered() {
-    if (g_builtinRegistered) return;
-    g_builtinRegistered = true;
+    std::call_once(g_builtinRegisteredFlag, []() {
     auto& reg = instance();
 
     reg.registerDetector("yolo_face", []() { return std::make_unique<YoloFaceAdapter>(); },
@@ -111,6 +111,7 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "MobileFaceNet INT8 量化模型，128 维嵌入。极轻量，适合资源极度受限设备。",
          "high_speed", 3});
     }
+    });
 }
 
 void ModelRegistry::registerDetector(const std::string& id, DetectorFactory factory, const ModelEntry& entry) {

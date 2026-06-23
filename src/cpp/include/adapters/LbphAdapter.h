@@ -3,13 +3,9 @@
 #include "Embedder.h"
 #include "rk_win/LbphEmbedder.h"
 
+#include <mutex>
 #include <string>
 
-/**
- * @brief Adapter wrapping rk_win::LbphEmbedder into the unified Embedder interface.
- *
- * LBPH produces histogram-like vectors (not fixed-dim embeddings), so embeddingDim() returns 0.
- */
 class LbphAdapter : public Embedder {
 public:
     LbphAdapter();
@@ -21,6 +17,7 @@ public:
     const char* name() const override;
 
 private:
+    mutable std::mutex mu_;
     rk_win::LbphEmbedder inner_;
     bool loaded_ = false;
     std::string currentName_;

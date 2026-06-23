@@ -448,7 +448,7 @@ FaceInferStageStatus FaceInferStages::searchTopK(const FaceInferRequest& req, Fa
 
     if (ctx.index.size() > 0) {
         FaceSearchOptions opt;
-        opt.assumeL2Normalized = true;
+        opt.assumeL2Normalized = req.assumeL2Normalized;
         ctx.hits = ctx.index.searchTopK(ctx.embedding, req.topK, opt, searchErr);
         if (!searchErr.empty()) {
             const auto ts1 = std::chrono::steady_clock::now();

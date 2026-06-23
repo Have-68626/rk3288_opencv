@@ -3,11 +3,9 @@
 #include "FaceDetector.h"
 #include "rk_win/FaceDetector.h"
 
+#include <mutex>
 #include <string>
 
-/**
- * @brief Adapter wrapping rk_win::FaceDetector (LBP Cascade) into the unified FaceDetector interface.
- */
 class CascadeAdapter : public FaceDetector {
 public:
     CascadeAdapter();
@@ -18,6 +16,7 @@ public:
     const char* name() const override;
 
 private:
+    mutable std::mutex mu_;
     rk_win::FaceDetector inner_;
     bool loaded_ = false;
     std::string currentName_;

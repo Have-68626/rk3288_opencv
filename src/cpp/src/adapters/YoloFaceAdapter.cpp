@@ -46,27 +46,16 @@ bool YoloFaceAdapter::load(const std::string& modelPath, std::string& err) {
 
         YoloFaceModelSpec dummy;
         if (!inner_->load(dummy, opt_, err)) {
-            rklog::logWarn("YoloFaceAdapter", "load", "ncnn failed: " + err + ", falling back to OpenCV DNN");
-            inner_ = CreateOpenCvDnnYoloFaceDetector();
-            YoloFaceModelSpec spec;
-            spec.modelPath = modelPath;
-            if (!inner_->load(spec, opt_, err)) {
-                return false;
-            }
-            currentName_ = "opencv_dnn";
-            loaded_ = true;
-            return true;
+            rklog::logWarn("YoloFaceAdapter", "load",
+                "ncnn failed: " + err + "; .param/.bin cannot be used with OpenCV DNN");
+            return false;
         }
         currentName_ = "ncnn";
 #else
-        rklog::logWarn("YoloFaceAdapter", "load", "ncnn not available for .param/.bin, falling back to OpenCV DNN");
-        inner_ = CreateOpenCvDnnYoloFaceDetector();
-        YoloFaceModelSpec spec;
-        spec.modelPath = modelPath;
-        if (!inner_->load(spec, opt_, err)) {
-            return false;
-        }
-        currentName_ = "opencv_dnn";
+        rklog::logWarn("YoloFaceAdapter", "load",
+            "ncnn not available for .param/.bin, cannot load model: " + modelPath);
+        err = "ncnn unavailable for .param/.bin model";
+        return false;
 #endif
     } else {
         inner_ = CreateOpenCvDnnYoloFaceDetector();

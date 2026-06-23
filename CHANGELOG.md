@@ -117,11 +117,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | CR-31 | BioAuth | `BioAuth.cpp:101,186` | 置信度归一化公式本质错误 → 拒真率接近 100% | ✅ 已修 |
 | CR-32 | MotionDetector | `MotionDetector.cpp` 全局 | 零线程安全 — `detect()` 与 `getMotionMask()` 竞态 | ✅ 已修 |
 | CR-33 | MotionDetector | `MotionDetector.cpp:43` | `getMotionMask()` 浅拷贝 → 共享缓冲区被覆写 | ✅ 已修 |
-| CR-41 | FaceInfer | `FaceInferStages.cpp:451` | `assumeL2Normalized` 硬编码 → 非归一化模型检索静默错误 |
-| CR-42 | FaceInfer | `ModelRegistry.cpp:18` | `ensureBuiltinRegistered` 无 `call_once` → 并发 UB |
-| CR-43 | 适配器 | 全部 9 个 `*Adapter.cpp` | 全线零线程安全 |
-| CR-44 | 适配器 | `ArcFaceAdapter.cpp:44`, `YoloFaceAdapter.cpp:47` | ncnn→OpenCV 回退传递 `.param` 文件 |
-| CR-45 | 适配器 | `ArcFaceAdapter.cpp:25`, `MobileFaceNetAdapter.cpp:20` | 路径拼接硬编码 `/` → Windows 不兼容 |
+| CR-41 | FaceInfer | `FaceInferStages.cpp:451` | `assumeL2Normalized` 硬编码 → 非归一化模型检索静默错误 | ✅ 已修 |
+| CR-42 | FaceInfer | `ModelRegistry.cpp:18` | `ensureBuiltinRegistered` 无 `call_once` → 并发 UB | ✅ 已修 |
+| CR-43 | 适配器 | 全部 9 个 `*Adapter.cpp` | 全线零线程安全 | ✅ 已修 |
+| CR-44 | 适配器 | `ArcFaceAdapter.cpp:44`, `YoloFaceAdapter.cpp:47` | ncnn→OpenCV 回退传递 `.param` 文件 | ✅ 已修 |
+| CR-45 | 适配器 | `ArcFaceAdapter.cpp:25`, `MobileFaceNetAdapter.cpp:20` | 路径拼接硬编码 `/` → Windows 不兼容 | ✅ 已修 |
 | CR-46 | 日志 | `EventManager.cpp:57` | `static mt19937` 无锁 → uid 重复/死锁 |
 | CR-47 | 日志 | `Storage.cpp:64` | `appendLog` 无锁并发 → 日志损坏 |
 | CR-48 | 日志 | `EventManager.cpp:34` | `formatEventJson` JSON 未转义 → 非法 JSON |

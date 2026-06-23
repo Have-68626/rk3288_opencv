@@ -61,6 +61,7 @@ struct FaceInferRequest {
     std::string faceSelectPolicy = "score_area";
 
     bool int8Enabled = false;
+    bool assumeL2Normalized = true;
 
     bool fakeDetect = false;
     bool fakeEmbedding = false;

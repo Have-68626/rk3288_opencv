@@ -5,6 +5,7 @@
 #include <opencv2/face.hpp>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 class SFaceAdapter : public Embedder {
@@ -18,6 +19,7 @@ public:
     const char* name() const override;
 
 private:
+    mutable std::mutex mu_;
     cv::Ptr<cv::FaceRecognizerSF> inner_;
     int inputW_ = 112;
     int inputH_ = 112;

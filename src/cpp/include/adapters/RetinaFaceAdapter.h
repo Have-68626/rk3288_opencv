@@ -5,6 +5,7 @@
 #include <opencv2/dnn.hpp>
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,7 @@ private:
                         float bx1, float by1, float bx2, float by2);
     void nms(std::vector<FaceDetection>& dets, float threshold);
 
+    mutable std::mutex mu_;
     cv::dnn::Net net_;
     int inputW_ = 640;
     int inputH_ = 640;
@@ -41,7 +43,5 @@ private:
     bool loaded_ = false;
     std::string currentName_;
     std::vector<AnchorCfg> anchorCfgs_;
-
-    // FPN 各层输出名称（SCRFD/det_10g 约定）
     std::vector<std::string> outputNames_;
 };

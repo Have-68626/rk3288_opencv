@@ -5,6 +5,7 @@
 #include <opencv2/objdetect.hpp>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 class YuNetAdapter : public FaceDetector {
@@ -17,6 +18,7 @@ public:
     const char* name() const override;
 
 private:
+    mutable std::mutex mu_;
     cv::Ptr<cv::FaceDetectorYN> inner_;
     int inputW_ = 320;
     int inputH_ = 320;
