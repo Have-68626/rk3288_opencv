@@ -598,14 +598,24 @@ static double percentileNearestRank(std::vector<double> v, double q) {
 }
 
 static std::string joinCommandLine(int argc, char** argv) {
-    std::ostringstream oss;
+    std::size_t reserveSize = 0;
     for (int i = 0; i < argc; i++) {
-        if (i) oss << " ";
-        const std::string s = argv[i] ? argv[i] : "";
-        if (s.find(' ') != std::string::npos) oss << "\"" << s << "\"";
-        else oss << s;
+        if (argv[i]) reserveSize += std::strlen(argv[i]) + 3;
     }
-    return oss.str();
+    std::string out;
+    out.reserve(reserveSize);
+    for (int i = 0; i < argc; i++) {
+        if (i) out += " ";
+        const std::string s = argv[i] ? argv[i] : "";
+        if (s.find(' ') != std::string::npos) {
+            out += "\"";
+            out += s;
+            out += "\"";
+        } else {
+            out += s;
+        }
+    }
+    return out;
 }
 
 static std::size_t selectMainFaceIndex(const FaceDetections& faces, const std::string& policy) {

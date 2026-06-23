@@ -249,12 +249,11 @@ public:
         if (!pipe->tryGetRenderState(rs)) return true;
         std::vector<std::uint8_t> jpeg;
         if (!buildJpegWithOverlay(rs, jpeg)) return true;
-        std::ostringstream os;
-        os << "--rk_boundary\r\n"
-           << "Content-Type: image/jpeg\r\n"
-           << "Content-Length: " << jpeg.size() << "\r\n"
-           << "\r\n";
-        const std::string part = os.str();
+        std::string part;
+        part.reserve(128);
+        part += "--rk_boundary\r\nContent-Type: image/jpeg\r\nContent-Length: ";
+        part += std::to_string(jpeg.size());
+        part += "\r\n\r\n";
         if (!server_->writeRaw(sock, part.data(), part.size())) return false;
         if (!server_->writeRaw(sock, jpeg.data(), jpeg.size())) return false;
         if (!server_->writeRaw(sock, "\r\n", 2)) return false;
@@ -521,16 +520,26 @@ bool HttpFacesServer::writeRaw(std::uintptr_t sock, const void* data, std::size_
 }
 
 bool HttpFacesServer::writeResponse(std::uintptr_t sock, const HttpResponse& resp) {
-    std::ostringstream os;
-    os << "HTTP/1.1 " << resp.status << " " << (resp.reason.empty() ? statusReason(resp.status) : resp.reason) << "\r\n";
-    os << "Content-Type: " << resp.contentType << "\r\n";
-    os << "Content-Length: " << resp.body.size() << "\r\n";
-    os << "Connection: " << (resp.close ? "close" : "keep-alive") << "\r\n";
+    std::string head;
+    head.reserve(256 + resp.headers.size() * 64);
+    head += "HTTP/1.1 ";
+    head += std::to_string(resp.status);
+    head += " ";
+    head += resp.reason.empty() ? statusReason(resp.status) : resp.reason;
+    head += "\r\nContent-Type: ";
+    head += resp.contentType;
+    head += "\r\nContent-Length: ";
+    head += std::to_string(resp.body.size());
+    head += "\r\nConnection: ";
+    head += resp.close ? "close" : "keep-alive";
+    head += "\r\n";
     for (const auto& h : resp.headers) {
-        os << h.first << ": " << h.second << "\r\n";
+        head += h.first;
+        head += ": ";
+        head += h.second;
+        head += "\r\n";
     }
-    os << "\r\n";
-    const std::string head = os.str();
+    head += "\r\n";
     if (!writeRaw(sock, head.data(), head.size())) return false;
     if (!resp.body.empty() && !writeRaw(sock, resp.body.data(), resp.body.size())) return false;
     return true;
@@ -925,16 +934,15 @@ HttpFacesServer::HttpResponse HttpFacesServer::onPreviewJpg(const HttpRequest&) 
 void HttpFacesServer::runStream(std::uintptr_t sock, std::unique_ptr<StreamSession> session) {
     SocketGuard sg(static_cast<SOCKET>(sock));
     const std::string ct = session->contentType();
-    std::ostringstream os;
-    os << "HTTP/1.1 200 OK\r\n"
-       << "Content-Type: " << ct << "\r\n"
-       << "Cache-Control: no-cache\r\n"
-       << "X-Content-Type-Options: nosniff\r\n"
-       << "X-Frame-Options: DENY\r\n"
-       << "Content-Security-Policy: default-src 'none'\r\n"
-       << "Connection: keep-alive\r\n"
-       << "\r\n";
-    const std::string head = os.str();
+    std::string head;
+    head.reserve(256);
+    head += "HTTP/1.1 200 OK\r\nContent-Type: ";
+    head += ct;
+    head += "\r\nCache-Control: no-cache\r\n"
+            "X-Content-Type-Options: nosniff\r\n"
+            "X-Frame-Options: DENY\r\n"
+            "Content-Security-Policy: default-src 'none'\r\n"
+            "Connection: keep-alive\r\n\r\n";
     if (!writeRaw(sock, head.data(), head.size())) return;
     while (running_) {
         if (!session->writeFrame(sock, pipe_, running_)) break;
