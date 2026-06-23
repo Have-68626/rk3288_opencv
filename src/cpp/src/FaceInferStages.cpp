@@ -437,7 +437,9 @@ FaceInferStageStatus FaceInferStages::searchTopK(const FaceInferRequest& req, Fa
 
     std::string searchErr;
     const auto ts0 = std::chrono::steady_clock::now();
-    if (!ctx.index.reset(std::move(ctx.galleryEntries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {
+    // Copy entries so a failed reset() doesn't leave galleryEntries empty for a retry
+    auto entries = ctx.galleryEntries;
+    if (!ctx.index.reset(std::move(entries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {
         const auto ts1 = std::chrono::steady_clock::now();
         m.msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
         ctx.hits.clear();

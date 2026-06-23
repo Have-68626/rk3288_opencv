@@ -151,11 +151,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-28 | 安全 | `WinJsonConfig.cpp:1093` | 备份无轮转 | ✅ 已修 |
 | HR-29 | 安全 | `WinJsonConfig.cpp:72` | fallback 非原子 | ✅ 已修 |
 | HR-30 | 安全 | `WinJsonConfig.cpp:1065` | 错误信息泄露 | ✅ 已修 |
-| HR-31 | 人脸识别 | `FaceDetector.cpp:21` | CascadeClassifier 非线程安全 |
-| HR-32 | 人脸识别 | `FaceSearch.cpp:42,55` | NEON 16 字节对齐崩溃 |
-| HR-33 | 人脸识别 | `FaceRecognizer.cpp:97` | `identifyThreshold_` 读写竞争 |
-| HR-34 | 人脸识别 | `FaceInferStages.cpp:440` | `std::move` 导致空 gallery |
-| HR-35 | 构建 | `CMakeLists.txt` | 无 `install()` 目标 |
+| HR-31 | 人脸识别 | `FaceDetector.cpp:21` | CascadeClassifier 非线程安全 | ✅ 已修 |
+| HR-32 | 人脸识别 | `FaceSearch.cpp:42,55` | NEON 16 字节对齐崩溃 | ✅ 已修 |
+| HR-33 | 人脸识别 | `FaceRecognizer.cpp:97` | `identifyThreshold_` 读写竞争 | ✅ 已修（CR-24） |
+| HR-34 | 人脸识别 | `FaceInferStages.cpp:440` | `std::move` 导致空 gallery | ✅ 已修 |
+| HR-35 | 构建 | `CMakeLists.txt` | 无 `install()` 目标 | ✅ 已修 |
 | HR-36 | 构建 | `CMakeLists.txt:111` | 全局 `include_directories()` |
 | HR-37 | 构建 | `CMakeLists.txt:85` | 废弃 `add_definitions()` |
 | HR-38 | 构建 | `CMakeLists.txt:305` | `file(GLOB_RECURSE)` |

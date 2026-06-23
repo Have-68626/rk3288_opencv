@@ -36,6 +36,14 @@ static float reduceAdd(float32x4_t v) {
 }
 
 static float dotProductNeon(const float* a, const float* b, std::size_t dim) {
+    // Use aligned loads when possible; vld1q_f32 on ARMv7 handles unaligned addresses
+    // but some older ARM implementations may trap.  Check alignment and fall back
+    // to scalar for sub-16-byte-aligned pointers.
+    constexpr std::size_t kAlign = 16;
+    const bool aligned = (reinterpret_cast<std::uintptr_t>(a) & (kAlign - 1)) == 0 &&
+                         (reinterpret_cast<std::uintptr_t>(b) & (kAlign - 1)) == 0;
+    if (!aligned) return dotProductScalar(a, b, dim);
+
     std::size_t i = 0;
     float32x4_t acc = vdupq_n_f32(0.0f);
     for (; i + 4 <= dim; i += 4) {
@@ -49,6 +57,10 @@ static float dotProductNeon(const float* a, const float* b, std::size_t dim) {
 }
 
 static float l2NormNeon(const float* v, std::size_t dim) {
+    constexpr std::size_t kAlign = 16;
+    const bool aligned = (reinterpret_cast<std::uintptr_t>(v) & (kAlign - 1)) == 0;
+    if (!aligned) return l2NormScalar(v, dim);
+
     std::size_t i = 0;
     float32x4_t acc = vdupq_n_f32(0.0f);
     for (; i + 4 <= dim; i += 4) {
