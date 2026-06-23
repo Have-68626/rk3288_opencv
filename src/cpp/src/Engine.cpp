@@ -3,7 +3,6 @@
  * @brief Implementation of Engine class.
  */
 #include "Engine.h"
-#include "AccelerationContract.h"
 #include "Config.h"
 #include "Storage.h"
 #include "NativeLog.h"
@@ -23,16 +22,7 @@
 #include <libyuv/convert_from.h>
 #endif
 
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-#include <rk_mpi.h>
-#include <mpp.h>
-#include <mpp_err.h>
-#endif
-
 namespace {
-static bool getEnvBool(const char* envName);
-static const char* throttleModeName(InferenceThrottleMode mode);
-
 static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, std::string& err) {
     const int w = f.width;
     const int h = f.height;
@@ -176,14 +166,12 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 
     auto fallbackOpencvNv21 = [&]() {
         if (stride == w) {
-            // 复制 const 数据到临时缓冲区, 避免 const_cast UB
-            std::vector<uint8_t> nv21Copy(f.nv21.begin(), f.nv21.end());
-            cv::Mat yuv(h + uvH, w, CV_8UC1, nv21Copy.data());
+            cv::Mat yuv(h + uvH, w, CV_8UC1, const_cast<uint8_t*>(f.nv21.data()));
             cv::cvtColor(yuv, outBgr, cv::COLOR_YUV2BGR_NV21);
             return true;
         }
 
-        cv::Mat packedYuv;
+        thread_local cv::Mat packedYuv;
         packedYuv.create(h + uvH, w, CV_8UC1);
 
         for (int row = 0; row < h; row++) {
@@ -205,7 +193,6 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
     };
 
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-    if (getEnvBool("RK_USE_LIBYUV")) {
     const uint8_t* srcY = f.nv21.data();
     const uint8_t* srcVu = f.nv21.data() + needY;
     const int r = libyuv::NV21ToRGB24(
@@ -222,8 +209,6 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
         return fallbackOpencvNv21();
     }
     return true;
-    }
-    return fallbackOpencvNv21();
 #else
     return fallbackOpencvNv21();
 #endif
@@ -236,10 +221,13 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
     }
 
     const int rot = ((f.meta.rotationDegrees % 360) + 360) % 360;
-    // 检查物理分辨率（旋转前），而非旋转后尺寸——传感器面积不变
-    // 竖屏 90°/270° 时交换宽高会导致 1080×1920 被误判超规格
-    if (f.width > 1920 || f.height > 1920) {
-        err = "超规格输入: " + std::to_string(f.width) + "x" + std::to_string(f.height);
+    int effectiveW = f.width;
+    int effectiveH = f.height;
+    if (rot == 90 || rot == 270) {
+        std::swap(effectiveW, effectiveH);
+    }
+    if (effectiveW > 1920 || effectiveH > 1080) {
+        err = "超规格输入: " + std::to_string(effectiveW) + "x" + std::to_string(effectiveH);
         return false;
     }
 
@@ -248,41 +236,39 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
             return false;
         }
     } else {
-        cv::Mat yuvI420;
+        thread_local cv::Mat yuvI420;
         if (!fillI420FromYuv420888(f, yuvI420, err)) {
             return false;
         }
         outBgr.create(f.height, f.width, CV_8UC3);
-        bool converted = false;
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-        if (getEnvBool("RK_USE_LIBYUV")) {
-            const int w = f.width;
-            const int h = f.height;
-            const int w2 = w / 2;
-            const int h2 = h / 2;
-            const std::size_t ySize = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
-            const std::size_t uvSize = static_cast<std::size_t>(w2) * static_cast<std::size_t>(h2);
-            const uint8_t* y = yuvI420.data;
-            const uint8_t* u = yuvI420.data + ySize;
-            const uint8_t* v = yuvI420.data + ySize + uvSize;
-            const int r = libyuv::I420ToRGB24(
-                y,
-                w,
-                u,
-                w2,
-                v,
-                w2,
-                outBgr.data,
-                static_cast<int>(outBgr.step),
-                w,
-                h
-            );
-            converted = (r == 0);
-        }
-#endif
-        if (!converted) {
+        const int w = f.width;
+        const int h = f.height;
+        const int w2 = w / 2;
+        const int h2 = h / 2;
+        const std::size_t ySize = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+        const std::size_t uvSize = static_cast<std::size_t>(w2) * static_cast<std::size_t>(h2);
+        const uint8_t* y = yuvI420.data;
+        const uint8_t* u = yuvI420.data + ySize;
+        const uint8_t* v = yuvI420.data + ySize + uvSize;
+        const int r = libyuv::I420ToRGB24(
+            y,
+            w,
+            u,
+            w2,
+            v,
+            w2,
+            outBgr.data,
+            static_cast<int>(outBgr.step),
+            w,
+            h
+        );
+        if (r != 0) {
             cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
         }
+#else
+        cv::cvtColor(yuvI420, outBgr, cv::COLOR_YUV2BGR_I420);
+#endif
     }
 
     if (rot == 90) {
@@ -311,6 +297,7 @@ static float iou(const cv::Rect& a, const cv::Rect& b) {
     const float uni = static_cast<float>(a.area() + b.area()) - inter;
     return (uni <= 0.0f) ? 0.0f : (inter / uni);
 }
+}  // namespace
 
 
 // [Qualcomm/MPP Backend Feature Placeholder]
@@ -332,7 +319,7 @@ static bool initQualcommDelegate(bool requested) {
 
 // 待补充代码接入: MPP Hardware Decoding
 static bool initMppDecoder(bool requested) {
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
     if (!requested) {
         rklog::logInfo("Engine", "initMppDecoder", "RK MPP disabled by user config.");
         return false;
@@ -351,7 +338,7 @@ static bool initMppDecoder(bool requested) {
     return false;
 #else
     (void)requested;
-    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (unsupported platform or RK_HAVE_MPP not defined or 0)");
+    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (RK_HAVE_MPP not defined or 0)");
     return false;
 #endif
 }
@@ -366,23 +353,6 @@ static bool getEnvBool(const char* envName) {
     }
     return false;
 }
-
-static const char* throttleModeName(InferenceThrottleMode mode) {
-    switch (mode) {
-        case InferenceThrottleMode::Off:
-            return "off";
-        case InferenceThrottleMode::Manual:
-            return "manual";
-        case InferenceThrottleMode::Auto:
-            return "auto";
-    }
-    return "off";
-}
-
-static void logAccelSelfCheckStatus(const rk_accel::AccelContractStatus& status) {
-    rklog::logInfo("Engine", "performAccelSelfCheck", rk_accel::formatSelfCheckLine(status));
-}
-}  // namespace
 
 Engine::Engine() 
     : isRunning(false),
@@ -424,30 +394,11 @@ Engine::~Engine() {
 
 void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
     const auto m = parseInferenceThrottleMode(mode);
+    const int v = clampInferenceIntervalMs(intervalMs);
     detThrottleMode.store(m);
-    detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
+    detIntervalMs.store(clampDetectionIntervalMs(v));
     recThrottleMode.store(m);
-    recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
-    rklog::logInfo(
-        "Engine",
-        "updateInferenceThrottle",
-        rk_accel::formatSelfCheckLine({
-            "detection_throttle",
-            m != InferenceThrottleMode::Off,
-            m != InferenceThrottleMode::Off,
-            "ok",
-            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(detIntervalMs.load())
-        }));
-    rklog::logInfo(
-        "Engine",
-        "updateInferenceThrottle",
-        rk_accel::formatSelfCheckLine({
-            "recognition_throttle",
-            m != InferenceThrottleMode::Off,
-            m != InferenceThrottleMode::Off,
-            "ok",
-            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(recIntervalMs.load())
-        }));
+    recIntervalMs.store(clampRecognitionIntervalMs(v));
 }
 
 InferenceThrottleMode Engine::getInferenceThrottleMode() const {
@@ -461,17 +412,6 @@ int Engine::getInferenceIntervalMs() const {
 void Engine::updateDetectionThrottle(const std::string& mode, int intervalMs) {
     detThrottleMode.store(parseInferenceThrottleMode(mode));
     detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
-    const auto current = detThrottleMode.load();
-    rklog::logInfo(
-        "Engine",
-        "updateDetectionThrottle",
-        rk_accel::formatSelfCheckLine({
-            "detection_throttle",
-            current != InferenceThrottleMode::Off,
-            current != InferenceThrottleMode::Off,
-            "ok",
-            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(detIntervalMs.load())
-        }));
 }
 
 InferenceThrottleMode Engine::getDetectionThrottleMode() const {
@@ -485,17 +425,6 @@ int Engine::getDetectionIntervalMs() const {
 void Engine::updateRecognitionThrottle(const std::string& mode, int intervalMs) {
     recThrottleMode.store(parseInferenceThrottleMode(mode));
     recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
-    const auto current = recThrottleMode.load();
-    rklog::logInfo(
-        "Engine",
-        "updateRecognitionThrottle",
-        rk_accel::formatSelfCheckLine({
-            "recognition_throttle",
-            current != InferenceThrottleMode::Off,
-            current != InferenceThrottleMode::Off,
-            "ok",
-            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(recIntervalMs.load())
-        }));
 }
 
 InferenceThrottleMode Engine::getRecognitionThrottleMode() const {
@@ -506,11 +435,7 @@ int Engine::getRecognitionIntervalMs() const {
     return recIntervalMs.load();
 }
 
-bool Engine::initCommon(const std::string& cascadePath, const std::string& storagePath) {
-    if (initialized_.exchange(true)) {
-        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
-        return true;
-    }
+bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
     RKLOG_ENTER("Engine");
     initCancelRequested.store(false);
     videoManager->setCancelToken(&initCancelRequested);
@@ -520,23 +445,25 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
     }
     this->storagePath = base + "cache/";
 
+    // 1. Ensure storage
     if (!Storage::ensureDirectory(this->storagePath)) {
         std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
+
+    // 2. Cleanup old data
     Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
+
+    // 3. Init BioAuth
     if (!bioAuth->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
-        return false;
     }
-    return true;
-}
 
-bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
-    if (!initCommon(cascadePath, storagePath)) return false;
     if (cameraId >= 0) {
-        if (initCancelRequested.load()) return false;
+        if (initCancelRequested.load()) {
+            return false;
+        }
         if (!videoManager->open(cameraId)) {
             std::cerr << "Failed to open camera " << cameraId << "." << std::endl;
             rklog::logError("Engine", __func__, "Failed to open camera");
@@ -545,13 +472,40 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
     } else {
         rklog::logInfo("Engine", __func__, "cameraId<0：跳过 VideoManager 相机打开（预期用于外部帧输入）");
     }
+
     performAccelSelfCheck();
     return true;
 }
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
-    if (!initCommon(cascadePath, storagePath)) return false;
-    if (initCancelRequested.load()) return false;
+    RKLOG_ENTER("Engine");
+    initCancelRequested.store(false);
+    videoManager->setCancelToken(&initCancelRequested);
+    std::string base = storagePath;
+    if (!base.empty() && base.back() != '/' && base.back() != '\\') {
+        base.append("/");
+    }
+    this->storagePath = base + "cache/";
+
+    // 1. Ensure storage
+    if (!Storage::ensureDirectory(this->storagePath)) {
+        std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
+        rklog::logError("Engine", __func__, "Failed to init storage");
+        return false;
+    }
+
+    // 2. Cleanup old data
+    Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
+
+    // 3. Init BioAuth
+    if (!bioAuth->initialize(cascadePath)) {
+        rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
+    }
+
+    // 4. Init Mock Source
+    if (initCancelRequested.load()) {
+        return false;
+    }
     if (!videoManager->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager->getLastMockRejectReason());
@@ -561,6 +515,7 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         videoManager->close();
         return false;
     }
+
     performAccelSelfCheck();
     return true;
 }
@@ -653,19 +608,12 @@ void Engine::run() {
                     std::string outDir = envOutDir ? envOutDir : "tests/metrics";
                     std::string outPath = outDir + "/engine_perf.csv";
 
-                    {
-                        std::ostringstream csv;
+                    FILE* f = fopen(outPath.c_str(), "a");
+                    if (f) {
                         for (const auto& s : perfHistory) {
-                            csv << s.decodeMs << ',' << s.preMs << ',' << s.inferMs << ','
-                                << s.postMs << ',' << s.renderMs << ',' << s.rssBytes << '\n';
+                            fprintf(f, "%f,%f,%f,%f,%f,%lld\n", s.decodeMs, s.preMs, s.inferMs, s.postMs, s.renderMs, s.rssBytes);
                         }
-                        std::thread([outPath, csvStr = csv.str()]() {
-                            FILE* f = fopen(outPath.c_str(), "a");
-                            if (f) {
-                                fwrite(csvStr.data(), 1, csvStr.size(), f);
-                                fclose(f);
-                            }
-                        }).detach();
+                        fclose(f);
                     }
                     perfHistory.clear();
                 }
@@ -683,10 +631,9 @@ void Engine::run() {
 }
 
 void Engine::stop() {
-    initialized_.store(false);
     RKLOG_ENTER("Engine");
     isRunning = false;
-    if (videoManager) videoManager->close();
+    videoManager->close();
     if (externalInput) {
         externalInput->clear();
     }
@@ -728,7 +675,7 @@ bool Engine::pushExternalFrame(ExternalFrame frame) {
     return true;
 }
 
-void Engine::processFrame(const cv::Mat& inputFrame, double decodeMs) {
+void Engine::processFrame(cv::Mat& inputFrame, double decodeMs) {
     FramePerfStats stats;
     stats.decodeMs = decodeMs;
 
@@ -830,7 +777,8 @@ void Engine::processFrame(const cv::Mat& inputFrame, double decodeMs) {
     if (!shouldDetect) {
         drawTracks();
         stats.inferMs = static_cast<double>(nowMs() - inferStart);
-        stats.postMs = 0.0;  // 未执行后处理, 显式标记而非 ≈0ms 假象
+        long long postStart = nowMs();
+        stats.postMs = static_cast<double>(nowMs() - postStart);
         long long renderStart = nowMs();
         {
             std::lock_guard<std::mutex> lock(renderMutex);
@@ -857,9 +805,11 @@ void Engine::processFrame(const cv::Mat& inputFrame, double decodeMs) {
     std::vector<BioAuth::FaceAuthResult> results;
     bool faceDetected = bioAuth->verifyMulti(frame, results, 4, shouldRecognize);
     stats.inferMs = static_cast<double>(nowMs() - inferStart);
+    long long postStart = nowMs();
+
     if ((!faceDetected || results.empty()) && !faceTracks.empty()) {
         drawTracks();
-        stats.postMs = 0.0;  // 无实际后处理, 显式标记
+        stats.postMs = static_cast<double>(nowMs() - postStart);
         long long renderStart = nowMs();
         {
             std::lock_guard<std::mutex> lock(renderMutex);
@@ -922,27 +872,20 @@ void Engine::processFrame(const cv::Mat& inputFrame, double decodeMs) {
         t.lastSeenMs = now;
 
         if (shouldRecognize) {
-            const bool authed = results[i].identity.isAuthenticated;
-            const std::string rawId = authed ? results[i].identity.id : "Unknown";
+            const std::string rawId = results[i].identity.isAuthenticated ? results[i].identity.id : "Unknown";
             const float rawConf = results[i].identity.confidence;
 
-            // 已稳定认证的跟踪永不接受非认证覆盖
-            const bool hasStableAuth = (!t.stableId.empty() && t.stableId != "Unknown");
-
-            if (authed && rawId == t.lastId) {
+            if (rawId == t.lastId) {
                 t.lastIdStreak++;
-            } else if (authed) {
+            } else {
                 t.lastId = rawId;
                 t.lastIdStreak = 1;
-            } else {
-                // 非认证帧只清零 streak, 不清 lastId → 保留已认证 track
-                t.lastIdStreak = 0;
             }
 
-            if (authed && t.lastIdStreak >= stableFrames) {
+            if (t.lastIdStreak >= stableFrames) {
                 t.stableId = rawId;
                 t.stableConfidence = rawConf;
-            } else if (!hasStableAuth && t.stableId.empty()) {
+            } else if (t.stableId.empty()) {
                 t.stableId = rawId;
                 t.stableConfidence = rawConf;
             }
@@ -1053,12 +996,11 @@ bool Engine::getRenderFrame(cv::Mat& outFrame) {
     return getRenderFrame(outFrame, seq);
 }
 
-bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& inOutSeq) {
+bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& outSeq) {
     std::lock_guard<std::mutex> lock(renderMutex);
     if (renderFrame.empty()) return false;
-    if (renderFrameSeq == inOutSeq) return false;  // 无新帧
     renderFrame.copyTo(outFrame);
-    inOutSeq = renderFrameSeq;
+    outSeq = renderFrameSeq;
     return true;
 }
 
@@ -1163,73 +1105,25 @@ void Engine::performAccelSelfCheck() {
     RKLOG_ENTER("Engine");
 
     // ncnn
-    logAccelSelfCheckStatus({
-        "ncnn",
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-        true,
-        true,
-        "ok",
-        "RK_HAVE_NCNN=1"
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=ncnn] requested=1 effective=1 evidence=RK_HAVE_NCNN=1");
 #else
-        false,
-        false,
-        "build_disabled",
-        "RK_HAVE_NCNN=0"
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=ncnn] requested=0 effective=0 evidence=RK_HAVE_NCNN=0");
 #endif
-    });
 
     // MPP
-    {
-        const bool requested = getEnvBool("RK_USE_MPP");
-        const bool effective =
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-            requested;
+#if defined(RK_HAVE_MPP) && RK_HAVE_MPP
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=mpp] requested=1 effective=1 evidence=RK_HAVE_MPP=1");
 #else
-            false;
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=mpp] requested=0 effective=0 evidence=RK_HAVE_MPP=0");
 #endif
-        logAccelSelfCheckStatus({
-            "mpp",
-            requested,
-            effective,
-            effective ? "ok" :
-#if defined(_WIN32)
-                "unsupported_platform",
-#elif defined(RK_HAVE_MPP) && RK_HAVE_MPP
-                (requested ? "runtime_init_failed" : "build_disabled"),
-#else
-                (requested ? "missing_dependency" : "build_disabled"),
-#endif
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-            "RK_HAVE_MPP=1"
-#elif defined(_WIN32)
-            "platform=windows"
-#else
-            "RK_HAVE_MPP=0"
-#endif
-        });
-    }
 
     // Qualcomm
-    {
-        const bool requested = getEnvBool("RK_USE_QUALCOMM");
-        const bool effective =
 #if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
-            requested;
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=qualcomm] requested=1 effective=1 evidence=RK_HAVE_QUALCOMM=1");
 #else
-            false;
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=qualcomm] requested=0 effective=0 evidence=RK_HAVE_QUALCOMM=0");
 #endif
-        logAccelSelfCheckStatus({
-            "qualcomm",
-            requested,
-            effective,
-            effective ? "ok" : (requested ? "missing_dependency" : "build_disabled"),
-#if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
-            "RK_HAVE_QUALCOMM=1"
-#else
-            "RK_HAVE_QUALCOMM=0"
-#endif
-        });
-    }
 
     // OpenCL
     bool oclRequested = false;
@@ -1242,45 +1136,21 @@ void Engine::performAccelSelfCheck() {
     }
     bool oclEffective = cv::ocl::useOpenCL();
     bool oclHave = cv::ocl::haveOpenCL();
-    std::string oclEvidence = "useOpenCL=" + std::to_string(oclEffective) +
+    std::string oclEvidence = "requested=" + std::to_string(oclRequested) +
+        " useOpenCL=" + std::to_string(oclEffective) +
         " haveOpenCL=" + std::to_string(oclHave);
     if (oclHave) {
         try {
             cv::ocl::Device dev = cv::ocl::Device::getDefault();
             oclEvidence += " device=" + dev.name() + " vendor=" + dev.vendorName();
-        } catch (const std::exception& e) {
-            rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常: " + std::string(e.what()));
-        } catch (...) {
-            rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常 (unknown)");
-        }
+        } catch (...) {}
     }
-    logAccelSelfCheckStatus({
-        "opencl",
-        oclRequested,
-        oclEffective,
-        oclEffective ? "ok" : (oclRequested ? "missing_dependency" : "build_disabled"),
-        oclEvidence
-    });
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=opencl] " + oclEvidence);
 
     // libyuv
-    {
-        const bool requested = getEnvBool("RK_USE_LIBYUV");
-        const bool effective =
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-            requested;
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=libyuv] requested=1 effective=1 evidence=RK_HAVE_LIBYUV=1");
 #else
-            false;
+    rklog::logInfo("Engine", "performAccelSelfCheck", "ACCEL_SELF_CHECK [path=libyuv] requested=0 effective=0 evidence=RK_HAVE_LIBYUV=0");
 #endif
-        logAccelSelfCheckStatus({
-            "libyuv",
-            requested,
-            effective,
-            effective ? "ok" : (requested ? "missing_dependency" : "build_disabled"),
-#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-            "RK_HAVE_LIBYUV=1"
-#else
-            "RK_HAVE_LIBYUV=0"
-#endif
-        });
-    }
 }

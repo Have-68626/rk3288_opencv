@@ -62,8 +62,6 @@ public:
     std::optional<ArcFaceEmbedding> embedAlignedFaceBgr(const cv::Mat& alignedFaceBgr, std::string* err) const;
 
 private:
-    bool initOpenCvDnn(const char* logTag, std::string* err);
-
     ArcFaceEmbedderConfig cfg_{};
     bool inited_ = false;
 

@@ -35,10 +35,6 @@ export interface ServerSettingsDoc {
     identifyThreshold: number
     enrollSamples: number
   }
-  inference: {
-    throttleMode: string
-    intervalMs: number
-  }
   dnn: {
     enable: boolean
     modelPath: string
@@ -53,14 +49,6 @@ export interface ServerSettingsDoc {
     confThreshold: number
     backend: number
     target: number
-  }
-  model: {
-    detection: string
-    recognition: string
-    backend: string
-    detectorBackend: string
-    recognitionBackend: string
-    autoFallback: boolean
   }
   http: {
     enable: boolean
@@ -101,51 +89,8 @@ export interface ServerSettingsDoc {
   }
   acceleration: {
     enableOpenCL: boolean
-    enableLibyuv: boolean
     enableMpp: boolean
     enableQualcomm: boolean
   }
-}
-
-// --- GET /api/v1/models ---
-export interface ModelInfo {
-  id: string
-  displayName: string
-  taskType: string
-  notes: string
-  recommendedFor: string
-}
-
-export interface ActiveModelInfo {
-  id: string
-  displayName: string
-  taskType: string
-  configuredPath: string
-  resolvedPath: string
-  backend: string
-  hash?: string
-  status: 'loaded' | 'failed' | 'missing'
-  isInUse: boolean
-  modelVersion?: string
-  lastError?: string
-}
-
-export interface ModelSummary {
-  totalSupported: number
-  totalConfigured: number
-  totalLoaded: number
-  totalFailed: number
-  totalMissing: number
-}
-
-export interface ModelsResponse {
-  supportedModels: ModelInfo[]
-  activeModels: ActiveModelInfo[]
-  summary: ModelSummary
-}
-
-export interface ReloadResult {
-  id: string
-  status: string
 }
 

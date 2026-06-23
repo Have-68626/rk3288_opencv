@@ -6,12 +6,10 @@
 namespace rk_win {
 
 bool FaceDetector::loadCascade(const std::string& cascadePath) {
-    std::lock_guard<std::mutex> lock(mu_);
     return cascade_.load(cascadePath);
 }
 
 std::vector<cv::Rect> FaceDetector::detect(const cv::Mat& bgr, int minFaceSizePx) {
-    std::lock_guard<std::mutex> lock(mu_);
     std::vector<cv::Rect> faces;
     if (bgr.empty()) return faces;
     if (cascade_.empty()) return faces;

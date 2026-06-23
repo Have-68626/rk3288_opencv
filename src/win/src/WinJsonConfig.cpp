@@ -1,6 +1,5 @@
 #include "rk_win/WinJsonConfig.h"
 
-#include "AccelerationContract.h"
 #include "rk_win/JsonLite.h"
 #include "rk_win/WinCrypto.h"
 
@@ -27,7 +26,58 @@ constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
 
-constexpr std::uintmax_t kMaxConfigFileBytes = 10 * 1024 * 1024;      // 10MB max config file
+static std::string asciiLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+static std::string normalizeInferenceThrottleMode(std::string s) {
+    s = asciiLower(std::move(s));
+    if (s == "auto" || s == "manual" || s == "off") return s;
+    return "auto";
+}
+
+static int clampInferenceIntervalMs(int v) {
+    return std::clamp(v, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
+}
+
+std::wstring getEnvW(const wchar_t* name) {
+#ifdef _WIN32
+    wchar_t buf[32768];
+    DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) return L"";
+    return std::wstring(buf, buf + n);
+#else
+    (void)name;
+    return L"";
+#endif
+}
+
+std::string utf8FromWide(const std::wstring& ws) {
+    if (ws.empty()) return {};
+#ifdef _WIN32
+    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
+    return out;
+#else
+    return std::string(ws.begin(), ws.end());
+#endif
+}
+
+std::wstring wideFromUtf8(const std::string& s) {
+    if (s.empty()) return L"";
+#ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return L"";
+    std::wstring out(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
+    return out;
+#else
+    return std::wstring(s.begin(), s.end());
+#endif
+}
 
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
     err.clear();
@@ -37,27 +87,9 @@ bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& 
         err = "无法读取文件: " + p.string();
         return false;
     }
-    std::error_code ec;
-    const auto sz = std::filesystem::file_size(p, ec);
-    if (!ec && sz > kMaxConfigFileBytes) {
-        err = "文件超过大小上限 (" + std::to_string(kMaxConfigFileBytes / 1024 / 1024) + "MB)";
-        return false;
-    }
-    if (!ec) {
-        std::string data;
-        data.resize(static_cast<std::size_t>(sz));
-        ifs.read(data.data(), static_cast<std::streamsize>(data.size()));
-        out = std::move(data);
-    } else {
-        // Fallback for special files where file_size fails
-        std::ostringstream ss;
-        ss << ifs.rdbuf();
-        out = ss.str();
-        if (out.size() > kMaxConfigFileBytes) {
-            err = "文件超过大小上限";
-            return false;
-        }
-    }
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    out = ss.str();
     return true;
 }
 
@@ -94,8 +126,14 @@ bool moveReplaceWriteThrough(const std::filesystem::path& src, const std::filesy
     err.clear();
     if (MoveFileExW(src.wstring().c_str(), dst.wstring().c_str(),
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-        err = "MoveFileExW(REPLACE|WRITE_THROUGH) 失败";
-        return false;
+        std::error_code ec;
+        std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            err = "MoveFileExW(REPLACE) 失败，且 copy_file 回退失败";
+            return false;
+        }
+        std::filesystem::remove(src, ec);
+        return true;
     }
     return true;
 #else
@@ -218,7 +256,6 @@ static JsonValue schemaSettingsDoc() {
         JsonValue req = JsonValue::makeArray();
         req.a.push_back(JsonValue::makeString("cascadePath"));
         req.a.push_back(JsonValue::makeString("databasePath"));
-        req.a.push_back(JsonValue::makeString("arcFaceModelPath"));
         req.a.push_back(JsonValue::makeString("minFaceSizePx"));
         req.a.push_back(JsonValue::makeString("identifyThreshold"));
         req.a.push_back(JsonValue::makeString("enrollSamples"));
@@ -226,7 +263,6 @@ static JsonValue schemaSettingsDoc() {
         JsonValue rp = JsonValue::makeObject();
         rp.o["cascadePath"] = objStr();
         rp.o["databasePath"] = objStr();
-        rp.o["arcFaceModelPath"] = objStr();
         rp.o["minFaceSizePx"] = objBoolInt(true, 10, 10000);
         {
             JsonValue t = JsonValue::makeObject();
@@ -300,11 +336,9 @@ static JsonValue schemaSettingsDoc() {
         m.o["type"] = JsonValue::makeString("object");
         m.o["additionalProperties"] = JsonValue::makeBool(false);
         JsonValue mp = JsonValue::makeObject();
-        mp.o["detection"] = objStr();
-        mp.o["recognition"] = objStr();
-        mp.o["backend"] = objStr();
-        mp.o["detectorBackend"] = objStr();
-        mp.o["recognitionBackend"] = objStr();
+        mp.o["detection"] = objBoolInt(true, 1, 256);
+        mp.o["recognition"] = objBoolInt(true, 1, 256);
+        mp.o["backend"] = objBoolInt(true, 1, 64);
         mp.o["autoFallback"] = objBool();
         m.o["properties"] = std::move(mp);
         props.o["model"] = std::move(m);
@@ -430,13 +464,11 @@ static JsonValue schemaSettingsDoc() {
         a.o["additionalProperties"] = JsonValue::makeBool(false);
         JsonValue req = JsonValue::makeArray();
         req.a.push_back(JsonValue::makeString("enableOpenCL"));
-        req.a.push_back(JsonValue::makeString("enableLibyuv"));
         req.a.push_back(JsonValue::makeString("enableMpp"));
         req.a.push_back(JsonValue::makeString("enableQualcomm"));
         a.o["required"] = std::move(req);
         JsonValue ap = JsonValue::makeObject();
         ap.o["enableOpenCL"] = objBool();
-        ap.o["enableLibyuv"] = objBool();
         ap.o["enableMpp"] = objBool();
         ap.o["enableQualcomm"] = objBool();
         a.o["properties"] = std::move(ap);
@@ -697,7 +729,6 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         JsonValue r = JsonValue::makeObject();
         r.o["cascadePath"] = JsonValue::makeString(cfg.recognition.cascadePath.string());
         r.o["databasePath"] = JsonValue::makeString(cfg.recognition.databasePath.string());
-        r.o["arcFaceModelPath"] = JsonValue::makeString(cfg.recognition.arcFaceModelPath.string());
         r.o["minFaceSizePx"] = JsonValue::makeNumber(cfg.recognition.minFaceSizePx);
         r.o["identifyThreshold"] = JsonValue::makeNumber(cfg.recognition.identifyThreshold);
         r.o["enrollSamples"] = JsonValue::makeNumber(cfg.recognition.enrollSamples);
@@ -736,11 +767,8 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         JsonValue md = JsonValue::makeObject();
         md.o["detection"] = JsonValue::makeString(cfg.model.detection);
         md.o["recognition"] = JsonValue::makeString(cfg.model.recognition);
-        md.o["backend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.backend, "opencv_dnn"));
-        md.o["detectorBackend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.detectorBackend, cfg.model.backend));
-        md.o["recognitionBackend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.recognitionBackend, cfg.model.backend));
+        md.o["backend"] = JsonValue::makeString(cfg.model.backend);
         md.o["autoFallback"] = JsonValue::makeBool(cfg.model.autoFallback);
-        md.o["int8Enabled"] = JsonValue::makeBool(cfg.model.int8Enabled);
         root.o["model"] = std::move(md);
     }
 
@@ -765,7 +793,7 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
             std::vector<std::uint8_t> plainBin(plain.begin(), plain.end());
             AesGcmCiphertext ct;
             std::string e;
-            if (!aes256gcmEncrypt(*keyOpt, plainBin, ct, e, "poster.postUrl")) {
+            if (!aes256gcmEncrypt(*keyOpt, plainBin, ct, e)) {
                 errOut = e;
                 return JsonValue{};
             }
@@ -828,7 +856,6 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
     {
         JsonValue a = JsonValue::makeObject();
         a.o["enableOpenCL"] = JsonValue::makeBool(cfg.acceleration.enableOpenCL);
-        a.o["enableLibyuv"] = JsonValue::makeBool(cfg.acceleration.enableLibyuv);
         a.o["enableMpp"] = JsonValue::makeBool(cfg.acceleration.enableMpp);
         a.o["enableQualcomm"] = JsonValue::makeBool(cfg.acceleration.enableQualcomm);
         root.o["acceleration"] = std::move(a);
@@ -843,7 +870,6 @@ static AppConfig defaultAppConfig() {
     // 路径默认与旧 INI 兼容：相对路径以 exeDir 为基准（见 WinConfig::resolvePathFromExeDir）
     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
     cfg.recognition.databasePath = resolvePathFromExeDir(L"storage/win_face_db.yml");
-    cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(L"models/arcface_w600k_r50.onnx");
     cfg.dnn.modelPath = resolvePathFromExeDir(L"storage/models/opencv_face_detector_uint8.pb");
     cfg.dnn.configPath = resolvePathFromExeDir(L"storage/models/opencv_face_detector.pbtxt");
     cfg.log.logDir = resolvePathFromExeDir(L"storage/win_logs");
@@ -912,7 +938,6 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         double v = 0;
         if (getString(*r, "cascadePath", s)) cfg.recognition.cascadePath = resolvePathFromExeDir(s);
         if (getString(*r, "databasePath", s)) cfg.recognition.databasePath = resolvePathFromExeDir(s);
-        if (getString(*r, "arcFaceModelPath", s)) cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(s);
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
         if (getNumber(*r, "enrollSamples", v)) cfg.recognition.enrollSamples = static_cast<int>(v);
@@ -958,14 +983,9 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         std::string s;
         if (getString(*m, "detection", s)) cfg.model.detection = s;
         if (getString(*m, "recognition", s)) cfg.model.recognition = s;
-        if (getString(*m, "backend", s)) cfg.model.backend = rk_accel::normalizeBackendName(s, cfg.model.backend);
-        if (getString(*m, "detectorBackend", s)) cfg.model.detectorBackend = rk_accel::normalizeBackendName(s, cfg.model.backend);
-        if (getString(*m, "recognitionBackend", s)) cfg.model.recognitionBackend = rk_accel::normalizeBackendName(s, cfg.model.backend);
+        if (getString(*m, "backend", s)) cfg.model.backend = s;
         bool b = false;
         if (getBool(*m, "autoFallback", b)) cfg.model.autoFallback = b;
-        if (getBool(*m, "int8Enabled", b)) cfg.model.int8Enabled = b;
-        if (cfg.model.detectorBackend.empty()) cfg.model.detectorBackend = cfg.model.backend;
-        if (cfg.model.recognitionBackend.empty()) cfg.model.recognitionBackend = cfg.model.backend;
     }
 
     // http
@@ -993,7 +1013,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
                     return false;
                 }
                 std::vector<std::uint8_t> plain;
-                if (!aes256gcmDecrypt(key, ct, plain, e, "poster.postUrl")) {
+                if (!aes256gcmDecrypt(key, ct, plain, e)) {
                     outErr = "postUrl 解密失败: " + e;
                     return false;
                 }
@@ -1050,7 +1070,6 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     if (const JsonValue* a = doc.find("acceleration"); a && a->isObject()) {
         bool b = false;
         if (getBool(*a, "enableOpenCL", b)) cfg.acceleration.enableOpenCL = b;
-        if (getBool(*a, "enableLibyuv", b)) cfg.acceleration.enableLibyuv = b;
         if (getBool(*a, "enableMpp", b)) cfg.acceleration.enableMpp = b;
         if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }
@@ -1080,17 +1099,17 @@ std::string WinJsonConfigStore::buildSettingsJson(const AppConfig& cfg, bool red
     std::vector<std::uint8_t> key;
     std::string err;
     if (encryptSensitive && !ensureOrLoadKey(key, err)) {
-        // 返回最小 JSON；错误信息用通用消息替代以防止泄漏敏感细节
+        // 返回最小 JSON，避免崩溃；错误由调用方决定是否记录/返回
         JsonValue o = JsonValue::makeObject();
         o.o["schemaVersion"] = JsonValue::makeNumber(1);
-        o.o["_error"] = JsonValue::makeString("key_error");
+        o.o["_error"] = JsonValue::makeString("key_error: " + err);
         return toJsonString(o, true);
     }
     JsonValue doc = toSettingsDocObject(cfg, redacted, encryptSensitive, encryptSensitive ? &key : nullptr, err);
     if (!err.empty()) {
         JsonValue o = JsonValue::makeObject();
         o.o["schemaVersion"] = JsonValue::makeNumber(1);
-        o.o["_error"] = JsonValue::makeString("encrypt_error");
+        o.o["_error"] = JsonValue::makeString("encrypt_error: " + err);
         return toJsonString(o, true);
     }
     return toJsonString(doc, true);
@@ -1103,21 +1122,9 @@ bool WinJsonConfigStore::writeAtomicallyWithBackup(const std::string& jsonPretty
         outErr = ioErr;
         return false;
     }
-    // 先备份旧文件，保留最近 5 个轮转副本
+    // 先备份旧文件
     if (std::filesystem::exists(configPath_)) {
         std::error_code ec;
-        // Rotate: config.json.bak.5 -> remove, .4->.5, .3->.4, .2->.3, .1->.2, .bak->.1
-        auto rotatePath = [&](int n) { return configPath_.parent_path() / (L"config.json.bak." + std::to_wstring(n)); };
-        std::filesystem::remove(rotatePath(5), ec);
-        for (int i = 4; i >= 1; --i) {
-            std::filesystem::path src = rotatePath(i);
-            if (std::filesystem::exists(src, ec)) {
-                std::filesystem::rename(src, rotatePath(i + 1), ec);
-            }
-        }
-        if (std::filesystem::exists(bakPath_, ec)) {
-            std::filesystem::rename(bakPath_, rotatePath(1), ec);
-        }
         std::filesystem::copy_file(configPath_, bakPath_, std::filesystem::copy_options::overwrite_existing, ec);
         // 备份失败不阻断写入（但会降低回滚能力）
     }
@@ -1386,16 +1393,16 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
 
     std::error_code ec;
     if (!std::filesystem::exists(configPath_)) return true;
+    const auto wt = std::filesystem::last_write_time(configPath_, ec);
+    if (ec) return true;
 
-    std::string txt;
-    std::filesystem::file_time_type wt;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        wt = std::filesystem::last_write_time(configPath_, ec);
-        if (ec) return true;
         if (lastWriteTime_ == wt) return true;
-        if (!readFileAll(configPath_, txt, outErr)) return false;
     }
+
+    std::string txt;
+    if (!readFileAll(configPath_, txt, outErr)) return false;
 
     AppConfig cfg;
     std::string parseErr;
@@ -1434,15 +1441,9 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
     const std::string pretty = buildSettingsJson(cfg, false, true);
     {
         std::lock_guard<std::mutex> lock(mu_);
-        const auto currentWt = std::filesystem::last_write_time(configPath_, ec);
-        if (!ec && currentWt != wt) {
-            // 文件在读取后被再次修改，放弃本次更新以避免覆盖
-            outErr = "配置在读取期间被外部修改，放弃热重载";
-            return false;
-        }
         cfg_ = cfg;
         lastGoodJsonPretty_ = pretty;
-        lastWriteTime_ = wt;
+        lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
     }
     outApplied = true;
     return true;

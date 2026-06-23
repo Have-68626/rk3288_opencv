@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -19,8 +19,6 @@
 #include <opencv2/core/ocl.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
-
-#include "AccelerationContract.h"
 
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
 #include <net.h>
@@ -307,10 +305,6 @@ static Stats computeStats(const std::vector<double> &samplesMs) {
 
 struct Record {
   std::string backend;
-  std::string backendRequested;
-  std::string backendEffective;
-  std::string backendReason = "ok";
-  std::string backendEvidence;
 
   std::string opencvModel;
   std::string opencvConfig;
@@ -442,8 +436,9 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      net.setInput(blob);
+      // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
+      net.setInput(blob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -481,10 +476,6 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
 
   Record r;
   r.backend = "opencv_dnn";
-  r.backendRequested = "opencv_dnn";
-  r.backendEffective = "opencv_dnn";
-  r.backendReason = "ok";
-  r.backendEvidence = "requested_backend=opencv_dnn";
   r.opencvModel = args.opencvModel;
   r.opencvConfig = args.opencvConfig;
   r.opencvFramework = args.opencvFramework;
@@ -609,8 +600,9 @@ static std::optional<Record> runQualcommBench(const Args &args,
   for (int i = 0; i < std::max(0, args.iters); i++) {
     try {
       const auto t0 = clock::now();
-      net.setInput(blob);
+      // Preprocessing hoisted outside loop to prevent redundant memory allocations
       const auto t1 = clock::now();
+      net.setInput(blob);
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -648,10 +640,6 @@ static std::optional<Record> runQualcommBench(const Args &args,
 
   Record r;
   r.backend = "qualcomm";
-  r.backendRequested = "qualcomm";
-  r.backendEffective = "opencv_dnn";
-  r.backendReason = "missing_dependency";
-  r.backendEvidence = "qualcomm_requested=1 fallback_backend=opencv_dnn";
   r.opencvModel = args.qualcommModel;
   r.opencvConfig = args.opencvConfig;
   r.opencvFramework = args.opencvFramework;
@@ -780,9 +768,10 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   ncnn::Extractor ex = net.create_extractor();
   for (int i = 0; i < std::max(0, args.iters); i++) {
     const auto t0 = clock::now();
+    // Preprocessing hoisted outside loop to prevent redundant memory allocations
+    const auto t1 = clock::now();
 
     if (ex.input(args.ncnnInput.c_str(), in) == 0) {
-      const auto t1 = clock::now();
       // t1_infer 用于排除 net.setInput() / ex.input() 的开销，确保 inferMs
       // 只计测推理时间
       const auto t1_infer = clock::now();
@@ -820,10 +809,6 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
 
   Record r;
   r.backend = "ncnn";
-  r.backendRequested = "ncnn";
-  r.backendEffective = "ncnn";
-  r.backendReason = "ok";
-  r.backendEvidence = "requested_backend=ncnn";
   r.ncnnParam = args.ncnnParam;
   r.ncnnBin = args.ncnnBin;
   r.ncnnInput = args.ncnnInput;
@@ -872,23 +857,17 @@ static bool writeCsv(const std::filesystem::path &path, std::uint64_t ts,
     return false;
   out << "ts,opencl_requested,opencl_effective,opencl_have_opencl,"
          "opencl_device_name,opencl_device_vendor,opencl_device_version,opencl_device_type,"
-         "opencl_reason,opencl_evidence,backend,backend_requested,backend_effective,backend_reason,backend_evidence,opencv_model,opencv_config,opencv_framework,"
+         "backend,opencv_model,opencv_config,opencv_framework,"
          "opencv_output,opencv_backend,opencv_target,ncnn_param,ncnn_bin,ncnn_"
          "input,ncnn_output,ncnn_threads,ncnn_lightmode,input_w,input_h,scale,"
          "mean_b,mean_g,mean_r,swap_rb,warmup,iters,seed,ok_iters,err_iters,"
          "wall_ms,cpu_ms,cpu_util_percent,mean_ms,p50_ms,p95_ms,min_ms,max_ms,"
          "pre_mean_ms,pre_p50_ms,pre_p95_ms,infer_mean_ms,infer_p50_ms,infer_"
          "p95_ms,rss_before_bytes,rss_after_bytes,rss_peak_bytes\n";
-  const std::string oclReason =
-      rk_accel::normalizeReasonCode("", oclRequested, oclEffective);
-  const std::string oclEvidence =
-      "haveOpenCL=" + std::to_string(haveOpenCL ? 1 : 0) + " device=" +
-      oclDeviceName + " vendor=" + oclDeviceVendor + " type=" + oclDeviceType;
   for (const auto &r : recs) {
     out << ts << "," << (oclRequested ? 1 : 0) << "," << (oclEffective ? 1 : 0) << "," << (haveOpenCL ? 1 : 0) << ","
         << "\"" << oclDeviceName << "\",\"" << oclDeviceVendor << "\",\"" << oclDeviceVersion << "\",\"" << oclDeviceType << "\","
-        << oclReason << ",\"" << oclEvidence << "\","
-        << r.backend << "," << r.backendRequested << "," << r.backendEffective << "," << r.backendReason << ",\"" << r.backendEvidence << "\","
+        << r.backend << ","
         << r.opencvModel << "," << r.opencvConfig << "," << r.opencvFramework
         << "," << r.opencvOutput << "," << r.opencvBackend << ","
         << r.opencvTarget << "," << r.ncnnParam << "," << r.ncnnBin << ","
@@ -933,7 +912,7 @@ static bool writeJson(const std::filesystem::path &path, std::uint64_t ts,
       << ",";
   out << "\"input_w\":" << args.inputW << ",";
   out << "\"input_h\":" << args.inputH << ",";
-  out << "\"scale\":" << (std::isfinite(args.scale) ? std::to_string(args.scale) : "null") << ",";
+  out << "\"scale\":" << args.scale << ",";
   out << "\"mean_b\":" << args.meanB << ",";
   out << "\"mean_g\":" << args.meanG << ",";
   out << "\"mean_r\":" << args.meanR << ",";
@@ -983,15 +962,6 @@ static bool writeJson(const std::filesystem::path &path, std::uint64_t ts,
   out << "\"opencl_requested\":" << (oclRequested ? "true" : "false") << ",";
   out << "\"opencl_effective\":" << (oclEffective ? "true" : "false") << ",";
   out << "\"opencl_have_opencl\":" << (haveOpenCL ? "true" : "false") << ",";
-  out << "\"opencl_reason\":\""
-      << jsonEscape(
-             rk_accel::normalizeReasonCode("", oclRequested, oclEffective))
-      << "\",";
-  out << "\"opencl_evidence\":\""
-      << jsonEscape("haveOpenCL=" + std::to_string(haveOpenCL ? 1 : 0) +
-                    " device=" + oclDeviceName + " vendor=" + oclDeviceVendor +
-                    " type=" + oclDeviceType)
-      << "\",";
   out << "\"opencl_device_name\":\"" << jsonEscape(oclDeviceName) << "\",";
   out << "\"opencl_device_vendor\":\"" << jsonEscape(oclDeviceVendor) << "\",";
   out << "\"opencl_device_version\":\"" << jsonEscape(oclDeviceVersion)
@@ -1004,10 +974,6 @@ static bool writeJson(const std::filesystem::path &path, std::uint64_t ts,
     const auto &r = recs[i];
     out << "{";
     out << "\"backend\":\"" << jsonEscape(r.backend) << "\",";
-    out << "\"backendRequested\":\"" << jsonEscape(r.backendRequested) << "\",";
-    out << "\"backendEffective\":\"" << jsonEscape(r.backendEffective) << "\",";
-    out << "\"backendReason\":\"" << jsonEscape(r.backendReason) << "\",";
-    out << "\"backendEvidence\":\"" << jsonEscape(r.backendEvidence) << "\",";
     out << "\"opencv_model\":\"" << jsonEscape(r.opencvModel) << "\",";
     out << "\"opencv_config\":\"" << jsonEscape(r.opencvConfig) << "\",";
     out << "\"opencv_framework\":\"" << jsonEscape(r.opencvFramework) << "\",";
@@ -1022,7 +988,7 @@ static bool writeJson(const std::filesystem::path &path, std::uint64_t ts,
     out << "\"ncnn_lightmode\":" << (r.ncnnLightmode ? "true" : "false") << ",";
     out << "\"input_w\":" << r.inputW << ",";
     out << "\"input_h\":" << r.inputH << ",";
-    out << "\"scale\":" << (std::isfinite(r.scale) ? std::to_string(r.scale) : "null") << ",";
+    out << "\"scale\":" << r.scale << ",";
     out << "\"mean_b\":" << r.meanB << ",";
     out << "\"mean_g\":" << r.meanG << ",";
     out << "\"mean_r\":" << r.meanR << ",";
@@ -1200,8 +1166,6 @@ int main(int argc, char **argv) {
             << " opencl_requested=" << (oclRequested ? "true" : "false")
             << " opencl_effective=" << (oclEffective ? "true" : "false")
             << " opencl_have_opencl=" << (haveOpenCL ? "true" : "false")
-            << " opencl_reason="
-            << rk_accel::normalizeReasonCode("", oclRequested, oclEffective)
             << " opencl_device_name=" << oclDeviceName
             << " opencl_device_vendor=" << oclDeviceVendor
             << " opencl_device_version=" << oclDeviceVersion
@@ -1209,9 +1173,6 @@ int main(int argc, char **argv) {
 
   for (const auto &r : records) {
     std::cout << "BENCH_RESULT backend=" << r.backend
-              << " backend_requested=" << r.backendRequested
-              << " backend_effective=" << r.backendEffective
-              << " backend_reason=" << r.backendReason
               << " total_p95_ms=" << r.stats.p95Ms
               << " pre_p95_ms=" << r.preprocessStats.p95Ms
               << " infer_p95_ms=" << r.inferStats.p95Ms

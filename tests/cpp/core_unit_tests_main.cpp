@@ -40,8 +40,6 @@ bool test_event_manager_unique_id();
 bool test_http_faces_server_path_validation();
 bool test_inference_throttle_parse_and_clamp();
 bool test_connection_quota_acquire_release();
-bool test_accel_contract_normalize_key_and_backend();
-bool test_accel_contract_format_self_check_line();
 
 bool test_file_hash_known_content();
 bool test_file_hash_empty_file();
@@ -62,8 +60,6 @@ int main() {
         {"event_manager_unique_id", test_event_manager_unique_id},
         {"http_faces_server_path_validation", test_http_faces_server_path_validation},
         {"connection_quota_acquire_release", test_connection_quota_acquire_release},
-        {"accel_contract_normalize_key_and_backend", test_accel_contract_normalize_key_and_backend},
-        {"accel_contract_format_self_check_line", test_accel_contract_format_self_check_line},
         {"file_hash_known_content", test_file_hash_known_content},
         {"file_hash_empty_file", test_file_hash_empty_file},
         {"file_hash_invalid_path", test_file_hash_invalid_path},

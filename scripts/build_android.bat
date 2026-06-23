@@ -21,11 +21,11 @@ if defined ANDROID_NDK_HOME (
         echo 请设置 ANDROID_NDK_HOME，或设置 ANDROID_SDK_ROOT/ANDROID_HOME 指向 Android SDK 根目录。
         exit /b 1
     )
-    for /f "tokens=*" %%d in ('dir "%SDK_ROOT%\ndk" /b 2^>nul ^| findstr /r "^[0-9]" ^| sort /r') do (
-        set "NDK_ROOT=%SDK_ROOT%\ndk\%%d"
-        goto :found_ndk
+    if exist "%SDK_ROOT%\ndk\27.0.12077973" (
+        set "NDK_ROOT=%SDK_ROOT%\ndk\27.0.12077973"
+    ) else if exist "%SDK_ROOT%\ndk\25.1.8937393" (
+        set "NDK_ROOT=%SDK_ROOT%\ndk\25.1.8937393"
     )
-    :found_ndk
 )
 
 :: 2. CMake (from AndroidStudioSDK)

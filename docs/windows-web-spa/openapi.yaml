@@ -135,33 +135,6 @@ paths:
       responses:
         "200":
           description: OK
-  /api/v1/models:
-    get:
-      summary: 获取模型状态列表
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Envelope"
-  /api/v1/models/reload:
-    post:
-      summary: 重载指定模型
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [id]
-              properties:
-                id:
-                  type: string
-                  description: 模型 ID
-      responses:
-        "200":
-          description: OK
 components:
   schemas:
     Envelope:

@@ -100,7 +100,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_FLIP_X_PREFIX = "pref_flip_x_";
     private static final String PREF_FLIP_Y_PREFIX = "pref_flip_y_";
     private static final String PREF_ACCEL_OPENCL = "pref_accel_opencl";
-    private static final String PREF_ACCEL_LIBYUV = "pref_accel_libyuv";
     private static final String PREF_ACCEL_MPP = "pref_accel_mpp";
     private static final String PREF_ACCEL_QUALCOMM = "pref_accel_qualcomm";
     private static final String PREF_DETECTION_THROTTLE_MODE = "pref_detection_throttle_mode";
@@ -108,9 +107,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_INFERENCE_THROTTLE_MODE = "pref_inference_throttle_mode";
     private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
     private static final String TAG = "MainActivity";
-
-    /** Sentinel: no real camera device, external frame input only */
-    private static final String NO_CAMERA_ID = null;
 
     private static final int DETECTION_INTERVAL_DEFAULT_MS = 150;
     private static final int DETECTION_INTERVAL_MIN_MS = 80;
@@ -196,7 +192,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     " engineInit=" + engineInitialized + " isRunning=" + isRunning);
                 if (monitorView != null) monitorView.setVisibility(View.GONE);
                 // Auto-recover: if Engine is ready but monitoring stopped, restart
-                if (pendingResumeStart && engineInitialized && !isRunning && selectedCameraId != null) {
+                if (pendingResumeStart && engineInitialized && !isRunning && selectedCameraId >= 0) {
                     pendingResumeStart = false;
                     AppLog.i("MainActivity", "surfaceCreated",
                         "Surface ready, resuming monitoring (delay 100ms)");
@@ -245,7 +241,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Runnable statsUpdater;
     private Runnable captureWatchdog;
     
-    private String selectedCameraId = "0";
+    private int selectedCameraId = 0;
     private List<CameraInfo> availableCameras = new ArrayList<>();
     private ArrayAdapter<String> cameraAdapter;
     private boolean isSpinnerInitialized = false;
@@ -608,7 +604,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             nativeConfigureExternalInput(true, 0, 1);
             activeCaptureScheme = s.schemeOrNull == null ? CaptureScheme.CAMERA2 : s.schemeOrNull;
             activeCapture = (activeCaptureScheme == CaptureScheme.CAMERAX) ? cameraXCapture : camera2Capture;
-            boolean started = activeCapture != null && activeCapture.start(selectedCameraId);
+            boolean started = activeCapture != null && activeCapture.start(String.valueOf(selectedCameraId));
             if (!started) {
                 String capName = activeCapture == null ? "N/A" : activeCapture.name();
                 nativeConfigureExternalInput(false, 0, 1);
@@ -673,7 +669,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         AppLog.w("MockMode", "performMockFallback",
             "Mock source not responding after " + MOCK_FALLBACK_TIMEOUT_MS + "ms, falling back to camera");
         Toast.makeText(this, "Mock 源无响应，自动切换到相机模式", Toast.LENGTH_LONG).show();
-        selectedCameraId = "0";
+        selectedCameraId = 0;
         mockFilePath = null;
         isSpinnerInitialized = true;
         refreshFlipFromPrefs(true);
@@ -731,16 +727,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         try {
             int newId = Integer.parseInt(info.id);
-            if (info.id.equals(selectedCameraId)) return;
+            if (newId == selectedCameraId) return;
 
-            selectedCameraId = String.valueOf(newId);
+            selectedCameraId = newId;
             mockFilePath = null;
             refreshFlipFromPrefs(true);
             AppLog.i("MainActivity", "onItemSelected", "切换 Camera ID: " + selectedCameraId);
 
             getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                     .edit()
-                    .putInt(PREF_CAMERA_ID, Integer.parseInt(selectedCameraId))
+                    .putInt(PREF_CAMERA_ID, selectedCameraId)
                     .apply();
 
             if (isRunning) {
@@ -1289,7 +1285,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     // Native methods
     public native String stringFromJNI();
-    public native boolean nativeInit(String cameraId, String cascadePath, String storagePath);
+    public native boolean nativeInit(int cameraId, String cascadePath, String storagePath);
     public native boolean nativeInitFile(String filePath, String cascadePath, String storagePath);
     public native void nativeStart();
     public native void nativeStop();
@@ -1347,7 +1343,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         DeviceClass deviceClass = DeviceRuntime.get().getDeviceClass();
 
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        selectedCameraId = String.valueOf(prefs.getInt(PREF_CAMERA_ID, 0));
+        selectedCameraId = prefs.getInt(PREF_CAMERA_ID, 0);
         recognitionEventsVisible = prefs.getBoolean(PREF_EVENTS_VISIBLE, true);
         captureAutoEnabled = prefs.getBoolean(PREF_CAPTURE_AUTO, true);
         String schemeRaw = prefs.getString(PREF_CAPTURE_SCHEME, CaptureScheme.CAMERA2.name());
@@ -1654,7 +1650,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (currentPhotoPath == null) return;
         
         mockFilePath = currentPhotoPath;
-        selectedCameraId = null; // Mock Flag
+        selectedCameraId = -1; // Mock Flag
         
         AppLog.i("MainActivity", "handleSystemCameraResult", "Photo captured: " + mockFilePath);
         Toast.makeText(this, "Photo Captured", Toast.LENGTH_SHORT).show();
@@ -1683,7 +1679,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         if (direct != null && !direct.isEmpty()) {
             mockFilePath = direct;
-            selectedCameraId = null;
+            selectedCameraId = -1;
             isSpinnerInitialized = true;
             refreshFlipFromPrefs(true);
             if (isRunning) {
@@ -1881,7 +1877,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         " elapsedMs=" + elapsedMs + " speedKBps=" + (finalCopied / 1024L * 1000L / elapsedMs));
 
                     mockFilePath = finalOutPath;
-                    selectedCameraId = null;
+                    selectedCameraId = -1;
                     isSpinnerInitialized = true;
                     refreshFlipFromPrefs(true);
 
@@ -1977,7 +1973,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         try {
             CameraManager mgr = (CameraManager) getSystemService(CAMERA_SERVICE);
             if (mgr == null) return "相机预检失败：CameraManager 不可用";
-            CameraCharacteristics chars = mgr.getCameraCharacteristics(selectedCameraId);
+            CameraCharacteristics chars = mgr.getCameraCharacteristics(String.valueOf(selectedCameraId));
             StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             Size[] sizes = map != null ? map.getOutputSizes(ImageFormat.YUV_420_888) : null;
             Range<Integer>[] fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
@@ -2283,15 +2279,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         try {
             android.system.Os.setenv("RK_USE_OPENCL", prefs.getBoolean(PREF_ACCEL_OPENCL, false) ? "1" : "0", true);
-            android.system.Os.setenv("RK_USE_LIBYUV", prefs.getBoolean(PREF_ACCEL_LIBYUV, true) ? "1" : "0", true);
             android.system.Os.setenv("RK_USE_MPP", prefs.getBoolean(PREF_ACCEL_MPP, false) ? "1" : "0", true);
             android.system.Os.setenv("RK_USE_QUALCOMM", prefs.getBoolean(PREF_ACCEL_QUALCOMM, false) ? "1" : "0", true);
         } catch (Exception e) {
             AppLog.e("MainActivity", "initEngine", "Failed to setenv for acceleration", e);
         }
 
-        boolean wantCamera = (selectedCameraId != null && mockFilePath == null);
-        boolean wantMock = (selectedCameraId == null && mockFilePath != null);
+        boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
+        boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
         if (wantCamera && permissionStateMachine != null && !permissionStateMachine.isRuntimeGranted()) {
             engineInitialized = false;
             firstFrameReceived = false;
@@ -2337,7 +2332,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 });
             }).start();
         } else if (wantCamera) {
-            engineInitialized = nativeInit(NO_CAMERA_ID, cascadePath, storagePath);
+            engineInitialized = nativeInit(-1, cascadePath, storagePath);
             if (engineInitialized) {
                 applyFlipToNative();
                 applyInferenceThrottleToNative();
@@ -2397,8 +2392,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private String getFlipSourceKey() {
-        boolean wantCamera = (selectedCameraId != null && mockFilePath == null);
-        return wantCamera ? ("cam_" + (selectedCameraId != null ? selectedCameraId : "null")) : "mock";
+        boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
+        return wantCamera ? ("cam_" + selectedCameraId) : "mock";
     }
 
     private void refreshFlipFromPrefs(boolean applyToNativeIfReady) {
@@ -2411,7 +2406,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         boolean hasY = prefs.contains(ky);
 
         boolean defaultX = false;
-        if (selectedCameraId != null && mockFilePath == null) {
+        if (selectedCameraId >= 0 && mockFilePath == null) {
             defaultX = isFrontCamera(selectedCameraId);
         }
         boolean nextX = hasX ? prefs.getBoolean(kx, defaultX) : defaultX;
@@ -2438,11 +2433,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
     }
 
-    private boolean isFrontCamera(String camId) {
+    private boolean isFrontCamera(int camId) {
         try {
             android.hardware.camera2.CameraManager mgr = (android.hardware.camera2.CameraManager) getSystemService(Context.CAMERA_SERVICE);
             if (mgr == null) return false;
-            android.hardware.camera2.CameraCharacteristics chars = mgr.getCameraCharacteristics(camId);
+            android.hardware.camera2.CameraCharacteristics chars = mgr.getCameraCharacteristics(String.valueOf(camId));
             Integer facing = chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING);
             return facing != null && facing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT;
         } catch (Throwable ignored) {
@@ -2544,7 +2539,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         StatsRepository.getInstance().reportCaptureFrameTimestampNs(ts);
         if (first) {
             String src = activeCapture != null ? activeCapture.name() : "N/A";
-            AppLog.i("MainActivity", "capture", "首帧推入 ok tsNs=" + ts + " src=" + src + " camId=" + (selectedCameraId != null ? selectedCameraId : "null"));
+            AppLog.i("MainActivity", "capture", "首帧推入 ok tsNs=" + ts + " src=" + src + " camId=" + selectedCameraId);
         }
     }
 
@@ -2601,8 +2596,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             public void run() {
                 if (!isRunning) return;
                 long now = SystemClock.elapsedRealtime();
-                boolean wantCamera = (selectedCameraId != null && mockFilePath == null);
-                boolean wantMock = (selectedCameraId == null && mockFilePath != null);
+                boolean wantCamera = (selectedCameraId >= 0 && mockFilePath == null);
+                boolean wantMock = (selectedCameraId == -1 && mockFilePath != null);
                 boolean captureOk = !wantCamera || (captureEverPushed && now - lastPushOkRealtimeMs < 1200);
                 boolean renderStalled = firstFrameReceived && now - lastPreviewRenderOkRealtimeMs > 2200;
 
@@ -2678,7 +2673,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 " capAgeMs=" + capAge +
                 " renderAgeMs=" + rendAge +
                 " scheme=" + src +
-                " camId=" + (selectedCameraId != null ? selectedCameraId : "null") +
+                " camId=" + selectedCameraId +
                 " mock=" + (mockFilePath != null);
     }
 
@@ -2720,7 +2715,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private void updateSystemReadyUi(String reason) {
         boolean runtimeGranted = permissionStateMachine != null && permissionStateMachine.isRuntimeGranted();
-        boolean permissionOk = runtimeGranted || (selectedCameraId == null && mockFilePath != null);
+        boolean permissionOk = runtimeGranted || (selectedCameraId == -1 && mockFilePath != null);
         boolean ready = permissionOk && engineInitialized && isRunning && firstFrameReceived;
         if (ready) {
             if (!lastReadyVisible) {
@@ -2865,7 +2860,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             return;
         }
         mockFilePath = url;
-        selectedCameraId = null;
+        selectedCameraId = -1;
         isSpinnerInitialized = true;
         refreshFlipFromPrefs(true);
         initEngine();
@@ -2880,14 +2875,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
         
         String input;
-        if (selectedCameraId == null && mockFilePath != null) {
+        if (selectedCameraId == -1 && mockFilePath != null) {
             input = mockFilePath;
         } else {
             // Camera source - Use Pipe (requires native implementation)
             // For now, we pass "pipe:0" to test command construction, 
             // but show warning that stream won't flow without JNI pipe feed.
             input = "pipe:0";
-            if (selectedCameraId != null) {
+            if (selectedCameraId != -1) {
                  Toast.makeText(this, "Camera push requires native pipe (Not fully implemented)", Toast.LENGTH_LONG).show();
             } else {
                  Toast.makeText(this, "请先设置 Mock 源或选择摄像头", Toast.LENGTH_SHORT).show();
@@ -2941,7 +2936,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void onPermissionStateChanged(@NonNull PermissionStateMachine.State state, @NonNull List<String> missingRuntimePermissions) {
         AppLog.enter("MainActivity", "onPermissionStateChanged");
         boolean granted = (state == PermissionStateMachine.State.GRANTED);
-        if (!granted && selectedCameraId != null) {
+        if (!granted && selectedCameraId >= 0) {
             engineInitialized = false;
             firstFrameReceived = false;
         }
@@ -2992,7 +2987,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
                     // Check if this matches selected ID
                     try {
-                        if (id.equals(selectedCameraId)) {
+                        if (Integer.parseInt(id) == selectedCameraId) {
                             selectionIndex = i;
                         }
                     } catch (NumberFormatException e) {
@@ -3016,7 +3011,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         displayNames.add("Mock Camera (System App)");
         
         // If current selection is -1 (Mock), set index to last
-        if (selectedCameraId == null) {
+        if (selectedCameraId == -1) {
             selectionIndex = availableCameras.size() - 1;
         }
 
@@ -3064,7 +3059,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             activeCapture = null;
         }
-        pendingResumeStart = (isRunning && selectedCameraId != null);
+        pendingResumeStart = (isRunning && selectedCameraId >= 0);
     }
 
     @Override

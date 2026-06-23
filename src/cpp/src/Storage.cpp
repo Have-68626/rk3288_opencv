@@ -8,12 +8,7 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
-#include <mutex>
 #include <opencv2/imgcodecs.hpp>
-
-namespace {
-    std::mutex g_logMutex;
-}
 
 bool Storage::ensureDirectory(const std::string& path) {
     if (path.empty()) return false;
@@ -67,9 +62,8 @@ bool Storage::saveImage(const std::string& filename, const cv::Mat& frame) {
 }
 
 bool Storage::appendLog(const std::string& filename, const std::string& content) {
-    std::lock_guard<std::mutex> lock(g_logMutex);
     std::ofstream outfile;
-    outfile.open(filename, std::ios_base::app);
+    outfile.open(filename, std::ios_base::app); // Append mode
     if (!outfile.is_open()) return false;
     outfile << content << std::endl;
     return true;

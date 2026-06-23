@@ -46,7 +46,7 @@ final class CameraXCaptureController implements CaptureController {
     private final RotationDegreesProvider deviceRotationDegrees;
 
     private ExecutorService analyzerExecutor;
-    private volatile ProcessCameraProvider provider;
+    private ProcessCameraProvider provider;
     private Camera camera;
     private ImageAnalysis analysis;
 

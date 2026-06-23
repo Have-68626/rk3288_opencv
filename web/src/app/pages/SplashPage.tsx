@@ -20,10 +20,15 @@ export function SplashPage() {
     if (did.current) return
     did.current = true
 
+    // 启动时先尝试拉取后端 settings：
+    // - 好处：用户进入设置页时已有数据；
+    // - 失败也不阻断：允许“离线/后端未启动”进入页面查看提示。
     refreshServerSettings({ silent: true }).then((ok) => {
       if (ok) nav(startPageToRoute(prefs.startPage), { replace: true })
+      // 失败则停留在启动页，让用户决定“重试/继续”
     })
-  }, [refreshServerSettings, nav, prefs.startPage])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div

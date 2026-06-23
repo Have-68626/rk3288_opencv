@@ -1,5 +1,4 @@
 #include "rk_win/WinConfig.h"
-#include "AccelerationContract.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -10,7 +9,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
-#include <iostream>
 #include <vector>
 
 namespace rk_win {
@@ -20,15 +18,48 @@ constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
 
+std::wstring getEnvW(const wchar_t* name) {
+#ifdef _WIN32
+    wchar_t buf[32768];
+    DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) return L"";
+    return std::wstring(buf, buf + n);
+#else
+    (void)name;
+    return L"";
+#endif
+}
+
+std::string utf8FromWide(const std::wstring& ws) {
+    if (ws.empty()) return {};
+#ifdef _WIN32
+    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
+    return out;
+#else
+    return std::string(ws.begin(), ws.end());
+#endif
+}
+
+std::wstring wFromUtf8(const std::string& s) {
+    if (s.empty()) return L"";
+#ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return L"";
+    std::wstring out(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
+    return out;
+#else
+    return std::wstring(s.begin(), s.end());
+#endif
+}
+
 std::wstring readIniW(const std::filesystem::path& iniPath, const wchar_t* section, const wchar_t* key, const wchar_t* def) {
 #ifdef _WIN32
-    wchar_t out[32768];
+    wchar_t out[4096];
     DWORD n = GetPrivateProfileStringW(section, key, def, out, static_cast<DWORD>(std::size(out)), iniPath.wstring().c_str());
-    // 若 n == size-1，值可能被截断；日志记录以便排查
-    if (n >= static_cast<DWORD>(std::size(out)) - 1) {
-        std::cerr << "WinConfig: readIniW 缓冲区可能不足, key=" << (key ? "" : "null")
-                  << " n=" << n << " max=" << (std::size(out) - 1) << std::endl;
-    }
     return std::wstring(out, out + n);
 #else
     (void)iniPath;
@@ -59,7 +90,6 @@ std::uint64_t readIniU64(const std::filesystem::path& iniPath, const wchar_t* se
     try {
         return static_cast<std::uint64_t>(std::stoull(s));
     } catch (...) {
-        std::cerr << "WinConfig: readIniU64 解析失败 value='" << s << "'" << std::endl;
         return def;
     }
 }
@@ -70,7 +100,6 @@ double readIniDouble(const std::filesystem::path& iniPath, const wchar_t* sectio
     try {
         return std::stod(s);
     } catch (...) {
-        std::cerr << "WinConfig: readIniDouble 解析失败 value='" << s << "'" << std::endl;
         return def;
     }
 }
@@ -106,64 +135,22 @@ std::wstring toWStringDouble(double v) {
     return buf;
 }
 
-}  // namespace
-
-// ─── 共享工具函数实现 ──────────────────────────────────────────
-
-std::wstring getEnvW(const wchar_t* name) {
-#ifdef _WIN32
-    wchar_t buf[32768];
-    DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-    if (n == 0 || n >= std::size(buf)) return L"";
-    return std::wstring(buf, buf + n);
-#else
-    (void)name;
-    return L"";
-#endif
-}
-
-std::string utf8FromWide(const std::wstring& ws) {
-    if (ws.empty()) return {};
-#ifdef _WIN32
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-#else
-    return std::string(ws.begin(), ws.end());
-#endif
-}
-
-std::wstring wideFromUtf8(const std::string& s) {
-    if (s.empty()) return L"";
-#ifdef _WIN32
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    if (n <= 0) return L"";
-    std::wstring out(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-#else
-    return std::wstring(s.begin(), s.end());
-#endif
-}
-
-std::string asciiLower(std::string s) {
+static std::string asciiLower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
 }
 
-std::string normalizeInferenceThrottleMode(std::string s) {
+static std::string normalizeInferenceThrottleMode(std::string s) {
     s = asciiLower(std::move(s));
     if (s == "auto" || s == "manual" || s == "off") return s;
     return "auto";
 }
 
-int clampInferenceIntervalMs(int v) {
-    return std::clamp(v, 80, 500);
+static int clampInferenceIntervalMs(int v) {
+    return std::clamp(v, kInferenceIntervalMinMs, kInferenceIntervalMaxMs);
 }
 
-// ─── 路径解析 ─────────────────────────────────────────────────
+}  // namespace
 
 std::filesystem::path getExeDir() {
 #ifdef _WIN32
@@ -199,7 +186,6 @@ AppConfig loadConfigFromIniOrDefault() {
 
     cfg.recognition.cascadePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"cascade_path", L"assets/lbpcascade_frontalface.xml")));
     cfg.recognition.databasePath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"database_path", L"storage/win_face_db.yml")));
-    cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"arcface_model_path", L"models/arcface_w600k_r50.onnx")));
     cfg.recognition.minFaceSizePx = readIniInt(cfg.configPath, L"recognition", L"min_face_size_px", cfg.recognition.minFaceSizePx);
     cfg.recognition.identifyThreshold = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold", cfg.recognition.identifyThreshold);
     cfg.recognition.enrollSamples = readIniInt(cfg.configPath, L"recognition", L"enroll_samples", cfg.recognition.enrollSamples);
@@ -282,23 +268,8 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.display.anisoLevel = readIniInt(cfg.configPath, L"display", L"aniso_level", cfg.display.anisoLevel);
 
     cfg.acceleration.enableOpenCL = readIniBool(cfg.configPath, L"acceleration", L"enable_opencl", cfg.acceleration.enableOpenCL);
-    cfg.acceleration.enableLibyuv = readIniBool(cfg.configPath, L"acceleration", L"enable_libyuv", cfg.acceleration.enableLibyuv);
     cfg.acceleration.enableMpp = readIniBool(cfg.configPath, L"acceleration", L"enable_mpp", cfg.acceleration.enableMpp);
     cfg.acceleration.enableQualcomm = readIniBool(cfg.configPath, L"acceleration", L"enable_qualcomm", cfg.acceleration.enableQualcomm);
-
-    cfg.model.detection = utf8FromWide(readIniW(cfg.configPath, L"model", L"detection", wideFromUtf8(cfg.model.detection).c_str()));
-    cfg.model.recognition = utf8FromWide(readIniW(cfg.configPath, L"model", L"recognition", wideFromUtf8(cfg.model.recognition).c_str()));
-    cfg.model.backend = rk_accel::normalizeBackendName(
-        utf8FromWide(readIniW(cfg.configPath, L"model", L"backend", wideFromUtf8(cfg.model.backend).c_str())),
-        cfg.model.backend);
-    cfg.model.detectorBackend = rk_accel::normalizeBackendName(
-        utf8FromWide(readIniW(cfg.configPath, L"model", L"detector_backend", wideFromUtf8(cfg.model.backend).c_str())),
-        cfg.model.backend);
-    cfg.model.recognitionBackend = rk_accel::normalizeBackendName(
-        utf8FromWide(readIniW(cfg.configPath, L"model", L"recognition_backend", wideFromUtf8(cfg.model.backend).c_str())),
-        cfg.model.backend);
-    cfg.model.autoFallback = readIniBool(cfg.configPath, L"model", L"auto_fallback", cfg.model.autoFallback);
-    cfg.model.int8Enabled = readIniBool(cfg.configPath, L"model", L"int8_enabled", cfg.model.int8Enabled);
 
     return cfg;
 }
@@ -314,12 +285,11 @@ bool saveConfigToIni(const AppConfig& cfg) {
 
     ok = writeIniW(cfg.configPath, L"recognition", L"cascade_path", cfg.recognition.cascadePath.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"database_path", cfg.recognition.databasePath.wstring()) && ok;
-    ok = writeIniW(cfg.configPath, L"recognition", L"arcface_model_path", cfg.recognition.arcFaceModelPath.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"min_face_size_px", toWStringInt(cfg.recognition.minFaceSizePx)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold", toWStringDouble(cfg.recognition.identifyThreshold)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"enroll_samples", toWStringInt(cfg.recognition.enrollSamples)) && ok;
 
-    ok = writeIniW(cfg.configPath, L"inference", L"throttle_mode", wideFromUtf8(normalizeInferenceThrottleMode(cfg.inference.throttleMode))) && ok;
+    ok = writeIniW(cfg.configPath, L"inference", L"throttle_mode", wFromUtf8(normalizeInferenceThrottleMode(cfg.inference.throttleMode))) && ok;
     ok = writeIniW(cfg.configPath, L"inference", L"interval_ms", toWStringInt(clampInferenceIntervalMs(cfg.inference.intervalMs))) && ok;
 
     ok = writeIniW(cfg.configPath, L"dnn", L"enable", toWStringInt(cfg.dnn.enable ? 1 : 0)) && ok;
@@ -340,7 +310,7 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"http", L"port", toWStringInt(cfg.http.port)) && ok;
 
     ok = writeIniW(cfg.configPath, L"poster", L"enable", toWStringInt(cfg.poster.enable ? 1 : 0)) && ok;
-    ok = writeIniW(cfg.configPath, L"poster", L"post_url", wideFromUtf8(cfg.poster.postUrl)) && ok;
+    ok = writeIniW(cfg.configPath, L"poster", L"post_url", wFromUtf8(cfg.poster.postUrl)) && ok;
     ok = writeIniW(cfg.configPath, L"poster", L"throttle_ms", toWStringInt(cfg.poster.throttleMs)) && ok;
     ok = writeIniW(cfg.configPath, L"poster", L"backoff_min_ms", toWStringInt(cfg.poster.backoffMinMs)) && ok;
     ok = writeIniW(cfg.configPath, L"poster", L"backoff_max_ms", toWStringInt(cfg.poster.backoffMaxMs)) && ok;
@@ -372,16 +342,8 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"display", L"aniso_level", toWStringInt(cfg.display.anisoLevel)) && ok;
 
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_opencl", toWStringInt(cfg.acceleration.enableOpenCL ? 1 : 0)) && ok;
-    ok = writeIniW(cfg.configPath, L"acceleration", L"enable_libyuv", toWStringInt(cfg.acceleration.enableLibyuv ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_mpp", toWStringInt(cfg.acceleration.enableMpp ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_qualcomm", toWStringInt(cfg.acceleration.enableQualcomm ? 1 : 0)) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"detection", wideFromUtf8(cfg.model.detection)) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"recognition", wideFromUtf8(cfg.model.recognition)) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"backend", wideFromUtf8(rk_accel::normalizeBackendName(cfg.model.backend, "opencv_dnn"))) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"detector_backend", wideFromUtf8(rk_accel::normalizeBackendName(cfg.model.detectorBackend, "opencv_dnn"))) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"recognition_backend", wideFromUtf8(rk_accel::normalizeBackendName(cfg.model.recognitionBackend, "opencv_dnn"))) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"auto_fallback", toWStringInt(cfg.model.autoFallback ? 1 : 0)) && ok;
-    ok = writeIniW(cfg.configPath, L"model", L"int8_enabled", toWStringInt(cfg.model.int8Enabled ? 1 : 0)) && ok;
 
     return ok;
 }

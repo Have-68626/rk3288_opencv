@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Compat.h"
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -66,7 +65,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    Impl* impl_ = nullptr;
 };
 
 }  // namespace rk_win

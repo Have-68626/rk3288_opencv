@@ -21,14 +21,17 @@ ArcFaceAdapter::~ArcFaceAdapter() = default;
 bool ArcFaceAdapter::load(const std::string& modelPath, std::string& err) {
     loaded_ = false;
     std::string ext = std::filesystem::path(modelPath).extension().string();
+    std::string base = std::filesystem::path(modelPath).parent_path().string();
+    if (!base.empty() && base.back() != '/') base += "/";
+
     if (ext == ".param" || ext == ".bin") {
         cfg_.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
         if (ext == ".param") {
             cfg_.ncnnParam = modelPath;
-            cfg_.ncnnBin = (std::filesystem::path(modelPath).parent_path() / std::filesystem::path(modelPath).stem().replace_extension(".bin")).string();
+            cfg_.ncnnBin = base + std::filesystem::path(modelPath).stem().string() + ".bin";
         } else {
             cfg_.ncnnBin = modelPath;
-            cfg_.ncnnParam = (std::filesystem::path(modelPath).parent_path() / std::filesystem::path(modelPath).stem().replace_extension(".param")).string();
+            cfg_.ncnnParam = base + std::filesystem::path(modelPath).stem().string() + ".param";
         }
         rklog::logInfo("ArcFaceAdapter", "load", "ncnn backend selected for: " + modelPath);
     } else {
@@ -40,8 +43,15 @@ bool ArcFaceAdapter::load(const std::string& modelPath, std::string& err) {
     if (!inner_.initialize(cfg_, &err)) {
         rklog::logWarn("ArcFaceAdapter", "load", "initialize failed: " + err);
         if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) {
-            rklog::logWarn("ArcFaceAdapter", "load",
-                "ncnn backend failed; fallback requires an ONNX/OpenCV model, .param/.bin cannot be used by OpenCV DNN");
+            rklog::logWarn("ArcFaceAdapter", "load", "falling back to OpenCV DNN");
+            cfg_.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
+            cfg_.opencvModel = modelPath;
+            if (!inner_.initialize(cfg_, &err)) {
+                return false;
+            }
+            currentName_ = "opencv_dnn";
+            loaded_ = true;
+            return true;
         }
         return false;
     }

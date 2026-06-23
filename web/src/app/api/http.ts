@@ -38,13 +38,6 @@ function log(
 
 type CacheEntry = { expiresAt: number; json: unknown }
 const memoryCache = new Map<string, CacheEntry>()
-const kMaxCacheEntries = 50
-function pruneCache() {
-  if (memoryCache.size <= kMaxCacheEntries) return
-  const entries = [...memoryCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)
-  const toRemove = entries.slice(0, entries.length - kMaxCacheEntries)
-  for (const [key] of toRemove) memoryCache.delete(key)
-}
 
 function getFromCache(strategy: CacheStrategy, key: string): unknown | undefined {
   const now = Date.now()
@@ -82,7 +75,6 @@ function putToCache(strategy: CacheStrategy, key: string, json: unknown) {
   const now = Date.now()
   if (strategy === 'memory-30s') {
     memoryCache.set(key, { expiresAt: now + 30_000, json })
-    pruneCache()
   } else if (strategy === 'local-5m') {
     try {
       localStorage.setItem(
@@ -93,11 +85,6 @@ function putToCache(strategy: CacheStrategy, key: string, json: unknown) {
       // localStorage 可能满/禁用；忽略即可
     }
   }
-}
-
-// 运行时校验：确认 JSON 是对象且含 ok 字段（与后端 ApiEnvelope 对齐）
-function isValidEnvelope(raw: unknown): raw is Record<string, unknown> {
-  return typeof raw === 'object' && raw !== null && 'ok' in raw
 }
 
 export async function fetchJson<T>(
@@ -114,16 +101,12 @@ export async function fetchJson<T>(
     const hit = getFromCache(init.cacheStrategy, cacheKey)
     if (hit !== undefined) {
       log(init.logLevel, 'debug', '[api] cache hit', cacheKey)
-      if (isValidEnvelope(hit)) { return hit as T }
-      // 缓存数据格式不匹配（版本变更），忽略缓存
-      log(init.logLevel, 'warn', '[api] cache format mismatch, discarding')
+      return hit as T
     }
   }
 
   const controller = new AbortController()
-  const timeoutId = init.timeoutMs > 0
-    ? window.setTimeout(() => controller.abort(), init.timeoutMs)
-    : 0
+  const timeoutId = window.setTimeout(() => controller.abort(), init.timeoutMs)
   try {
     log(init.logLevel, 'debug', '[api] request', init.method ?? 'GET', input)
     const res = await fetch(input, {
@@ -136,7 +119,7 @@ export async function fetchJson<T>(
     })
 
     const text = await res.text()
-    const json: unknown = text ? JSON.parse(text) : null
+    const json = text ? (JSON.parse(text) as unknown) : null
     if (!res.ok) {
       // 后端使用统一 envelope：{ok:false,error:{code,message,details?}}
       const errObj = json as Record<string, unknown>
@@ -153,9 +136,6 @@ export async function fetchJson<T>(
       putToCache(init.cacheStrategy, cacheKey, json)
     }
 
-    if (!isValidEnvelope(json)) {
-      throw new ApiError('invalid_response', 'API 响应缺少统一 envelope 结构')
-    }
     return json as T
   } catch (e: unknown) {
     const err = e as Error
@@ -167,7 +147,7 @@ export async function fetchJson<T>(
     if (err instanceof ApiError) throw err
     throw new ApiError('network_error', err?.message || '网络错误/解析失败')
   } finally {
-    if (timeoutId > 0) window.clearTimeout(timeoutId)
+    window.clearTimeout(timeoutId)
   }
 }
 

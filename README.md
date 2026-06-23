@@ -1,6 +1,6 @@
 # RK3288 机器视觉引擎 (AI Engine)
 
-**更新日期**: 2026-06-23
+**更新日期**: 2026-05-18
 
 ![Platform](https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue)
 ![Language](https://img.shields.io/badge/Language-C%2B%2B17-green)
@@ -94,7 +94,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | 脚本 | 用途 | 使用说明 |
 | :--- | :--- | :--- |
 | `clean-repo-junk.js` | 清理仓库垃圾文件 | `node scripts/clean-repo-junk.js scan --ci` |
-| `docs-sync-audit.js` | 审计文档同步状态 | `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json` |
+| `docs-sync-audit.js` | 审计文档同步状态 | `node scripts/docs-sync-audit.js --out-dir tests/reports` |
 | `verify_opencv_host.bat` | 验证 OpenCV 主机环境 | 设置 `OPENCV_ROOT` 后执行 |
 | `verify_faces_test_set01.bat` | 人脸检测参数验证 | 依赖 `tests/test_set01/` 测试集 |
 | `run-web-e2e.ps1` | Web SPA 端到端测试 | Cypress E2E + 覆盖率报告 |
@@ -103,100 +103,84 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
 ## 待办列表 (Todo List)
 
-> ✅ 已完成 / 🟡 部分完成 / ❌ 未开始 / ⬜ 待办
+> ⬜ 表示待办（按优先级排序）
 
-### 1. ✅ **[P0] 核心稳定性治理 (Stability & Bug Fixes)**
+### 1. ⬜ **[P0] 核心稳定性治理 (Stability & Bug Fixes)**
+- **现状核对**：
+  - [Android] 前后台切换后预览画面高概率卡死（热重启无效）。
+  - [Mock] 加载文件模式存在异常闪退风险。代码审查与业界 Mock 策略对照（参见 `ErrorLog/cleanup/mock研究.txt`）发现现有实现虽覆盖三阶段但各有缺口：
+    - ① **调用前预检**（Calling）：已实现 `wantMock` 状态机与文件选择器（[MainActivity.java](src/java/com/example/rk3288_opencv/MainActivity.java) `handleMockFileSelection`）→ 缺少文件格式/完整性快速校验，损坏文件与超大文件需等到加载阶段才被发现。
+    - ② **加载时防护**（Loading）：已实现分块读取 1MB 块 + 50MB 大小上限 + OOM catch（[VideoManager.cpp](src/cpp/src/VideoManager.cpp) `open(filePath)` 静态图片加载）→ 缺少总体加载超时机制，大文件在网络流场景下可能阻塞主线程。
+    - ③ **解析后验证**（Parsing）：已实现 `imdecode` 异常捕获 + `bad_alloc` 保护 + 视频文件回退（[VideoManager.cpp](src/cpp/src/VideoManager.cpp) `captureLoop` 中 isMockMode 分支）→ 缺少首帧格式/分辨率/帧率预检，损坏视频文件在 `cap.read()` 时抛出异常。
+    - ④ **测试覆盖**：MonitoringCoordinatorTest 覆盖了部分状态机逻辑（`tests/unit/java/.../MonitoringCoordinatorTest.java`），但缺少面向损坏文件的 fixture 测试。
+  - [Engine] `handleAbnormalEvent` 在两个监控会话中频繁触发约 55 次，形成"处理慢→触发异常→CPU 消耗→处理更慢"的恶性循环。参见 [证据日志分析](docs/analysis/evidence_20170115_analysis.md)。
+- **目标**：重构渲染 Surface 生命周期管理，实现"感知式"重建；按三阶段补齐 Mock 文件加载防护；调查 `handleAbnormalEvent` 触发条件，区分真正的异常与可忽略警告。
+- **验收**：前后台切换 50 次无黑屏；Mock 加载损坏/超规格文件在调用阶段即快速拒绝而非加载后崩溃；`handleAbnormalEvent` 触发频率下降 90% 以上。
+- **状态（三态）**：
+  - **已实现**：`VideoManager` 增加 Mock 调用前预检与统一拒绝原因码（`MOCK_MAGIC_INVALID` / `MOCK_FILE_INCOMPLETE` / `MOCK_OVERSIZE`）；新增 C++ fixture 测试覆盖损坏魔数、不完整文件、超规格文件。
+  - **未验收**：Android 前后台 50 次切换自动化脚本已落地（`scripts/stability_switch_50_adb.ps1`），待真机执行并产出 `tests/reports/stability/<timestamp>/` 证据。
+  - **待补测试**：`handleAbnormalEvent` 会话级统计（总量/分类型/抑制次数）已加日志口径，待补同输入集前后对比数据，验证触发频率下降目标。
 
-| 子项 | 状态 | 备注 |
-|:----|:----:|:-----|
-| Mock 调用前预检 | ✅ 已完成 | `VideoManager::preflightMockInput()` — `MOCK_MAGIC_INVALID` / `MOCK_FILE_INCOMPLETE` / `MOCK_OVERSIZE` 拒绝码 |
-| Mock 加载时防护 | ✅ 已完成 | 分块 1MB 读取 + 50MB 上限 + OOM catch (`VideoManager.cpp`) |
-| Mock 解析后验证 | ✅ 已完成 | 首帧格式/分辨率/帧率预检 (`VideoManager.cpp:captureLoop`) |
-| Mock fixture 测试 | ✅ 已完成 | `tests/cpp/test_mock_preflight_guards.cpp` — 3 tests PASS；fixtures: `tests/fixtures/mock/corrupt_magic.jpg`, `incomplete.jpg` |
-| Android 前后台 50 次切换 | 🟡 脚本就绪，未实机验收 | `scripts/stability_switch_50_adb.ps1` 已实现；`tests/reports/stability/` 无报告输出 |
-| `handleAbnormalEvent` 治理 | 🟡 代码完成，缺基线对比 | 会话级统计 + 自适应冷却已实现；缺前后同输入集对比数据 |
+### 2. ⬜ **[P0] 链路加速方案落地 (Acceleration)**
+- **现状核对**：
+  - [CPU-only] 日志分析确认 **所有硬件加速路径均不可用**：Qualcomm SDK 回退（RK_HAVE_QUALCOMM=0）、MPP 硬件解码回退（RK_HAVE_MPP=0）、OpenCL 不支持。Yolo/ArcFace 推理、帧预处理完全由 CPU 承担，这是性能瓶颈的根本原因。参见 [诊断报告](docs/analysis/evidence_20170115_analysis.md)。
+  - [延迟尖峰] CPU-only 下帧分析最大延迟达 37.6ms，25fps（40ms 间隔）余量仅 2.4ms，极易丢帧。
+  - [加速全景调查] 端到端管线各阶段 CPU 占比：YOLO 检测推理 ~40%（10-20ms）、ArcFace 特征提取 ~30%（8-15ms）、帧预处理 ~10%（2-5ms）、Mock 视频解码 ~15%（5-15ms）、人脸对齐 ~3%（1-2ms）、1:N 搜索 ~1%（<1ms）。参见 [加速方案评估报告](docs/acceleration_study.md)。
+- **加速机会矩阵**：
 
-### 2. ✅ **[P0] 链路加速方案落地 (Acceleration)**
+  | 优先级 | 加速项 | 当前耗时 | 加速手段 | 预期收益 | 实现难度 | 项目已有支持 |
+  |:------:|:-------|:--------:|:---------|:--------:|:--------:|:-----------|
+  | **P0** | 推理调度优化 | 10-20ms | 调整 detect stride 帧跳过策略 | 推理负载降 50% | 低 | ✅ InferenceThrottle 框架已有 |
+  | **P0** | **YOLO ncnn 推理** | 10-20ms | ncnn (NEON) 替代 OpenCV DNN | 延迟降 30-50% | 中 | ✅ 工厂方法 `CreateNcnnYoloFaceDetector()` 已有 |
+  | **P0** | **ArcFace ncnn 推理** | 8-15ms | ncnn (NEON) 替代 OpenCV DNN | 延迟降 30-50% | 中 | ✅ `BackendType::Ncnn` 枚举与 `NcnnState` 已有 |
+  | P1 | Mock 视频 MPP 硬解码 | 5-15ms | MPP 硬件解码（`MppDecoder` 已完成） | CPU 占用降至 ~0% | 中 | ✅ `MppDecoder` 类已创建并集成 |
+  | P1 | 帧预处理 libyuv | 2-5ms | libyuv NEON 加速 resize/颜色转换 | 降 2-4ms | 低 | ✅ `RK_ENABLE_LIBYUV=ON` |
+  | P1 | 模型 INT8 量化 | 10-20ms | ncnn INT8 量化模型推理 | 加速 2-3x | 高 | ❌ 需量化工具链 |
+  | P2 | 1:N 搜索 NEON 加速 | <1ms | ARM NEON vmlaq_f32 点积 | 加速 5-10x | 低 | ✅ `FaceSearchLinearIndex` 已增加 NEON/SIMD 路径，x86 自动回退 |
 
-**代码实现全部完成**（7/7 项），**缺 RK3288 真机实测数据**。
+- **目标**：按优先级推进加速项落地；启用 MPP 硬件解码；补齐加速开关的 `requested`/`effective`/`evidence` 证据输出；在 RK3288 真机完成实测填表并定稿加速策略。
+- **验收**：日志中明确记录"为何启用/为何回退加速"；启用 ncnn 后 YOLO+ArcFace 推理 P95 延迟降低 30% 以上；MPP 启用后帧分析 P95 延迟降低 50% 以上；证据日志分析结论闭环。
 
-| 优先级 | 加速项 | 代码状态 | 真机测量 | 备注 |
-|:------:|:-------|:--------:|:--------:|:-----|
-| **P0** | 推理调度优化 | ✅ `InferenceThrottle` (Off/Manual/Auto) + `detectStride_` (1-8) | ❌ | |
-| **P0** | **YOLO ncnn 推理** | ✅ `CreateNcnnYoloFaceDetector()` + `YoloFaceAdapter` | ❌ | |
-| **P0** | **ArcFace ncnn 推理** | ✅ `ArcFaceEmbedderConfig::BackendType::Ncnn` | ❌ | |
-| P1 | Mock 视频 MPP 硬解码 | ✅ `MppDecoder` 已集成 (`VideoManager.cpp`) | ❌ | Android 专用 (`!ANDROID` 时跳过) |
-| P1 | 帧预处理 libyuv | ✅ `RK_ENABLE_LIBYUV=ON`, `toBgrFromNv21()` | ❌ | |
-| P1 | **模型 INT8 量化** | ✅ `scripts/quantize_ncnn_int8.py` + 3 模型 + 精度 ≥ 0.90 | ❌ | 参见下方 §INT8 |
-| P2 | 1:N 搜索 NEON | ✅ `FaceSearchLinearIndex` NEON/SIMD + x86 回退 | ❌ | |
-| — | 加速证据日志输出 | ✅ `Engine::performAccelSelfCheck()` 全加速器覆盖 | ❌ | 日志中已记录启用/回退原因 |
+### 3. ⬜ **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
+- **现状核对**：模型台账已建立但在代码中为静态描述；缺乏运行时模型查询接口；检测参数（minSize 等）未持久化。
+- **目标**：实现运行时模型查询 API (`/api/v1/models`)；支持检测参数的 JSON 持久化；补齐 YOLO 检测后端（ncnn）的热切换与版本校验能力。
+- **验收**：通过 Web UI 实时查看当前加载模型的 hash 与后端状态；参数修改后重启服务不丢失。
 
-> ⚠️ **关键缺口**：所有加速项均已完成代码实现，但 RK3288 真机实测数据缺失。需在 RK3288 上执行 `inference_bench_cli` 及 `stability_switch_50_adb.ps1`，将结果填入
-DEVELOP.md 附录 B 加速机会矩阵。
+### 4. ⬜ **[P0] 自动化测试与 CI 加固 (CI/CD)**
+- **现状核对**：当前 CI 缺少 Android 构建/单测、Web 前端测试及文档同步审计自动化。
+- **目标**：扩展 [ci.yml](.github/workflows/ci.yml)，集成 Android job、Web job 及 `node scripts/docs-sync-audit.js` 强制发布门禁；统一归档测试报告与关键产物。
+- **验收**：PR 打开后自动触发全平台闭环验证，失败时精准定位问题点；CI 命中缓存后显著加速。
 
-### 3. 🟡 **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
+### 5. ⬜ **[P1] 人员注册与权限系统 (Personnel & Enrollment)**
+- **现状核对**：仅支持单样本均值注册；缺少质量检查、人员属性（姓名/工号）、权限校验及安全的导入导出。
+- **目标**：建立人员实体模型（personId + profile + 状态机）；增加注册前质量门槛（亮度/角度/清晰度）；支持加密的批量导入导出（DPAPI/Keystore）。
+- **验收**：UI 支持完整的增删改查与权限配置；导入导出文件防篡改且兼容版本演进。
 
-| 子项 | 状态 | 备注 |
-|:----|:----:|:-----|
-| `/api/v1/models` 查询端点 | ✅ 已完成 | `HttpFacesServer.cpp` — 返回 `supportedModels` + `activeModels` (hash/backend/status/isInUse) |
-| `/api/v1/models/reload` 重载 | ✅ 已完成 | 支持单模型按 ID 重载 |
-| 检测参数 JSON 持久化 | ✅ 已完成 | `ModelConfig` (detection/recognition/backend/int8Enabled) 读写 `WinJsonConfig.cpp` |
-| 模型 hash 与状态追踪 | ✅ 已完成 | `FramePipeline::ModelSnapshot` — hash/configuredPath/resolvedPath/status/backend |
-| Web UI 实时查看 | ✅ 已完成 | SettingsPage 后端 Tab 新增"模型状态 (Model Status)"面板，展示摘要/活跃模型/状态/重载 |
+### 6. ⬜ **[P1] 工程规范与治理 (Engineering Excellence)**
+- **现状核对**：存在遗留废弃接口；开发流程文档化程度尚需补齐；`initEngine()` 中存在 Engine 初始化双重调用，浪费约 20ms 启动时间。
+- **目标**：执行废弃代码"零容忍"清理；补齐基础框架、核心算法与开发流程的研究结论；消除 Engine 初始化冗余调用。
+- **验收**：代码库无未引用的旧版接口；开发者可根据文档一键复现全链路开发/调试环境；Engine 初始化日志中仅出现一次 `initialize` 调用。
 
-### 4. ✅ **[P0] 自动化测试与 CI 加固 (CI/CD)**
+### 7. ⬜ **[P2] 多模型集成与切换策略 (Model Diversity)**
+- **现状核对**：当前项目使用 YOLO Face（检测）+ ArcFace（特征提取），OpenCV DNN/ncnn 双后端。CREDITS.md 中登记了 5 个模型的台账，但缺少替代模型集成和运行时切换能力。
+- **模型对比参考**：
 
-**6 个 CI job 全部运行中**（`.github/workflows/ci.yml`）：
+  | 管线 | 用途 | 当前模型 | 可替代模型 | 替代优势 | 切换代价 |
+  |:----|:----|:--------|:----------|:--------|:--------|
+  | Android/CLI | 检测 | YOLO Face (~7M) | **SCRFD-0.5GF** | 精度更高(WiderFace 96.1%)，参数量更低 | 需重新适配 ncnn 接口 |
+  | Android/CLI | 检测 | YOLO Face (~7M) | **YuNet** (OpenCV ~0.3M) | 极轻量，OpenCV 内置 | 需用 `FaceDetectorYN` API |
+  | Android/CLI | 检测 | YOLO Face (~7M) | **RetinaFace** (InsightFace 500MF) | 精度最高，生态完善 | 需新增 ONNX→ncnn 转换 |
+  | Android/CLI | 识别 | ArcFace 512D (FP32) | **MobileFaceNet** 128D | 推理快 2-3 倍，适合 RK3288 | 需训练/转换 ncnn 模型 |
+  | Android/CLI | 识别 | ArcFace 512D (FP32) | **SFace** 128D | CPU 上最快识别模型 | 需重新适配推理接口 |
+  | Android/CLI | 双模型 | YOLO + ArcFace (FP32) | **INT8 量化版** | 推理加速 2-3x，内存减半 | 需 ncnn2int8 量化工具链 |
+  | Windows | 检测 | LBP Cascade | **ResNet SSD Face** (已内置) | DNN 检测精度显著高于 Cascade | 配置 `dnn.enable=true`，无需代码改动 |
+  | Windows | 识别 | LBPH | **ArcFace ONNX** | 精度从 <90% 提升至 99.8% | 需集成 ONNX Runtime 推理 |
 
-| Job | 触发条件 | 内容 |
-|:----|:--------:|:-----|
-| repo-hygiene | PR/push → master | `node scripts/clean-repo-junk.js scan --ci` |
-| unit-tests | PR/push → master | Linux CMake + Ninja, `RK_SKIP_OPENCV=ON`, `core_unit_tests` + `src/win/src/*.cpp` 交叉编译检查 |
-| docs-audit | PR/push → master | `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json` |
-| web | PR/push → master | `pnpm install` → `pnpm lint` → `pnpm build` → `pnpm e2e:run:coverage` (非阻塞) |
-| android | PR/push → master | `gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug` |
-| windows | push only (含 "Windows" 关键词或 workflow_dispatch) | 完整 OpenCV 源码构建 + ctest + INT8 量化 + 精度测试 |
-
-### 5. ❌ **[P1] 人员注册与权限系统 (Personnel & Enrollment)**
-
-| 子项 | 状态 | 备注 |
-|:----|:----:|:-----|
-| 单样本均值注册 | 🟡 基础实现 | `FaceRecognizer::enrollFromFrame()` 已存在 |
-| 注册前质量门槛（亮度/角度/清晰度） | ❌ 未实现 | 无 pre-enroll 质量检查 |
-| 人员实体模型（personId + profile + 状态机） | ❌ 未实现 | `personId` 仅用字符串 |
-| 权限校验 | ❌ 未实现 | 无角色/权限系统 |
-| 加密批量导入导出 | ❌ 未实现 | 无导入导出机制 |
-
-### 6. 🟡 **[P1] 工程规范与治理 (Engineering Excellence)**
-
-| 子项 | 状态 | 备注 |
-|:----|:----:|:-----|
-| `initEngine()` 双重调用治理 | 🟡 部分完成 | C++ 侧 ✅（`Engine.h` `atomic<bool>` exchange 守卫），Java 侧 🟡（`engineInitialized` 已加，9 个调用点入口未防护） |
-| 废弃代码清理 | ✅ 已完成 | `native-lib-stub.cpp` 删除 11 个废弃 JNI 存根，`native-lib.cpp` 删除无 Java 声明的 `nativePushFrameNV21`/`NV21Bytes` |
-| 开发流程文档 | ✅ 已完成 | `DEVELOP.md` 已补充构建变体/测试框架/构建要点/INT8 量化/加速契约，覆盖构建→测试→CI 全链路 |
-| `Engine::initialize()` 调用次数验证 | 🟡 未验证 | 缺少运行时日志断言验证 |
-
-### 7. ✅ **[P2] 多模型集成与切换策略 (Model Diversity)**
-
-| 模型/能力 | 状态 | 备注 |
-|:----------|:----:|:-----|
-| YOLO Face (detect, FP32) | ✅ 已完成 | ncnn + OpenCV 双后端 |
-| SCRFD-0.5GF (detect) | ✅ 已完成 | 注册为 `scrfd_0.5gf`，`models/scrfd_face_detect_ncnn/` 含 16 变体 |
-| ArcFace 512D (recognize, FP32) | ✅ 已完成 | 注册为 `arcface`，bin 约 87MB |
-| MobileFaceNet 128D (recognize, FP32) | ✅ 已完成 | 注册为 `mobilefacenet` |
-| **INT8 量化版（3 模型）** | ✅ 已完成 | 脚本 `scripts/quantize_ncnn_int8.py` + 8 测试 + ArcFace cosine ≥ 0.90 |
-| 运行时配置切换 | ✅ 已完成 | `ModelConfig::detection`/`recognition`/`int8Enabled` → `FaceInferStages` |
-| 模型注册框架 | ✅ 已完成 | `ModelRegistry` — 按文件存在条件注册 |
-| **YuNet (OpenCV)** | ✅ 已完成 | `YuNetAdapter` 封装 `cv::FaceDetectorYN`，注册为 `yunet` |
-| **SFace 128D** | ✅ 已完成 | `SFaceAdapter` 封装 `cv::FaceRecognizerSF`，注册为 `sface` |
-| **SCRFD/RetinaFace (det_10g)** | ✅ 已完成 | `RetinaFaceAdapter` FPN 多尺度解码 + NMS，注册为 `retinaface_scrfd` |
-| **Windows ArcFace ONNX** | ✅ 已完成 | `ArcFaceWinRecognizer` 实现 `IRecognizer` 接口，`FramePipeline` 通过 `cfg_.model.recognition` 分支集成 |
-| RK3288 INT8 加速实测 | ❌ 缺失 | 代码完成，缺真机 P95 延迟数据 |
-
-> **RK3288 部署建议分级**（基于估算，待实测验证）：
-> - **追求精度**：YOLO Face (ncnn FP32) + ArcFace (ncnn FP32)
-> - **追求速度**：SCRFD-0.5GF (ncnn) + MobileFaceNet (ncnn)
-> - **追求极致**：任选模型 + INT8 量化
-
+- **RK3288 部署建议分级**：
+  - **追求精度**：YOLO Face (ncnn FP32) + ArcFace (ncnn FP32) — 推理约 15ms + 8ms
+  - **追求速度**：SCRFD-0.5GF (ncnn) + MobileFaceNet (ncnn) — 推理约 5ms + 3ms
+  - **追求极致**：任选模型 + ncnn INT8 量化 — 再加速 2-3x
+- **目标**：建立模型注册与运行时切换框架，支持通过配置切换模型后端；补齐 INT8 量化工具链；补充 SCRFD/MobileFaceNet 等轻量模型的 ncnn 适配。
+- **验收**：可通过 JSON 配置 `model.detection` / `model.recognition` 切换模型后端；INT8 量化模型在 RK3288 上推理 P95 延迟降低 50% 以上。
 ## 📄 许可证
 MIT License

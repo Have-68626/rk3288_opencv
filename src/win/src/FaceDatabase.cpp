@@ -7,39 +7,33 @@
 namespace rk_win {
 
 bool FaceDatabase::load(const std::filesystem::path& path) {
+    persons_.clear();
     if (path.empty()) return false;
-    if (!std::filesystem::exists(path)) {
-        std::lock_guard<std::mutex> lock(mu_);
-        persons_.clear();
-        return true;
-    }
+    if (!std::filesystem::exists(path)) return true;
 
     cv::FileStorage fs(path.string(), cv::FileStorage::READ);
     if (!fs.isOpened()) return false;
 
-    std::unordered_map<std::string, PersonEntry> tmp;
     cv::FileNode persons = fs["persons"];
-    if (persons.type() == cv::FileNode::SEQ) {
-        for (auto it = persons.begin(); it != persons.end(); ++it) {
-            PersonEntry e;
-            (*it)["id"] >> e.id;
-            int count = 0;
-            (*it)["count"] >> count;
-            e.count = count;
-            cv::Mat meanMat;
-            (*it)["mean"] >> meanMat;
-            meanMat = meanMat.reshape(1, 1);
-            e.mean.resize(static_cast<size_t>(meanMat.cols));
-            CV_Assert(meanMat.type() == CV_32F && meanMat.isContinuous() && e.mean.size() == (size_t)meanMat.total());
-            std::copy(meanMat.ptr<float>(), meanMat.ptr<float>() + meanMat.total(), e.mean.begin());
-            if (!e.id.empty() && !e.mean.empty()) {
-                tmp.emplace(e.id, std::move(e));
-            }
+    if (persons.type() != cv::FileNode::SEQ) return true;
+
+    for (auto it = persons.begin(); it != persons.end(); ++it) {
+        PersonEntry e;
+        (*it)["id"] >> e.id;
+        int count = 0;
+        (*it)["count"] >> count;
+        e.count = count;
+        cv::Mat meanMat;
+        (*it)["mean"] >> meanMat;
+        meanMat = meanMat.reshape(1, 1);
+        e.mean.resize(static_cast<size_t>(meanMat.cols));
+        CV_Assert(meanMat.type() == CV_32F && meanMat.isContinuous() && e.mean.size() == (size_t)meanMat.total());
+        std::copy(meanMat.ptr<float>(), meanMat.ptr<float>() + meanMat.total(), e.mean.begin());
+        if (!e.id.empty() && !e.mean.empty()) {
+            persons_.emplace(e.id, std::move(e));
         }
     }
 
-    std::lock_guard<std::mutex> lock(mu_);
-    persons_ = std::move(tmp);
     return true;
 }
 
@@ -48,18 +42,12 @@ bool FaceDatabase::save(const std::filesystem::path& path) const {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
 
-    std::unordered_map<std::string, PersonEntry> snap;
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        snap = persons_;
-    }
-
     cv::FileStorage fs(path.string(), cv::FileStorage::WRITE);
     if (!fs.isOpened()) return false;
 
     fs << "version" << 1;
     fs << "persons" << "[";
-    for (const auto& kv : snap) {
+    for (const auto& kv : persons_) {
         const auto& e = kv.second;
         cv::Mat meanMat(1, static_cast<int>(e.mean.size()), CV_32F);
         CV_Assert(e.mean.size() * sizeof(float) == meanMat.total() * meanMat.elemSize());
@@ -76,17 +64,14 @@ bool FaceDatabase::save(const std::filesystem::path& path) const {
 }
 
 void FaceDatabase::clear() {
-    std::lock_guard<std::mutex> lock(mu_);
     persons_.clear();
 }
 
 bool FaceDatabase::hasPerson(const std::string& id) const {
-    std::lock_guard<std::mutex> lock(mu_);
     return persons_.find(id) != persons_.end();
 }
 
 std::vector<std::string> FaceDatabase::listPersonIds() const {
-    std::lock_guard<std::mutex> lock(mu_);
     std::vector<std::string> ids;
     ids.reserve(persons_.size());
     for (const auto& kv : persons_) ids.push_back(kv.first);
@@ -96,7 +81,6 @@ std::vector<std::string> FaceDatabase::listPersonIds() const {
 
 bool FaceDatabase::updateMean(const std::string& id, const std::vector<float>& embedding) {
     if (id.empty() || embedding.empty()) return false;
-    std::lock_guard<std::mutex> lock(mu_);
     auto& e = persons_[id];
     if (e.id.empty()) e.id = id;
 
@@ -117,8 +101,7 @@ bool FaceDatabase::updateMean(const std::string& id, const std::vector<float>& e
     return true;
 }
 
-std::unordered_map<std::string, PersonEntry> FaceDatabase::persons() const {
-    std::lock_guard<std::mutex> lock(mu_);
+const std::unordered_map<std::string, PersonEntry>& FaceDatabase::persons() const {
     return persons_;
 }
 

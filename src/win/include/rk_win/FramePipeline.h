@@ -1,7 +1,6 @@
 #pragma once
 
-#include "FaceRecognizer.h"  // FaceMatch
-#include "IRecognizer.h"
+#include "FaceRecognizer.h"
 #include "MfCamera.h"
 #include "StructuredLogger.h"
 #include "WinConfig.h"
@@ -167,7 +166,7 @@ private:
 
     MfCamera camera_;
     StructuredLogger logger_;
-    std::unique_ptr<IRecognizer> recognizer_;
+    FaceRecognizer recognizer_;
     std::unique_ptr<DnnSsdFaceDetector> dnn_;
     std::mutex dnnMu_;
 
@@ -191,6 +190,10 @@ private:
     std::condition_variable cameraSignalCv_;
     int cameraSignal_ = 0;
     CameraOpenResult lastCameraOpenResult_{};
+
+    std::mutex detectorSignalMu_;
+    std::condition_variable detectorSignalCv_;
+    int detectorSignal_ = 0;
 
     mutable std::mutex previewMu_;
     int previewW_ = 0;

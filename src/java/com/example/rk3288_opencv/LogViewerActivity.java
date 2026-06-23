@@ -39,7 +39,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
@@ -430,7 +429,7 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
                 }
             }
             try {
-                p.waitFor(5, TimeUnit.SECONDS);
+                p.waitFor();
             } catch (Throwable ignored) {
             }
             if (pidOut.length() > 0) {
@@ -458,7 +457,7 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
                 }
             }
             try {
-                p.waitFor(5, TimeUnit.SECONDS);
+                p.waitFor();
             } catch (Throwable ignored) {
             }
 
@@ -663,13 +662,5 @@ public class LogViewerActivity extends AppCompatActivity implements LogAdapter.O
         Intent intent = new Intent(this, LogDetailActivity.class);
         intent.putExtra(LogDetailActivity.EXTRA_LOG_PATH, file.getAbsolutePath());
         startActivity(intent);
-    }
-
-    @Override
-    protected void onDestroy() {
-        if (executor != null && !executor.isShutdown()) {
-            executor.shutdownNow();
-        }
-        super.onDestroy();
     }
 }

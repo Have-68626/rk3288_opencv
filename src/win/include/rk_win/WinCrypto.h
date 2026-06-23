@@ -27,14 +27,12 @@ struct AesGcmCiphertext {
 bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
                       const std::vector<std::uint8_t>& plain,
                       AesGcmCiphertext& out,
-                      std::string& errOut,
-                      std::string_view aad = {});
+                      std::string& errOut);
 
 bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
                       const AesGcmCiphertext& in,
                       std::vector<std::uint8_t>& plainOut,
-                      std::string& errOut,
-                      std::string_view aad = {});
+                      std::string& errOut);
 
 // 安全随机数
 bool randomBytes(std::size_t n, std::vector<std::uint8_t>& out, std::string& errOut);

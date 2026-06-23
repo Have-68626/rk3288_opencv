@@ -17,7 +17,6 @@
 #endif
 
 #include <memory>
-#include <mutex>
 #include <vector>
 
 class BioAuth {
@@ -35,16 +34,14 @@ public:
      * @param modelPath Path to the trained face recognition model.
      * @return true if initialization successful.
      */
-    bool initialize(const std::string& cascadePath, const std::string& modelPath = "",
-                    double scaleFactor = 1.1, int minNeighbors = 3, int minFaceSize = 60,
-                    bool enableEqualizeHist = true);
+    bool initialize(const std::string& cascadePath, const std::string& modelPath = "");
 
     /**
      * @brief Trains the recognizer with a set of images and labels.
      */
     void train(const std::vector<cv::Mat>& images, const std::vector<int>& labels);
 
-    void setFaceSelectMode(FaceSelectMode mode);
+    void setFaceSelectMode(FaceSelectMode mode) { faceMode = mode; }
 
     /**
      * @brief Verifies the identity of persons in the frame.
@@ -68,17 +65,10 @@ public:
     bool verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces = 3, bool enableRecognition = true);
 
 private:
-    static float normalizeLbphConfidence(double distance);
-
-    mutable std::mutex mu_;
-    double cascadeScaleFactor_ = 1.1;
-    int cascadeMinNeighbors_ = 3;
-    int cascadeMinFaceSize_ = 60;
-    bool equalizeHistEnabled_ = true;
     cv::CascadeClassifier faceCascade;
 #ifdef HAS_OPENCV_FACE
     cv::Ptr<cv::face::FaceRecognizer> faceRecognizer;
 #endif
-    bool isModelLoaded = false;
+    bool isModelLoaded;
     FaceSelectMode faceMode = FaceSelectMode::MAIN_FACE;
 };

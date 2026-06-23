@@ -1,7 +1,4 @@
-﻿# 配置说明（config.json）
-
-**更新日期**: 2026-06-23
-
+# 配置说明（config.json）
 
 ## 文件位置
 - 配置文件：`%APPDATA%\rk_wcfr\config.json` （可通过 `RK_WCFR_CONFIG` 环境变量覆盖）

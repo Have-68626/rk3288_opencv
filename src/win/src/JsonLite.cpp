@@ -12,8 +12,6 @@
 namespace rk_win {
 namespace {
 
-constexpr int kMaxParseDepth = 64;
-
 struct Parser {
     const char* base = nullptr;
     const char* p = nullptr;
@@ -58,11 +56,7 @@ struct Parser {
         return true;
     }
 
-    bool parseValue(JsonValue& out, int depth = 0) {
-        if (depth > kMaxParseDepth) {
-            err = fail("max parse depth exceeded");
-            return false;
-        }
+    bool parseValue(JsonValue& out) {
         skipWs();
         if (eof()) {
             err = "unexpected EOF";
@@ -70,8 +64,8 @@ struct Parser {
         }
 
         const char c = peek();
-        if (c == '{') return parseObject(out, depth);
-        if (c == '[') return parseArray(out, depth);
+        if (c == '{') return parseObject(out);
+        if (c == '[') return parseArray(out);
         if (c == '"') return parseString(out);
         if (c == '-' || (c >= '0' && c <= '9')) return parseNumber(out);
         if (c == 't' || c == 'f') return parseBool(out);
@@ -251,7 +245,7 @@ struct Parser {
         return false;
     }
 
-    bool parseArray(JsonValue& out, int depth) {
+    bool parseArray(JsonValue& out) {
         skipWs();
         if (!expect('[', "expected array")) return false;
         JsonValue arr = JsonValue::makeArray();
@@ -262,7 +256,7 @@ struct Parser {
         }
         while (true) {
             JsonValue elem;
-            if (!parseValue(elem, depth + 1)) return false;
+            if (!parseValue(elem)) return false;
             arr.a.push_back(std::move(elem));
             skipWs();
             if (consume(']')) break;
@@ -272,7 +266,7 @@ struct Parser {
         return true;
     }
 
-    bool parseObject(JsonValue& out, int depth) {
+    bool parseObject(JsonValue& out) {
         skipWs();
         if (!expect('{', "expected object")) return false;
         JsonValue obj = JsonValue::makeObject();
@@ -286,7 +280,7 @@ struct Parser {
             if (!parseString(key)) return false;
             if (!expect(':', "expected ':'")) return false;
             JsonValue val;
-            if (!parseValue(val, depth + 1)) return false;
+            if (!parseValue(val)) return false;
             obj.o[std::move(key.s)] = std::move(val);
             skipWs();
             if (consume('}')) break;
@@ -418,11 +412,6 @@ JsonValue* JsonValue::find(const std::string& key) {
 }
 
 bool parseJson(std::string_view text, JsonValue& out, std::string& errOut) {
-    constexpr std::size_t kMaxJsonInputBytes = 10 * 1024 * 1024;
-    if (text.size() > kMaxJsonInputBytes) {
-        errOut = "JSON input too large (" + std::to_string(text.size()) + " bytes, max " + std::to_string(kMaxJsonInputBytes) + ")";
-        return false;
-    }
     Parser ps;
     ps.base = text.data();
     ps.p = text.data();

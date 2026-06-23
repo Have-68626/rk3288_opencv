@@ -2,11 +2,9 @@
 
 #include "FaceDatabase.h"
 #include "FaceDetector.h"
-#include "IRecognizer.h"
 #include "LbphEmbedder.h"
 
 #include "Compat.h"
-#include <atomic>
 #include <string>
 #include <vector>
 
@@ -45,20 +43,20 @@ struct FaceMatch {
     bool accepted = false;
 };
 
-class FaceRecognizer : public IRecognizer {
+class FaceRecognizer {
 public:
     bool initialize(const std::string& cascadePath, const std::filesystem::path& dbPath, int minFaceSizePx, double identifyThreshold);
 
-    std::vector<FaceMatch> identify(const cv::Mat& bgr) override;
-    bool enrollFromFrame(const std::string& personId, const cv::Mat& bgr, int samplesToTake, int& samplesTakenOut) override;
+    std::vector<FaceMatch> identify(const cv::Mat& bgr);
+    bool enrollFromFrame(const std::string& personId, const cv::Mat& bgr, int samplesToTake, int& samplesTakenOut);
 
-    bool saveDb() const override;
-    void clearDb() override;
+    bool saveDb() const;
+    void clearDb();
 
-    double threshold() const override;
-    void setThreshold(double t) override;
+    double threshold() const;
+    void setThreshold(double t);
 
-    std::vector<std::string> personIds() const override;
+    std::vector<std::string> personIds() const;
 
 private:
     static cv::Rect pickLargest(const std::vector<cv::Rect>& faces);
@@ -69,7 +67,7 @@ private:
     FaceDatabase db_;
     std::filesystem::path dbPath_;
     int minFaceSizePx_ = 60;
-    std::atomic<double> identifyThreshold_{55.0};
+    double identifyThreshold_ = 55.0;
 };
 
 }  // namespace rk_win

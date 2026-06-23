@@ -59,16 +59,6 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build_ci --output-on-failure
 
-      - name: Install OpenCV headers (cross-platform smoke test)
-        run: sudo apt-get install -y libopencv-dev
-
-      - name: Compile-check cross-platform source files
-        run: |
-          CXXFLAGS="-std=c++17 -c -o /dev/null -Isrc/win/include -Isrc/cpp/include $(pkg-config --cflags opencv4)"
-          g++ $CXXFLAGS src/win/src/FaceDetector.cpp
-          g++ $CXXFLAGS src/win/src/LbphEmbedder.cpp
-          g++ $CXXFLAGS src/win/src/DnnSsdFaceDetector.cpp
-
       - name: Upload Test Reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,7 +80,7 @@ jobs:
           node-version: "22"
 
       - name: Run Docs Sync Audit
-        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
+        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 
       - name: Upload Artifacts
         if: always()
@@ -277,26 +267,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG --output-on-failure
-
-      - name: Quantize models (INT8)
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python scripts/quantize_ncnn_int8.py `
-            --model scrfd `
-            --fp32-dir "models/scrfd_ncnn" `
-            --calib-dir "deps/WIDER_train/WIDER_train/images" `
-            --output-dir "models/scrfd_int8_ncnn" `
-            --size 640 `
-            --num-samples 50
-
-      - name: Run INT8 precision tests
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R face_infer --output-on-failure
 
       - name: Upload Test Reports
         if: always()

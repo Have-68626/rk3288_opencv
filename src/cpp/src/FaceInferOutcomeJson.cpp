@@ -1,6 +1,5 @@
 #include "FaceInferOutcomeJson.h"
 
-#include <cmath>
 #include <cstdint>
 #include <sstream>
 #include <vector>
@@ -81,10 +80,6 @@ public:
     }
     void number(double v) {
         beginValue_();
-        if (!std::isfinite(v)) {
-            out_ += "null";
-            return;
-        }
         char buf[32];
         snprintf(buf, sizeof(buf), "%g", v);
         out_ += buf;

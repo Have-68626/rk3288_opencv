@@ -10,14 +10,6 @@ add_compile_definitions(BUILD_ID="${APP_BUILD_ID}")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ccache (build cache, auto-detect when available)
-find_program(CCACHE_PROGRAM ccache)
-if(CCACHE_PROGRAM)
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    message(STATUS "ccache detected: ${CCACHE_PROGRAM}")
-endif()
-
 if(MSVC)
     # ⚠️ 重要：Windows 构建器架构配置
     # 当前构建器：${CMAKE_GENERATOR_PLATFORM} (通常为 x86 或 x64)
@@ -90,16 +82,7 @@ else()
     set(RK_HAVE_QUALCOMM 0)
 endif()
 
-set(RK_COMMON_DEFS RK_HAVE_MPP=${RK_HAVE_MPP} RK_HAVE_QUALCOMM=${RK_HAVE_QUALCOMM})
-
-# Collect non-test engine target names for per-target include/dep application
-set(RK_ENGINE_TARGETS
-    core_unit_tests rk3288_cli opencv_verify_cli native-lib
-    win_local_service win_camera_face_recognition
-    face_infer_unit_tests ncnn_precision_test
-    inference_bench_cli win_face_eval_cli win_face_bench_cli
-    win_unit_tests win_face_database_perf
-)
+add_definitions(-DRK_HAVE_MPP=${RK_HAVE_MPP} -DRK_HAVE_QUALCOMM=${RK_HAVE_QUALCOMM})
 
 if(ANDROID)
     set(_rk_enable_libyuv_default ON)
@@ -121,20 +104,11 @@ if(MSVC)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
-    # -fPIE/-pie 仅适用于 Linux/Android (ELF), MinGW/Cygwin 等非 ELF 平台会链接失败
-    if(UNIX AND NOT APPLE)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now -fPIE -pie")
-    else()
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now")
-    endif()
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now -fPIE -pie")
 endif()
 
-# Include directories — applied per-target below (not globally)
-set(RK_COMMON_INCLUDES
-    "${CMAKE_SOURCE_DIR}/src/cpp/include"
-    "${CMAKE_SOURCE_DIR}/src/cpp/include/adapters"
-    "${CMAKE_SOURCE_DIR}/src/win/include"
-)
+# Include directories
+include_directories(src/cpp/include)
 
 option(RK_SKIP_OPENCV "跳过 OpenCV 构建（仅可用于不依赖 OpenCV 的目标，如 core_unit_tests）" OFF)
 option(RK_BUILD_CORE_UNIT_TESTS "Build core unit tests" ON)
@@ -149,7 +123,6 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_event_manager.cpp"
         "tests/cpp/test_file_hash.cpp"
         "tests/cpp/test_connection_quota.cpp"
-        "tests/cpp/test_acceleration_contract.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
@@ -326,48 +299,14 @@ if(RK_ENABLE_LIBYUV)
 endif()
 
 # Collect Core Source Files (excluding entry points)
-set(CORE_SOURCES
-    "src/cpp/src/ArcFaceEmbedder.cpp"
-    "src/cpp/src/BioAuth.cpp"
-    "src/cpp/src/Engine.cpp"
-    "src/cpp/src/EventManager.cpp"
-    "src/cpp/src/FaceAlign.cpp"
-    "src/cpp/src/FaceInferencePipeline.cpp"
-    "src/cpp/src/FaceInferOutcomeJson.cpp"
-    "src/cpp/src/FaceInferStages.cpp"
-    "src/cpp/src/FaceSearch.cpp"
-    "src/cpp/src/FaceTemplate.cpp"
-    "src/cpp/src/FileHash.cpp"
-    "src/cpp/src/FrameInputChannel.cpp"
-    "src/cpp/src/ModelRegistry.cpp"
-    "src/cpp/src/MotionDetector.cpp"
-    "src/cpp/src/MppDecoder.cpp"
-    "src/cpp/src/NativeLog.cpp"
-    "src/cpp/src/Storage.cpp"
-    "src/cpp/src/ThresholdPolicy.cpp"
-    "src/cpp/src/VideoManager.cpp"
-    "src/cpp/src/YoloFaceDetector.cpp"
-    "src/cpp/src/adapters/ArcFaceAdapter.cpp"
-    "src/cpp/src/adapters/CascadeAdapter.cpp"
-    "src/cpp/src/adapters/DnnSsdAdapter.cpp"
-    "src/cpp/src/adapters/LbphAdapter.cpp"
-    "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
-    "src/cpp/src/adapters/RetinaFaceAdapter.cpp"
-    "src/cpp/src/adapters/SFaceAdapter.cpp"
-    "src/cpp/src/adapters/YoloFaceAdapter.cpp"
-    "src/cpp/src/adapters/YuNetAdapter.cpp"
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
+    "src/cpp/src/*.cpp"
 )
 
 if(ANDROID)
     # 1. Android JNI Shared Library
     if(NOT RK_SKIP_OPENCV)
-        add_library(native-lib SHARED
-            ${CORE_SOURCES}
-            "src/cpp/native-lib.cpp"
-            "src/win/src/FaceDetector.cpp"
-            "src/win/src/LbphEmbedder.cpp"
-            "src/win/src/DnnSsdFaceDetector.cpp"
-        )
+        add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib.cpp")
         # Link Libraries for JNI
         target_link_libraries(
             native-lib
@@ -402,8 +341,6 @@ if(ANDROID)
     # Explicitly set include directories for native-lib
     target_include_directories(native-lib PRIVATE 
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
     )
 
     target_compile_definitions(native-lib PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
@@ -422,27 +359,15 @@ endif()
 
 if(NOT RK_SKIP_OPENCV)
     # 2. Native Executable (CLI) for RK3288 (and Host Testing)
-    add_executable(rk3288_cli
-        "src/cpp/main.cpp"
-        ${CORE_SOURCES}
-        "src/win/src/FaceDetector.cpp"
-        "src/win/src/LbphEmbedder.cpp"
-        "src/win/src/DnnSsdFaceDetector.cpp"
-    )
+    add_executable(rk3288_cli "src/cpp/main.cpp" ${CORE_SOURCES})
 
     # Explicitly set include directories for rk3288_cli
     target_include_directories(rk3288_cli PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include/rk_win
     )
 
     target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
     target_compile_definitions(rk3288_cli PRIVATE RK_HAVE_LIBYUV=$<IF:$<BOOL:${RK_HAVE_LIBYUV}>,1,0>)
-    if(WIN32)
-        target_compile_definitions(rk3288_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    endif()
     if(RK_HAVE_LIBYUV AND libyuv_SOURCE_DIR)
         target_include_directories(rk3288_cli PRIVATE ${libyuv_SOURCE_DIR}/include)
     endif()
@@ -535,10 +460,6 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/test_face_infer_outcome_json.cpp"
             "tests/cpp/test_mock_preflight_guards.cpp"
             "tests/cpp/test_video_manager.cpp"
-            "tests/cpp/test_int8_quantization.cpp"
-            "tests/cpp/test_face_align.cpp"
-            "tests/cpp/test_resource_cleanup.cpp"
-            "tests/cpp/test_gallery_cache.cpp"
             "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/cpp/src/FaceAlign.cpp"
             "src/cpp/src/FaceInferOutcomeJson.cpp"
@@ -556,9 +477,6 @@ if(NOT RK_SKIP_OPENCV)
             "src/cpp/src/adapters/ArcFaceAdapter.cpp"
             "src/cpp/src/adapters/YoloFaceAdapter.cpp"
             "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
-            "src/cpp/src/adapters/YuNetAdapter.cpp"
-            "src/cpp/src/adapters/SFaceAdapter.cpp"
-            "src/cpp/src/adapters/RetinaFaceAdapter.cpp"
             "src/cpp/src/adapters/DnnSsdAdapter.cpp"
             "src/cpp/src/adapters/CascadeAdapter.cpp"
             "src/cpp/src/adapters/LbphAdapter.cpp"
@@ -587,38 +505,7 @@ if(NOT RK_SKIP_OPENCV)
             opencv_objdetect
             opencv_videoio
         )
-        if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
-            target_link_libraries(face_infer_unit_tests ${RK_NCNN_TARGET})
-        endif()
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/yolo_face_int8_ncnn/yolo_face_int8.param")
-            target_compile_definitions(face_infer_unit_tests PRIVATE RK_HAVE_INT8_MODELS=1)
-        endif()
         add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
-    endif()
-
-    # 独立 ncnn 精度测试：仅链接 ncnn + OpenCV，不含适配器代码
-    if(NOT ANDROID AND RK_HAVE_NCNN AND RK_NCNN_TARGET)
-        add_executable(ncnn_precision_test
-            "tests/cpp/ncnn_precision_test.cpp"
-        )
-        find_path(_ncnn_include ncnn/net.h PATHS "${NCNN_DIR}/include" NO_DEFAULT_PATH)
-        target_include_directories(ncnn_precision_test PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-            ${_ncnn_include})
-        target_compile_definitions(ncnn_precision_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-        if(MSVC)
-            target_compile_options(ncnn_precision_test PRIVATE /utf-8)
-            # 本地构建的 ncnn.lib 使用静态 CRT (/MT)，与项目默认一致
-            set_target_properties(ncnn_precision_test PROPERTIES
-                MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-        endif()
-        target_link_libraries(ncnn_precision_test
-            opencv_core
-            opencv_imgproc
-            opencv_imgcodecs
-            ${RK_NCNN_TARGET}
-        )
-        add_test(NAME ncnn_precision_test COMMAND ncnn_precision_test)
     endif()
 endif()
 
@@ -680,8 +567,6 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/LbphEmbedder.cpp"
             "src/win/src/FaceDatabase.cpp"
             "src/win/src/FaceRecognizer.cpp"
-            "src/win/src/ArcFaceWinRecognizer.cpp"
-            "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/win/src/DnnSsdFaceDetector.cpp"
             "src/win/src/OverlayRenderer.cpp"
             "src/win/src/FacesJson.cpp"
@@ -935,42 +820,6 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         opencv_imgcodecs
     )
     add_test(NAME win_face_database_perf COMMAND win_face_database_perf)
-
-# --- Install targets ---
-# Only install main binaries and the shared library, not tests or benchmarks
-if(TARGET win_local_service)
-    install(TARGETS win_local_service RUNTIME DESTINATION bin)
-endif()
-if(TARGET win_camera_face_recognition)
-    install(TARGETS win_camera_face_recognition RUNTIME DESTINATION bin)
-endif()
-if(TARGET rk3288_cli)
-    install(TARGETS rk3288_cli RUNTIME DESTINATION bin)
-endif()
-if(TARGET native-lib)
-    install(TARGETS native-lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
-endif()
-if(TARGET inference_bench_cli)
-    install(TARGETS inference_bench_cli RUNTIME DESTINATION bin)
-endif()
-if(TARGET win_face_eval_cli)
-    install(TARGETS win_face_eval_cli RUNTIME DESTINATION bin)
-endif()
-if(TARGET win_face_bench_cli)
-    install(TARGETS win_face_bench_cli RUNTIME DESTINATION bin)
-endif()
-
-# Common OpenCV library lists for test/CLI targets (reduces 10+ repetitions)
-set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc opencv_imgcodecs opencv_objdetect)
-set(RK_OPENCV_CORE_DNN_LIBS ${RK_OPENCV_CORE_LIBS} opencv_dnn)
-
-# Apply per-target includes and definitions (replacing global include_directories / add_definitions)
-foreach(t ${RK_ENGINE_TARGETS})
-    if(TARGET ${t})
-        target_include_directories(${t} PRIVATE ${RK_COMMON_INCLUDES})
-        target_compile_definitions(${t} PRIVATE ${RK_COMMON_DEFS})
-    endif()
-endforeach()
 
 endif()
 

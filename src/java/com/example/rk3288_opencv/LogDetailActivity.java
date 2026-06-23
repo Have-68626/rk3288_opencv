@@ -725,12 +725,4 @@ public class LogDetailActivity extends AppCompatActivity {
         }
         return super.onOptionsItemSelected(item);
     }
-
-    @Override
-    protected void onDestroy() {
-        if (executor != null && !executor.isShutdown()) {
-            executor.shutdownNow();
-        }
-        super.onDestroy();
-    }
 }

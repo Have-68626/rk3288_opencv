@@ -64,7 +64,7 @@ bool httpPostJson(const std::string& urlUtf8, const std::string& body, int timeo
     }
 
     const wchar_t* hdr = L"Content-Type: application/json; charset=utf-8\r\n";
-    BOOL ok = WinHttpSendRequest(req, hdr, -1, const_cast<LPVOID>(static_cast<const void*>(body.data())), static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0);
+    BOOL ok = WinHttpSendRequest(req, hdr, -1, (LPVOID)body.data(), static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0);
     if (ok) ok = WinHttpReceiveResponse(req, nullptr);
 
     DWORD status = 0;

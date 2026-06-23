@@ -28,20 +28,7 @@ try {
     corepack pnpm run dev -- --host 127.0.0.1 --port 5173 | Out-Host
   } -ArgumentList $webDir
 
-  # Wait for Vite dev server to be ready (up to 30s)
-  $viteReady = $false
-  for ($i = 0; $i -lt 30; $i++) {
-    try {
-      $req = [System.Net.WebRequest]::Create("http://127.0.0.1:5173")
-      $req.Timeout = 1000
-      $resp = $req.GetResponse()
-      if ($resp.StatusCode -eq 200) { $viteReady = $true; $resp.Close(); break }
-      $resp.Close()
-    } catch { }
-    Start-Sleep -Seconds 1
-  }
-  if (-not $viteReady) { throw "Vite dev server did not become ready within 30s" }
-
+  Start-Sleep -Seconds 3
   corepack pnpm run e2e:run:coverage | Out-Host
   corepack pnpm run coverage:report | Out-Host
 

@@ -1,4 +1,4 @@
-import { ConfigProvider, message, theme } from 'antd'
+import { ConfigProvider, theme } from 'antd'
 import enUS from 'antd/locale/en_US'
 import zhCN from 'antd/locale/zh_CN'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
@@ -7,19 +7,10 @@ import { HomePage } from './app/pages/HomePage'
 import { PreviewPage } from './app/pages/PreviewPage'
 import { SettingsPage } from './app/pages/SettingsPage'
 import { SplashPage } from './app/pages/SplashPage'
-import { AppStoreProvider, setNotify, useAppStore } from './app/state/AppStore'
-import { ErrorBoundary } from './app/ui/ErrorBoundary'
+import { AppStoreProvider, useAppStore } from './app/state/AppStore'
 import { MainLayout } from './app/ui/MainLayout'
 
 function AntdAndRouteRoot() {
-  return (
-    <ErrorBoundary>
-      <AntdAndRouteInner />
-    </ErrorBoundary>
-  )
-}
-
-function AntdAndRouteInner() {
   const { prefs } = useAppStore()
 
   const resolvedThemeMode =
@@ -59,11 +50,6 @@ function AntdAndRouteInner() {
 }
 
 export default function App() {
-  setNotify({
-    loading: (msg: string) => message.loading(msg, 0),
-    success: (msg: string) => message.success(msg),
-    error: (msg: string) => message.error(msg),
-  })
   return (
     <AppStoreProvider>
       <AntdAndRouteRoot />

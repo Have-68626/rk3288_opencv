@@ -1,19 +1,17 @@
 # 致谢与许可证（CREDITS）
 
-**更新日期**: 2026-06-23
-
 本文件用于记录本项目使用的第三方依赖、来源与许可证信息，便于审计与合规。
 
 ## 📑 快速索引
 
 | 平台 | 章节 |
 |:----|:-----|
-| 跨平台 | [📦 跨平台依赖](#跨平台依赖) |
-| Android | [🤖 Android 依赖](#android-依赖) |
-| Windows | [🖥️ Windows 依赖](#windows-依赖) |
-| 模型 | [📊 模型台账与依赖](#模型台账与依赖) |
-| 检查 | [📋 依赖状态检查](#依赖状态检查) |
-| 模板 | [📝 外部文档模板](#外部文档模板) |
+| 跨平台 | [📦 跨平台依赖](#-跨平台依赖) |
+| Android | [🤖 Android 依赖](#-android-依赖) |
+| Windows | [🖥️ Windows 依赖](#️-windows-依赖) |
+| 模型 | [📊 模型台账与依赖](#️-模型台账与依赖) |
+| 检查 | [📋 依赖状态检查](#-依赖状态检查) |
+| 模板 | [📝 外部文档模板](#-外部文档模板) |
 
 ---
 
@@ -68,8 +66,6 @@ CameraX 的传递依赖（已解析）：
 
 ---
 
-<a id="windows-依赖"></a>
-
 ## 🖥️ Windows 依赖
 
 ### Native 层
@@ -99,8 +95,6 @@ CameraX 的传递依赖（已解析）：
 
 ---
 
-<a id="模型台账与依赖"></a>
-
 ## 📊 模型台账与依赖
 
 本项目使用或支持以下机器视觉模型。对于需要在部署时下载的模型，请确保计算其 SHA-256 哈希值与下表一致，以确保安全性与精度。
@@ -110,15 +104,12 @@ CameraX 的传递依赖（已解析）：
 | **LBP Frontal Face** | 人脸检测（级联） | XML | `app/src/main/assets/lbpcascade_frontalface.xml` | [OpenCV Data](https://github.com/opencv/opencv/tree/master/data/lbpcascades) | `529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d` | 3-Clause BSD |
 | **ResNet SSD Face** | 人脸检测（DNN） | PB | `storage/models/opencv_face_detector_uint8.pb` | [OpenCV 3rdparty](https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel) | ⚠️ 需在部署时验证 | Apache 2.0 |
 | **ResNet SSD Config** | 网络结构定义 | PBTXT | `storage/models/opencv_face_detector.pbtxt` | [OpenCV Extra](https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/opencv_face_detector.pbtxt) | ⚠️ 需在部署时验证 | Apache 2.0 |
-| **NCNN YOLO Face** | 端侧检测 | BIN/PARAM | `models/yolo_face_ncnn/` | 自训练/转换 | ⚠️ 需本地生成 | — |
-| **NCNN SCRFD** | 端侧检测（轻量） | BIN/PARAM | `models/scrfd_ncnn/` | PNNX 转换自 `det_10g.onnx` | ⚠️ 需本地生成 | — |
-| **ArcFace Embedder** | 人脸特征提取 | ONNX/BIN | `models/arcface_ncnn/` | 第三方/自训练 | ⚠️ 需本地生成 | — |
-| **MobileFaceNet** | 轻量人脸特征提取 | BIN/PARAM | `models/mobilefacenet_ncnn/` | 自训练/转换 | ⚠️ 需本地生成 | — |
+| **NCNN YOLO Face** | 端侧检测 | BIN/PARAM | *(按需配置)* | 第三方/自训练 | ⚠️ 需在部署时验证 | — |
+| **ArcFace Embedder** | 人脸特征提取 | ONNX/BIN | *(按需配置)* | 第三方/自训练 | ⚠️ 需在部署时验证 | — |
 
 > **提示**：启动时程序将自动进行自检，并会在日志中打印所有加载模型的 SHA-256。请确保与上述台账保持一致。
 
-> **⚠️ 重要**：DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的
-`/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。
+> **⚠️ 重要**：DNN 模型文件由于体积较大，默认不包含在代码库中。Windows 环境首次部署时，需将 `.pb` 与 `.pbtxt` 文件下载并放置于 `storage/models/` 目录下（或通过 Web UI 的 `/api/v1/settings` 接口修改 `dnn.modelPath` 配置）。
 
 ---
 

@@ -36,80 +36,75 @@ std::string nowStamp() {
 }
 
 #ifdef _WIN32
-struct WsaGuard {
-    WSADATA wsa{};
-    bool ok = false;
-    WsaGuard() { ok = (WSAStartup(MAKEWORD(2, 2), &wsa) == 0); }
-    ~WsaGuard() { if (ok) WSACleanup(); }
-    WsaGuard(const WsaGuard&) = delete;
-    WsaGuard& operator=(const WsaGuard&) = delete;
-};
-
-struct SocketGuard {
-    SOCKET s = INVALID_SOCKET;
-    SocketGuard() = default;
-    explicit SocketGuard(SOCKET s_) : s(s_) {}
-    ~SocketGuard() { if (s != INVALID_SOCKET) closesocket(s); }
-    SocketGuard(const SocketGuard&) = delete;
-    SocketGuard& operator=(const SocketGuard&) = delete;
-    SOCKET get() const { return s; }
-};
-
 bool httpGetLocal(int port, const std::string& path, std::string& outResp) {
     outResp.clear();
-    WsaGuard wsa;
-    if (!wsa.ok) return false;
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
 
-    SocketGuard sg(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-    if (sg.get() == INVALID_SOCKET) return false;
-
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) {
+        WSACleanup();
+        return false;
+    }
     DWORD recvTimeoutMs = 2000;
     DWORD sendTimeoutMs = 2000;
-    setsockopt(sg.get(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
-    setsockopt(sg.get(), SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendTimeoutMs), sizeof(sendTimeoutMs));
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendTimeoutMs), sizeof(sendTimeoutMs));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<u_short>(port));
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    if (connect(sg.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) return false;
+    if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        closesocket(s);
+        WSACleanup();
+        return false;
+    }
 
     std::string req;
     req += "GET " + path + " HTTP/1.1\r\n";
     req += "Host: 127.0.0.1\r\n";
     req += "Connection: close\r\n";
     req += "\r\n";
-    send(sg.get(), req.c_str(), static_cast<int>(req.size()), 0);
+    send(s, req.c_str(), static_cast<int>(req.size()), 0);
 
     char buf[2048];
     for (;;) {
-        int r = recv(sg.get(), buf, static_cast<int>(sizeof(buf)), 0);
+        int r = recv(s, buf, static_cast<int>(sizeof(buf)), 0);
         if (r <= 0) break;
         outResp.append(buf, buf + r);
         if (outResp.size() > 256000) break;
     }
 
+    closesocket(s);
+    WSACleanup();
     return !outResp.empty();
 }
 
 bool sseReadSome(int port, const std::string& path, int seconds, int& eventsOut) {
     eventsOut = 0;
-    WsaGuard wsa;
-    if (!wsa.ok) return false;
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
 
-    SocketGuard sg(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-    if (sg.get() == INVALID_SOCKET) return false;
-
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) {
+        WSACleanup();
+        return false;
+    }
     DWORD recvTimeoutMs = 2000;
     DWORD sendTimeoutMs = 2000;
-    setsockopt(sg.get(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
-    setsockopt(sg.get(), SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendTimeoutMs), sizeof(sendTimeoutMs));
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sendTimeoutMs), sizeof(sendTimeoutMs));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<u_short>(port));
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    if (connect(sg.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) return false;
+    if (connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        closesocket(s);
+        WSACleanup();
+        return false;
+    }
 
     std::string req;
     req += "GET " + path + " HTTP/1.1\r\n";
@@ -117,14 +112,14 @@ bool sseReadSome(int port, const std::string& path, int seconds, int& eventsOut)
     req += "Accept: text/event-stream\r\n";
     req += "Connection: close\r\n";
     req += "\r\n";
-    send(sg.get(), req.c_str(), static_cast<int>(req.size()), 0);
+    send(s, req.c_str(), static_cast<int>(req.size()), 0);
 
     auto endT = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, seconds));
     std::string bufAll;
     bufAll.reserve(4096);
     char buf[2048];
     while (std::chrono::steady_clock::now() < endT) {
-        int r = recv(sg.get(), buf, static_cast<int>(sizeof(buf)), 0);
+        int r = recv(s, buf, static_cast<int>(sizeof(buf)), 0);
         if (r > 0) {
             bufAll.append(buf, buf + r);
             size_t pos = 0;
@@ -138,6 +133,8 @@ bool sseReadSome(int port, const std::string& path, int seconds, int& eventsOut)
         if (eventsOut >= 2) break;
     }
 
+    closesocket(s);
+    WSACleanup();
     return eventsOut > 0;
 }
 #endif

@@ -73,10 +73,9 @@ static bool isLittleEndianHost() {
 std::vector<std::uint8_t> serializeFaceTemplate(const FaceTemplate& t) {
     FaceTemplateHeader h = t.header;
     h.payloadBytes = static_cast<std::uint32_t>(t.embedding.size() * 4);
-    h.dim = static_cast<std::uint16_t>(t.embedding.size());
 
     std::vector<std::uint8_t> out;
-    out.reserve(23 + static_cast<std::size_t>(h.payloadBytes));
+    out.reserve(24 + static_cast<std::size_t>(h.payloadBytes));
 
     putU32BE(out, FaceTemplateHeader::kMagic);
     out.push_back(h.version);

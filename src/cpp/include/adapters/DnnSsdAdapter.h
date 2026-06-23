@@ -3,9 +3,11 @@
 #include "FaceDetector.h"
 #include "rk_win/DnnSsdFaceDetector.h"
 
-#include <mutex>
 #include <string>
 
+/**
+ * @brief Adapter wrapping rk_win::DnnSsdFaceDetector into the unified FaceDetector interface.
+ */
 class DnnSsdAdapter : public FaceDetector {
 public:
     DnnSsdAdapter();
@@ -16,7 +18,6 @@ public:
     const char* name() const override;
 
 private:
-    mutable std::mutex mu_;
     rk_win::DnnSsdFaceDetector inner_;
     rk_win::DnnSsdConfig cfg_;
     bool loaded_ = false;

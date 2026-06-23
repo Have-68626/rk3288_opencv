@@ -1,6 +1,5 @@
 #include <jni.h>
 #include <cstdint>
-#include <cstdlib>
 #include <atomic>
 #include <string>
 #include <thread>
@@ -24,7 +23,6 @@ static std::thread g_engineThread;
 static std::mutex g_engineThreadMutex;
 static JavaVM* g_vm = nullptr;
 static jobject g_activity = nullptr;
-static std::mutex g_activityMutex;
 static std::mutex g_previewMutex;
 static ANativeWindow* g_previewWindow = nullptr;
 static std::atomic<uint64_t> g_previewGeneration{0};
@@ -60,7 +58,6 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 }
 
 JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
-    stopAndJoinEngineThreadIfRunning();
     std::lock_guard<std::mutex> lock(g_previewMutex);
     if (g_previewWindow) {
         ANativeWindow_release(g_previewWindow);
@@ -69,12 +66,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
 }
 
 void sendRecognitionResult(const std::string& result) {
-    jobject activityLocal;
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        activityLocal = g_activity;
-    }
-    if (!g_vm || !activityLocal) return;
+    if (!g_vm || !g_activity) return;
 
     JNIEnv* env;
     int getEnvStat = g_vm->GetEnv((void**)&env, JNI_VERSION_1_6);
@@ -87,14 +79,11 @@ void sendRecognitionResult(const std::string& result) {
         attached = true;
     }
 
-    jclass cls = env->GetObjectClass(activityLocal);
+    jclass cls = env->GetObjectClass(g_activity);
     jmethodID mid = env->GetMethodID(cls, "onNativeResult", "(Ljava/lang/String;)V");
     if (mid) {
         jstring jStr = env->NewStringUTF(result.c_str());
-        env->CallVoidMethod(activityLocal, mid, jStr);
-        if (env->ExceptionCheck()) {
-            env->ExceptionClear();
-        }
+        env->CallVoidMethod(g_activity, mid, jStr);
         env->DeleteLocalRef(jStr);
     }
 
@@ -117,12 +106,9 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
 
     stopAndJoinEngineThreadIfRunning();
 
-    // Update global activity ref (受 g_activityMutex 保护)
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity) env->DeleteGlobalRef(g_activity);
-        g_activity = env->NewGlobalRef(thiz);
-    }
+    // Update global activity ref
+    if (g_activity) env->DeleteGlobalRef(g_activity);
+    g_activity = env->NewGlobalRef(thiz);
     const char* path = filePath ? env->GetStringUTFChars(filePath, nullptr) : nullptr;
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
     const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
@@ -272,30 +258,18 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
         JNIEnv* env,
         jobject thiz,
-        jstring cameraId,
+        jint cameraId,
         jstring cascadePath,
         jstring storagePath) {
     RKLOG_ENTER(TAG);
 
     stopAndJoinEngineThreadIfRunning();
 
-    // Update global activity ref (受 g_activityMutex 保护)
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity) env->DeleteGlobalRef(g_activity);
-        g_activity = env->NewGlobalRef(thiz);
-    }
+    // Update global activity ref
+    if (g_activity) env->DeleteGlobalRef(g_activity);
+    g_activity = env->NewGlobalRef(thiz);
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
-    if (cascadePath && env->ExceptionCheck()) {
-        env->ExceptionClear();
-        return JNI_FALSE;
-    }
     const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
-    if (storagePath && env->ExceptionCheck()) {
-        if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
-        env->ExceptionClear();
-        return JNI_FALSE;
-    }
 
     std::string cascadeStr = cascade ? cascade : "";
     std::string storageStr = storage ? storage : "";
@@ -303,44 +277,7 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
     if (storage) env->ReleaseStringUTFChars(storagePath, storage);
 
-    // Java 层 cameraId 已改为 String
-    //   null         → 外部帧输入（camIdInt = -1）
-    //   纯数字        → 相机索引（camIdInt = 数值）
-    //   文件路径      → 调用 initialize(string filePath) 重载
-    //   其他非法格式 → 返回 false
-    bool useFilePathInit = false;
-    std::string camIdStr;
-    int camIdInt = -1;
-    if (cameraId) {
-        const char* camStr = env->GetStringUTFChars(cameraId, nullptr);
-        if (env->ExceptionCheck()) {
-            env->ExceptionClear();
-            return JNI_FALSE;
-        }
-        if (camStr) {
-            camIdStr = camStr;
-            env->ReleaseStringUTFChars(cameraId, camStr);
-        }
-        if (!camIdStr.empty()) {
-            // 判断是否为文件路径：包含 . / \ 视为文件路径
-            bool isFilePath = camIdStr.find('.') != std::string::npos ||
-                              camIdStr.find('/') != std::string::npos ||
-                              camIdStr.find('\\') != std::string::npos;
-            if (isFilePath) {
-                useFilePathInit = true;
-            } else {
-                // 尝试解析为整数
-                char* end = nullptr;
-                long val = std::strtol(camIdStr.c_str(), &end, 10);
-                if (end == camIdStr.c_str() || *end != '\0' || val < 0) {
-                    LOGE("Invalid cameraId format: %s", camIdStr.c_str());
-                    return JNI_FALSE;
-                }
-                camIdInt = static_cast<int>(val);
-            }
-        }
-    }
-
+    LOGI("Initializing Engine with Camera ID: %d...", cameraId);
     if (!g_engine) {
         g_engine = std::make_unique<Engine>();
     }
@@ -349,21 +286,10 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     g_engine->clearCancelInit();
     g_engine->setOnResultCallback(sendRecognitionResult);
 
-    if (useFilePathInit) {
-        LOGI("Initializing Engine with file path: %s...", camIdStr.c_str());
-        try {
-            return g_engine->initialize(camIdStr, cascadeStr, storageStr);
-        } catch (const std::exception& e) {
-            LOGE("Engine::initialize(filePath) threw: %s", e.what());
-            return JNI_FALSE;
-        }
-    }
-
-    LOGI("Initializing Engine with Camera ID: %d...", camIdInt);
     try {
-        return g_engine->initialize(camIdInt, cascadeStr, storageStr);
+        return g_engine->initialize(cameraId, cascadeStr, storageStr);
     } catch (const std::exception& e) {
-        LOGE("Engine::initialize(cameraId) threw: %s", e.what());
+        LOGE("Engine::initialize threw std::exception: %s", e.what());
         return JNI_FALSE;
     } catch (...) {
         LOGE("Engine::initialize threw unknown exception");
@@ -458,6 +384,50 @@ bool copyDirectBytes(JNIEnv* env, jobject byteBuffer, std::size_t needBytes, std
 }  // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameNV21(
+        JNIEnv* env,
+        jobject /* this */,
+        jobject nv21Buffer,
+        jint width,
+        jint height,
+        jint rowStrideY,
+        jlong timestampNs,
+        jint rotationDegrees,
+        jboolean mirrored) {
+    if (!g_engine) return JNI_FALSE;
+
+    ExternalFrame f;
+    f.format = ExternalFrameFormat::NV21;
+    f.width = width;
+    f.height = height;
+    f.meta.timestampNs = static_cast<int64_t>(timestampNs);
+    f.meta.rotationDegrees = rotationDegrees;
+    f.meta.mirrored = (mirrored == JNI_TRUE);
+    f.nv21RowStrideY = rowStrideY > 0 ? rowStrideY : width;
+
+    if (width <= 0 || height <= 0 || f.nv21RowStrideY < width) {
+        rklog::logWarn(TAG, __func__, "nativePushFrameNV21 参数非法");
+        return JNI_FALSE;
+    }
+
+    const std::size_t needY = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>(height);
+    const std::size_t needUV = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>((height + 1) / 2);
+    const std::size_t need = needY + needUV;
+
+    // JNI 所有权：这里做深拷贝，保证 Java 侧复用/释放 Buffer 不会导致 Native 悬挂指针。
+    if (!copyDirectBytes(env, nv21Buffer, need, f.nv21)) {
+        rklog::logWarn(TAG, __func__, "nativePushFrameNV21 需要 DirectByteBuffer 且容量足够");
+        return JNI_FALSE;
+    }
+
+    const bool ok = g_engine->pushExternalFrame(std::move(f));
+    if (!ok) {
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
         JNIEnv* env,
         jobject /* this */,
@@ -531,6 +501,51 @@ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
         return JNI_FALSE;
     }
     return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameNV21Bytes(
+        JNIEnv* env,
+        jobject /* this */,
+        jbyteArray nv21Bytes,
+        jint width,
+        jint height,
+        jint rowStrideY,
+        jlong timestampNs,
+        jint rotationDegrees,
+        jboolean mirrored) {
+    if (!g_engine) return JNI_FALSE;
+    if (!nv21Bytes) return JNI_FALSE;
+
+    ExternalFrame f;
+    f.format = ExternalFrameFormat::NV21;
+    f.width = width;
+    f.height = height;
+    f.meta.timestampNs = static_cast<int64_t>(timestampNs);
+    f.meta.rotationDegrees = rotationDegrees;
+    f.meta.mirrored = (mirrored == JNI_TRUE);
+    f.nv21RowStrideY = rowStrideY > 0 ? rowStrideY : width;
+
+    if (width <= 0 || height <= 0 || f.nv21RowStrideY < width) {
+        rklog::logWarn(TAG, __func__, "nativePushFrameNV21Bytes 参数非法");
+        return JNI_FALSE;
+    }
+
+    const std::size_t needY = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>(height);
+    const std::size_t needUV = static_cast<std::size_t>(f.nv21RowStrideY) * static_cast<std::size_t>((height + 1) / 2);
+    const std::size_t need = needY + needUV;
+
+    const jsize len = env->GetArrayLength(nv21Bytes);
+    if (len < 0 || static_cast<std::size_t>(len) < need) {
+        rklog::logWarn(TAG, __func__, "nativePushFrameNV21Bytes 缓冲区长度不足");
+        return JNI_FALSE;
+    }
+
+    f.nv21.resize(need);
+    env->GetByteArrayRegion(nv21Bytes, 0, static_cast<jsize>(need),
+                            reinterpret_cast<jbyte*>(f.nv21.data()));
+
+    return g_engine->pushExternalFrame(std::move(f)) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -624,15 +639,11 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(
     if (!g_engine->getRenderFrame(frame, seq)) {
         return false;
     }
-    {
-        static std::mutex seqMu;
-        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
-        std::lock_guard<std::mutex> lock(seqMu);
-        if (seq == lastSeqGlob) {
-            return false;
-        }
-        lastSeqGlob = seq;
+    thread_local uint64_t lastSeq = static_cast<uint64_t>(-1);
+    if (seq == lastSeq) {
+        return false;
     }
+    lastSeq = seq;
 
     // Lock Bitmap pixels
     AndroidBitmapInfo info;
@@ -703,26 +714,22 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
     }
     if (frame.empty()) return JNI_FALSE;
 
-    {
-        static std::mutex seqMu;
-        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
-        static int lastGenGlob = -1;
-        static int lastWGlob = 0;
-        static int lastHGlob = 0;
-        static int lastFormatGlob = 0;
-        std::lock_guard<std::mutex> lock(seqMu);
-        if (gen != lastGenGlob) {
-            lastGenGlob = gen;
-            lastSeqGlob = static_cast<uint64_t>(-1);
-            lastWGlob = 0;
-            lastHGlob = 0;
-            lastFormatGlob = 0;
-        }
-        if (seq == lastSeqGlob) {
-            return JNI_TRUE;
-        }
-        lastSeqGlob = seq;
+    thread_local uint64_t lastGen = static_cast<uint64_t>(-1);
+    thread_local uint64_t lastSeq = static_cast<uint64_t>(-1);
+    thread_local int lastW = 0;
+    thread_local int lastH = 0;
+    thread_local int lastFormat = 0;
+    if (gen != lastGen) {
+        lastGen = gen;
+        lastSeq = static_cast<uint64_t>(-1);
+        lastW = 0;
+        lastH = 0;
+        lastFormat = 0;
     }
+    if (seq == lastSeq) {
+        return JNI_TRUE;
+    }
+    lastSeq = seq;
 
     const int w = frame.cols;
     const int h = frame.rows;

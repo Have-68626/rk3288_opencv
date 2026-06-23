@@ -2,15 +2,9 @@ plugins {
     id 'com.android.application'
 }
 
-// Helper: read integer property from gradle.properties with fallback
-def intProp(String name, int fallback) {
-    def v = project.findProperty(name)
-    return v != null ? (v as Integer) : fallback
-}
-
 android {
     namespace 'com.example.rk3288_opencv'
-    compileSdk intProp('rk.compileSdk', 34)
+    compileSdk 34
 
     def skipOpencv = (project.findProperty("RK_SKIP_OPENCV") ?: System.getenv("RK_SKIP_OPENCV"))?.toString()?.toBoolean() ?: false
     def opencvRoot = (project.findProperty("OPENCV_ROOT") ?: System.getenv("OPENCV_ROOT"))
@@ -42,10 +36,10 @@ android {
 
     defaultConfig {
         applicationId "com.example.rk3288_opencv"
-        minSdk intProp('rk.minSdk', 21)
-        targetSdk intProp('rk.targetSdk', 34)
-        versionCode intProp('rk.versionCode', 3)
-        versionName project.findProperty('rk.versionName') ?: "v0.1beta1"
+        minSdk 21 // Android 5.0+ (RK3288 常用版本)
+        targetSdk 34
+        versionCode 3
+        versionName "v0.1beta1"
 
         externalNativeBuild {
             cmake {
@@ -62,21 +56,11 @@ android {
                         cmakeArgs.add("-DOPENCV_CONTRIB_ROOT=${opencvContribRoot}")
                     }
                 }
-                // 禁用 libyuv：该库从 chromium.googlesource.com 通过 FetchContent 下载，
-                // 但国内网络环境不稳定，容易超时失败。libyuv 为可选加速，不影响核心功能。
-                cmakeArgs.add("-DRK_ENABLE_LIBYUV=OFF")
                 // ncnn 本地路径（避免 FetchContent 网络下载）
-                // 优先使用环境变量 NCNN_DIR，否则使用硬编码路径作为后备
-                def ncnnRoot = System.getenv("NCNN_DIR") ?: "D:/ProgramData/NCNN/ncnn-20260113-android-vulkan"
-                def ncnnArmv7 = new File("${ncnnRoot}/armeabi-v7a")
-                def ncnnArm64 = new File("${ncnnRoot}/arm64-v8a")
-                if (ncnnArmv7.exists() && ncnnArm64.exists()) {
-                    cmakeArgs.add("-DRK_ENABLE_NCNN=ON")
-                    cmakeArgs.add("-DNCNN_DIR_ARMv7=${ncnnRoot}/armeabi-v7a")
-                    cmakeArgs.add("-DNCNN_DIR_ARM64=${ncnnRoot}/arm64-v8a")
-                } else {
-                    cmakeArgs.add("-DRK_ENABLE_NCNN=OFF")
-                }
+                // ncnn Android 包按 ABI 分目录，不同 ABI 用不同的 NCNN_DIR
+                def ncnnRoot = "D:/ProgramData/NCNN/ncnn-20260113-android-vulkan"
+                cmakeArgs.add("-DNCNN_DIR_ARMv7=${ncnnRoot}/armeabi-v7a")
+                cmakeArgs.add("-DNCNN_DIR_ARM64=${ncnnRoot}/arm64-v8a")
                 arguments(*cmakeArgs)
             }
         }
@@ -111,13 +95,13 @@ android {
             } else {
                 include 'armeabi-v7a', 'arm64-v8a'
             }
-            universalApk false
+            universalApk true
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

@@ -175,7 +175,7 @@ static size_t pickMainFaceIndex(const FaceInferRequest& req, const FaceDetection
 
 }  // namespace
 
-std::vector<float> FaceInferStages::makeFakeEmbedding512(const cv::Rect2f& bbox, const cv::Size& imgSz) {
+std::vector<float> FaceInferStages::makeFakeEmbedding512ForTest(const cv::Rect2f& bbox, const cv::Size& imgSz) {
     std::vector<float> v(static_cast<size_t>(ArcFaceEmbedding::kDim), 0.0f);
     const float sx = imgSz.width > 0 ? (bbox.x / static_cast<float>(imgSz.width)) : 0.0f;
     const float sy = imgSz.height > 0 ? (bbox.y / static_cast<float>(imgSz.height)) : 0.0f;
@@ -216,46 +216,14 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
     std::string detErr;
     std::unique_ptr<YoloFaceDetector> det;
 
-    // 缓存检测器以避免每帧重新加载模型文件
-    static std::mutex s_detMu;
-    static std::string s_detCacheKey;
-    static std::unique_ptr<FaceDetector> s_cachedDet;
-    auto getCachedDet = [&](const std::string& backend, const std::string& modelPath,
-                            std::string& loadErr) -> FaceDetector* {
-        std::string key = backend + ":" + modelPath;
-        {
-            std::lock_guard<std::mutex> lock(s_detMu);
-            if (key == s_detCacheKey && s_cachedDet) return s_cachedDet.get();
-        }
-        ModelRegistry::ensureBuiltinRegistered();
-        auto det = ModelRegistry::instance().createDetector(backend);
-        if (!det) { loadErr = "detector_not_found: " + backend; return nullptr; }
-        if (!det->load(modelPath, loadErr)) return nullptr;
-        std::lock_guard<std::mutex> lock(s_detMu);
-        s_detCacheKey = key;
-        s_cachedDet = std::move(det);
-        return s_cachedDet.get();
-    };
-
-    // INT8 量化模型优先选择
-    if (req.int8Enabled) {
-        std::string loadErr;
-        auto* int8Det = getCachedDet("yolo_face_int8", req.yoloModelPath, loadErr);
-        if (int8Det) {
-            ctx.yoloBackendName = std::string(int8Det->name()) + " (INT8)";
-            const auto td0 = std::chrono::steady_clock::now();
-            ctx.faces = int8Det->detect(ctx.img, detErr);
-            const auto td1 = std::chrono::steady_clock::now();
-            m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
-            if (detErr.empty()) return okStatus();
-        }
-        rklog::logWarn("FaceInferStages", "detectFaces", "INT8 detector failed: " + loadErr + ", falling back to FP32");
-    }
-
     if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn" || req.yoloBackend == "ncnn") {
-        std::string loadErr;
-        auto* adapter = getCachedDet(req.yoloBackend, req.yoloModelPath, loadErr);
+        ModelRegistry::ensureBuiltinRegistered();
+        auto adapter = ModelRegistry::instance().createDetector(req.yoloBackend);
         if (!adapter) {
+            return failStatus("yolo_load", "detector_not_found: " + req.yoloBackend);
+        }
+        std::string loadErr;
+        if (!adapter->load(req.yoloModelPath, loadErr)) {
             return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
         }
         ctx.yoloBackendName = adapter->name();
@@ -344,39 +312,12 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
 
     const auto te0 = std::chrono::steady_clock::now();
     if (req.fakeEmbedding) {
-        ctx.embedding = makeFakeEmbedding512(ctx.mainFace.bbox, ctx.img.size());
+        ctx.embedding = makeFakeEmbedding512ForTest(ctx.mainFace.bbox, ctx.img.size());
         ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
         ctx.embeddingFake = true;
         const auto te1 = std::chrono::steady_clock::now();
         m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
         return okStatus();
-    }
-
-    // INT8 量化模型优先选择
-    if (req.int8Enabled) {
-        ModelRegistry::ensureBuiltinRegistered();
-        // 按优先级尝试 INT8 识别器
-        const char* int8EmbedderIds[] = {"arcface_int8", "mobilefacenet_int8"};
-        for (const char* eId : int8EmbedderIds) {
-            auto int8Emb = ModelRegistry::instance().createEmbedder(eId);
-            if (int8Emb) {
-                std::string loadErr;
-                if (int8Emb->load(req.arcModelPath, loadErr)) {
-                    std::string embedErr;
-                    auto e = int8Emb->embed(ctx.aligned112, embedErr);
-                    if (e.has_value()) {
-                        ctx.embedding = std::move(*e);
-                        ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
-                        ctx.embeddingFake = false;
-                        ctx.arcBackendName = std::string(int8Emb->name()) + " (INT8)";
-                        const auto te1 = std::chrono::steady_clock::now();
-                        m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-                        return okStatus();
-                    }
-                }
-                rklog::logWarn("FaceInferStages", "computeEmbedding", "INT8 embedder failed, falling back to FP32");
-            }
-        }
     }
 
     ArcFaceEmbedderConfig cfg;
@@ -407,29 +348,8 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         return failStatus("arc_init", "arc_backend_unsupported");
     }
 
-    // 缓存 embedder 避免每帧重新加载模型文件
-    static std::mutex s_embMu;
-    static std::string s_embCacheKey;
-    static ArcFaceEmbedder s_cachedEmb;
-    static bool s_embInited = false;
-    std::string cacheKey = req.arcBackend + ":" + req.arcModelPath;
-    std::string initErr;
-    {
-        std::lock_guard<std::mutex> lock(s_embMu);
-        if (cacheKey == s_embCacheKey && s_embInited) {
-            auto result = s_cachedEmb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
-            if (result.has_value()) {
-                ctx.embedding = std::move(result->values);
-                ctx.embeddingOk = true;
-                ctx.arcBackendName = req.arcBackend;
-                const auto te1 = std::chrono::steady_clock::now();
-                m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-                return okStatus();
-            }
-        }
-    }
-
     ArcFaceEmbedder emb;
+    std::string initErr;
     if (!emb.initialize(cfg, &initErr)) {
         return failStatus("arc_init", initErr.empty() ? "arc_init_failed" : initErr);
     }
@@ -444,60 +364,25 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         ctx.arcBackendName = "unknown";
     }
 
-    {
-        auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
-        if (e.has_value()) {
-            ctx.embedding = std::move(e->values);
-            ctx.embeddingOk = true;
-        }
+    std::string embedErr;
+    auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &embedErr);
+    if (!e.has_value()) {
+        return failStatus("arc_embed", embedErr.empty() ? "arc_embed_failed" : embedErr);
     }
+    ctx.embedding = std::move(e->values);
+    ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
+    ctx.embeddingFake = false;
 
-    {
-        std::lock_guard<std::mutex> lock(s_embMu);
-        s_embCacheKey = cacheKey;
-        s_cachedEmb = std::move(emb);
-        s_embInited = true;
-    }
-
-    if (!ctx.embeddingOk) {
-        return failStatus("arc_embed", "arc_embed_failed");
-    }
     const auto te1 = std::chrono::steady_clock::now();
     m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
     return okStatus();
 }
 
 FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, FaceInferContext& ctx) {
-    // Simple mtime-based cache to avoid re-reading unchanged gallery on every frame
-    static std::mutex s_cacheMu;
-    static std::string s_lastDir;
-    static std::filesystem::file_time_type s_lastMtime;
-    static std::vector<FaceSearchEntry> s_cachedEntries;
-    static std::vector<std::string> s_cachedWarnings;
-
-    std::error_code ec;
-    auto currentMtime = std::filesystem::exists(req.galleryDir, ec)
-        ? std::filesystem::last_write_time(req.galleryDir, ec) : std::filesystem::file_time_type{};
-    {
-        std::lock_guard<std::mutex> lock(s_cacheMu);
-        if (!ec && currentMtime == s_lastMtime && req.galleryDir == s_lastDir && !s_cachedEntries.empty()) {
-            ctx.galleryEntries = s_cachedEntries;
-            ctx.galleryWarnings = s_cachedWarnings;
-            return okStatus();
-        }
-    }
-
     std::string galleryErr;
     if (!loadGalleryDir(req.galleryDir, ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
         ctx.galleryEntries.clear();
         return failStatus("gallery_load", galleryErr.empty() ? "gallery_load_failed" : galleryErr);
-    }
-    {
-        std::lock_guard<std::mutex> lock(s_cacheMu);
-        s_lastDir = req.galleryDir;
-        s_lastMtime = currentMtime;
-        s_cachedEntries = ctx.galleryEntries;
-        s_cachedWarnings = ctx.galleryWarnings;
     }
     return okStatus();
 }
@@ -507,9 +392,7 @@ FaceInferStageStatus FaceInferStages::searchTopK(const FaceInferRequest& req, Fa
 
     std::string searchErr;
     const auto ts0 = std::chrono::steady_clock::now();
-    // Copy entries so a failed reset() doesn't leave galleryEntries empty for a retry
-    auto entries = ctx.galleryEntries;
-    if (!ctx.index.reset(std::move(entries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {
+    if (!ctx.index.reset(std::move(ctx.galleryEntries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {
         const auto ts1 = std::chrono::steady_clock::now();
         m.msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
         ctx.hits.clear();
@@ -520,7 +403,7 @@ FaceInferStageStatus FaceInferStages::searchTopK(const FaceInferRequest& req, Fa
 
     if (ctx.index.size() > 0) {
         FaceSearchOptions opt;
-        opt.assumeL2Normalized = req.assumeL2Normalized;
+        opt.assumeL2Normalized = true;
         ctx.hits = ctx.index.searchTopK(ctx.embedding, req.topK, opt, searchErr);
         if (!searchErr.empty()) {
             const auto ts1 = std::chrono::steady_clock::now();

@@ -30,35 +30,6 @@
 namespace rk_win {
 namespace {
 
-// ──── 命名常量（替代散落魔法数字）───────────────────────────
-constexpr int kRecvBufSize = 2048;
-constexpr std::size_t kMaxHeaderSize = 64 * 1024;
-constexpr std::size_t kMaxBodySize = 1024 * 1024;
-constexpr std::size_t kSendChunkSize = 1u << 20;   // 1 MiB
-#ifdef _WIN32
-constexpr DWORD kSocketTimeoutMs = 5000;
-#else
-constexpr int kSocketTimeoutMs = 5000;
-#endif
-constexpr int kSsePollMs = 1000;
-constexpr int kSseIdleMs = 100;
-constexpr auto kSseKeepaliveSec = std::chrono::seconds(10);
-constexpr int kMjpegIdleMs = 100;
-constexpr int kStaticCacheMaxAge = 31536000;        // 1 year
-constexpr int kAcceptRetryMs = 50;
-
-// RAII 封装 SOCKET: 析构时自动 closesocket, 消除手动关闭遗漏风险
-struct SocketGuard {
-    SOCKET s = INVALID_SOCKET;
-    explicit SocketGuard(SOCKET s_) : s(s_) {}
-    ~SocketGuard() { if (s != INVALID_SOCKET) closesocket(s); }
-    SocketGuard(const SocketGuard&) = delete;
-    SocketGuard& operator=(const SocketGuard&) = delete;
-    SocketGuard(SocketGuard&& other) noexcept : s(other.s) { other.s = INVALID_SOCKET; }
-    SocketGuard& operator=(SocketGuard&& other) noexcept { if (this != &other) { if (s != INVALID_SOCKET) closesocket(s); s = other.s; other.s = INVALID_SOCKET; } return *this; }
-    void release() { s = INVALID_SOCKET; }
-};
-
 struct WsaGuard {
     bool ok = false;
     WsaGuard() {
@@ -127,39 +98,21 @@ static std::string guessContentType(const std::string& path) {
 }
 
 static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
-    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
+    std::ifstream ifs(p, std::ios::binary);
     if (!ifs) return false;
-    const auto sz = ifs.tellg();
-    if (sz <= 0) { out.clear(); return true; }
-    ifs.seekg(0, std::ios::beg);
-    out.resize(static_cast<std::size_t>(sz));
-    ifs.read(out.data(), static_cast<std::streamsize>(sz));
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    out = ss.str();
     return true;
 }
 
 
 static std::string escapeJsonString(std::string_view s) {
     std::string out;
-    out.reserve(s.size() + s.size() / 4);
+    out.reserve(s.size() + 8);
     for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    out += buf;
-                } else {
-                    out.push_back(c);
-                }
-                break;
-        }
+        if (c == '"' || c == '\\') out.push_back('\\');
+        out.push_back(c);
     }
     return out;
 }
@@ -180,114 +133,24 @@ static std::string utf8FromWideLocal(const std::wstring& ws) {
 #if RK_WIN_HAS_OPENCV
 static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
     if (rs.bgr.empty()) return false;
-    cv::Mat img = rs.bgr.clone();
+
+    // Performance optimization: RenderState::bgr is already an isolated thread-local copy.
+    // Why: Avoids an expensive and redundant deep copy (clone()) allocating ~6MB per frame.
+    // Rollback: Revert to taking `const RenderState& rs` and doing `cv::Mat img = rs.bgr.clone();`.
     for (const auto& f : rs.faces) {
-        cv::rectangle(img, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+        cv::rectangle(rs.bgr, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     }
+
     static const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
+
     std::vector<uchar> buf;
-    if (!cv::imencode(".jpg", img, buf, params)) return false;
+    if (!cv::imencode(".jpg", rs.bgr, buf, params)) return false;
     outJpeg.assign(buf.begin(), buf.end());
     return true;
 }
 #endif
 
 }  // namespace
-
-// ──── SSE 流会话 ────────────────────────────────────────────
-namespace {
-class SseSession : public HttpFacesServer::StreamSession {
-public:
-    using StreamSession::StreamSession;
-
-    std::string contentType() const override { return "text/event-stream; charset=utf-8"; }
-    int idleMs() const override { return kSseIdleMs; }
-
-private:
-    std::uint64_t lastSeq_ = 0;
-    std::chrono::steady_clock::time_point lastKeep_ = std::chrono::steady_clock::now();
-
-public:
-    bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
-        if (!pipe) return false;
-        std::uint64_t seq = 0;
-        const bool changed = pipe->waitFacesSeqChanged(lastSeq_, kSsePollMs, seq);
-        if (!running) return false;
-        if (changed) {
-            lastSeq_ = seq;
-            FacesSnapshot snap;
-            if (pipe->snapshotFaces(snap)) {
-                const std::string body = buildFacesJson(snap);
-                std::string evt = "data: " + body + "\n\n";
-                return server_->writeRaw(sock, evt.data(), evt.size());
-            }
-        } else {
-            const auto now = std::chrono::steady_clock::now();
-            if (now - lastKeep_ > kSseKeepaliveSec) {
-                const std::string ka = ": keepalive\n\n";
-                lastKeep_ = now;
-                return server_->writeRaw(sock, ka.data(), ka.size());
-            }
-        }
-        return true;
-    }
-};
-
-class MjpegSession : public HttpFacesServer::StreamSession {
-public:
-    using StreamSession::StreamSession;
-
-    std::string contentType() const override {
-        return "multipart/x-mixed-replace; boundary=rk_boundary";
-    }
-    int idleMs() const override { return 100; }
-
-    bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
-#if RK_WIN_HAS_OPENCV
-        if (!pipe) return false;
-        RenderState rs;
-        if (!pipe->tryGetRenderState(rs)) return true;
-        std::vector<std::uint8_t> jpeg;
-        if (!buildJpegWithOverlay(rs, jpeg)) return true;
-        std::ostringstream os;
-        os << "--rk_boundary\r\n"
-           << "Content-Type: image/jpeg\r\n"
-           << "Content-Length: " << jpeg.size() << "\r\n"
-           << "\r\n";
-        const std::string part = os.str();
-        if (!server_->writeRaw(sock, part.data(), part.size())) return false;
-        if (!server_->writeRaw(sock, jpeg.data(), jpeg.size())) return false;
-        if (!server_->writeRaw(sock, "\r\n", 2)) return false;
-#else
-        (void)sock; (void)pipe; (void)running;
-        return false;  // 无 OpenCV 时无法编码 JPEG, 终止流
-#endif
-        return true;
-    }
-};
-}  // namespace
-
-// ──── 端点路由表 ─────────────────────────────────────────────
-static const HttpFacesServer::Route kRoutes[] = {
-    {"/api/v1/health",             "GET",  &HttpFacesServer::onHealth},
-    {"/api/v1/models",             "GET",  &HttpFacesServer::onModels},
-    {"/api/v1/models/reload",      "POST", &HttpFacesServer::onModelReload},
-    {"/api/v1/acceleration",       "GET",  &HttpFacesServer::onAcceleration},
-    {"/api/v1/openapi",            "GET",  &HttpFacesServer::onOpenApi},
-    {"/openapi.json",              "GET",  &HttpFacesServer::onOpenApi},
-    {"/api/v1/settings",           "*",    &HttpFacesServer::onSettings},
-    {"/api/v1/actions/crypto/rotate", "POST", &HttpFacesServer::onCryptoRotate},
-    {"/api/faces",                 "GET",  &HttpFacesServer::onFaces},
-    {"/api/v1/faces",              "GET",  &HttpFacesServer::onFaces},
-    {"/api/v1/cameras",            "GET",  &HttpFacesServer::onCameras},
-    {"/api/v1/camera/flip",        "PUT",  &HttpFacesServer::onCameraFlip},
-    {"/api/v1/actions/enroll",     "POST", &HttpFacesServer::onEnroll},
-    {"/api/v1/actions/db/clear",   "POST", &HttpFacesServer::onDbClear},
-    {"/api/v1/actions/privacy/open", "POST", &HttpFacesServer::onPrivacyOpen},
-    {"/api/v1/preview.jpg",        "GET",  &HttpFacesServer::onPreviewJpg},
-};
-
-// ──── 构造函数 / 生命周期 ────────────────────────────────────
 
 HttpFacesServer::HttpFacesServer() = default;
 
@@ -364,8 +227,6 @@ void HttpFacesServer::stop() {
     }
 }
 
-// ──── 连接 / I/O ────────────────────────────────────────────
-
 void HttpFacesServer::acceptLoop() {
     const SOCKET ls = static_cast<SOCKET>(listenSock_);
     while (running_) {
@@ -374,7 +235,7 @@ void HttpFacesServer::acceptLoop() {
         SOCKET cs = accept(ls, reinterpret_cast<sockaddr*>(&caddr), &clen);
         if (cs == INVALID_SOCKET) {
             if (!running_) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(kAcceptRetryMs));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
 
@@ -385,12 +246,13 @@ void HttpFacesServer::acceptLoop() {
         }
 
 #ifdef _WIN32
-        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&kSocketTimeoutMs), sizeof(kSocketTimeoutMs));
-        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&kSocketTimeoutMs), sizeof(kSocketTimeoutMs));
+        DWORD timeout = 5000;
+        setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 #else
         struct timeval tv;
-        tv.tv_sec = kSocketTimeoutMs / 1000;
-        tv.tv_usec = (kSocketTimeoutMs % 1000) * 1000;
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
         setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #endif
@@ -432,11 +294,11 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
 
     std::string buf;
     buf.reserve(8192);
-    char tmp[kRecvBufSize];
+    char tmp[2048];
     const SOCKET s = static_cast<SOCKET>(sock);
 
     auto findHeaderEnd = [&]() -> std::size_t { return buf.find("\r\n\r\n"); };
-    while (buf.size() < kMaxHeaderSize) {
+    while (buf.size() < 64 * 1024) {
         const int r = recv(s, tmp, static_cast<int>(sizeof(tmp)), 0);
         if (r <= 0) {
             err = "recv_failed";
@@ -488,7 +350,7 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
             break;
         }
     }
-    if (contentLen > kMaxBodySize) {
+    if (contentLen > 1024 * 1024) {
         err = "body_too_large";
         return false;
     }
@@ -512,7 +374,7 @@ bool HttpFacesServer::writeRaw(std::uintptr_t sock, const void* data, std::size_
     const char* p = static_cast<const char*>(data);
     std::size_t left = n;
     while (left > 0) {
-        const int w = send(s, p, static_cast<int>(std::min<std::size_t>(left, kSendChunkSize)), 0);
+        const int w = send(s, p, static_cast<int>(std::min<std::size_t>(left, 1u << 20)), 0);
         if (w <= 0) return false;
         p += w;
         left -= static_cast<std::size_t>(w);
@@ -536,8 +398,6 @@ bool HttpFacesServer::writeResponse(std::uintptr_t sock, const HttpResponse& res
     return true;
 }
 
-// ──── 响应构建 ───────────────────────────────────────────────
-
 HttpFacesServer::HttpResponse HttpFacesServer::jsonOk(const std::string& bodyJson) {
     HttpResponse r;
     r.status = 200;
@@ -548,13 +408,6 @@ HttpFacesServer::HttpResponse HttpFacesServer::jsonOk(const std::string& bodyJso
     r.headers.push_back({"X-Frame-Options", "DENY"});
     r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
     return r;
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::jsonOk(JsonValue data) {
-    JsonValue root = JsonValue::makeObject();
-    root.o["ok"] = JsonValue::makeBool(true);
-    root.o["data"] = std::move(data);
-    return jsonOk(toJsonString(root, false));
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::jsonErr(int httpStatus, const std::string& code, const std::string& message,
@@ -582,23 +435,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::jsonErr(int httpStatus, const std
     return r;
 }
 
-// ──── 路由调度 ───────────────────────────────────────────────
-
 HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& req) {
     if (startsWith(req.path, "/api")) return handleApi(req);
     return handleStaticOrFallback(req);
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req) {
-    for (const auto& r : kRoutes) {
-        if (req.path == r.path) {
-            if (r.method[0] != '*' && req.method != r.method) {
-                return jsonErr(405, "method_not_allowed", "仅支持 " + std::string(r.method));
-            }
-            return (this->*r.handler)(req);
-        }
-    }
-    return jsonErr(404, "not_found", "未知端点");
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const HttpRequest& req) {
@@ -621,6 +460,9 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
                 r.contentType = "text/html; charset=utf-8";
                 r.body = std::move(body);
                 r.headers.push_back({"Cache-Control", "no-cache"});
+                // 威胁模型：避免静态文件被错误解析为脚本（MIME嗅探利用）和被恶意网站iframe嵌套（点击劫持）。
+                // 影响范围：只影响未匹配具体路径的 index.html fallback 响应，不会破坏现有前端功能。
+                // 回滚方式：删除这两行 push_back 即可。
                 r.headers.push_back({"X-Content-Type-Options", "nosniff"});
                 r.headers.push_back({"X-Frame-Options", "DENY"});
                 return r;
@@ -635,317 +477,369 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
     r.contentType = guessContentType(rel);
     r.body = std::move(body);
     if (startsWith(rel, "/assets/") || rel.find(".js") != std::string::npos || rel.find(".css") != std::string::npos) {
-        r.headers.push_back({"Cache-Control", "public, max-age=" + std::to_string(kStaticCacheMaxAge) + ", immutable"});
+        r.headers.push_back({"Cache-Control", "public, max-age=31536000, immutable"});
     } else {
         r.headers.push_back({"Cache-Control", "no-cache"});
     }
+    // 威胁模型：避免静态资源（如 js, css, 图片等）被跨域 MIME-sniffing 或被外部框架恶意加载（点击劫持）。
+    // 影响范围：只影响对 /webroot 下静态文件的读取响应，提高静态资源的安全性。
+    // 回滚方式：移除下面两行。
     r.headers.push_back({"X-Content-Type-Options", "nosniff"});
     r.headers.push_back({"X-Frame-Options", "DENY"});
     return r;
 }
 
-// ──── 端点 Handler ───────────────────────────────────────────
+HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req) {
+    const std::string& m = req.method;
+    const std::string& p = req.path;
 
-HttpFacesServer::HttpResponse HttpFacesServer::onHealth(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-    d.o["name"] = JsonValue::makeString("rk_wcfr");
-    d.o["port"] = JsonValue::makeNumber(port_);
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onModels(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-
-    JsonValue supported = JsonValue::makeArray();
-    {
-        JsonValue s1 = JsonValue::makeObject();
-        s1.o["id"] = JsonValue::makeString("cascade_frontalface");
-        s1.o["displayName"] = JsonValue::makeString("Cascade Frontal Face (LBP)");
-        s1.o["taskType"] = JsonValue::makeString("detect_recognize_pipeline");
-        s1.o["notes"] = JsonValue::makeString("LBP 级联分类器，极轻量。适合低资源环境，精度低于 DNN 方案。Windows 管线默认检测器。");
-        s1.o["recommendedFor"] = JsonValue::makeString("high_speed");
-        supported.a.push_back(std::move(s1));
-
-        JsonValue s2 = JsonValue::makeObject();
-        s2.o["id"] = JsonValue::makeString("dnn_face_detector");
-        s2.o["displayName"] = JsonValue::makeString("OpenCV DNN Face Detector");
-        s2.o["taskType"] = JsonValue::makeString("detect");
-        s2.o["notes"] = JsonValue::makeString("ResNet SSD 300x300，OpenCV DNN 后端检测器。精度高于 Cascade，适合 Windows 管线。");
-        s2.o["recommendedFor"] = JsonValue::makeString("balanced");
-        supported.a.push_back(std::move(s2));
-    }
-    d.o["supportedModels"] = std::move(supported);
-
-    JsonValue active = JsonValue::makeArray();
-    int totalConfigured = 0;
-    int totalLoaded = 0;
-    int totalFailed = 0;
-    int totalMissing = 0;
-
-    if (pipe_) {
-        std::vector<ModelSnapshot> models = pipe_->getActiveModels();
-        totalConfigured = models.size();
-        for (const auto& mSnap : models) {
-            if (mSnap.status == "loaded") totalLoaded++;
-            else if (mSnap.status == "failed") totalFailed++;
-            else if (mSnap.status == "missing") totalMissing++;
-
-            JsonValue am = JsonValue::makeObject();
-            am.o["id"] = JsonValue::makeString(mSnap.id);
-            am.o["displayName"] = JsonValue::makeString(mSnap.displayName);
-            am.o["taskType"] = JsonValue::makeString(mSnap.taskType);
-            am.o["backend"] = JsonValue::makeString(mSnap.backend);
-            if (!mSnap.hash.empty()) am.o["hash"] = JsonValue::makeString(mSnap.hash);
-            am.o["status"] = JsonValue::makeString(mSnap.status);
-            am.o["isInUse"] = JsonValue::makeBool(mSnap.isInUse);
-            if (!mSnap.modelVersion.empty()) am.o["modelVersion"] = JsonValue::makeString(mSnap.modelVersion);
-            if (!mSnap.lastError.empty()) am.o["lastError"] = JsonValue::makeString(mSnap.lastError);
-            active.a.push_back(std::move(am));
-        }
-    }
-    d.o["activeModels"] = std::move(active);
-
-    JsonValue summary = JsonValue::makeObject();
-    summary.o["totalSupported"] = JsonValue::makeNumber(2);
-    summary.o["totalConfigured"] = JsonValue::makeNumber(totalConfigured);
-    summary.o["totalLoaded"] = JsonValue::makeNumber(totalLoaded);
-    summary.o["totalFailed"] = JsonValue::makeNumber(totalFailed);
-    summary.o["totalMissing"] = JsonValue::makeNumber(totalMissing);
-    d.o["summary"] = std::move(summary);
-
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onModelReload(const HttpRequest& req) {
-    JsonValue body;
-    std::string perr;
-    if (!parseJson(req.body, body, perr) || !body.isObject()) {
-        return jsonErr(400, "invalid_json", "请求体需为 JSON object");
-    }
-    const std::string* id = nullptr;
-    if (const JsonValue* idv = body.find("id"); idv && idv->isString()) {
-        id = &idv->s;
-    }
-    if (!id || id->empty()) {
-        return jsonErr(400, "missing_id", "缺少 id 字段");
-    }
-    std::string status = "not_found";
-    if (pipe_) {
-        auto models = pipe_->getActiveModels();
-        for (const auto& m : models) {
-            if (m.id == *id) {
-                status = "reload_requested";
-                break;
-            }
-        }
-    }
-    JsonValue o = JsonValue::makeObject();
-    o.o["id"] = JsonValue::makeString(*id);
-    o.o["status"] = JsonValue::makeString(status);
-    return jsonOk(std::move(o));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onAcceleration(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-
-    if (settings_) {
-        std::string redacted = settings_->currentRedactedJsonPretty();
-        JsonValue settingsDoc;
-        std::string perr;
-        if (parseJson(redacted, settingsDoc, perr) && settingsDoc.isObject()) {
-            if (const JsonValue* accel = settingsDoc.find("acceleration"); accel && accel->isObject()) {
-                d.o["config"] = *accel;
-            }
-            if (const JsonValue* dnn = settingsDoc.find("dnn"); dnn && dnn->isObject()) {
-                JsonValue dnnSummary = JsonValue::makeObject();
-                if (const JsonValue* e = dnn->find("enable")) dnnSummary.o["enable"] = *e;
-                if (const JsonValue* b = dnn->find("backend")) dnnSummary.o["backend"] = *b;
-                if (const JsonValue* bt = dnn->find("confThreshold")) dnnSummary.o["confThreshold"] = *bt;
-                d.o["dnn"] = std::move(dnnSummary);
-            }
-        }
-    }
-
-    JsonValue backends = JsonValue::makeArray();
-    if (pipe_) {
-        auto models = pipe_->getActiveModels();
-        for (const auto& m : models) {
-            if (m.isInUse) {
-                JsonValue b = JsonValue::makeObject();
-                b.o["id"] = JsonValue::makeString(m.id);
-                b.o["backend"] = JsonValue::makeString(m.backend);
-                b.o["status"] = JsonValue::makeString(m.status);
-                backends.a.push_back(std::move(b));
-            }
-        }
-    }
-    d.o["activeBackends"] = std::move(backends);
-
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onOpenApi(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-    d.o["note"] = JsonValue::makeString("OpenAPI 文档见 docs/windows-web-spa/openapi.yaml；此端点为最小联调占位");
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onSettings(const HttpRequest& req) {
-    if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
-    if (req.method == "GET") {
-        JsonValue doc;
-        std::string perr;
-        if (!parseJson(settings_->currentRedactedJsonPretty(), doc, perr)) {
-            return jsonErr(500, "settings_parse_error", "设置数据解析失败", {perr});
-        }
-        return jsonOk(std::move(doc));
-    }
-    if (req.method == "PUT") {
-        const auto res = settings_->updateFromJsonBody(req.body);
-        if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "invalid_request" : res.code, res.message, res.details);
-        JsonValue doc;
-        std::string perr;
-        if (!parseJson(settings_->currentRedactedJsonPretty(), doc, perr)) {
-            return jsonErr(500, "settings_parse_error", "设置数据解析失败", {perr});
-        }
-        return jsonOk(std::move(doc));
-    }
-    return jsonErr(405, "method_not_allowed", "仅支持 GET/PUT");
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onCryptoRotate(const HttpRequest&) {
-    if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
-    const auto res = settings_->rotateKeyAndReencrypt();
-    if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "internal_error" : res.code, res.message, res.details);
-    return jsonOk(JsonValue::makeObject());
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onFaces(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    FacesSnapshot snap;
-    if (!pipe_->snapshotFaces(snap)) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    HttpResponse r;
-    r.status = 200;
-    r.reason = "OK";
-    r.contentType = "application/json; charset=utf-8";
-    r.body = buildFacesJson(snap);
-    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
-    r.headers.push_back({"X-Frame-Options", "DENY"});
-    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
-    return r;
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onCameras(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    const auto devs = pipe_->devices();
-    JsonValue devices = JsonValue::makeArray();
-    for (size_t i = 0; i < devs.size(); i++) {
+    if (p == "/api/v1/health") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
         JsonValue d = JsonValue::makeObject();
-        d.o["index"] = JsonValue::makeNumber(static_cast<double>(i));
-        d.o["name"] = JsonValue::makeString(utf8FromWideLocal(devs[i].name));
-        d.o["deviceId"] = JsonValue::makeString(utf8FromWideLocal(devs[i].deviceId));
-        JsonValue formats = JsonValue::makeArray();
-        for (const auto& f : devs[i].formats) {
-            JsonValue fmt = JsonValue::makeObject();
-            fmt.o["w"] = JsonValue::makeNumber(static_cast<double>(f.width));
-            fmt.o["h"] = JsonValue::makeNumber(static_cast<double>(f.height));
-            fmt.o["fps"] = JsonValue::makeNumber(static_cast<double>(f.fps));
-            formats.a.push_back(std::move(fmt));
+        d.o["name"] = JsonValue::makeString("rk_wcfr");
+        d.o["port"] = JsonValue::makeNumber(port_);
+        o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/models") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+
+        JsonValue d = JsonValue::makeObject();
+
+        JsonValue supported = JsonValue::makeArray();
+        {
+            JsonValue s1 = JsonValue::makeObject();
+            s1.o["id"] = JsonValue::makeString("cascade_frontalface");
+            s1.o["displayName"] = JsonValue::makeString("Cascade Frontal Face (LBP)");
+            s1.o["taskType"] = JsonValue::makeString("detect_recognize_pipeline");
+            s1.o["notes"] = JsonValue::makeString("LBP 级联分类器，极轻量。适合低资源环境，精度低于 DNN 方案。Windows 管线默认检测器。");
+            s1.o["recommendedFor"] = JsonValue::makeString("high_speed");
+            supported.a.push_back(std::move(s1));
+
+            JsonValue s2 = JsonValue::makeObject();
+            s2.o["id"] = JsonValue::makeString("dnn_face_detector");
+            s2.o["displayName"] = JsonValue::makeString("OpenCV DNN Face Detector");
+            s2.o["taskType"] = JsonValue::makeString("detect");
+            s2.o["notes"] = JsonValue::makeString("ResNet SSD 300x300，OpenCV DNN 后端检测器。精度高于 Cascade，适合 Windows 管线。");
+            s2.o["recommendedFor"] = JsonValue::makeString("balanced");
+            supported.a.push_back(std::move(s2));
         }
-        d.o["formats"] = std::move(formats);
-        devices.a.push_back(std::move(d));
+        d.o["supportedModels"] = std::move(supported);
+
+        JsonValue active = JsonValue::makeArray();
+        int totalConfigured = 0;
+        int totalLoaded = 0;
+        int totalFailed = 0;
+        int totalMissing = 0;
+
+        if (pipe_) {
+            std::vector<ModelSnapshot> models = pipe_->getActiveModels();
+            totalConfigured = models.size();
+            for (const auto& mSnap : models) {
+                if (mSnap.status == "loaded") totalLoaded++;
+                else if (mSnap.status == "failed") totalFailed++;
+                else if (mSnap.status == "missing") totalMissing++;
+
+                JsonValue am = JsonValue::makeObject();
+                am.o["id"] = JsonValue::makeString(mSnap.id);
+                am.o["displayName"] = JsonValue::makeString(mSnap.displayName);
+                am.o["taskType"] = JsonValue::makeString(mSnap.taskType);
+                am.o["configuredPath"] = JsonValue::makeString(mSnap.configuredPath);
+                am.o["resolvedPath"] = JsonValue::makeString(mSnap.resolvedPath);
+                am.o["backend"] = JsonValue::makeString(mSnap.backend);
+                if (!mSnap.hash.empty()) am.o["hash"] = JsonValue::makeString(mSnap.hash);
+                am.o["status"] = JsonValue::makeString(mSnap.status);
+                am.o["isInUse"] = JsonValue::makeBool(mSnap.isInUse);
+                if (!mSnap.modelVersion.empty()) am.o["modelVersion"] = JsonValue::makeString(mSnap.modelVersion);
+                if (!mSnap.lastError.empty()) am.o["lastError"] = JsonValue::makeString(mSnap.lastError);
+                active.a.push_back(std::move(am));
+            }
+        }
+        d.o["activeModels"] = std::move(active);
+
+        JsonValue summary = JsonValue::makeObject();
+        summary.o["totalSupported"] = JsonValue::makeNumber(2);
+        summary.o["totalConfigured"] = JsonValue::makeNumber(totalConfigured);
+        summary.o["totalLoaded"] = JsonValue::makeNumber(totalLoaded);
+        summary.o["totalFailed"] = JsonValue::makeNumber(totalFailed);
+        summary.o["totalMissing"] = JsonValue::makeNumber(totalMissing);
+        d.o["summary"] = std::move(summary);
+
+        o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
     }
-    JsonValue data = JsonValue::makeObject();
-    data.o["devices"] = std::move(devices);
-    return jsonOk(std::move(data));
-}
 
-HttpFacesServer::HttpResponse HttpFacesServer::onCameraFlip(const HttpRequest& req) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    JsonValue doc;
-    std::string perr;
-    if (!parseJson(req.body, doc, perr) || !doc.isObject()) return jsonErr(400, "invalid_request", "JSON 解析失败", {perr});
-    bool flipX = false;
-    bool flipY = false;
-    if (const JsonValue* v = doc.find("flipX"); v && v->isBool()) flipX = v->b;
-    if (const JsonValue* v = doc.find("flipY"); v && v->isBool()) flipY = v->b;
-    pipe_->setFlip(flipX, flipY);
-    return jsonOk(JsonValue::makeObject());
-}
+    if (p == "/api/v1/models/reload") {
+        if (m != "POST") return jsonErr(405, "method_not_allowed", "仅支持 POST");
+        JsonValue body;
+        std::string perr;
+        if (!parseJson(req.body, body, perr) || !body.isObject()) {
+            return jsonErr(400, "invalid_json", "请求体需为 JSON object");
+        }
+        const std::string* id = nullptr;
+        if (const JsonValue* idv = body.find("id"); idv && idv->isString()) {
+            id = &idv->s;
+        }
+        if (!id || id->empty()) {
+            return jsonErr(400, "missing_id", "缺少 id 字段");
+        }
+        std::string status = "not_found";
+        if (pipe_) {
+            auto models = pipe_->getActiveModels();
+            for (const auto& m : models) {
+                if (m.id == *id) {
+                    status = "reload_requested";
+                    break;
+                }
+            }
+        }
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        o.o["id"] = JsonValue::makeString(*id);
+        o.o["status"] = JsonValue::makeString(status);
+        return jsonOk(toJsonString(o, false));
+    }
 
-HttpFacesServer::HttpResponse HttpFacesServer::onEnroll(const HttpRequest& req) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    JsonValue doc;
-    std::string perr;
-    if (!parseJson(req.body, doc, perr) || !doc.isObject()) return jsonErr(400, "invalid_request", "JSON 解析失败", {perr});
-    std::string personId;
-    if (const JsonValue* v = doc.find("personId"); v && v->isString()) personId = v->s;
-    personId = trim(personId);
-    if (personId.empty()) return jsonErr(400, "invalid_request", "personId 不能为空");
-    pipe_->requestEnroll(personId);
-    return jsonOk(JsonValue::makeObject());
-}
+    if (p == "/api/v1/acceleration") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        JsonValue d = JsonValue::makeObject();
 
-HttpFacesServer::HttpResponse HttpFacesServer::onDbClear(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    pipe_->requestClearDb();
-    return jsonOk(JsonValue::makeObject());
-}
+        // Acceleration config from settings
+        if (settings_) {
+            std::string redacted = settings_->currentRedactedJsonPretty();
+            JsonValue settingsDoc;
+            std::string perr;
+            if (parseJson(redacted, settingsDoc, perr) && settingsDoc.isObject()) {
+                if (const JsonValue* accel = settingsDoc.find("acceleration"); accel && accel->isObject()) {
+                    d.o["config"] = *accel;
+                }
+                if (const JsonValue* dnn = settingsDoc.find("dnn"); dnn && dnn->isObject()) {
+                    JsonValue dnnSummary = JsonValue::makeObject();
+                    if (const JsonValue* e = dnn->find("enable")) dnnSummary.o["enable"] = *e;
+                    if (const JsonValue* b = dnn->find("backend")) dnnSummary.o["backend"] = *b;
+                    if (const JsonValue* bt = dnn->find("confThreshold")) dnnSummary.o["confThreshold"] = *bt;
+                    d.o["dnn"] = std::move(dnnSummary);
+                }
+            }
+        }
 
-HttpFacesServer::HttpResponse HttpFacesServer::onPrivacyOpen(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    pipe_->openPrivacySettings();
-    return jsonOk(JsonValue::makeObject());
-}
+        // Active model backends from pipeline
+        JsonValue backends = JsonValue::makeArray();
+        if (pipe_) {
+            auto models = pipe_->getActiveModels();
+            for (const auto& m : models) {
+                if (m.isInUse) {
+                    JsonValue b = JsonValue::makeObject();
+                    b.o["id"] = JsonValue::makeString(m.id);
+                    b.o["backend"] = JsonValue::makeString(m.backend);
+                    b.o["status"] = JsonValue::makeString(m.status);
+                    backends.a.push_back(std::move(b));
+                }
+            }
+        }
+        d.o["activeBackends"] = std::move(backends);
 
-HttpFacesServer::HttpResponse HttpFacesServer::onPreviewJpg(const HttpRequest&) {
+        o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/openapi" || p == "/openapi.json") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        JsonValue d = JsonValue::makeObject();
+        d.o["note"] = JsonValue::makeString("OpenAPI 文档见 docs/windows-web-spa/openapi.yaml；此端点为最小联调占位");
+        o.o["data"] = std::move(d);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/settings") {
+        if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
+        if (m == "GET") {
+            const std::string redacted = settings_->currentRedactedJsonPretty();
+            std::ostringstream os;
+            os << "{\"ok\":true,\"data\":" << redacted << "}";
+            return jsonOk(os.str());
+        }
+        if (m == "PUT") {
+            const auto res = settings_->updateFromJsonBody(req.body);
+            if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "invalid_request" : res.code, res.message, res.details);
+            const std::string redacted = settings_->currentRedactedJsonPretty();
+            std::ostringstream os;
+            os << "{\"ok\":true,\"data\":" << redacted << "}";
+            return jsonOk(os.str());
+        }
+        return jsonErr(405, "method_not_allowed", "仅支持 GET/PUT");
+    }
+
+    if (p == "/api/v1/actions/crypto/rotate") {
+        if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
+        if (m != "POST") return jsonErr(405, "method_not_allowed", "仅支持 POST");
+        const auto res = settings_->rotateKeyAndReencrypt();
+        if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "internal_error" : res.code, res.message, res.details);
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/faces" || p == "/api/v1/faces") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        FacesSnapshot snap;
+        if (!pipe_->snapshotFaces(snap)) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        HttpResponse r;
+        r.status = 200;
+        r.reason = "OK";
+        r.contentType = "application/json; charset=utf-8";
+        r.body = buildFacesJson(snap);
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
+        return r;
+    }
+
+    if (p == "/api/faces/stream" || p == "/api/v1/faces/stream") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        HttpResponse r;
+        r.status = 200;
+        r.reason = "OK";
+        r.contentType = "text/event-stream; charset=utf-8";
+        r.close = false;
+        r.headers.push_back({"Cache-Control", "no-cache"});
+        r.headers.push_back({"Connection", "keep-alive"});
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
+        r.body.clear();
+        return r;
+    }
+
+    if (p == "/api/v1/cameras") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        const auto devs = pipe_->devices();
+        std::ostringstream os;
+        os << "{\"ok\":true,\"data\":{\"devices\":[";
+        for (size_t i = 0; i < devs.size(); i++) {
+            if (i) os << ",";
+            os << "{"
+               << "\"index\":" << i << ","
+               << "\"name\":\"" << escapeJsonString(utf8FromWideLocal(devs[i].name)) << "\","
+               << "\"deviceId\":\"" << escapeJsonString(utf8FromWideLocal(devs[i].deviceId)) << "\","
+               << "\"formats\":[";
+            for (size_t j = 0; j < devs[i].formats.size(); j++) {
+                if (j) os << ",";
+                const auto& f = devs[i].formats[j];
+                os << "{\"w\":" << f.width << ",\"h\":" << f.height << ",\"fps\":" << f.fps << "}";
+            }
+            os << "]"
+               << "}";
+        }
+        os << "]}}";
+        return jsonOk(os.str());
+    }
+
+    if (p == "/api/v1/camera/flip") {
+        if (m != "PUT") return jsonErr(405, "method_not_allowed", "仅支持 PUT");
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        JsonValue doc;
+        std::string perr;
+        if (!parseJson(req.body, doc, perr) || !doc.isObject()) return jsonErr(400, "invalid_request", "JSON 解析失败", {perr});
+        bool flipX = false;
+        bool flipY = false;
+        if (const JsonValue* v = doc.find("flipX"); v && v->isBool()) flipX = v->b;
+        if (const JsonValue* v = doc.find("flipY"); v && v->isBool()) flipY = v->b;
+        pipe_->setFlip(flipX, flipY);
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/actions/enroll") {
+        if (m != "POST") return jsonErr(405, "method_not_allowed", "仅支持 POST");
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        JsonValue doc;
+        std::string perr;
+        if (!parseJson(req.body, doc, perr) || !doc.isObject()) return jsonErr(400, "invalid_request", "JSON 解析失败", {perr});
+        std::string personId;
+        if (const JsonValue* v = doc.find("personId"); v && v->isString()) personId = v->s;
+        personId = trim(personId);
+        if (personId.empty()) return jsonErr(400, "invalid_request", "personId 不能为空");
+        pipe_->requestEnroll(personId);
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/actions/db/clear") {
+        if (m != "POST") return jsonErr(405, "method_not_allowed", "仅支持 POST");
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        pipe_->requestClearDb();
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/actions/privacy/open") {
+        if (m != "POST") return jsonErr(405, "method_not_allowed", "仅支持 POST");
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        pipe_->openPrivacySettings();
+        JsonValue o = JsonValue::makeObject();
+        o.o["ok"] = JsonValue::makeBool(true);
+        return jsonOk(toJsonString(o, false));
+    }
+
+    if (p == "/api/v1/preview.jpg") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
 #if RK_WIN_HAS_OPENCV
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    RenderState rs;
-    if (!pipe_->tryGetRenderState(rs)) return jsonErr(503, "frame_unavailable", "暂无可用画面");
-    std::vector<std::uint8_t> jpeg;
-    if (!buildJpegWithOverlay(rs, jpeg)) return jsonErr(500, "encode_failed", "JPEG 编码失败");
-    HttpResponse r;
-    r.status = 200;
-    r.reason = "OK";
-    r.contentType = "image/jpeg";
-    r.headers.push_back({"Cache-Control", "no-cache"});
-    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
-    r.headers.push_back({"X-Frame-Options", "DENY"});
-    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
-    r.body.assign(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
-    return r;
+        if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
+        RenderState rs;
+        if (!pipe_->tryGetRenderState(rs)) return jsonErr(503, "frame_unavailable", "暂无可用画面");
+        std::vector<std::uint8_t> jpeg;
+        if (!buildJpegWithOverlay(rs, jpeg)) return jsonErr(500, "encode_failed", "JPEG 编码失败");
+        HttpResponse r;
+        r.status = 200;
+        r.reason = "OK";
+        r.contentType = "image/jpeg";
+        r.headers.push_back({"Cache-Control", "no-cache"});
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
+        r.body.assign(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
+        return r;
 #else
-    return jsonErr(503, "opencv_unavailable", "OpenCV 不可用，无法输出预览");
+        return jsonErr(503, "opencv_unavailable", "OpenCV 不可用，无法输出预览");
 #endif
-}
-
-// ──── 流式会话 ───────────────────────────────────────────────
-
-void HttpFacesServer::runStream(std::uintptr_t sock, std::unique_ptr<StreamSession> session) {
-    SocketGuard sg(static_cast<SOCKET>(sock));
-    const std::string ct = session->contentType();
-    std::ostringstream os;
-    os << "HTTP/1.1 200 OK\r\n"
-       << "Content-Type: " << ct << "\r\n"
-       << "Cache-Control: no-cache\r\n"
-       << "X-Content-Type-Options: nosniff\r\n"
-       << "X-Frame-Options: DENY\r\n"
-       << "Content-Security-Policy: default-src 'none'\r\n"
-       << "Connection: keep-alive\r\n"
-       << "\r\n";
-    const std::string head = os.str();
-    if (!writeRaw(sock, head.data(), head.size())) return;
-    while (running_) {
-        if (!session->writeFrame(sock, pipe_, running_)) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(session->idleMs()));
     }
-}
 
-// ──── 客户端处理 ─────────────────────────────────────────────
+    if (p == "/api/v1/preview.mjpeg") {
+        if (m != "GET") return jsonErr(405, "method_not_allowed", "仅支持 GET");
+        HttpResponse r;
+        r.status = 200;
+        r.reason = "OK";
+        r.contentType = "multipart/x-mixed-replace; boundary=rk_boundary";
+        r.close = false;
+        r.headers.push_back({"Cache-Control", "no-cache"});
+        r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+        r.headers.push_back({"X-Frame-Options", "DENY"});
+        r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
+        r.headers.push_back({"Connection", "close"});
+        r.body.clear();
+        return r;
+    }
+
+    return jsonErr(404, "not_found", "未知端点");
+}
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
-    SocketGuard sg(static_cast<SOCKET>(sock));
+    const SOCKET s = static_cast<SOCKET>(sock);
     HttpRequest req;
     std::string err;
 
@@ -956,24 +850,103 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
         r.contentType = "application/json; charset=utf-8";
         r.body = jsonErr(r.status, "invalid_request", "请求解析失败", {err}).body;
         (void)writeResponse(sock, r);
+        closesocket(s);
         return;
     }
 
-    // 流式端点：runStream 接管 socket 生命周期
     if ((req.path == "/api/faces/stream" || req.path == "/api/v1/faces/stream") && req.method == "GET") {
-        sg.release();
-        runStream(sock, std::make_unique<SseSession>(this));
+        const std::string head =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream; charset=utf-8\r\n"
+            "Cache-Control: no-cache\r\n"
+            "X-Content-Type-Options: nosniff\r\n"
+            "X-Frame-Options: DENY\r\n"
+            "Content-Security-Policy: default-src 'none'\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n";
+        if (!writeRaw(sock, head.data(), head.size())) {
+            closesocket(s);
+            return;
+        }
+        std::uint64_t lastSeq = 0;
+        auto lastKeep = std::chrono::steady_clock::now();
+        while (running_) {
+            std::uint64_t seq = 0;
+            const bool changed = pipe_ ? pipe_->waitFacesSeqChanged(lastSeq, 1000, seq) : false;
+            if (!running_) break;
+            if (changed) {
+                lastSeq = seq;
+                FacesSnapshot snap;
+                if (pipe_ && pipe_->snapshotFaces(snap)) {
+                    const std::string body = buildFacesJson(snap);
+                    std::string evt;
+                    evt.reserve(body.size() + 32);
+                    evt += "data: ";
+                    evt += body;
+                    evt += "\n\n";
+                    if (!writeRaw(sock, evt.data(), evt.size())) break;
+                }
+            } else {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - lastKeep > std::chrono::seconds(10)) {
+                    const std::string ka = ": keepalive\n\n";
+                    if (!writeRaw(sock, ka.data(), ka.size())) break;
+                    lastKeep = now;
+                }
+            }
+        }
+        closesocket(s);
         return;
     }
 
     if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
-        sg.release();
-        runStream(sock, std::make_unique<MjpegSession>(this));
+        const std::string boundary = "rk_boundary";
+        std::ostringstream os;
+        os << "HTTP/1.1 200 OK\r\n"
+           << "Content-Type: multipart/x-mixed-replace; boundary=" << boundary << "\r\n"
+           << "Cache-Control: no-cache\r\n"
+           << "X-Content-Type-Options: nosniff\r\n"
+           << "X-Frame-Options: DENY\r\n"
+           << "Content-Security-Policy: default-src 'none'\r\n"
+           << "Connection: close\r\n"
+           << "\r\n";
+        const std::string head = os.str();
+        if (!writeRaw(sock, head.data(), head.size())) {
+            closesocket(s);
+            return;
+        }
+#if RK_WIN_HAS_OPENCV
+        while (running_) {
+            if (!pipe_) break;
+            RenderState rs;
+            if (!pipe_->tryGetRenderState(rs)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+            std::vector<std::uint8_t> jpeg;
+            if (!buildJpegWithOverlay(rs, jpeg)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+            std::ostringstream part;
+            part << "--" << boundary << "\r\n"
+                 << "Content-Type: image/jpeg\r\n"
+                 << "Content-Length: " << jpeg.size() << "\r\n"
+                 << "\r\n";
+            const std::string partHead = part.str();
+            if (!writeRaw(sock, partHead.data(), partHead.size())) break;
+            if (!writeRaw(sock, jpeg.data(), jpeg.size())) break;
+            if (!writeRaw(sock, "\r\n", 2)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+#endif
+        closesocket(s);
         return;
     }
 
     const HttpResponse resp = handleRequest(req);
     (void)writeResponse(sock, resp);
+    closesocket(s);
 }
 
 }  // namespace rk_win

@@ -97,10 +97,10 @@ struct MfCamera::Impl {
 
     ComPtr<IMFSourceReader> reader;
     ComPtr<IMFMediaSource> source;
-    INT32 stride = 0;
+    UINT32 stride = 0;
 };
 
-MfCamera::MfCamera() : impl_(std::make_unique<Impl>()) {
+MfCamera::MfCamera() : impl_(new Impl()) {
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
     impl_->started = SUCCEEDED(hr);
 }
@@ -110,6 +110,7 @@ MfCamera::~MfCamera() {
     if (impl_->started) {
         MFShutdown();
     }
+    delete impl_;
 }
 
 std::vector<CameraDevice> MfCamera::enumerateDevices() {
@@ -230,11 +231,6 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
         return r;
     }
 
-    // Ensure Shutdown is called on source before any early return after this point
-    auto shutdownSource = [&source]() {
-        if (source) { source->Shutdown(); source.Reset(); }
-    };
-
     ComPtr<IMFAttributes> readerAttrs;
     hr = MFCreateAttributes(&readerAttrs, 2);
     if (SUCCEEDED(hr)) {
@@ -245,7 +241,6 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
     ComPtr<IMFSourceReader> reader;
     hr = MFCreateSourceReaderFromMediaSource(source.Get(), readerAttrs.Get(), &reader);
     if (FAILED(hr)) {
-        shutdownSource();
         r.ok = false;
         r.category = classifyOpenError(hr);
         r.code = hrToCode(hr);
@@ -256,7 +251,6 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
     ComPtr<IMFMediaType> type;
     hr = MFCreateMediaType(&type);
     if (FAILED(hr)) {
-        shutdownSource();
         r.ok = false;
         r.category = classifyOpenError(hr);
         r.code = hrToCode(hr);
@@ -272,7 +266,6 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
 
     hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type.Get());
     if (FAILED(hr)) {
-        shutdownSource();
         r.ok = false;
         r.category = classifyOpenError(hr);
         r.code = hrToCode(hr);
@@ -283,7 +276,6 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
     ComPtr<IMFMediaType> actual;
     hr = reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &actual);
     if (FAILED(hr)) {
-        shutdownSource();
         r.ok = false;
         r.category = classifyOpenError(hr);
         r.code = hrToCode(hr);
@@ -297,12 +289,9 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
     GUID subtype{};
     actual->GetGUID(MF_MT_SUBTYPE, &subtype);
 
-    UINT32 strideU32 = 0;
-    if (SUCCEEDED(actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &strideU32))) {
-        // MF stores signed stride in UINT32; reinterpret bits for negative (bottom-up) case
-        impl_->stride = static_cast<INT32>(strideU32);
-    } else {
-        impl_->stride = aw * 4;
+    UINT32 stride = 0;
+    if (FAILED(actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride))) {
+        stride = static_cast<UINT32>(aw * 4);
     }
 
     impl_->reader = reader;
@@ -406,8 +395,7 @@ CameraOpenResult MfCamera::readFrameBgr(cv::Mat& outBgr, std::uint64_t& outTimes
 
     const int w = impl_->format.width;
     const int h = impl_->format.height;
-    // cv::Mat requires positive step; MF can return negative stride for bottom-up frames
-    const int stride = std::abs(static_cast<int>(impl_->stride));
+    const int stride = static_cast<int>(impl_->stride);
     cv::Mat bgra(h, w, CV_8UC4, data, stride);
     cv::cvtColor(bgra, outBgr, cv::COLOR_BGRA2BGR);
 

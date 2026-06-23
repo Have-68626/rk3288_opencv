@@ -30,20 +30,24 @@ final class FileLogSink {
         String payload = line.endsWith("\n") ? line : (line + "\n");
         byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
 
-        for (File dir : dirs) {
-            File file = null;
-            try {
-                if (dir == null) continue;
-                if (!dir.exists() && !dir.mkdirs()) continue;
-                file = new File(dir, fileName);
-                rotateIfNeeded(file);
-                try (FileOutputStream fos = new FileOutputStream(file, true);
-                     BufferedOutputStream bos = new BufferedOutputStream(fos)) {
-                    bos.write(bytes);
-                    bos.flush();
+        lock.lock();
+        try {
+            for (File dir : dirs) {
+                try {
+                    if (dir == null) continue;
+                    if (!dir.exists() && !dir.mkdirs()) continue;
+                    File file = new File(dir, fileName);
+                    rotateIfNeeded(file);
+                    try (FileOutputStream fos = new FileOutputStream(file, true);
+                         BufferedOutputStream bos = new BufferedOutputStream(fos)) {
+                        bos.write(bytes);
+                        bos.flush();
+                    }
+                } catch (Exception ignored) {
                 }
-            } catch (Exception ignored) {
             }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -71,7 +75,6 @@ final class FileLogSink {
         }
         file.renameTo(first);
 
-        // 注意：sleep 不持锁 — rotateIfNeeded 在 writeLine 外部无锁段调用
         SystemClock.sleep(10);
     }
 }

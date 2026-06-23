@@ -26,7 +26,6 @@ public:
     static FaceInferStageStatus searchTopK(const FaceInferRequest& req, FaceInferContext& ctx, FaceInferMetrics& m);
     static ThresholdDecisionResult makeDecision(const FaceInferRequest& req, const FaceInferContext& ctx);
 
-    /** Generate a deterministic fake 512-dim embedding for test/debug mode (used when req.fakeEmbedding == true) */
-    static std::vector<float> makeFakeEmbedding512(const cv::Rect2f& bbox, const cv::Size& imgSz);
+    static std::vector<float> makeFakeEmbedding512ForTest(const cv::Rect2f& bbox, const cv::Size& imgSz);
 };
 

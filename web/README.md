@@ -1,40 +1,73 @@
-﻿# Web SPA 前端
+# React + TypeScript + Vite
 
-**更新日期**: 2026-06-23
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+Currently, two official plugins are available:
 
-Windows 本地服务的浏览器 UI，基于 **React 18 + TypeScript 5 + Vite 8 + Ant Design 5**。
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## 快速命令
+## React Compiler
 
-```bash
-# 安装依赖
-pnpm install
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-# 开发模式（代理 /api → http://127.0.0.1:8080）
-pnpm dev
+## Expanding the ESLint configuration
 
-# 构建（输出到 src/win/app/webroot/）
-pnpm build
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
 
-# 代码检查
-pnpm lint
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
 
-# E2E 测试
-pnpm e2e:run
-pnpm e2e:run:coverage   # 带覆盖率
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
+
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
 
-## 构建输出
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
-- `pnpm build` 产出写入 `../src/win/app/webroot/`
-- 这些文件被 git 跟踪（CMake 构建时会复制到 exe 同级的 `webroot/`）
-- 开发代理目标可通过 `VITE_DEV_PROXY_TARGET` 环境变量覆盖
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
 
-## 技术栈
-
-- Vite 8 + @vitejs/plugin-react
-- React Router v6
-- Ant Design 5 + @ant-design/icons
-- Cypress 13（E2E 测试）
-- ESLint 9 + typescript-eslint
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```

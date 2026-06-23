@@ -1,31 +1,22 @@
+/**
+ * @file BioAuth.cpp
+ * @brief Implementation of BioAuth class.
+ */
 #include "BioAuth.h"
 #include "Config.h"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <iostream>
 
-namespace {
-constexpr int kCascadeFlags = 0;
-
-cv::Rect clipToImage(const cv::Rect& r, int cols, int rows) {
-    return r & cv::Rect(0, 0, cols, rows);
-}
-}
-
-BioAuth::BioAuth() {
+BioAuth::BioAuth() : isModelLoaded(false) {
 #ifdef HAS_OPENCV_FACE
+    // Create LBPH Face Recognizer
+    // Radius=1, Neighbors=8, GridX=8, GridY=8, Threshold=DBL_MAX
     faceRecognizer = cv::face::LBPHFaceRecognizer::create();
 #endif
 }
 
-bool BioAuth::initialize(const std::string& cascadePath, const std::string& modelPath,
-                         double scaleFactor, int minNeighbors, int minFaceSize,
-                         bool enableEqualizeHist) {
-    std::lock_guard<std::mutex> lock(mu_);
-    cascadeScaleFactor_ = scaleFactor;
-    cascadeMinNeighbors_ = minNeighbors;
-    cascadeMinFaceSize_ = minFaceSize;
-    equalizeHistEnabled_ = enableEqualizeHist;
+bool BioAuth::initialize(const std::string& cascadePath, const std::string& modelPath) {
     if (!faceCascade.load(cascadePath)) {
         std::cerr << "Error loading face cascade: " << cascadePath << std::endl;
         return false;
@@ -38,6 +29,7 @@ bool BioAuth::initialize(const std::string& cascadePath, const std::string& mode
             isModelLoaded = true;
         } catch (const cv::Exception& e) {
             std::cerr << "Error loading face model: " << e.what() << std::endl;
+            // Non-fatal if we intend to train later
         }
     }
 #else
@@ -51,23 +43,11 @@ bool BioAuth::initialize(const std::string& cascadePath, const std::string& mode
 void BioAuth::train(const std::vector<cv::Mat>& images, const std::vector<int>& labels) {
 #ifdef HAS_OPENCV_FACE
     if (images.empty()) return;
-    std::lock_guard<std::mutex> lock(mu_);
     faceRecognizer->train(images, labels);
     isModelLoaded = true;
 #else
     std::cerr << "Error: train() called but OpenCV face module is not available." << std::endl;
 #endif
-}
-
-void BioAuth::setFaceSelectMode(FaceSelectMode mode) {
-    std::lock_guard<std::mutex> lock(mu_);
-    faceMode = mode;
-}
-
-float BioAuth::normalizeLbphConfidence(double distance) {
-    // LBPH distance is unbounded: 0 = perfect match, no upper limit.
-    // Use 1/(1+d) to map [0, +∞) → (0.0, 1.0].
-    return static_cast<float>(1.0 / (1.0 + distance));
 }
 
 bool BioAuth::verify(const cv::Mat& frame, PersonIdentity& outIdentity) {
@@ -87,11 +67,9 @@ bool BioAuth::verify(const cv::Mat& frame,
     cv::Mat gray;
 
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (equalizeHistEnabled_) cv::equalizeHist(gray, gray);
-        faceCascade.detectMultiScale(gray, faces, cascadeScaleFactor_, cascadeMinNeighbors_, kCascadeFlags, cv::Size(cascadeMinFaceSize_, cascadeMinFaceSize_));
-    }
+    cv::equalizeHist(gray, gray);
+
+    faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
 
     if (faces.empty()) {
         return false;
@@ -106,28 +84,34 @@ bool BioAuth::verify(const cv::Mat& frame,
     outFaces = faces;
     outMainFace = largestFace;
 
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (isModelLoaded) {
+    if (isModelLoaded) {
 #ifdef HAS_OPENCV_FACE
-            int label = -1;
-            double confidence = 0.0;
+        int label = -1;
+        double confidence = 0.0;
 
-            faceRecognizer->predict(gray(clipToImage(largestFace, gray.cols, gray.rows)), label, confidence);
+        // LBPH returns a "distance" metric, not probability.
+        // Lower distance = better match.
+        // 0 is perfect match. Usually < 50 is a good match.
+        faceRecognizer->predict(gray(largestFace), label, confidence);
 
-            outIdentity.id = std::to_string(label);
-            outIdentity.confidence = normalizeLbphConfidence(confidence);
-            outIdentity.isAuthenticated = (outIdentity.confidence >= Config::BIO_AUTH_THRESHOLD);
+        outIdentity.id = std::to_string(label);
+
+        // Normalize confidence roughly for the interface (0.0 - 1.0)
+        // Assuming distance 100 is 0.0 confidence and 0 is 1.0
+        float normConf = std::max(0.0f, static_cast<float>((100.0 - confidence) / 100.0));
+
+        outIdentity.confidence = normConf;
+        outIdentity.isAuthenticated = (normConf >= Config::BIO_AUTH_THRESHOLD);
 #else
-            outIdentity.id = "unknown_no_module";
-            outIdentity.confidence = 0.0f;
-            outIdentity.isAuthenticated = false;
+        outIdentity.id = "unknown_no_module";
+        outIdentity.confidence = 0.0f;
+        outIdentity.isAuthenticated = false;
 #endif
-        } else {
-            outIdentity.id = "unknown";
-            outIdentity.confidence = 0.0f;
-            outIdentity.isAuthenticated = false;
-        }
+    } else {
+        // Mock behavior if no model loaded
+        outIdentity.id = "unknown";
+        outIdentity.confidence = 0.0f;
+        outIdentity.isAuthenticated = false;
     }
 
     return true;
@@ -140,11 +124,9 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
     cv::Mat gray;
 
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (equalizeHistEnabled_) cv::equalizeHist(gray, gray);
-        faceCascade.detectMultiScale(gray, faces, cascadeScaleFactor_, cascadeMinNeighbors_, kCascadeFlags, cv::Size(cascadeMinFaceSize_, cascadeMinFaceSize_));
-    }
+    cv::equalizeHist(gray, gray);
+
+    faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
 
     if (faces.empty()) {
         return false;
@@ -194,27 +176,21 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
         r.face = face;
         r.isMain = (face == largestFace);
 
-        if (enableRecognition) {
-            std::lock_guard<std::mutex> lock(mu_);
-            if (isModelLoaded) {
+        if (enableRecognition && isModelLoaded) {
 #ifdef HAS_OPENCV_FACE
-                int label = -1;
-                double distance = 0.0;
-                faceRecognizer->predict(gray(clipToImage(face, gray.cols, gray.rows)), label, distance);
+            int label = -1;
+            double distance = 0.0;
+            faceRecognizer->predict(gray(face), label, distance);
 
-                r.identity.id = (label >= 0) ? std::to_string(label) : "unknown";
-                r.identity.confidence = normalizeLbphConfidence(distance);
-                r.identity.isAuthenticated = (r.identity.confidence >= Config::BIO_AUTH_THRESHOLD);
+            r.identity.id = (label >= 0) ? std::to_string(label) : "unknown";
+            float normConf = std::max(0.0f, static_cast<float>((100.0 - distance) / 100.0));
+            r.identity.confidence = normConf;
+            r.identity.isAuthenticated = (normConf >= Config::BIO_AUTH_THRESHOLD);
 #else
-                r.identity.id = "unknown_no_module";
-                r.identity.confidence = 0.0f;
-                r.identity.isAuthenticated = false;
+            r.identity.id = "unknown_no_module";
+            r.identity.confidence = 0.0f;
+            r.identity.isAuthenticated = false;
 #endif
-            } else {
-                r.identity.id = "unknown";
-                r.identity.confidence = 0.0f;
-                r.identity.isAuthenticated = false;
-            }
         } else {
             r.identity.id = "unknown";
             r.identity.confidence = 0.0f;

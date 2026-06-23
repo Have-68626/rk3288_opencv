@@ -16,16 +16,19 @@ bool MobileFaceNetAdapter::load(const std::string& modelPath, std::string& err) 
     loaded_ = false;
 
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    std::string base = std::filesystem::path(modelPath).parent_path().string();
+    if (!base.empty() && base.back() != '/') base += "/";
+
     std::string paramPath;
     std::string binPath;
     std::string ext = std::filesystem::path(modelPath).extension().string();
 
     if (ext == ".param") {
         paramPath = modelPath;
-        binPath = (std::filesystem::path(modelPath).parent_path() / std::filesystem::path(modelPath).stem().replace_extension(".bin")).string();
+        binPath = base + std::filesystem::path(modelPath).stem().string() + ".bin";
     } else if (ext == ".bin") {
         binPath = modelPath;
-        paramPath = (std::filesystem::path(modelPath).parent_path() / std::filesystem::path(modelPath).stem().replace_extension(".param")).string();
+        paramPath = base + std::filesystem::path(modelPath).stem().string() + ".param";
     } else {
         // Treat bare path as base name, append .param and .bin
         paramPath = modelPath + ".param";
@@ -42,8 +45,7 @@ bool MobileFaceNetAdapter::load(const std::string& modelPath, std::string& err) 
     }
 
     net_.opt.lightmode = true;
-    net_.opt.num_threads = static_cast<int>(std::thread::hardware_concurrency());
-    if (net_.opt.num_threads < 1) net_.opt.num_threads = 1;
+    net_.opt.num_threads = 1;
 
     currentName_ = "mobilefacenet_ncnn";
     loaded_ = true;
@@ -57,12 +59,9 @@ bool MobileFaceNetAdapter::load(const std::string& modelPath, std::string& err) 
 }
 
 std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& alignedFaceBgr, std::string& err) {
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (!loaded_) {
-            err = "mobilefacenet: not loaded";
-            return std::nullopt;
-        }
+    if (!loaded_) {
+        err = "mobilefacenet: not loaded";
+        return std::nullopt;
     }
 
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
@@ -81,6 +80,7 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
     in.substract_mean_normalize(meanVals, normVals);
 
     ncnn::Extractor ex = net_.create_extractor();
+    ex.set_num_threads(1);
 
     if (ex.input("data", in) != 0) {
         err = "mobilefacenet: input failed";
@@ -100,7 +100,7 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
     }
 
     std::vector<float> embedding(128);
-    std::memcpy(embedding.data(), (const float*)out.data, 128 * sizeof(float));
+    std::memcpy(embedding.data(), out.ptr<float>(), 128 * sizeof(float));
 
     // L2 normalize for correct cosine similarity comparison
     float sqSum = 0.0f;
@@ -115,9 +115,4 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
     (void)err;
     return std::nullopt;
 #endif
-}
-
-const char* MobileFaceNetAdapter::name() const {
-    std::lock_guard<std::mutex> lock(mu_);
-    return currentName_.c_str();
 }

@@ -80,7 +80,6 @@ std::vector<FaceMatch> FaceRecognizer::identify(const cv::Mat& bgr) {
         double bestDist = std::numeric_limits<double>::infinity();
         std::string bestId;
 
-        const double thr = identifyThreshold_.load();
         for (const auto& kv : db_.persons()) {
             const auto& pid = kv.first;
             const auto& mean = kv.second.mean;
@@ -92,10 +91,10 @@ std::vector<FaceMatch> FaceRecognizer::identify(const cv::Mat& bgr) {
         }
 
         m.distance = std::isfinite(bestDist) ? bestDist : 1e9;
-        if (!bestId.empty() && m.distance <= thr) {
+        if (!bestId.empty() && m.distance <= identifyThreshold_) {
             m.personId = bestId;
             m.accepted = true;
-            const double c = 1.0 - (m.distance / std::max(thr, 1e-9));
+            const double c = 1.0 - (m.distance / std::max(identifyThreshold_, 1e-9));
             m.confidence = std::clamp(c, 0.0, 1.0);
         } else {
             m.personId = "UNKNOWN";
@@ -137,11 +136,11 @@ void FaceRecognizer::clearDb() {
 }
 
 double FaceRecognizer::threshold() const {
-    return identifyThreshold_.load();
+    return identifyThreshold_;
 }
 
 void FaceRecognizer::setThreshold(double t) {
-    identifyThreshold_.store(t);
+    identifyThreshold_ = t;
 }
 
 std::vector<std::string> FaceRecognizer::personIds() const {

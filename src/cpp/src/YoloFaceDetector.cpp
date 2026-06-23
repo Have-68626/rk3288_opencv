@@ -459,6 +459,7 @@ public:
             }
 
             ncnn::Extractor ex = net_.create_extractor();
+            ex.set_num_threads(std::max(1, ncnnSpec_.threads));
             ex.set_light_mode(ncnnSpec_.lightmode);
             if (ex.input(ncnnSpec_.inputName.c_str(), in) != 0) {
                 err = "ncnn_set_input_failed";

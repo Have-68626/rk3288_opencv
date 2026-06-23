@@ -70,10 +70,66 @@ bool ArcFaceEmbedder::initialize(const ArcFaceEmbedderConfig& cfg, std::string* 
     }
 
     if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) {
-        return initOpenCvDnn("OpenCvDnn", err);
+        if (cfg_.opencvModel.empty()) {
+            if (err) *err = "ArcFaceEmbedder: 缺少 OpenCV DNN 模型路径";
+            return false;
+        }
+
+        auto st = std::make_shared<OpenCvDnnState>();
+        try {
+            if (!cfg_.opencvConfig.empty() && !cfg_.opencvFramework.empty()) {
+                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig, cfg_.opencvFramework);
+            } else if (!cfg_.opencvConfig.empty()) {
+                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig);
+            } else {
+                st->net = cv::dnn::readNet(cfg_.opencvModel);
+            }
+        } catch (const cv::Exception& e) {
+            if (err) *err = std::string("ArcFaceEmbedder: OpenCV readNet 失败: ") + e.what();
+            return false;
+        }
+
+        try {
+            st->net.setPreferableBackend(cfg_.opencvBackend);
+            st->net.setPreferableTarget(cfg_.opencvTarget);
+        } catch (const cv::Exception&) {
+        }
+
+        ocv_ = std::move(st);
+        inited_ = true;
+        return true;
     } else if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Qualcomm) {
+        // [Qualcomm SDK Placeholder]
+        // 探测失败或硬件不兼容时回退到 CPU (OpenCV DNN)
         rklog::logInfo("ArcFaceEmbedder", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... 待补测");
-        return initOpenCvDnn("Qualcomm", err);
+        if (cfg_.opencvModel.empty()) {
+            if (err) *err = "ArcFaceEmbedder: 缺少回退的 OpenCV DNN 模型路径";
+            return false;
+        }
+
+        auto st = std::make_shared<OpenCvDnnState>();
+        try {
+            if (!cfg_.opencvConfig.empty() && !cfg_.opencvFramework.empty()) {
+                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig, cfg_.opencvFramework);
+            } else if (!cfg_.opencvConfig.empty()) {
+                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig);
+            } else {
+                st->net = cv::dnn::readNet(cfg_.opencvModel);
+            }
+        } catch (const cv::Exception& e) {
+            if (err) *err = std::string("ArcFaceEmbedder: OpenCV readNet 失败: ") + e.what();
+            return false;
+        }
+
+        try {
+            st->net.setPreferableBackend(cfg_.opencvBackend);
+            st->net.setPreferableTarget(cfg_.opencvTarget);
+        } catch (const cv::Exception&) {
+        }
+
+        ocv_ = std::move(st);
+        inited_ = true;
+        return true;
     }
 
     if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) {
@@ -202,6 +258,7 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         in.substract_mean_normalize(meanVals, normVals);
 
         ncnn::Extractor ex = ncnn_->net.create_extractor();
+        ex.set_num_threads(std::max(1, cfg_.ncnnThreads));
         if (ex.input(cfg_.ncnnInput.c_str(), in) != 0) {
             if (err) *err = "ArcFaceEmbedder: ncnn input 失败";
             return std::nullopt;
@@ -222,7 +279,7 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         ArcFaceEmbedding emb;
         emb.modelVersion = cfg_.modelVersion;
         emb.preprocessVersion = cfg_.preprocessVersion;
-        emb.values.assign((const float*)out.data, (const float*)out.data + ArcFaceEmbedding::kDim);
+        emb.values.assign(out.begin(), out.begin() + ArcFaceEmbedding::kDim);
         if (!l2NormalizeInplace(emb.values)) {
             if (err) *err = "ArcFaceEmbedder: L2 归一化失败";
             return std::nullopt;
@@ -233,36 +290,5 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
 
     if (err) *err = "ArcFaceEmbedder: 未知后端";
     return std::nullopt;
-}
-
-bool ArcFaceEmbedder::initOpenCvDnn(const char* logTag, std::string* err) {
-    if (cfg_.opencvModel.empty()) {
-        if (err) *err = std::string("ArcFaceEmbedder[") + logTag + "]: 缺少 OpenCV DNN 模型路径";
-        return false;
-    }
-
-    auto st = std::make_shared<OpenCvDnnState>();
-    try {
-        if (!cfg_.opencvConfig.empty() && !cfg_.opencvFramework.empty()) {
-            st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig, cfg_.opencvFramework);
-        } else if (!cfg_.opencvConfig.empty()) {
-            st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig);
-        } else {
-            st->net = cv::dnn::readNet(cfg_.opencvModel);
-        }
-    } catch (const cv::Exception& e) {
-        if (err) *err = std::string("ArcFaceEmbedder[") + logTag + "]: OpenCV readNet 失败: " + e.what();
-        return false;
-    }
-
-    try {
-        st->net.setPreferableBackend(cfg_.opencvBackend);
-        st->net.setPreferableTarget(cfg_.opencvTarget);
-    } catch (const cv::Exception&) {
-    }
-
-    ocv_ = std::move(st);
-    inited_ = true;
-    return true;
 }
 

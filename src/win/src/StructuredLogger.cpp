@@ -220,9 +220,7 @@ void StructuredLogger::append(const FrameLogEntry& e) {
            << "\"error_category\":\"" << escapeJson(toString(e.errorCategory)) << "\","
            << "\"error_code\":\"" << escapeJson(e.errorCode) << "\","
            << "\"error_message\":\"" << escapeJson(e.errorMessage) << "\""
-            << "}\n";
-    csv_.flush();
-    jsonl_.flush();
+           << "}\n";
 }
 
 }  // namespace rk_win

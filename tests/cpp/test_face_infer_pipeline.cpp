@@ -116,7 +116,7 @@ bool test_face_infer_done_hit() {
     std::error_code ec;
     std::filesystem::create_directories(galleryDir, ec);
 
-    const auto fakeEmb = FaceInferStages::makeFakeEmbedding512(cv::Rect2f(16.0f, 16.0f, 32.0f, 32.0f), cv::Size(64, 64));
+    const auto fakeEmb = FaceInferStages::makeFakeEmbedding512ForTest(cv::Rect2f(16.0f, 16.0f, 32.0f, 32.0f), cv::Size(64, 64));
     FaceTemplate t;
     t.embedding = fakeEmb;
     auto bytes = serializeFaceTemplate(t);

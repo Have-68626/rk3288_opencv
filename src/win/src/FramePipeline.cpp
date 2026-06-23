@@ -1,5 +1,4 @@
 #include "rk_win/FramePipeline.h"
-#include "rk_win/ArcFaceWinRecognizer.h"
 
 #include "rk_win/DnnSsdFaceDetector.h"
 #include "rk_win/OverlayRenderer.h"
@@ -30,7 +29,6 @@ std::string utf8FromWide(const std::wstring& ws) {
 #else
     return std::string(ws.begin(), ws.end());
 #endif
-}
 
 void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     if (bgr.empty()) return;
@@ -40,15 +38,11 @@ void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     else if (flipY) code = 0;
     else code = 1;
     cv::flip(bgr, bgr, code);
-}
-
-}  // namespace (anon)
 
 FramePipeline::FramePipeline() = default;
 
 FramePipeline::~FramePipeline() {
     shutdown();
-}
 
 bool FramePipeline::initialize(const AppConfig& cfg) {
     cfg_ = cfg;
@@ -62,16 +56,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         activeModels_.clear();
 
     const std::string cascadeUtf8 = cfg_.recognition.cascadePath.string();
-    bool cascadeOk = false;
-    if (cfg_.model.recognition == "arcface") {
-        auto arcRec = std::make_unique<ArcFaceWinRecognizer>();
-        cascadeOk = arcRec->initialize(cascadeUtf8, cfg_.recognition.databasePath, cfg_.recognition.arcFaceModelPath.string(), cfg_.recognition.minFaceSizePx, cfg_.recognition.identifyThreshold);
-        recognizer_ = std::move(arcRec);
-    } else {
-        auto lbpRec = std::make_unique<FaceRecognizer>();
-        cascadeOk = lbpRec->initialize(cascadeUtf8, cfg_.recognition.databasePath, cfg_.recognition.minFaceSizePx, cfg_.recognition.identifyThreshold);
-        recognizer_ = std::move(lbpRec);
-    }
+    bool cascadeOk = recognizer_.initialize(cascadeUtf8, cfg_.recognition.databasePath, cfg_.recognition.minFaceSizePx, cfg_.recognition.identifyThreshold);
     if (!cascadeOk) {
         render_.status = "识别模块初始化失败（请检查 cascade_path 与 database_path）";
 
@@ -82,13 +67,9 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         m.taskType = "detect_recognize_pipeline";
         m.configuredPath = cascadeUtf8;
         m.resolvedPath = cascadeUtf8;
-        m.backend = cfg_.model.recognition == "arcface" ? "opencv_dnn_arcface" : "opencv_cascade";
-        if (cfg_.model.recognition == "arcface") {
-            m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.arcFaceModelPath.string());
-        } else {
-            m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.cascadePath);
-        }
-        m.status = cascadeOk ? "loaded" : "failed";
+        m.backend = "opencv_cascade";
+        m.hash = rk_wcfr::calculateSHA256(cfg_.recognition.cascadePath);
+        m.status = cascadeOk ? "loaded" : (std::filesystem::exists(cfg_.recognition.cascadePath) ? "failed" : "missing");
         m.isInUse = !cfg_.dnn.enable;
         if (!cascadeOk) m.lastError = "初始化失败 (cascade_path 或 database_path 有误)";
         std::lock_guard<std::mutex> lock(modelsMu_);
@@ -176,7 +157,6 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
     running_ = true;
     processThread_ = std::thread(&FramePipeline::processLoop, this);
     return true;
-}
 
 void FramePipeline::shutdown() {
     running_ = false;
@@ -186,17 +166,14 @@ void FramePipeline::shutdown() {
     if (captureThread_.joinable()) captureThread_.join();
     if (processThread_.joinable()) processThread_.join();
     logger_.close();
-}
 
 std::vector<CameraDevice> FramePipeline::devices() const {
     std::lock_guard<std::mutex> lock(mu_);
     return devices_;
-}
 
 std::vector<CameraFormat> FramePipeline::formatsForDeviceIndex(int index) const {
     std::lock_guard<std::mutex> lock(mu_);
     return devices_[static_cast<size_t>(index)].formats;
-}
 
 bool FramePipeline::startCameraByIndex(int deviceIndex, int formatIndex) {
     if (deviceIndex < 0) return false;
@@ -232,9 +209,7 @@ std::optional<int> FramePipeline::findExactFormatIndexLocked(int deviceIndex, in
     for (size_t i = 0; i < fmts.size(); i++) {
         const auto& f = fmts[i];
         if (f.width == width && f.height == height && f.fps == fps) return static_cast<int>(i);
-    }
     return std::nullopt;
-}
 
 CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex, const CameraFormat& desired, int maxTotalMs) {
     using clock = std::chrono::steady_clock;
@@ -418,7 +393,6 @@ void FramePipeline::requestClearDb() {
     clearDbRequested_ = true;
 
 bool FramePipeline::tryGetRenderState(RenderState& out) {
-    std::lock_guard<std::mutex> lock(renderMu_);
     if (render_.bgr.empty()) return false;
     render_.bgr.copyTo(out.bgr);
     out.faces = render_.faces;
@@ -429,11 +403,10 @@ bool FramePipeline::tryGetRenderState(RenderState& out) {
     out.timestamp100ns = render_.timestamp100ns;
     out.status = render_.status;
     return true;
-}
 
 bool FramePipeline::snapshotFaces(FacesSnapshot& out) {
-    std::lock_guard<std::mutex> lock(renderMu_);
-    if (render_.bgr.empty()) return false;
+    {
+        if (render_.bgr.empty()) return false;
         out.faces = render_.faces;
         out.frameWidth = render_.bgr.cols;
         out.frameHeight = render_.bgr.rows;
@@ -441,15 +414,12 @@ bool FramePipeline::snapshotFaces(FacesSnapshot& out) {
         out.inferMs = render_.inferMs;
         out.dropRate = render_.dropRate;
         out.stride = render_.stride;
-    }
     {
         std::lock_guard<std::mutex> lock(previewMu_);
         out.previewWidth = previewW_;
         out.previewHeight = previewH_;
         out.previewScaleMode = previewScaleMode_;
-    }
     return true;
-}
 
 std::uint64_t FramePipeline::currentFacesSeq() const {
     std::lock_guard<std::mutex> lock(facesSeqMu_);
@@ -457,9 +427,6 @@ std::uint64_t FramePipeline::currentFacesSeq() const {
 
 bool FramePipeline::waitFacesSeqChanged(std::uint64_t lastSeq, int timeoutMs, std::uint64_t& outSeq) const {
     std::unique_lock<std::mutex> lock(facesSeqMu_);
-    facesSeqCv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this, lastSeq] {
-        return facesSeq_ != lastSeq;
-    });
     outSeq = facesSeq_;
     return facesSeq_ != lastSeq;
 
@@ -542,16 +509,7 @@ void FramePipeline::captureLoop() {
             if (consecutiveFail >= 10 && rr.category == ErrorCategory::BackendFailure) {
                 camera_.close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                CameraDevice dev;
-                CameraFormat fmt;
-                {
-                    std::lock_guard<std::mutex> lock(mu_);
-                    if (activeDeviceIndex_ >= 0 && static_cast<size_t>(activeDeviceIndex_) < devices_.size()) {
-                        dev = devices_[static_cast<size_t>(activeDeviceIndex_)];
-                    }
-                    fmt = desiredFormat_;
-                }
-                const auto re = camera_.open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
+                const auto re = camera_.open(d.deviceId, f.width, f.height, f.fps);
                 if (!re.ok) {
                     FrameLogEntry le;
                     le.tsIso8601 = nowIso8601Local();
@@ -616,8 +574,7 @@ void FramePipeline::processLoop() {
         {
             std::unique_lock<std::mutex> lock(frameMu_);
             if (!running_) break;
-            frameCv_.wait_for(lock, std::chrono::milliseconds(1000), [this]{ return hasFrame_ || !running_; });
-            if (!hasFrame_ || !running_) continue;
+            if (!hasFrame_) continue;
             latestFrame_.copyTo(frame);
             ts = latestFrameTs_;
             hasFrame_ = false;
@@ -644,9 +601,7 @@ void FramePipeline::processLoop() {
             if (cfg_.dnn.enable && dnn_ && dnn_->ready()) {
                 if (bad) {
                     if (detectStride_ < 8) detectStride_++;
-                } else {
                     if (detectStride_ > 1) detectStride_--;
-                }
             if (detectStride_ != prevStride) {
                 EventLogger* ev = nullptr;
                 {
@@ -658,8 +613,8 @@ void FramePipeline::processLoop() {
                     ev->append(bad ? "stride_degrade" : "stride_recover", oss.str());
 
         if (clearDbRequested_.exchange(false)) {
-            recognizer_->clearDb();
-            recognizer_->saveDb();
+            recognizer_.clearDb();
+            recognizer_.saveDb();
             render_.status = "已清空人脸库";
 
         if (enrollRequested_.load()) {
@@ -671,12 +626,12 @@ void FramePipeline::processLoop() {
                 remaining = enrollRemaining_;
             if (remaining > 0) {
                 int taken = 0;
-                if (recognizer_->enrollFromFrame(pid, frame, 1, taken) && taken > 0) {
+                if (recognizer_.enrollFromFrame(pid, frame, 1, taken) && taken > 0) {
                     {
                         std::lock_guard<std::mutex> lock(mu_);
                         enrollRemaining_ -= taken;
                         remaining = enrollRemaining_;
-                    recognizer_->saveDb();
+                    recognizer_.saveDb();
             if (remaining <= 0) {
                 enrollRequested_ = false;
                 render_.status = "注册完成: " + pid;
@@ -703,7 +658,7 @@ void FramePipeline::processLoop() {
                     m.accepted = false;
                     lastDetections.push_back(std::move(m));
             matches = lastDetections;
-            matches = recognizer_->identify(frame);
+            matches = recognizer_.identify(frame);
 
         frame.copyTo(drawBuffer); cv::Mat& draw = drawBuffer;
         drawFacesOverlay(draw, matches);
@@ -732,7 +687,6 @@ void FramePipeline::processLoop() {
         logger_.append(le);
 
         {
-            std::lock_guard<std::mutex> lock(renderMu_);
             render_.bgr = std::move(draw);
             render_.faces = std::move(matches);
             render_.fps = fps;

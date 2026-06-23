@@ -119,9 +119,7 @@ public:
     int getRecognitionIntervalMs() const;
 
 private:
-    /** Shared by both initialize() overloads: storage, cleanup, BioAuth */
-    bool initCommon(const std::string& cascadePath, const std::string& storagePath);
-    void processFrame(const cv::Mat& frame, double decodeMs);
+    void processFrame(cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
     void performAccelSelfCheck();
 
@@ -134,7 +132,6 @@ private:
     std::atomic<MonitoringMode> currentMode;
     std::atomic<bool> externalInputEnabled;
     std::atomic<bool> initCancelRequested{false};
-    std::atomic<bool> initialized_{false};
     std::atomic<bool> flipXEnabled{false};
     std::atomic<bool> flipYEnabled{false};
     std::atomic<InferenceThrottleMode> detThrottleMode{InferenceThrottleMode::Off};

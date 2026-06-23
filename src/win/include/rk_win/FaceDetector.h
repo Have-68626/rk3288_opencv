@@ -30,7 +30,6 @@ class CascadeClassifier {};
 }
 #endif
 
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -42,7 +41,6 @@ public:
     std::vector<cv::Rect> detect(const cv::Mat& bgr, int minFaceSizePx);
 
 private:
-    mutable std::mutex mu_;
     cv::CascadeClassifier cascade_;
 };
 

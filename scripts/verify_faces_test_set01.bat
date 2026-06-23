@@ -34,14 +34,6 @@ if not exist "%OPENCV_ROOT%" (
     echo [ERROR] OpenCV root not found: %OPENCV_ROOT%
     exit /b 1
 )
-if not defined OPENCV_CONTRIB_ROOT (
-    echo [ERROR] OPENCV_CONTRIB_ROOT 未设置。请设置环境变量指向 opencv_contrib 源码目录。
-    exit /b 1
-)
-if not exist "%OPENCV_CONTRIB_ROOT%" (
-    echo [ERROR] OpenCV contrib root not found: %OPENCV_CONTRIB_ROOT%
-    exit /b 1
-)
 
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 

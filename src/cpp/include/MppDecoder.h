@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -33,7 +32,7 @@ private:
     bool hasFrame_ = false;
     bool reachedEos_ = false;
     cv::Mat latestBgr_;
-    std::list<std::shared_ptr<std::vector<uint8_t>>> pendingBufs_;
+    std::vector<uint8_t> chunkBuf_;
     int64_t fileReadOffset_ = 0;
     int64_t fileSize_ = 0;
     MppDecoderConfig cfg_{};

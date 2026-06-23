@@ -3,9 +3,13 @@
 #include "Embedder.h"
 #include "ArcFaceEmbedder.h"
 
-#include <mutex>
 #include <string>
 
+/**
+ * @brief Adapter that wraps ArcFaceEmbedder to implement the unified Embedder interface.
+ *
+ * Supports both OpenCvDnn and ncnn backends.
+ */
 class ArcFaceAdapter : public Embedder {
 public:
     ArcFaceAdapter();
@@ -17,7 +21,6 @@ public:
     const char* name() const override;
 
 private:
-    mutable std::mutex mu_;
     ArcFaceEmbedder inner_;
     ArcFaceEmbedderConfig cfg_;
     bool loaded_ = false;

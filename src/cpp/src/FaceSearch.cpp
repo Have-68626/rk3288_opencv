@@ -36,14 +36,6 @@ static float reduceAdd(float32x4_t v) {
 }
 
 static float dotProductNeon(const float* a, const float* b, std::size_t dim) {
-    // Use aligned loads when possible; vld1q_f32 on ARMv7 handles unaligned addresses
-    // but some older ARM implementations may trap.  Check alignment and fall back
-    // to scalar for sub-16-byte-aligned pointers.
-    constexpr std::size_t kAlign = 16;
-    const bool aligned = (reinterpret_cast<std::uintptr_t>(a) & (kAlign - 1)) == 0 &&
-                         (reinterpret_cast<std::uintptr_t>(b) & (kAlign - 1)) == 0;
-    if (!aligned) return dotProductScalar(a, b, dim);
-
     std::size_t i = 0;
     float32x4_t acc = vdupq_n_f32(0.0f);
     for (; i + 4 <= dim; i += 4) {
@@ -57,10 +49,6 @@ static float dotProductNeon(const float* a, const float* b, std::size_t dim) {
 }
 
 static float l2NormNeon(const float* v, std::size_t dim) {
-    constexpr std::size_t kAlign = 16;
-    const bool aligned = (reinterpret_cast<std::uintptr_t>(v) & (kAlign - 1)) == 0;
-    if (!aligned) return l2NormScalar(v, dim);
-
     std::size_t i = 0;
     float32x4_t acc = vdupq_n_f32(0.0f);
     for (; i + 4 <= dim; i += 4) {
@@ -109,14 +97,13 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
         err = "FaceSearchLinearIndex: dim 不能为 0";
         return false;
     }
-    static constexpr std::size_t kMaxLinearEntries = 10000;
-    if (entries.size() > kMaxLinearEntries) {
-        err = "FaceSearchLinearIndex: N 超过 " + std::to_string(kMaxLinearEntries) + "（当前仅支持线性检索）";
+    if (entries.size() > 10000) {
+        err = "FaceSearchLinearIndex: N 超过 10000（当前仅支持线性检索）";
         return false;
     }
 
-    std::vector<float> norms;
-    norms.reserve(entries.size());
+    norms_.clear();
+    norms_.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); i++) {
         const auto& e = entries[i];
         if (e.id.empty()) {
@@ -133,12 +120,11 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
                 return false;
             }
         }
-        norms.push_back(l2Norm(e.embedding.data(), dim));
+        norms_.push_back(l2Norm(e.embedding.data(), dim));
     }
 
     dim_ = dim;
     entries_ = std::move(entries);
-    norms_ = std::move(norms);
     return true;
 }
 

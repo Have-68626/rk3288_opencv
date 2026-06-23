@@ -2,9 +2,6 @@
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
 #include "adapters/MobileFaceNetAdapter.h"
-#include "adapters/YuNetAdapter.h"
-#include "adapters/SFaceAdapter.h"
-#include "adapters/RetinaFaceAdapter.h"
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -12,8 +9,6 @@
 #endif
 
 #include <algorithm>
-#include <filesystem>
-#include <mutex>
 #include <unordered_map>
 
 ModelRegistry& ModelRegistry::instance() {
@@ -21,10 +16,11 @@ ModelRegistry& ModelRegistry::instance() {
     return reg;
 }
 
-static std::once_flag g_builtinRegisteredFlag;
+static bool g_builtinRegistered = false;
 
 void ModelRegistry::ensureBuiltinRegistered() {
-    std::call_once(g_builtinRegisteredFlag, []() {
+    if (g_builtinRegistered) return;
+    g_builtinRegistered = true;
     auto& reg = instance();
 
     reg.registerDetector("yolo_face", []() { return std::make_unique<YoloFaceAdapter>(); },
@@ -63,69 +59,17 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "LBP 直方图识别器，轻量但精度有限（<90%）。Windows 管线默认识别器。",
          "high_speed", 3});
 #endif
-
-    reg.registerDetector("retinaface_scrfd", []() { return std::make_unique<RetinaFaceAdapter>(); },
-        {"retinaface_scrfd", "SCRFD/RetinaFace (det_10g)", "detect",
-         "SCRFD 架构，640x640 输入，FPN 多尺度。WiderFace 96.1%。PNNX 转换 ONNX 模型。",
-         "high_accuracy", 1});
-
-    reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
-        {"yunet", "YuNet Face Detector", "detect",
-         "OpenCV FaceDetectorYN，320x320 输入。多尺度 FPN+SSH，WiderFace 91.5%。OpenCV 内置，无需额外模型依赖。",
-         "balanced", 3});
-
-    reg.registerEmbedder("sface", []() { return std::make_unique<SFaceAdapter>(); },
-        {"sface", "SFace 128D", "recognize",
-         "SFace 128 维特征提取，CPU 上最快的识别模型。OpenCV contrib face 模块内置。",
-         "high_speed", 2});
-
-    // INT8 量化模型注册 — 需要 INT8 模型文件存在才注册
-    auto fileExists = [](const std::string& path) -> bool {
-        std::error_code ec;
-        return std::filesystem::exists(path, ec) && !ec;
-    };
-
-    if (fileExists("models/yolo_face_int8_ncnn/yolo_face_int8.param")) {
-        reg.registerDetector("yolo_face_int8", []() {
-            return std::make_unique<YoloFaceAdapter>();
-        },
-        {"yolo_face_int8", "YOLO Face INT8", "detect",
-         "YOLOv5 INT8 量化模型，ncnn 后端。体积小、推理快，适合 RK3288 等资源受限设备。",
-         "high_speed", 2});
-    }
-
-    if (fileExists("models/arcface_int8_ncnn/arcface_int8.param")) {
-        reg.registerEmbedder("arcface_int8", []() {
-            return std::make_unique<ArcFaceAdapter>();
-        },
-        {"arcface_int8", "ArcFace INT8 128D", "recognize",
-         "ArcFace INT8 量化模型，128 维嵌入。推理快、体积小，适合嵌入式部署。",
-         "high_speed", 2});
-    }
-
-    if (fileExists("models/mobilefacenet_int8_ncnn/mobilefacenet_int8.param")) {
-        reg.registerEmbedder("mobilefacenet_int8", []() {
-            return std::make_unique<MobileFaceNetAdapter>();
-        },
-        {"mobilefacenet_int8", "MobileFaceNet INT8 128D", "recognize",
-         "MobileFaceNet INT8 量化模型，128 维嵌入。极轻量，适合资源极度受限设备。",
-         "high_speed", 3});
-    }
-    });
 }
 
 void ModelRegistry::registerDetector(const std::string& id, DetectorFactory factory, const ModelEntry& entry) {
-    std::unique_lock lock(mu_);
     detectors_[id] = DetectorSlot{std::move(factory), entry};
 }
 
 void ModelRegistry::registerEmbedder(const std::string& id, EmbedderFactory factory, const ModelEntry& entry) {
-    std::unique_lock lock(mu_);
     embedders_[id] = EmbedderSlot{std::move(factory), entry};
 }
 
 std::unique_ptr<FaceDetector> ModelRegistry::createDetector(const std::string& id, std::string* err) {
-    std::shared_lock lock(mu_);
     auto it = detectors_.find(id);
     if (it == detectors_.end()) {
         if (err) *err = "detector_not_found: " + id;
@@ -135,7 +79,6 @@ std::unique_ptr<FaceDetector> ModelRegistry::createDetector(const std::string& i
 }
 
 std::unique_ptr<Embedder> ModelRegistry::createEmbedder(const std::string& id, std::string* err) {
-    std::shared_lock lock(mu_);
     auto it = embedders_.find(id);
     if (it == embedders_.end()) {
         if (err) *err = "embedder_not_found: " + id;
@@ -145,7 +88,6 @@ std::unique_ptr<Embedder> ModelRegistry::createEmbedder(const std::string& id, s
 }
 
 const ModelEntry* ModelRegistry::getEntry(const std::string& id) const {
-    std::shared_lock lock(mu_);
     {
         auto it = detectors_.find(id);
         if (it != detectors_.end()) return &it->second.entry;
@@ -158,7 +100,6 @@ const ModelEntry* ModelRegistry::getEntry(const std::string& id) const {
 }
 
 std::vector<ModelEntry> ModelRegistry::listAll() const {
-    std::shared_lock lock(mu_);
     std::vector<ModelEntry> result;
     result.reserve(detectors_.size() + embedders_.size());
     for (const auto& p : detectors_) result.push_back(p.second.entry);
@@ -167,7 +108,6 @@ std::vector<ModelEntry> ModelRegistry::listAll() const {
 }
 
 std::vector<ModelEntry> ModelRegistry::listByTask(const std::string& taskType) const {
-    std::shared_lock lock(mu_);
     std::vector<ModelEntry> result;
     for (const auto& p : detectors_) {
         if (p.second.entry.taskType == taskType || taskType.empty())
@@ -181,7 +121,6 @@ std::vector<ModelEntry> ModelRegistry::listByTask(const std::string& taskType) c
 }
 
 bool ModelRegistry::reloadDetector(const std::string& id, DetectorFactory factory) {
-    std::unique_lock lock(mu_);
     auto it = detectors_.find(id);
     if (it == detectors_.end()) return false;
     it->second.factory = std::move(factory);
@@ -189,7 +128,6 @@ bool ModelRegistry::reloadDetector(const std::string& id, DetectorFactory factor
 }
 
 bool ModelRegistry::reloadEmbedder(const std::string& id, EmbedderFactory factory) {
-    std::unique_lock lock(mu_);
     auto it = embedders_.find(id);
     if (it == embedders_.end()) return false;
     it->second.factory = std::move(factory);

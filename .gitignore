@@ -98,14 +98,6 @@ Makefile
 *.log
 工作流建议_本地备忘_勿提交.txt
 
-# Model files (large binaries, not included in repo — see CREDITS.md)
-models/*
-!models/.gitkeep
-deps/WIDER_train/*
-!deps/WIDER_train/.gitkeep
-deps/insightface/*
-!deps/insightface/.gitkeep
-
 # Python
 __pycache__/
 *.py[cod]

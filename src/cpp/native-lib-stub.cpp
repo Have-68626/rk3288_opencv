@@ -19,7 +19,8 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(JNIEnv* env, jobject /* 
 }
 
 extern "C" JNIEXPORT void JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativeRelease(JNIEnv* env, jobject /* this */) {
+}
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(JNIEnv* env, jobject /* this */) {
@@ -27,35 +28,47 @@ Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(JNIEnv* env, jobject 
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativeGetProfile(JNIEnv* env, jobject /* this */) {
+    return env->NewStringUTF("{}");
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
-
-
-extern "C" JNIEXPORT void JNICALL
-
-
-extern "C" JNIEXPORT void JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativeUpdateConfig(JNIEnv* env, jobject /* this */, jstring) {
+    return JNI_FALSE;
+}
 
 extern "C" JNIEXPORT void JNICALL
-
-
-extern "C" JNIEXPORT void JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativeClearDatabase(JNIEnv* env, jobject /* this */) {
+}
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeSetEnrollMode(JNIEnv* env, jobject /* this */, jboolean) {
+}
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeSetIdentityId(JNIEnv* env, jobject /* this */, jint) {
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeGetDbState(JNIEnv*, jobject, jintArray) {
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeGetMetrics(JNIEnv* env, jobject /* this */, jlongArray) {
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeSetFlip(JNIEnv*, jobject, jboolean, jboolean) {
 }
 
 extern "C" JNIEXPORT void JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativeSetDisplayThreshold(JNIEnv* env, jobject /* this */, jfloat) {
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameBytes(JNIEnv* env, jobject /* this */, jbyteArray, jint, jint, jint, jlong, jint, jboolean) {
+    return JNI_FALSE;
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(JNIEnv* env, jobject /* this */, jobject, jint, jobject, jint, jint, jobject, jint, jint, jint, jint, jlong, jint, jboolean) {
@@ -63,7 +76,9 @@ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(JNIEnv* en
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-
+Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameNV21Bytes(JNIEnv* env, jobject /* this */, jbyteArray, jint, jint, jint, jlong, jint, jboolean) {
+    return JNI_FALSE;
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888Bytes(JNIEnv* env, jobject /* this */, jbyteArray, jint, jbyteArray, jint, jint, jbyteArray, jint, jint, jint, jint, jlong, jint, jboolean) {
