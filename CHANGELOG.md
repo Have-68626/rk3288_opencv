@@ -171,14 +171,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-48 | FaceInfer | `FaceInferStages.cpp:232,362` | INT8→FP32 降级无日志 | ✅ 已修 |
 | HR-49 | FaceInfer | `FaceInferStages.cpp:92` | 每帧全量 gallery 重新解析 | ✅ 已修 |
 | HR-50 | 适配器 | `LbphAdapter.cpp:8` | `load()` 忽略 `modelPath` | ✅ 已修 |
-| HR-51 | 适配器 | `CascadeAdapter.cpp:33` | 所有检测 score=1.0 |
-| HR-52 | 适配器 | `MobileFaceNetAdapter.cpp:48` | `num_threads=1` 硬编码 |
-| HR-53 | 适配器 | 多个 `*Adapter.cpp` | `cv::dnn` 调用无 try/catch |
-| HR-54 | 日志 | `NativeLog.cpp:144` | 持锁阻塞 IO |
-| HR-55 | 日志 | `NativeLog.cpp:121` | `write()` 返回值未检查 |
-| HR-56 | 日志 | `NativeLog.cpp:69` | 路径仅按 `/` 分割 |
-| HR-57 | 日志 | `NativeLog.cpp:95` | 轮换非原子 |
-| HR-58 | 日志 | `NativeLog.cpp:113` | 每次日志 open/write/close |
+| HR-51 | 适配器 | `CascadeAdapter.cpp:33` | 所有检测 score=1.0 | ✅ 已修 |
+| HR-52 | 适配器 | `MobileFaceNetAdapter.cpp:48` | `num_threads=1` 硬编码 | ✅ 已修 |
+| HR-53 | 适配器 | 多个 `*Adapter.cpp` | `cv::dnn` 调用无 try/catch | ✅ 已修 |
+| HR-54 | 日志 | `NativeLog.cpp:144` | 持锁阻塞 IO | ✅ 已修 |
+| HR-55 | 日志 | `NativeLog.cpp:121` | `write()` 返回值未检查 | ✅ 已修 |
+| HR-56 | 日志 | `NativeLog.cpp:69` | 路径仅按 `/` 分割 | ✅ 已修 |
+| HR-57 | 日志 | `NativeLog.cpp:95` | 轮换非原子 | ✅ 已修 |
+| HR-58 | 日志 | `NativeLog.cpp:113` | 每次日志 open/write/close | ✅ 已修 |
 | HR-59 | 日志 | `EventManager.cpp:57` | 32 位 ID 碰撞 |
 | HR-60 | FaceAlign | `FaceAlign.cpp:15` | NaN bbox → UB |
 | HR-61 | FaceTemplate | `FaceTemplate.cpp:74` | `serialize` 未更新 `h.dim` |

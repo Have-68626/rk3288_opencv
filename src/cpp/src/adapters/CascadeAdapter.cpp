@@ -30,7 +30,7 @@ FaceDetections CascadeAdapter::detect(const cv::Mat& bgr, std::string& err) {
                              static_cast<float>(r.y),
                              static_cast<float>(r.width),
                              static_cast<float>(r.height));
-        d.score = 1.0f;
+        d.score = 0.5f;  // CascadeClassifier 不产生置信度，使用中性值
         dets.push_back(std::move(d));
     }
     return dets;

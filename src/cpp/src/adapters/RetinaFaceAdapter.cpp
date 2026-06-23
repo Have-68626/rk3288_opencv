@@ -115,13 +115,24 @@ FaceDetections RetinaFaceAdapter::detect(const cv::Mat& bgr, std::string& err) {
         return {};
     }
 
-    cv::Mat blob = cv::dnn::blobFromImage(bgr, 1.0 / 255.0,
-        cv::Size(inputW_, inputH_),
-        cv::Scalar(0, 0, 0), true, false);
-    net_.setInput(blob);
+    cv::Mat blob;
+    try {
+        blob = cv::dnn::blobFromImage(bgr, 1.0 / 255.0,
+            cv::Size(inputW_, inputH_),
+            cv::Scalar(0, 0, 0), true, false);
+    } catch (const cv::Exception& e) {
+        err = std::string("RetinaFaceAdapter: blobFromImage failed: ") + e.what();
+        return {};
+    }
 
     std::vector<cv::Mat> outputs;
-    net_.forward(outputs, outputNames_);
+    try {
+        net_.setInput(blob);
+        net_.forward(outputs, outputNames_);
+    } catch (const cv::Exception& e) {
+        err = std::string("RetinaFaceAdapter: forward failed: ") + e.what();
+        return {};
+    }
 
     if (outputs.empty()) {
         err = "RetinaFaceAdapter: forward returned no outputs";

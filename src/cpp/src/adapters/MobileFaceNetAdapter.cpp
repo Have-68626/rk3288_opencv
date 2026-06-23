@@ -42,7 +42,8 @@ bool MobileFaceNetAdapter::load(const std::string& modelPath, std::string& err) 
     }
 
     net_.opt.lightmode = true;
-    net_.opt.num_threads = 1;
+    net_.opt.num_threads = static_cast<int>(std::thread::hardware_concurrency());
+    if (net_.opt.num_threads < 1) net_.opt.num_threads = 1;
 
     currentName_ = "mobilefacenet_ncnn";
     loaded_ = true;
