@@ -6,7 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 > **关于版本号重置的说明 (Version Reset Notice)**
-> 在项目早期的探索与架构验证阶段，曾短暂使用过 `1.x` 和 `2.0.0-rcX` 序列的版本号。随着 Windows 端向 Web SPA 架构（React + Vite + 本地 HTTP 服务）的全面迁移，以及 Android 与 Native 核心层的彻底重构，项目进入了实质性的 Beta 测试阶段。为了准确反映项目当前的成熟度与演进主线，版本号已从 `v0.1beta0` 开始重新校准，并统一收敛了全端的版本口径。
+> 在项目早期的探索与架构验证阶段，曾短暂使用过 `1.x` 和 `2.0.0-rcX` 序列的版本号。随着 Windows 端向 Web SPA 架构（React + Vite + 本地 HTTP 服务）的全面迁移，以及 Android
+与 Native 核心层的彻底重构，项目进入了实质性的 Beta 测试阶段。为了准确反映项目当前的成熟度与演进主线，版本号已从 `v0.1beta0` 开始重新校准，并统一收敛了全端的版本口径。
 
 ## [Unreleased]
 
@@ -145,11 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-23 | Windows | `OverlayRenderer.cpp:51,64` | 每帧 6MB clone | ✅ 已修 |
 | HR-24 | Windows | `D3D11Renderer.cpp:732` | `Map()` 失败无设备恢复 | ✅ 已修 |
 | HR-25 | Windows | `FramePipeline.cpp:533` | 重连参数陈旧 | ✅ 已修 |
-| HR-26 | 安全 | `WinJsonConfig.cpp:30` | `readFileAll` 无大小限制 |
-| HR-27 | 安全 | `JsonLite.cpp:414` | `parseJson` 无长度限制 |
-| HR-28 | 安全 | `WinJsonConfig.cpp:1093` | 备份无轮转 |
-| HR-29 | 安全 | `WinJsonConfig.cpp:72` | fallback 非原子 |
-| HR-30 | 安全 | `WinJsonConfig.cpp:1065` | 错误信息泄露 |
+| HR-26 | 安全 | `WinJsonConfig.cpp:30` | `readFileAll` 无大小限制 | ✅ 已修 |
+| HR-27 | 安全 | `JsonLite.cpp:414` | `parseJson` 无长度限制 | ✅ 已修 |
+| HR-28 | 安全 | `WinJsonConfig.cpp:1093` | 备份无轮转 | ✅ 已修 |
+| HR-29 | 安全 | `WinJsonConfig.cpp:72` | fallback 非原子 | ✅ 已修 |
+| HR-30 | 安全 | `WinJsonConfig.cpp:1065` | 错误信息泄露 | ✅ 已修 |
 | HR-31 | 人脸识别 | `FaceDetector.cpp:21` | CascadeClassifier 非线程安全 |
 | HR-32 | 人脸识别 | `FaceSearch.cpp:42,55` | NEON 16 字节对齐崩溃 |
 | HR-33 | 人脸识别 | `FaceRecognizer.cpp:97` | `identifyThreshold_` 读写竞争 |
@@ -286,11 +287,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1-beta.1] - 2026-04-16
 
-### Added
+<a id="added-2"></a>
+### Added（2）
 - **Build System**: 向 Windows / CLI 的 CMake 构建链路中注入了 `BUILD_ID` 宏，使得二进制产物、评估工具（`win_face_eval_cli` / `inference_bench_cli`）以及应用启动日志都能输出一致的版本号。
 - **Documentation**: 在 `CREDITS.md` 中新增了完整的**模型台账 (Model Inventory)**，明确了 OpenCV DNN 模型和 LBP 级联分类器的来源、部署路径与开源许可证。
 
-### Changed
+<a id="changed-2"></a>
+### Changed（2）
 - **Versioning**: 升级全端版本号至 `v0.1beta1` (Android `versionCode 3`)，彻底消除 Android 构建、CMake 产物与文档之间的版本漂移。
 - **Documentation**: 全面校准 `DEVELOP.md`，更新了包含 `web/` 的最新目录结构与前端技术栈（React 18 + AntD 5）。
 - **Configuration**: 明确 `%APPDATA%\rk_wcfr\config.json` 为 Windows 端配置的唯一事实来源 (Source of Truth)，并在旧版 `config/windows_camera_face_recognition.ini` 中添加了废弃/迁移警告及模型下载指引。
@@ -302,7 +305,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta.0] - 2026-04-15
 
-### Added
+<a id="added-3"></a>
+### Added（3）
 - **Documentation**: 全面重构 `DEVELOP.md`，采用标准化 Markdown、中英双语术语与工程化改进。
 - **Examples**: 新增 `docs/examples/` 目录，包含 RK3288 平台的 8 个可编译 C++ 示例：
   - `01_v4l2_capture.cpp`: 直接使用 V4L2 + MMAP 采集摄像头。
@@ -317,11 +321,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Checklists**: 新增 `docs/checklist/acceptance.md`，涵盖开发、测试与发布阶段验收清单。
 - **Quick Start**: 在 `DEVELOP.md` 中新增快速开始脚本指南与依赖矩阵。
 
-### Removed
+<a id="removed-2"></a>
+### Removed（2）
 - **Legacy SDK**: 移除 `ColorOsSdkBridge`、`PlayIntegrityChecker`、`GmsDetector`、`PrivilegedCommandGate` 与 `DevicePolicy`，消除无效依赖。
 - **Security**: 移除 `SecurityEventLogger` 作为 SDK 清理的一部分。
 
-### Changed
+<a id="changed-3"></a>
+### Changed（3）
 - **Device Profiling**: 简化 `DeviceProfile`，聚焦于硬件数据采集（Build info、Memory/Storage）。
 - **Documentation**: 在 `DEVELOP.md` 第 4.6 节新增简化版设备画像任务（待实现）。
 - **Structure**: 重构 `DEVELOP.md` 为"概述 → 环境 → 核心开发 → 高级/排障"结构。
@@ -329,7 +335,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Style**: 强制执行严格 Markdown 标准与中英双语术语。
 - **日志目录**: 错误日志目录统一为 `ErrorLog/`（区分大小写），不再兼容 `errorlog/`。
 
-### Documented
+<a id="documented-2"></a>
+### Documented（2）
 - **Roadmap**: 将 `README.md` 中已完成的待办项迁移到 `CHANGELOG.md` 以保持可追溯性。
 - **README 待办（完成项 1–15）**：从 `README.md` 清理迁移至此处归档（README 仅保留未完成待办 16+）。
   - 1. **[P0] 非 RK3288 设备：高分辨率/高帧率输入的稳定性与兼容性治理**（输入端强制 ≤1080p@60fps；超规格自动降档/拒绝并提示）
@@ -395,20 +402,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.0] - 2026-02-09
 
-### Added
+<a id="added-4"></a>
+### Added（4）
 - **System**: `PermissionStateMachine`，用于 Android 13+ 的健壮权限处理。
 - **Logging**: `AppLog` / `FileLogSink` / `NativeLog` 双路径存储与自动回滚。
 - **Monitoring**: `StatsRepository`，通过 `StatusService` 实现实时 FPS/CPU/MEM 监控。
 
-### Changed
+<a id="changed-4"></a>
+### Changed（4）
 - **UI**: 改进 `LogViewerActivity`，支持导出与敏感数据脱敏。
 - **Camera**: 动态摄像头发现与热插拔支持。
 
 ## [1.1.0] - 2026-02-09
 
-### Added
+<a id="added-5"></a>
+### Added（5）
 - **Compatibility**: 优化 `AndroidManifest.xml` 以适配非工业 Android 设备。
 - **Debug**: 修复 `main.cpp` CLI 构建问题。
 
-### Fixed
+<a id="fixed-2"></a>
+### Fixed（2）
 - **Build**: 向 `main.cpp` 添加 `<string>` 头文件以修复编译错误。

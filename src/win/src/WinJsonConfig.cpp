@@ -27,6 +27,8 @@ constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
 
+constexpr std::uintmax_t kMaxConfigFileBytes = 10 * 1024 * 1024;      // 10MB max config file
+
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
     err.clear();
     out.clear();
@@ -35,9 +37,27 @@ bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& 
         err = "无法读取文件: " + p.string();
         return false;
     }
-    std::ostringstream ss;
-    ss << ifs.rdbuf();
-    out = ss.str();
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(p, ec);
+    if (!ec && sz > kMaxConfigFileBytes) {
+        err = "文件超过大小上限 (" + std::to_string(kMaxConfigFileBytes / 1024 / 1024) + "MB)";
+        return false;
+    }
+    if (!ec) {
+        std::string data;
+        data.resize(static_cast<std::size_t>(sz));
+        ifs.read(data.data(), static_cast<std::streamsize>(data.size()));
+        out = std::move(data);
+    } else {
+        // Fallback for special files where file_size fails
+        std::ostringstream ss;
+        ss << ifs.rdbuf();
+        out = ss.str();
+        if (out.size() > kMaxConfigFileBytes) {
+            err = "文件超过大小上限";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -74,14 +94,8 @@ bool moveReplaceWriteThrough(const std::filesystem::path& src, const std::filesy
     err.clear();
     if (MoveFileExW(src.wstring().c_str(), dst.wstring().c_str(),
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-        std::error_code ec;
-        std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) {
-            err = "MoveFileExW(REPLACE) 失败，且 copy_file 回退失败";
-            return false;
-        }
-        std::filesystem::remove(src, ec);
-        return true;
+        err = "MoveFileExW(REPLACE|WRITE_THROUGH) 失败";
+        return false;
     }
     return true;
 #else
@@ -1066,17 +1080,17 @@ std::string WinJsonConfigStore::buildSettingsJson(const AppConfig& cfg, bool red
     std::vector<std::uint8_t> key;
     std::string err;
     if (encryptSensitive && !ensureOrLoadKey(key, err)) {
-        // 返回最小 JSON，避免崩溃；错误由调用方决定是否记录/返回
+        // 返回最小 JSON；错误信息用通用消息替代以防止泄漏敏感细节
         JsonValue o = JsonValue::makeObject();
         o.o["schemaVersion"] = JsonValue::makeNumber(1);
-        o.o["_error"] = JsonValue::makeString("key_error: " + err);
+        o.o["_error"] = JsonValue::makeString("key_error");
         return toJsonString(o, true);
     }
     JsonValue doc = toSettingsDocObject(cfg, redacted, encryptSensitive, encryptSensitive ? &key : nullptr, err);
     if (!err.empty()) {
         JsonValue o = JsonValue::makeObject();
         o.o["schemaVersion"] = JsonValue::makeNumber(1);
-        o.o["_error"] = JsonValue::makeString("encrypt_error: " + err);
+        o.o["_error"] = JsonValue::makeString("encrypt_error");
         return toJsonString(o, true);
     }
     return toJsonString(doc, true);
@@ -1089,9 +1103,21 @@ bool WinJsonConfigStore::writeAtomicallyWithBackup(const std::string& jsonPretty
         outErr = ioErr;
         return false;
     }
-    // 先备份旧文件
+    // 先备份旧文件，保留最近 5 个轮转副本
     if (std::filesystem::exists(configPath_)) {
         std::error_code ec;
+        // Rotate: config.json.bak.5 -> remove, .4->.5, .3->.4, .2->.3, .1->.2, .bak->.1
+        auto rotatePath = [&](int n) { return configPath_.parent_path() / (L"config.json.bak." + std::to_wstring(n)); };
+        std::filesystem::remove(rotatePath(5), ec);
+        for (int i = 4; i >= 1; --i) {
+            std::filesystem::path src = rotatePath(i);
+            if (std::filesystem::exists(src, ec)) {
+                std::filesystem::rename(src, rotatePath(i + 1), ec);
+            }
+        }
+        if (std::filesystem::exists(bakPath_, ec)) {
+            std::filesystem::rename(bakPath_, rotatePath(1), ec);
+        }
         std::filesystem::copy_file(configPath_, bakPath_, std::filesystem::copy_options::overwrite_existing, ec);
         // 备份失败不阻断写入（但会降低回滚能力）
     }

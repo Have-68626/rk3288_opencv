@@ -418,6 +418,11 @@ JsonValue* JsonValue::find(const std::string& key) {
 }
 
 bool parseJson(std::string_view text, JsonValue& out, std::string& errOut) {
+    constexpr std::size_t kMaxJsonInputBytes = 10 * 1024 * 1024;
+    if (text.size() > kMaxJsonInputBytes) {
+        errOut = "JSON input too large (" + std::to_string(text.size()) + " bytes, max " + std::to_string(kMaxJsonInputBytes) + ")";
+        return false;
+    }
     Parser ps;
     ps.base = text.data();
     ps.p = text.data();
