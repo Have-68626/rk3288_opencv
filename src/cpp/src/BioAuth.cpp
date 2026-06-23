@@ -19,11 +19,13 @@ BioAuth::BioAuth() {
 }
 
 bool BioAuth::initialize(const std::string& cascadePath, const std::string& modelPath,
-                         double scaleFactor, int minNeighbors, int minFaceSize) {
+                         double scaleFactor, int minNeighbors, int minFaceSize,
+                         bool enableEqualizeHist) {
     std::lock_guard<std::mutex> lock(mu_);
     cascadeScaleFactor_ = scaleFactor;
     cascadeMinNeighbors_ = minNeighbors;
     cascadeMinFaceSize_ = minFaceSize;
+    equalizeHistEnabled_ = enableEqualizeHist;
     if (!faceCascade.load(cascadePath)) {
         std::cerr << "Error loading face cascade: " << cascadePath << std::endl;
         return false;
@@ -85,10 +87,9 @@ bool BioAuth::verify(const cv::Mat& frame,
     cv::Mat gray;
 
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    cv::equalizeHist(gray, gray);
-
     {
         std::lock_guard<std::mutex> lock(mu_);
+        if (equalizeHistEnabled_) cv::equalizeHist(gray, gray);
         faceCascade.detectMultiScale(gray, faces, cascadeScaleFactor_, cascadeMinNeighbors_, kCascadeFlags, cv::Size(cascadeMinFaceSize_, cascadeMinFaceSize_));
     }
 
@@ -139,10 +140,9 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
     cv::Mat gray;
 
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    cv::equalizeHist(gray, gray);
-
     {
         std::lock_guard<std::mutex> lock(mu_);
+        if (equalizeHistEnabled_) cv::equalizeHist(gray, gray);
         faceCascade.detectMultiScale(gray, faces, cascadeScaleFactor_, cascadeMinNeighbors_, kCascadeFlags, cv::Size(cascadeMinFaceSize_, cascadeMinFaceSize_));
     }
 

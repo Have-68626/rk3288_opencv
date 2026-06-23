@@ -68,9 +68,15 @@ android {
                 // ncnn 本地路径（避免 FetchContent 网络下载）
                 // 优先使用环境变量 NCNN_DIR，否则使用硬编码路径作为后备
                 def ncnnRoot = System.getenv("NCNN_DIR") ?: "D:/ProgramData/NCNN/ncnn-20260113-android-vulkan"
-                cmakeArgs.add("-DRK_ENABLE_NCNN=ON")
-                cmakeArgs.add("-DNCNN_DIR_ARMv7=${ncnnRoot}/armeabi-v7a")
-                cmakeArgs.add("-DNCNN_DIR_ARM64=${ncnnRoot}/arm64-v8a")
+                def ncnnArmv7 = new File("${ncnnRoot}/armeabi-v7a")
+                def ncnnArm64 = new File("${ncnnRoot}/arm64-v8a")
+                if (ncnnArmv7.exists() && ncnnArm64.exists()) {
+                    cmakeArgs.add("-DRK_ENABLE_NCNN=ON")
+                    cmakeArgs.add("-DNCNN_DIR_ARMv7=${ncnnRoot}/armeabi-v7a")
+                    cmakeArgs.add("-DNCNN_DIR_ARM64=${ncnnRoot}/arm64-v8a")
+                } else {
+                    cmakeArgs.add("-DRK_ENABLE_NCNN=OFF")
+                }
                 arguments(*cmakeArgs)
             }
         }

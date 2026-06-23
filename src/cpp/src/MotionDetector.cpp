@@ -34,8 +34,18 @@ bool MotionDetector::detect(const cv::Mat& currentFrame) {
         cv::swap(blurred, prevFrame);
 
         int changedPixels = cv::countNonZero(motionMask);
-        return changedPixels > Config::MIN_MOTION_AREA;
+        // MIN_MOTION_AREA = 500 是为 640x480 校准的绝对值;
+        // 对于不同分辨率，按帧面积比例缩放
+        const double areaScale = static_cast<double>(currentFrame.total()) / (640.0 * 480.0);
+        const int minArea = static_cast<int>(Config::MIN_MOTION_AREA * areaScale);
+        return changedPixels > minArea;
     }
+}
+
+void MotionDetector::release() {
+    std::lock_guard<std::mutex> lock(mu_);
+    prevFrame = cv::Mat();
+    motionMask = cv::Mat();
 }
 
 cv::Mat MotionDetector::getMotionMask() const {

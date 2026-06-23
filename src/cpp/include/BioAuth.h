@@ -36,7 +36,8 @@ public:
      * @return true if initialization successful.
      */
     bool initialize(const std::string& cascadePath, const std::string& modelPath = "",
-                    double scaleFactor = 1.1, int minNeighbors = 3, int minFaceSize = 60);
+                    double scaleFactor = 1.1, int minNeighbors = 3, int minFaceSize = 60,
+                    bool enableEqualizeHist = true);
 
     /**
      * @brief Trains the recognizer with a set of images and labels.
@@ -73,6 +74,7 @@ private:
     double cascadeScaleFactor_ = 1.1;
     int cascadeMinNeighbors_ = 3;
     int cascadeMinFaceSize_ = 60;
+    bool equalizeHistEnabled_ = true;
     cv::CascadeClassifier faceCascade;
 #ifdef HAS_OPENCV_FACE
     cv::Ptr<cv::face::FaceRecognizer> faceRecognizer;

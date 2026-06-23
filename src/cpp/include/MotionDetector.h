@@ -9,6 +9,9 @@ public:
 
     bool detect(const cv::Mat& currentFrame);
 
+    /** Release internal frame buffers to free memory. Safe to call between stream changes. */
+    void release();
+
     cv::Mat getMotionMask() const;
 
 private:
