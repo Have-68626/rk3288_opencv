@@ -54,18 +54,27 @@ function Get-ShellValue([string]$AdbPath, [string[]]$AdbArgs, [string]$Cmd) {
 }
 
 function Get-FocusSummary([string]$AdbPath, [string[]]$AdbArgs) {
-    $dump = Get-ShellValue -AdbPath $AdbPath -AdbArgs $AdbArgs -Cmd "dumpsys window windows"
-    if ([string]::IsNullOrWhiteSpace($dump)) { return "" }
-    $lines = $dump -split "`r?`n"
-    $picked = @()
-    foreach ($line in $lines) {
-        if ($line -match "mCurrentFocus|mFocusedApp") {
-            $picked += $line.Trim()
+    # Try modern dumpsys activity first, fall back to deprecated window dumpsys
+    $dump = Get-ShellValue -AdbPath $AdbPath -AdbArgs $AdbArgs -Cmd "dumpsys activity activities"
+    if (-not [string]::IsNullOrWhiteSpace($dump)) {
+        $lines = $dump -split "`r?`n"
+        foreach ($line in $lines) {
+            if ($line -match "mResumedActivity|mFocusedActivity|mCurrentFocus") {
+                return $line.Trim()
+            }
         }
     }
-    if ($picked.Count -eq 0) { return "" }
-    if ($picked.Count -gt 2) { $picked = $picked[0..1] }
-    return ($picked -join " || ")
+    # Fallback: deprecated but still works on older Android
+    $dump = Get-ShellValue -AdbPath $AdbPath -AdbArgs $AdbArgs -Cmd "dumpsys window windows"
+    if (-not [string]::IsNullOrWhiteSpace($dump)) {
+        $lines = $dump -split "`r?`n"
+        foreach ($line in $lines) {
+            if ($line -match "mCurrentFocus|mFocusedApp") {
+                return $line.Trim()
+            }
+        }
+    }
+    return ""
 }
 
 $adb = Resolve-AdbPath

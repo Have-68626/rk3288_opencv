@@ -284,10 +284,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           python scripts/quantize_ncnn_int8.py `
-            --model yolo_face `
-            --fp32-dir "models/yolo_face_ncnn" `
-            --calib-dir "tests/test_set01" `
-            --output-dir "models/yolo_face_int8_ncnn" `
+            --model scrfd `
+            --fp32-dir "models/scrfd_ncnn" `
+            --calib-dir "deps/WIDER_train/WIDER_train/images" `
+            --output-dir "models/scrfd_int8_ncnn" `
             --size 640 `
             --num-samples 50
 
