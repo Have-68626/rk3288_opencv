@@ -1,6 +1,8 @@
 import type { LocalPrefs } from '../state/prefs'
 import { fetchJson } from './http'
 
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || ''
+
 export type CameraFormatInfo = { w: number; h: number; fps: number }
 export type CameraDeviceInfo = {
   index: number
@@ -14,7 +16,7 @@ export type CamerasErr = { ok: false; error: { code: string; message: string; de
 export type CamerasEnvelope = CamerasOk | CamerasErr
 
 export async function getCameras(prefs: LocalPrefs): Promise<CamerasEnvelope> {
-  return fetchJson<CamerasEnvelope>('/api/v1/cameras', {
+  return fetchJson<CamerasEnvelope>(`${API_BASE}/api/v1/cameras`, {
     method: 'GET',
     timeoutMs: prefs.apiTimeoutMs,
     logLevel: prefs.logLevel,

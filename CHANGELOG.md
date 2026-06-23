@@ -193,11 +193,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-70 | 构建 | `app/build.gradle:64` | 硬编码 ncnn 路径 |
 | HR-71 | 构建 | `app/build.gradle:108` | `minifyEnabled false` |
 | HR-72 | 构建 | `app/build.gradle:109` | proguard 文件缺失 |
-| HR-73 | Android | `StatusService.java:48` | overlay 权限绕过后显示 |
-| HR-74 | Android | `LogViewerActivity.java:63` | ExecutorService 未 shutdown |
-| HR-75 | Android | `LogDetailActivity.java:67` | ExecutorService 未 shutdown |
-| HR-76 | Android | `LogViewerActivity.java:417` | logcat pipe 死锁 |
-| HR-77 | Web | `cameras.ts + actions.ts` | API 路径忽略 `VITE_API_BASE` |
+| HR-73 | Android | `StatusService.java:48` | overlay 权限绕过后显示 | ✅ 已修 |
+| HR-74 | Android | `LogViewerActivity.java:63` | ExecutorService 未 shutdown | ✅ 已修 |
+| HR-75 | Android | `LogDetailActivity.java:67` | ExecutorService 未 shutdown | ✅ 已修 |
+| HR-76 | Android | `LogViewerActivity.java:417` | logcat pipe 死锁 | ✅ 已修 |
+| HR-77 | Web | `cameras.ts + actions.ts` | API 路径忽略 `VITE_API_BASE` | ✅ 已修 |
 | HR-78 | Web | `prefs.ts:92` | `savePrefs` 无 try/catch |
 | HR-79 | 基准 | `inference_bench_cli.cpp:444` | 预处理计时测零工作 |
 | HR-80 | 基准 | `inference_bench_cli.cpp:939` | NaN/Inf 输出非法 JSON |

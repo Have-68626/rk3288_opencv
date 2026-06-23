@@ -48,6 +48,11 @@ public class StatusService extends Service {
     public void onCreate() {
         AppLog.enter("StatusService", "onCreate");
         super.onCreate();
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+            AppLog.w("StatusService", "onCreate", "无悬浮窗权限，停止服务");
+            stopSelf();
+            return;
+        }
         setOverlayRunning(true);
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         createStatusView();
@@ -55,10 +60,6 @@ public class StatusService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         if (intent != null) {
             String action = intent.getAction();
             if (ACTION_STOP.equals(action)) {
