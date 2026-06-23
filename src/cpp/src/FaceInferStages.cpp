@@ -175,7 +175,7 @@ static size_t pickMainFaceIndex(const FaceInferRequest& req, const FaceDetection
 
 }  // namespace
 
-std::vector<float> FaceInferStages::makeFakeEmbedding512ForTest(const cv::Rect2f& bbox, const cv::Size& imgSz) {
+std::vector<float> FaceInferStages::makeFakeEmbedding512(const cv::Rect2f& bbox, const cv::Size& imgSz) {
     std::vector<float> v(static_cast<size_t>(ArcFaceEmbedding::kDim), 0.0f);
     const float sx = imgSz.width > 0 ? (bbox.x / static_cast<float>(imgSz.width)) : 0.0f;
     const float sy = imgSz.height > 0 ? (bbox.y / static_cast<float>(imgSz.height)) : 0.0f;
@@ -344,7 +344,7 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
 
     const auto te0 = std::chrono::steady_clock::now();
     if (req.fakeEmbedding) {
-        ctx.embedding = makeFakeEmbedding512ForTest(ctx.mainFace.bbox, ctx.img.size());
+        ctx.embedding = makeFakeEmbedding512(ctx.mainFace.bbox, ctx.img.size());
         ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
         ctx.embeddingFake = true;
         const auto te1 = std::chrono::steady_clock::now();

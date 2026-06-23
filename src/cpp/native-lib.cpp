@@ -286,7 +286,16 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
         g_activity = env->NewGlobalRef(thiz);
     }
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
+    if (cascadePath && env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
+    if (storagePath && env->ExceptionCheck()) {
+        if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
 
     std::string cascadeStr = cascade ? cascade : "";
     std::string storageStr = storage ? storage : "";
@@ -304,6 +313,10 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     int camIdInt = -1;
     if (cameraId) {
         const char* camStr = env->GetStringUTFChars(cameraId, nullptr);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return JNI_FALSE;
+        }
         if (camStr) {
             camIdStr = camStr;
             env->ReleaseStringUTFChars(cameraId, camStr);
