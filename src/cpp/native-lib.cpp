@@ -271,7 +271,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
         JNIEnv* env,
         jobject thiz,
-        jint cameraId,
+        jstring cameraId,
         jstring cascadePath,
         jstring storagePath) {
     RKLOG_ENTER(TAG);
@@ -293,7 +293,17 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
     if (storage) env->ReleaseStringUTFChars(storagePath, storage);
 
-    LOGI("Initializing Engine with Camera ID: %d...", cameraId);
+    // Java 层 cameraId 已改为 String，null 表示外部输入
+    int camIdInt = -1;
+    if (cameraId) {
+        const char* camStr = env->GetStringUTFChars(cameraId, nullptr);
+        if (camStr) {
+            camIdInt = std::atoi(camStr);
+            env->ReleaseStringUTFChars(cameraId, camStr);
+        }
+    }
+
+    LOGI("Initializing Engine with Camera ID: %d...", camIdInt);
     if (!g_engine) {
         g_engine = std::make_unique<Engine>();
     }
@@ -303,7 +313,7 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
     g_engine->setOnResultCallback(sendRecognitionResult);
     
     try {
-        return g_engine->initialize(cameraId, cascadeStr, storageStr);
+        return g_engine->initialize(camIdInt, cascadeStr, storageStr);
     } catch (const std::exception& e) {
         LOGE("Engine::initialize threw std::exception: %s", e.what());
         return JNI_FALSE;
