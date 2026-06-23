@@ -213,11 +213,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | MR-08 | Android | `selectedCameraId` int 局限 |
 | MR-09 | Web | `memoryCache` 无驱逐 |
 | MR-10 | Web | API 路径字符串分散 4 模块 |
-| MR-11 | Web | Vite 模板残留 CSS |
-| MR-12 | 测试 | 15+ 组件零测试覆盖 |
-| MR-13 | 测试 | 资源清理不完整 |
-| MR-14 | FaceInfer | `loadGallery` 每帧磁盘 IO |
-| MR-15 | FaceInfer | `ModelRegistry` 无内部同步 |
+| MR-11 | Web | Vite 模板残留 CSS | ✅ 已修 |
+| MR-12 | 测试 | 15+ 组件零测试覆盖 | ✅ 已修 |
+| MR-13 | 测试 | 资源清理不完整 | ✅ 已修 |
+| MR-14 | FaceInfer | `loadGallery` 每帧磁盘 IO | ✅ 已修 |
+| MR-15 | FaceInfer | `ModelRegistry` 无内部同步 | ✅ 已修 |
 | MR-16 | FaceDB | `e.count` int 溢出 |
 | MR-17 | 配置 | `int8Enabled` INI 缺失 |
 | MR-18 | 构建 | `ncnn_precision_test` CRT Debug 缺失 |

@@ -115,14 +115,17 @@ void ModelRegistry::ensureBuiltinRegistered() {
 }
 
 void ModelRegistry::registerDetector(const std::string& id, DetectorFactory factory, const ModelEntry& entry) {
+    std::unique_lock lock(mu_);
     detectors_[id] = DetectorSlot{std::move(factory), entry};
 }
 
 void ModelRegistry::registerEmbedder(const std::string& id, EmbedderFactory factory, const ModelEntry& entry) {
+    std::unique_lock lock(mu_);
     embedders_[id] = EmbedderSlot{std::move(factory), entry};
 }
 
 std::unique_ptr<FaceDetector> ModelRegistry::createDetector(const std::string& id, std::string* err) {
+    std::shared_lock lock(mu_);
     auto it = detectors_.find(id);
     if (it == detectors_.end()) {
         if (err) *err = "detector_not_found: " + id;
@@ -132,6 +135,7 @@ std::unique_ptr<FaceDetector> ModelRegistry::createDetector(const std::string& i
 }
 
 std::unique_ptr<Embedder> ModelRegistry::createEmbedder(const std::string& id, std::string* err) {
+    std::shared_lock lock(mu_);
     auto it = embedders_.find(id);
     if (it == embedders_.end()) {
         if (err) *err = "embedder_not_found: " + id;
@@ -141,6 +145,7 @@ std::unique_ptr<Embedder> ModelRegistry::createEmbedder(const std::string& id, s
 }
 
 const ModelEntry* ModelRegistry::getEntry(const std::string& id) const {
+    std::shared_lock lock(mu_);
     {
         auto it = detectors_.find(id);
         if (it != detectors_.end()) return &it->second.entry;
@@ -153,6 +158,7 @@ const ModelEntry* ModelRegistry::getEntry(const std::string& id) const {
 }
 
 std::vector<ModelEntry> ModelRegistry::listAll() const {
+    std::shared_lock lock(mu_);
     std::vector<ModelEntry> result;
     result.reserve(detectors_.size() + embedders_.size());
     for (const auto& p : detectors_) result.push_back(p.second.entry);
@@ -161,6 +167,7 @@ std::vector<ModelEntry> ModelRegistry::listAll() const {
 }
 
 std::vector<ModelEntry> ModelRegistry::listByTask(const std::string& taskType) const {
+    std::shared_lock lock(mu_);
     std::vector<ModelEntry> result;
     for (const auto& p : detectors_) {
         if (p.second.entry.taskType == taskType || taskType.empty())
@@ -174,6 +181,7 @@ std::vector<ModelEntry> ModelRegistry::listByTask(const std::string& taskType) c
 }
 
 bool ModelRegistry::reloadDetector(const std::string& id, DetectorFactory factory) {
+    std::unique_lock lock(mu_);
     auto it = detectors_.find(id);
     if (it == detectors_.end()) return false;
     it->second.factory = std::move(factory);
@@ -181,6 +189,7 @@ bool ModelRegistry::reloadDetector(const std::string& id, DetectorFactory factor
 }
 
 bool ModelRegistry::reloadEmbedder(const std::string& id, EmbedderFactory factory) {
+    std::unique_lock lock(mu_);
     auto it = embedders_.find(id);
     if (it == embedders_.end()) return false;
     it->second.factory = std::move(factory);

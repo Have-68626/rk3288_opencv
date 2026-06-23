@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,7 @@ private:
         EmbedderFactory factory;
         ModelEntry entry;
     };
+    mutable std::shared_mutex mu_;
     std::unordered_map<std::string, DetectorSlot> detectors_;
     std::unordered_map<std::string, EmbedderSlot> embedders_;
 };

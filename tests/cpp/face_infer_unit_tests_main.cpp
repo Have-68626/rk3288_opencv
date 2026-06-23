@@ -55,6 +55,18 @@ bool test_int8_yolo_face_creates_detector();
 bool test_int8_arcface_creates_embedder();
 bool test_int8_mobilefacenet_creates_embedder();
 
+bool test_face_align_basic();
+bool test_face_align_nan_bbox();
+bool test_face_align_empty_image();
+bool test_face_align_negative_bbox();
+
+bool test_cleanup_temp_file_removed();
+bool test_cleanup_temp_dir_created_and_removed();
+bool test_cleanup_file_write_and_read();
+
+bool test_gallery_cache_empty_dir();
+bool test_gallery_cache_repeated_call();
+
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
@@ -78,6 +90,15 @@ int main() {
         {"int8_mobilefacenet_creates_embedder", test_int8_mobilefacenet_creates_embedder},
         {"int8_precision_detection_iou", test_int8_precision_detection_iou},
         {"int8_precision_arcface_similarity", test_int8_precision_arcface_similarity},
+        {"face_align_basic", test_face_align_basic},
+        {"face_align_nan_bbox", test_face_align_nan_bbox},
+        {"face_align_empty_image", test_face_align_empty_image},
+        {"face_align_negative_bbox", test_face_align_negative_bbox},
+        {"cleanup_temp_file_removed", test_cleanup_temp_file_removed},
+        {"cleanup_temp_dir_created_and_removed", test_cleanup_temp_dir_created_and_removed},
+        {"cleanup_file_write_and_read", test_cleanup_file_write_and_read},
+        {"gallery_cache_empty_dir", test_gallery_cache_empty_dir},
+        {"gallery_cache_repeated_call", test_gallery_cache_repeated_call},
         {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
         {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
         {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},
