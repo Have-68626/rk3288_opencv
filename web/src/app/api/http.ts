@@ -121,7 +121,9 @@ export async function fetchJson<T>(
   }
 
   const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), init.timeoutMs)
+  const timeoutId = init.timeoutMs > 0
+    ? window.setTimeout(() => controller.abort(), init.timeoutMs)
+    : 0
   try {
     log(init.logLevel, 'debug', '[api] request', init.method ?? 'GET', input)
     const res = await fetch(input, {
@@ -165,7 +167,7 @@ export async function fetchJson<T>(
     if (err instanceof ApiError) throw err
     throw new ApiError('network_error', err?.message || '网络错误/解析失败')
   } finally {
-    window.clearTimeout(timeoutId)
+    if (timeoutId > 0) window.clearTimeout(timeoutId)
   }
 }
 
