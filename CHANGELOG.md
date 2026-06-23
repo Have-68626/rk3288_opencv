@@ -62,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
 
-### Code Review (2026-06-23, Round 9) — 全部未决问题
-> 第 9 轮审查聚焦新变更（cameraId JNI、新 Web 文件、测试文件注册）。发现 3 项新问题。
+### Code Review (2026-06-23, Round 10) — 全部未决问题
+> 第 10 轮审查覆盖 8 个此前未审核心文件（FaceInferStages、FaceSearch、ArcFaceEmbedder、win_local_service_main 等）。发现 6 项新问题。
 
 #### ✅ 已修复确认
-> Round 1-8 发现的 132 项问题已全部修复。Round 9 发现 3 项新问题，见下方 🔴 未决问题。
+> Round 1-8 发现的 132 项问题已全部修复。Round 9-10 发现 9 项新问题，见下方 🔴 未决问题。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -105,18 +105,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
 
-#### 🔴 未决问题（Round 9 — 3 项）
+#### 🔴 未决问题（Round 9-10 — 9 项）
+
+##### CRITICAL
+| # | 模块 | 文件 | 问题 | 状态 |
+|---|------|------|------|------|
+| CR-52 | 推理管线 | `FaceInferStages.cpp:426` | `loadGallery` 中 4 个 `static` 缓存变量（`s_lastDir`/`s_lastMtime`/`s_cachedEntries`/`s_cachedWarnings`）无同步 → 并发 UB | 🔴 Open |
 
 ##### HIGH
 | # | 模块 | 文件 | 问题 | 状态 |
 |---|------|------|------|------|
 | HR-82 | Web | `PreviewPage.tsx:151` | MJPEG 预览 URL 硬编码 `/api/v1/preview.mjpeg`，未使用 `VITE_API_BASE` | 🔴 Open |
+| HR-83 | 推理管线 | `FaceInferStages.cpp:220` | `detectFaces` 每帧通过 `createDetector()` 新建检测器 → 无缓存，反复文件 IO | 🔴 Open |
+| HR-84 | 推理管线 | `FaceInferStages.cpp:396` | `computeEmbedding` 每帧创建 `ArcFaceEmbedder` 栈对象 → 反复初始化 | 🔴 Open |
+| HR-85 | 嵌入计算 | `ArcFaceEmbedder.cpp:72,101` | OpenCV DNN 与 Qualcomm 后端初始化代码 30 行逐字重复 | 🔴 Open |
 
 ##### MEDIUM
 | # | 模块 | 文件 | 问题 | 状态 |
 |---|------|------|------|------|
 | MR-49 | JNI | `native-lib.cpp:272` | `nativeInit` 中 `GetStringUTFChars` 调用无 `ExceptionCheck` 保护 | 🔴 Open |
 | MR-50 | 测试 | `tests/cpp/test_resource_cleanup.cpp` | 3 个测试函数未注册到任何 `*_main.cpp` 测试套件 → 死代码 | 🔴 Open |
+| MR-51 | 推理管线 | `FaceInferStages.cpp:178` | `makeFakeEmbedding512ForTest` 公开测试方法在生产代码中 | 🔴 Open |
+| MR-52 | 人脸搜索 | `FaceSearch.cpp:113` | 硬编码魔数 `10000` 作为最大检索条目 | 🔴 Open |
 
 #### Findings Lifecycle Rules
 - **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复
