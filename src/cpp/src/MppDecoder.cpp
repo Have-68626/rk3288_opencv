@@ -125,7 +125,9 @@ bool MppDecoder::read(cv::Mat& outBgr) {
         MppPacket packet = nullptr;
         mpp_packet_new(&packet);
 
+        int64_t readPos = 0;
         if (mpp_->fileHandle && !mpp_->eos) {
+            readPos = std::ftell(mpp_->fileHandle);
             auto buf = std::make_shared<std::vector<uint8_t>>(kChunkSize);
             size_t bytesRead = std::fread(buf->data(), 1, kChunkSize, mpp_->fileHandle);
             if (bytesRead > 0) {
@@ -145,10 +147,31 @@ bool MppDecoder::read(cv::Mat& outBgr) {
         }
 
         MPP_RET putRet = mpp_->mpi->decode_put_packet(mpp_->ctx, packet);
+
+        if (putRet == MPP_ERR_BUFFER_FULL) {
+            // MPP input buffer full — rewind file to pre-read position, drain frames, retry
+            mpp_packet_destroy(packet);
+            pendingBufs_.clear();
+            if (mpp_->fileHandle && readPos >= 0) {
+                fileReadOffset_ -= (std::ftell(mpp_->fileHandle) - readPos);
+                std::fseek(mpp_->fileHandle, readPos, SEEK_SET);
+                mpp_->eos = false;
+            }
+            while (true) {
+                MppFrame frame = nullptr;
+                MPP_RET ret = mpp_->mpi->decode_get_frame(mpp_->ctx, &frame);
+                if (ret != MPP_OK || !frame) break;
+                bool eos = mpp_frame_get_eos(frame);
+                mpp_frame_deinit(&frame);
+                if (eos) goto handle_eos;
+            }
+            continue;
+        }
+
         mpp_packet_destroy(packet);
         pendingBufs_.clear();
 
-        if (putRet != MPP_OK && putRet != MPP_ERR_BUFFER_FULL) {
+        if (putRet != MPP_OK) {
             if (mpp_->eos) break;
             continue;
         }

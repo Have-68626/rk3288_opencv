@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <sstream>
 #include <iomanip>
+#include <atomic>
 #include <ctime>
 #include <random>
 
@@ -75,20 +76,14 @@ std::string EventManager::formatEventJson(const AppEvent& event) {
 }
 
 std::string EventManager::generateUniqueId() {
-    static thread_local std::random_device rd;
-    static thread_local std::mt19937 gen(rd());
+    static thread_local std::mt19937 gen(std::random_device{}());
     static thread_local std::uniform_int_distribution<uint32_t> dis;
+    static std::atomic<uint32_t> s_counter{0};
     static const char hex_chars[] = "0123456789abcdef";
 
-    /*
-     * [Performance Optimization - generateUniqueId]
-     * Why: Replaced 8 loop iterations with 8 independent dis(gen) calls to a single uint32_t random generation,
-     *      reducing std::mt19937 overhead by 8x. Also replaced string concatenation with direct buffer writes.
-     * Impact: Reduced Event ID generation time by > 50%.
-     * Rollback: Revert to 8 separate 0-15 random generations and string operator+=.
-     */
+    // Combine random 32-bit with atomic counter to reduce collision probability
+    uint32_t v = dis(gen) ^ s_counter.fetch_add(1, std::memory_order_relaxed);
     std::string uuid(8, '0');
-    uint32_t v = dis(gen);
     for (int i = 0; i < 8; ++i) {
         uuid[i] = hex_chars[v & 0x0f];
         v >>= 4;

@@ -295,12 +295,12 @@ bool VideoManager::open(const std::string& filePath) {
             std::vector<char> buffer;
             buffer.reserve(static_cast<size_t>(size));
             const size_t chunkSize = 1024 * 1024; // 1MB chunks
-            char chunk[1024 * 1024];
+            auto chunk = std::make_unique<char[]>(chunkSize);
             while (file) {
-                file.read(chunk, chunkSize);
+                file.read(chunk.get(), chunkSize);
                 std::streamsize count = file.gcount();
                 if (count > 0) {
-                    buffer.insert(buffer.end(), chunk, chunk + count);
+                    buffer.insert(buffer.end(), chunk.get(), chunk.get() + count);
                 }
             }
             
@@ -557,6 +557,11 @@ void VideoManager::captureLoop() {
     int consecutiveReadFailures = 0;
     constexpr int kMaxConsecutiveReadFailures = 300;  // ~3s at 10ms sleep
     while (isRunning) {
+        // HR-63: check external cancellation request
+        if (cancelToken && cancelToken->load()) {
+            isRunning = false;
+            break;
+        }
         // MPP hardware decoding branch (mock mode video files)
         if (isMockMode && useMppDecode && mppDecoder) {
             if (mppDecoder->read(tempFrame)) {

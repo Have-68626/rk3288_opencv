@@ -57,26 +57,33 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
 
     uint64_t bitlen = 0;
     uint8_t data[64];
-    while (file.read(reinterpret_cast<char*>(data), 64)) {
+    // Read in 64KB chunks, process 64-byte blocks (HR-62)
+    uint8_t readBuf[65536];
+    while (file.read(reinterpret_cast<char*>(readBuf), sizeof(readBuf))) {
+        std::size_t got = static_cast<std::size_t>(file.gcount());
+        for (std::size_t j = 0; j + 64 <= got; j += 64) {
+            sha256_transform(state, readBuf + j);
+            bitlen += 512;
+        }
+    }
+    // Final partial block
+    {
+        std::size_t count = static_cast<std::size_t>(file.gcount());
+        bitlen += count * 8;
+        if (count > 0) std::memcpy(data, readBuf, count);
+        data[count] = 0x80;
+        if (count < 56) {
+            std::memset(data + count + 1, 0, 56 - (count + 1));
+        } else {
+            std::memset(data + count + 1, 0, 64 - (count + 1));
+            sha256_transform(state, data);
+            std::memset(data, 0, 56);
+        }
+        for (std::size_t i = 0; i < 8; ++i) {
+            data[63 - i] = static_cast<uint8_t>(bitlen >> (i * 8));
+        }
         sha256_transform(state, data);
-        bitlen += 512;
     }
-
-    size_t count = file.gcount();
-    bitlen += count * 8;
-    data[count] = 0x80;
-    if (count < 56) {
-        std::memset(data + count + 1, 0, 56 - (count + 1));
-    } else {
-        std::memset(data + count + 1, 0, 64 - (count + 1));
-        sha256_transform(state, data);
-        std::memset(data, 0, 56);
-    }
-    
-    for (size_t i = 0; i < 8; ++i) {
-        data[63 - i] = static_cast<uint8_t>(bitlen >> (i * 8));
-    }
-    sha256_transform(state, data);
 
     std::ostringstream oss;
     for (int i = 0; i < 8; ++i) {

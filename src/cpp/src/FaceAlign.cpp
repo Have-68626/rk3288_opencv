@@ -12,6 +12,7 @@ namespace {
 
 static cv::Rect clampRectToImage(const cv::Rect2f& r, const cv::Size& sz) {
     if (sz.width <= 0 || sz.height <= 0) return {};
+    if (!std::isfinite(r.x) || !std::isfinite(r.y) || !std::isfinite(r.width) || !std::isfinite(r.height)) return {};
     float x = std::max(0.0f, r.x);
     float y = std::max(0.0f, r.y);
     float w = std::max(0.0f, r.width);
