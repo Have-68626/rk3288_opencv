@@ -161,11 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-38 | 构建 | `CMakeLists.txt:305` | `file(GLOB_RECURSE)` | ✅ 已修 |
 | HR-39 | BioAuth | `BioAuth.cpp:95,183` | ROI 无边界限制 | ✅ 已修 |
 | HR-40 | BioAuth | `BioAuth.cpp:72,129` | `detectMultiScale` 魔数 | ✅ 已修 |
-| HR-41 | MotionDetector | `MotionDetector.cpp:16` | 假设 BGR 输入 |
-| HR-42 | 构建 | `app/build.gradle` | 版本硬编码无 catalog |
-| HR-43 | 构建 | `gradle.properties:19` | 单线程 workers |
-| HR-44 | 脚本 | `run-web-e2e.ps1:31` | Vite 无就绪检查 |
-| HR-45 | 脚本 | `quantize_ncnn_int8.py:61` | 硬编码回退路径 |
+| HR-41 | MotionDetector | `MotionDetector.cpp:16` | 假设 BGR 输入 | ✅ 已修 |
+| HR-42 | 构建 | `app/build.gradle` | 版本硬编码无 catalog | ✅ 已修 |
+| HR-43 | 构建 | `gradle.properties:19` | 单线程 workers | ✅ 已修 |
+| HR-44 | 脚本 | `run-web-e2e.ps1:31` | Vite 无就绪检查 | ✅ 已修 |
+| HR-45 | 脚本 | `quantize_ncnn_int8.py:61` | 硬编码回退路径 | ✅ 已修 |
 | HR-46 | 脚本 | `build_android.bat:24` | NDK 版本硬编码 |
 | HR-47 | FaceInfer | `FaceInferencePipeline.cpp:112` | 审计文件毫秒碰撞 |
 | HR-48 | FaceInfer | `FaceInferStages.cpp:232,362` | INT8→FP32 降级无日志 |

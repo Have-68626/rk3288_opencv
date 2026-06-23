@@ -55,15 +55,21 @@ def find_tool(name: str) -> str:
     path = which(name)
     if path:
         return path
-    candidates = [
+
+    ncnn_root = os.environ.get("RK_NCNN_ROOT") or os.environ.get("NCNN_ROOT") or "C:/ncnn"
+    candidates: list[str] = [
         f"/usr/bin/{name}",
         f"/usr/local/bin/{name}",
-        f"C:/ncnn/tools/quantize/{name}.exe",
     ]
+    if os.name == "nt":
+        candidates.append(f"{ncnn_root}/tools/quantize/{name}.exe")
+        candidates.append(f"{ncnn_root}/bin/{name}.exe")
+        candidates.append(f"{ncnn_root}/{name}.exe")
     for c in candidates:
         if os.path.isfile(c):
             return c
-    print(f"错误：未找到 {name}，请确保已安装 ncnn 并将 bin/ 加入 PATH", file=sys.stderr)
+    print(f"错误：未找到 {name}，请确保已安装 ncnn 并将 bin/ 加入 PATH"
+          f"（或设置 NCNN_ROOT/RK_NCNN_ROOT 环境变量）", file=sys.stderr)
     sys.exit(1)
 
 

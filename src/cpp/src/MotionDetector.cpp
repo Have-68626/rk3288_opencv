@@ -9,7 +9,15 @@ bool MotionDetector::detect(const cv::Mat& currentFrame) {
     if (currentFrame.empty()) return false;
 
     cv::Mat gray, blurred;
-    cv::cvtColor(currentFrame, gray, cv::COLOR_BGR2GRAY);
+    if (currentFrame.channels() == 3) {
+        cv::cvtColor(currentFrame, gray, cv::COLOR_BGR2GRAY);
+    } else if (currentFrame.channels() == 4) {
+        cv::cvtColor(currentFrame, gray, cv::COLOR_BGRA2GRAY);
+    } else if (currentFrame.channels() == 1) {
+        gray = currentFrame;
+    } else {
+        return false;
+    }
     cv::GaussianBlur(gray, blurred, cv::Size(21, 21), 0);
 
     {

@@ -2,9 +2,15 @@ plugins {
     id 'com.android.application'
 }
 
+// Helper: read integer property from gradle.properties with fallback
+def intProp(String name, int fallback) {
+    def v = project.findProperty(name)
+    return v != null ? (v as Integer) : fallback
+}
+
 android {
     namespace 'com.example.rk3288_opencv'
-    compileSdk 34
+    compileSdk intProp('rk.compileSdk', 34)
 
     def skipOpencv = (project.findProperty("RK_SKIP_OPENCV") ?: System.getenv("RK_SKIP_OPENCV"))?.toString()?.toBoolean() ?: false
     def opencvRoot = (project.findProperty("OPENCV_ROOT") ?: System.getenv("OPENCV_ROOT"))
@@ -36,10 +42,10 @@ android {
 
     defaultConfig {
         applicationId "com.example.rk3288_opencv"
-        minSdk 21 // Android 5.0+ (RK3288 常用版本)
-        targetSdk 34
-        versionCode 3
-        versionName "v0.1beta1"
+        minSdk intProp('rk.minSdk', 21)
+        targetSdk intProp('rk.targetSdk', 34)
+        versionCode intProp('rk.versionCode', 3)
+        versionName project.findProperty('rk.versionName') ?: "v0.1beta1"
 
         externalNativeBuild {
             cmake {
