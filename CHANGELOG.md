@@ -62,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
 
-### Code Review (2026-06-23, Round 11) — 全部未决问题
-> 第 11 轮审查覆盖 Windows 端 15 个未审源文件（WinConfig、StructuredLogger、DnnSsdFaceDetector、HttpFacesPoster、FacesJson 等）。发现 6 项新问题。
+### Code Review (2026-06-23, Round 12) — 全部未决问题
+> 第 12 轮审查覆盖 CLI 入口点、legacy Win32 UI、opencv_verify_cli、test_win 文件。发现 3 项新问题。
 
 #### ✅ 已修复确认
-> Round 1-8 发现的 132 项问题已全部修复。Round 9-11 发现 15 项新问题，见下方 🔴 未决问题。
+> Round 1-8 发现的 132 项问题已全部修复。Round 9-12 发现 18 项新问题，见下方 🔴 未决问题。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -105,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
 
-#### 🔴 未决问题（Round 9-11 — 15 项）
+#### 🔴 未决问题（Round 9-12 — 18 项）
 
 ##### CRITICAL
 | # | 模块 | 文件 | 问题 | 状态 |
@@ -133,6 +133,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | MR-56 | Windows | `DnnSsdFaceDetector.cpp:63` | `Impl*` 使用原始 `new`/`delete`，应改为 `std::unique_ptr` | 🔴 Open |
 | MR-57 | Windows | `FacesJson.cpp:85,88,115` | `%g` 格式化可输出 `NaN`/`Inf` 到 JSON 中（同 HR-80） | 🔴 Open |
 | MR-58 | Windows | `HttpFacesPoster.cpp:67` | C 风格转型 `(LPVOID)body.data()`，建议 `reinterpret_cast` | 🔴 Open |
+| MR-59 | CLI | `main.cpp:489-543` | `loadGalleryDir` 与 `FaceInferStages.cpp:92-146` 逐字重复 55 行 | 🔴 Open |
+| MR-60 | CLI | `main.cpp:561-568` | `percentileNearestRank` 与 `D3D11Renderer.cpp:84-92` 重复 | 🔴 Open |
+| MR-61 | CLI | `main.cpp:1279` | `catch(...)` 中 `cameraId` 解析失败未记录原始输入值 | 🔴 Open |
 - **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复
 - **🟡 Stale** — 已知但不紧急 | **🟡 Monitoring** — 持续观察
 - **⏸️ Deferred** — 推迟评估
