@@ -62,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
 
-### Code Review (2026-06-23, Round 7 / Consolidated) — 修复记录 + 全部未决问题
-> 7 轮审查累计覆盖项目全量源代码。Round 7（b1bd373）为文档维护审计，未发现实质性新缺陷。
+### Code Review (2026-06-23, Round 9) — 全部未决问题
+> 第 9 轮审查聚焦新变更（cameraId JNI、新 Web 文件、测试文件注册）。发现 3 项新问题。
 
 #### ✅ 已修复确认
-> 全部 8 轮审查发现的 132 项问题已全部修复，无未决问题。CRITICAL (28项) + HIGH (69项) + MEDIUM (35项) 已在 Round 4-8 的 40 个 fix commits 中修复。
+> Round 1-8 发现的 132 项问题已全部修复。Round 9 发现 3 项新问题，见下方 🔴 未决问题。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -104,6 +104,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-07 | `processFrame` 误导性可变引用 | `ba1ac45` + `740401f` | R3 |
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
+
+#### 🔴 未决问题（Round 9 — 3 项）
+
+##### HIGH
+| # | 模块 | 文件 | 问题 | 状态 |
+|---|------|------|------|------|
+| HR-82 | Web | `PreviewPage.tsx:151` | MJPEG 预览 URL 硬编码 `/api/v1/preview.mjpeg`，未使用 `VITE_API_BASE` | 🔴 Open |
+
+##### MEDIUM
+| # | 模块 | 文件 | 问题 | 状态 |
+|---|------|------|------|------|
+| MR-49 | JNI | `native-lib.cpp:272` | `nativeInit` 中 `GetStringUTFChars` 调用无 `ExceptionCheck` 保护 | 🔴 Open |
+| MR-50 | 测试 | `tests/cpp/test_resource_cleanup.cpp` | 3 个测试函数未注册到任何 `*_main.cpp` 测试套件 → 死代码 | 🔴 Open |
 
 #### Findings Lifecycle Rules
 - **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复
