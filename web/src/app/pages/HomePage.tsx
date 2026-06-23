@@ -1,3 +1,4 @@
+import { ReloadOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Descriptions, Space, Typography } from 'antd'
 
 import { useAppStore } from '../state/AppStore'
@@ -30,6 +31,7 @@ export function HomePage() {
             <Button
               size="small"
               type="primary"
+              icon={<ReloadOutlined />}
               onClick={handleRefresh}
               loading={isLoading}
             >
@@ -69,6 +71,7 @@ export function HomePage() {
         title="后端 settings（只读摘要）"
         extra={
           <Button
+            icon={<ReloadOutlined />}
             onClick={handleRefresh}
             loading={isLoading}
           >

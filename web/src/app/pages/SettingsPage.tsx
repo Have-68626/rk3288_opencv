@@ -1,4 +1,5 @@
-﻿import {
+﻿import { KeyOutlined, ReloadOutlined, SaveOutlined, UndoOutlined } from '@ant-design/icons'
+import {
   Alert,
   Button,
   Card,
@@ -255,7 +256,7 @@ export function SettingsPage() {
       <Card
         title="后端设置（/api/v1/settings）"
         extra={
-          <Button onClick={() => refreshServerSettings()} loading={serverSettings.status === 'loading'}>
+          <Button icon={<ReloadOutlined />} onClick={() => refreshServerSettings()} loading={serverSettings.status === 'loading'}>
             重新拉取
           </Button>
         }
@@ -520,6 +521,7 @@ export function SettingsPage() {
                   <Button
                     type="primary"
                     htmlType="submit"
+                    icon={<SaveOutlined />}
                     loading={serverSettings.status === 'loading'}
                     disabled={!serverSettings.data}
                     style={{ pointerEvents: !serverSettings.data ? 'none' : 'auto' }}
@@ -551,6 +553,7 @@ export function SettingsPage() {
                     disabled={!serverSettings.data}
                   >
                     <Button
+                      icon={<KeyOutlined />}
                       loading={isRotatingKey}
                       disabled={!serverSettings.data}
                       danger
@@ -575,6 +578,7 @@ export function SettingsPage() {
                     disabled={!serverBaseline}
                   >
                     <Button
+                      icon={<UndoOutlined />}
                       disabled={!serverBaseline}
                       style={{ pointerEvents: !serverBaseline ? 'none' : 'auto' }}
                     >

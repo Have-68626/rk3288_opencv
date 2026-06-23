@@ -1,4 +1,4 @@
-import { AppstoreOutlined, SettingOutlined, VideoCameraOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, ReloadOutlined, SettingOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import { Badge, Button, Layout, Menu, Space, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -70,6 +70,7 @@ export function MainLayout() {
               ) : null}
             </Space>
             <Button
+              icon={<ReloadOutlined />}
               onClick={() => refreshServerSettings()}
               loading={serverSettings.status === 'loading'}
             >

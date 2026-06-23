@@ -1,4 +1,4 @@
-import { ReloadOutlined } from '@ant-design/icons'
+import { DeleteOutlined, ReloadOutlined, SafetyCertificateOutlined, UserAddOutlined } from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -172,7 +172,7 @@ export function PreviewPage() {
             message="摄像头列表不可用"
             description={cams.message}
             action={
-              <Button size="small" onClick={() => setCamRetry((v) => v + 1)}>
+              <Button size="small" icon={<ReloadOutlined />} onClick={() => setCamRetry((v) => v + 1)}>
                 重试
               </Button>
             }
@@ -354,6 +354,7 @@ export function PreviewPage() {
               <span style={{ display: 'inline-block' }} tabIndex={!personId.trim() ? 0 : undefined} role={!personId.trim() ? 'button' : undefined} aria-disabled={!personId.trim() ? true : undefined} aria-label="注册">
                 <Button
                   type="primary"
+                  icon={<UserAddOutlined />}
                   onClick={async () => {
                     try {
                       setIsEnrolling(true)
@@ -392,11 +393,12 @@ export function PreviewPage() {
               cancelText="取消"
               okButtonProps={{ danger: true, loading: isClearing }}
             >
-              <Button danger loading={isClearing}>
+              <Button danger icon={<DeleteOutlined />} loading={isClearing}>
                 清空库
               </Button>
             </Popconfirm>
             <Button
+              icon={<SafetyCertificateOutlined />}
               onClick={async () => {
                 try {
                   setIsOpeningPrivacy(true)
