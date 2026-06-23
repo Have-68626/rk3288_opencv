@@ -85,14 +85,14 @@ final class MonitoringCoordinator {
     static final class StartMonitoringFlow implements Effect {
         final boolean wantCamera;
         final boolean wantMock;
-        final int selectedCameraId;
+        final String selectedCameraId;
         final String mockFilePathOrNull;
         final CaptureScheme schemeOrNull;
 
         StartMonitoringFlow(
                 boolean wantCamera,
                 boolean wantMock,
-                int selectedCameraId,
+                String selectedCameraId,
                 String mockFilePathOrNull,
                 CaptureScheme schemeOrNull
         ) {
@@ -124,22 +124,22 @@ final class MonitoringCoordinator {
     }
 
     static final class Inputs {
-        final int selectedCameraId;
+        final String selectedCameraId;
         final String mockFilePathOrNull;
         final boolean runtimeGranted;
 
-        Inputs(int selectedCameraId, String mockFilePathOrNull, boolean runtimeGranted) {
+        Inputs(String selectedCameraId, String mockFilePathOrNull, boolean runtimeGranted) {
             this.selectedCameraId = selectedCameraId;
             this.mockFilePathOrNull = mockFilePathOrNull;
             this.runtimeGranted = runtimeGranted;
         }
 
         boolean wantCamera() {
-            return selectedCameraId >= 0 && mockFilePathOrNull == null;
+            return selectedCameraId != null && mockFilePathOrNull == null;
         }
 
         boolean wantMock() {
-            return selectedCameraId == -1 && mockFilePathOrNull != null;
+            return selectedCameraId == null && mockFilePathOrNull != null;
         }
 
         boolean allowMockEvenWithoutPermission() {

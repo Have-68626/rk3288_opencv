@@ -38,6 +38,13 @@ function log(
 
 type CacheEntry = { expiresAt: number; json: unknown }
 const memoryCache = new Map<string, CacheEntry>()
+const kMaxCacheEntries = 50
+function pruneCache() {
+  if (memoryCache.size <= kMaxCacheEntries) return
+  const entries = [...memoryCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+  const toRemove = entries.slice(0, entries.length - kMaxCacheEntries)
+  for (const [key] of toRemove) memoryCache.delete(key)
+}
 
 function getFromCache(strategy: CacheStrategy, key: string): unknown | undefined {
   const now = Date.now()
@@ -75,6 +82,7 @@ function putToCache(strategy: CacheStrategy, key: string, json: unknown) {
   const now = Date.now()
   if (strategy === 'memory-30s') {
     memoryCache.set(key, { expiresAt: now + 30_000, json })
+    pruneCache()
   } else if (strategy === 'local-5m') {
     try {
       localStorage.setItem(

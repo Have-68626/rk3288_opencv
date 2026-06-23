@@ -566,11 +566,15 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(
     if (!g_engine->getRenderFrame(frame, seq)) {
         return false;
     }
-    thread_local uint64_t lastSeq = static_cast<uint64_t>(-1);
-    if (seq == lastSeq) {
-        return false;
+    {
+        static std::mutex seqMu;
+        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
+        std::lock_guard<std::mutex> lock(seqMu);
+        if (seq == lastSeqGlob) {
+            return false;
+        }
+        lastSeqGlob = seq;
     }
-    lastSeq = seq;
 
     // Lock Bitmap pixels
     AndroidBitmapInfo info;
@@ -641,22 +645,26 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
     }
     if (frame.empty()) return JNI_FALSE;
 
-    thread_local uint64_t lastGen = static_cast<uint64_t>(-1);
-    thread_local uint64_t lastSeq = static_cast<uint64_t>(-1);
-    thread_local int lastW = 0;
-    thread_local int lastH = 0;
-    thread_local int lastFormat = 0;
-    if (gen != lastGen) {
-        lastGen = gen;
-        lastSeq = static_cast<uint64_t>(-1);
-        lastW = 0;
-        lastH = 0;
-        lastFormat = 0;
+    {
+        static std::mutex seqMu;
+        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
+        static int lastGenGlob = -1;
+        static int lastWGlob = 0;
+        static int lastHGlob = 0;
+        static int lastFormatGlob = 0;
+        std::lock_guard<std::mutex> lock(seqMu);
+        if (gen != lastGenGlob) {
+            lastGenGlob = gen;
+            lastSeqGlob = static_cast<uint64_t>(-1);
+            lastWGlob = 0;
+            lastHGlob = 0;
+            lastFormatGlob = 0;
+        }
+        if (seq == lastSeqGlob) {
+            return JNI_TRUE;
+        }
+        lastSeqGlob = seq;
     }
-    if (seq == lastSeq) {
-        return JNI_TRUE;
-    }
-    lastSeq = seq;
 
     const int w = frame.cols;
     const int h = frame.rows;

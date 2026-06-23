@@ -506,7 +506,7 @@ int Engine::getRecognitionIntervalMs() const {
     return recIntervalMs.load();
 }
 
-bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
+bool Engine::initCommon(const std::string& cascadePath, const std::string& storagePath) {
     if (initialized_.exchange(true)) {
         rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
         return true;
@@ -520,26 +520,23 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
     }
     this->storagePath = base + "cache/";
 
-    // 1. Ensure storage
     if (!Storage::ensureDirectory(this->storagePath)) {
         std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
-    
-    // 2. Cleanup old data
     Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
-
-    // 3. Init BioAuth
     if (!bioAuth->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
         return false;
     }
+    return true;
+}
 
+bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
+    if (!initCommon(cascadePath, storagePath)) return false;
     if (cameraId >= 0) {
-        if (initCancelRequested.load()) {
-            return false;
-        }
+        if (initCancelRequested.load()) return false;
         if (!videoManager->open(cameraId)) {
             std::cerr << "Failed to open camera " << cameraId << "." << std::endl;
             rklog::logError("Engine", __func__, "Failed to open camera");
@@ -548,45 +545,13 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
     } else {
         rklog::logInfo("Engine", __func__, "cameraId<0：跳过 VideoManager 相机打开（预期用于外部帧输入）");
     }
-
     performAccelSelfCheck();
     return true;
 }
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
-    if (initialized_.exchange(true)) {
-        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
-        return true;
-    }
-    RKLOG_ENTER("Engine");
-    initCancelRequested.store(false);
-    videoManager->setCancelToken(&initCancelRequested);
-    std::string base = storagePath;
-    if (!base.empty() && base.back() != '/' && base.back() != '\\') {
-        base.append("/");
-    }
-    this->storagePath = base + "cache/";
-
-    // 1. Ensure storage
-    if (!Storage::ensureDirectory(this->storagePath)) {
-        std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
-        rklog::logError("Engine", __func__, "Failed to init storage");
-        return false;
-    }
-    
-    // 2. Cleanup old data
-    Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
-
-    // 3. Init BioAuth
-    if (!bioAuth->initialize(cascadePath)) {
-        rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
-        return false;
-    }
-
-    // 4. Init Mock Source
-    if (initCancelRequested.load()) {
-        return false;
-    }
+    if (!initCommon(cascadePath, storagePath)) return false;
+    if (initCancelRequested.load()) return false;
     if (!videoManager->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager->getLastMockRejectReason());
@@ -596,7 +561,6 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         videoManager->close();
         return false;
     }
-
     performAccelSelfCheck();
     return true;
 }
@@ -1284,7 +1248,11 @@ void Engine::performAccelSelfCheck() {
         try {
             cv::ocl::Device dev = cv::ocl::Device::getDefault();
             oclEvidence += " device=" + dev.name() + " vendor=" + dev.vendorName();
-        } catch (...) {}
+        } catch (const std::exception& e) {
+            rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常: " + std::string(e.what()));
+        } catch (...) {
+            rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常 (unknown)");
+        }
     }
     logAccelSelfCheckStatus({
         "opencl",

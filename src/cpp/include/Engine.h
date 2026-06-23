@@ -119,6 +119,8 @@ public:
     int getRecognitionIntervalMs() const;
 
 private:
+    /** Shared by both initialize() overloads: storage, cleanup, BioAuth */
+    bool initCommon(const std::string& cascadePath, const std::string& storagePath);
     void processFrame(const cv::Mat& frame, double decodeMs);
     void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
     void performAccelSelfCheck();
