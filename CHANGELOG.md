@@ -62,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
 
-### Code Review (2026-06-23, Round 13) — 全部未决问题
-> 第 13 轮审查覆盖剩余 Windows 头文件 (26个)、tests/win/、CLI 工具等 20+ 文件。累计覆盖率约 95%。发现 2 项新问题。
+### Code Review (2026-06-23, Round 14) — 全部未决问题
+> 第 14 轮审查覆盖最后 13 个未审文件，累计覆盖率达 100%。发现 2 项新问题。
 
 #### ✅ 已修复确认
-> Round 1-8 发现的 132 项问题已全部修复。Round 9-13 发现 20 项新问题，见下方 🔴 未决问题。
+> Round 1-8 发现的 132 项问题已全部修复。Round 9-14 发现 22 项新问题，见下方 🔴 未决问题。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -105,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
 
-#### 🔴 未决问题（Round 9-13 — 20 项）
+#### 🔴 未决问题（Round 9-14 — 22 项）
 
 ##### CRITICAL
 | # | 模块 | 文件 | 问题 | 状态 |
@@ -137,7 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | MR-59 | CLI | `main.cpp:489-543` | `loadGalleryDir` 与 `FaceInferStages.cpp:92-146` 逐字重复 55 行 | 🔴 Open |
 | MR-60 | CLI | `main.cpp:561-568` | `percentileNearestRank` 与 `D3D11Renderer.cpp:84-92` 重复 | 🔴 Open |
 | MR-61 | CLI | `main.cpp:1279` | `catch(...)` 中 `cameraId` 解析失败未记录原始输入值 | 🔴 Open |
-- **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复
+| MR-62 | 推理管线 | `FaceInferencePipeline.cpp:71,85` | `errorCodeForStage` 函数在 `#if RK_CPP_HAS_OPENCV` 分支中重复定义 15 行 | 🔴 Open |
+| MR-63 | Windows | `AbcTestRunner.cpp:44` | 原始 WinSock socket 无 RAII 封装，多返回路径可能遗漏 `closesocket` | 🔴 Open |
+#### Findings Lifecycle Rules
 - **🟡 Stale** — 已知但不紧急 | **🟡 Monitoring** — 持续观察
 - **⏸️ Deferred** — 推迟评估
 
