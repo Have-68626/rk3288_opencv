@@ -140,11 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-13 | Web | `AppStore.tsx:71` | 状态层耦合 UI toast | ✅ 已修 |
 | HR-14 | Web | 全局 | `(e as Error)?.message` 模式 15 次 | ✅ 已修 |
 | HR-15 | Web | `SplashPage.tsx:29` | useEffect 缺依赖 | ✅ 已修 |
-| HR-21 | Windows | `MfCamera.cpp:292` | 负 stride 溢出 |
-| HR-22 | Windows | `MfCamera.cpp:224` | IMFMediaSource 打开失败未 Shutdown |
-| HR-23 | Windows | `OverlayRenderer.cpp:51,64` | 每帧 6MB clone |
-| HR-24 | Windows | `D3D11Renderer.cpp:732` | `Map()` 失败无设备恢复 |
-| HR-25 | Windows | `FramePipeline.cpp:533` | 重连参数陈旧 |
+| HR-21 | Windows | `MfCamera.cpp:292` | 负 stride 溢出 | ✅ 已修 |
+| HR-22 | Windows | `MfCamera.cpp:224` | IMFMediaSource 打开失败未 Shutdown | ✅ 已修 |
+| HR-23 | Windows | `OverlayRenderer.cpp:51,64` | 每帧 6MB clone | ✅ 已修 |
+| HR-24 | Windows | `D3D11Renderer.cpp:732` | `Map()` 失败无设备恢复 | ✅ 已修 |
+| HR-25 | Windows | `FramePipeline.cpp:533` | 重连参数陈旧 | ✅ 已修 |
 | HR-26 | 安全 | `WinJsonConfig.cpp:30` | `readFileAll` 无大小限制 |
 | HR-27 | 安全 | `JsonLite.cpp:414` | `parseJson` 无长度限制 |
 | HR-28 | 安全 | `WinJsonConfig.cpp:1093` | 备份无轮转 |

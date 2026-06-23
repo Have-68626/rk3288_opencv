@@ -48,20 +48,17 @@ void drawFacesOverlay(cv::Mat& bgr, const std::vector<FaceMatch>& faces) {
     if (bgr.empty()) return;
     if (faces.empty()) return;
 
-    cv::Mat overlay = bgr.clone();
     const cv::Scalar white(255, 255, 255);
     const int thickness = 2;
     const int radius = 5;
 
     for (const auto& f : faces) {
-        drawRoundedRect(overlay, f.rect, radius, thickness, white);
+        drawRoundedRect(bgr, f.rect, radius, thickness, white);
         const std::string text = confidenceToPercentText(f.confidence);
         const int x = std::max(0, f.rect.x + radius);
         const int y = std::max(0, f.rect.y + radius + 18);
-        cv::putText(overlay, text, cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.6, white, 2, cv::LINE_AA);
+        cv::putText(bgr, text, cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.6, white, 2, cv::LINE_AA);
     }
-
-    cv::addWeighted(overlay, 0.70, bgr, 0.30, 0.0, bgr);
 }
 
 }  // namespace rk_win

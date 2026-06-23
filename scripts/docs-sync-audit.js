@@ -34,6 +34,8 @@ function parseArgs(argv) {
     runMarkdownlintCli2: false,
     skipLinks: false,
     linkConcurrency: 6,
+    linkCache: "",
+    linkCacheTtl: 86400,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
@@ -53,6 +55,12 @@ function parseArgs(argv) {
     else if (a === "--skip-links") args.skipLinks = true;
     else if (a === "--link-concurrency" && argv[i + 1]) {
       args.linkConcurrency = Math.max(1, Number(argv[i + 1]) || 1);
+      i += 1;
+    } else if (a === "--link-cache" && argv[i + 1]) {
+      args.linkCache = argv[i + 1];
+      i += 1;
+    } else if (a === "--link-cache-ttl" && argv[i + 1]) {
+      args.linkCacheTtl = Math.max(0, Number(argv[i + 1]) || 86400);
       i += 1;
     }
   }
@@ -486,6 +494,20 @@ async function checkLinks(urls, concurrency) {
   return results.filter(Boolean);
 }
 
+async function loadLinkCache(cachePath) {
+  try {
+    const data = await fsp.readFile(cachePath, "utf8");
+    const parsed = JSON.parse(data);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch { /* ignore corrupt / missing */ }
+  return {};
+}
+
+async function saveLinkCache(cachePath, cache) {
+  await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+  await fsp.writeFile(cachePath, JSON.stringify(cache, null, 2) + "\n", "utf8");
+}
+
 function parseCrossRefs(md, fromFile) {
   const links = collectMdLinks(md);
   const refs = [];
@@ -598,11 +620,15 @@ function parseConfigItems(text) {
 async function main() {
   const args = parseArgs(process.argv);
   const repoRoot = path.resolve(__dirname, "..");
-  const files = [
+  const allFiles = safeExec(
+    `git ls-files --cached --others --exclude-standard "*.md"`
+  ).split(/\r?\n/).filter(Boolean).map(f => path.resolve(repoRoot, f)).filter(f => fs.existsSync(f));
+  const rootFiles = [
     path.join(repoRoot, "README.md"),
     path.join(repoRoot, "DEVELOP.md"),
     path.join(repoRoot, "docs", "RK3288_CONSTRAINTS.md"),
   ];
+  const files = allFiles.length > 0 ? allFiles : rootFiles;
 
   const branch = getMainBranchName();
   const lastMergeTs = getLastMergeTs(branch);
@@ -617,9 +643,11 @@ async function main() {
     summary: { defectCount: 0, severity: { high: 0, medium: 0, low: 0 } },
   };
 
+  const mdCache = {};
   for (const abs of files) {
     const rel = toPosix(path.relative(repoRoot, abs));
     const md = await fsp.readFile(abs, "utf8");
+    mdCache[rel] = md;
     const headTs = extractHeadUpdateTime(md);
     const gitTs = getGitFileLastCommitTs(abs);
     const usedTs = headTs || gitTs;
@@ -675,9 +703,9 @@ async function main() {
     }
   }
 
-  const readme = await fsp.readFile(files[0], "utf8");
-  const develop = await fsp.readFile(files[1], "utf8");
-  const constraints = await fsp.readFile(files[2], "utf8");
+  const readme = await fsp.readFile(rootFiles[0], "utf8");
+  const develop = await fsp.readFile(rootFiles[1], "utf8");
+  const constraints = await fsp.readFile(rootFiles[2], "utf8");
 
   const readmeReq = [
     { name: "项目简介", anyOf: ["项目简介", "简介", "Overview"] },
@@ -721,20 +749,22 @@ async function main() {
     });
   }
 
-  const crossRefs = [
-    ...parseCrossRefs(readme, "README.md"),
-    ...parseCrossRefs(develop, "DEVELOP.md"),
-    ...parseCrossRefs(constraints, "docs/RK3288_CONSTRAINTS.md"),
-  ];
-  const anchorMap = {
-    "README.md": collectAnchors(readme),
-    "DEVELOP.md": collectAnchors(develop),
-    "docs/RK3288_CONSTRAINTS.md": collectAnchors(constraints),
-  };
+  const crossRefs = [];
+  const anchorMap = {};
+  for (const [rel, md] of Object.entries(mdCache)) {
+    crossRefs.push(...parseCrossRefs(md, rel));
+    anchorMap[rel] = collectAnchors(md);
+  }
+  function normalizeRefPath(raw) {
+    let p = raw.replace(/^\.\//, "").replace(/^\.\.\//, "");
+    const rootFiles = ["README.md", "DEVELOP.md", "AGENTS.md", "CREDITS.md", "CHANGELOG.md"];
+    if (rootFiles.includes(p)) return p;
+    if (p === "RK3288_CONSTRAINTS.md") return "docs/RK3288_CONSTRAINTS.md";
+    if (p.startsWith("docs/")) return p;
+    return p;
+  }
   for (const r of crossRefs) {
-    const to = r.toFile.includes("/") ? r.toFile : r.toFile;
-    const normalizedTo =
-      to === "RK3288_CONSTRAINTS.md" ? "docs/RK3288_CONSTRAINTS.md" : to === "DEVELOP.md" ? "DEVELOP.md" : to === "README.md" ? "README.md" : to;
+    const normalizedTo = normalizeRefPath(r.toFile);
     if (!anchorMap[normalizedTo]) continue;
     if (r.anchor && !anchorMap[normalizedTo].has(r.anchor)) {
       report.defects.push({
@@ -976,8 +1006,36 @@ async function main() {
     report.markdownlintCli2 = { enabled: false, output: "" };
   }
 
-  const urlsAll = Array.from(new Set([...collectMdLinks(readme), ...collectMdLinks(develop), ...collectMdLinks(constraints)]));
-  const linkResults = args.skipLinks ? [] : await checkLinks(urlsAll, args.linkConcurrency);
+  const urlsAll = Array.from(new Set(Object.values(mdCache).flatMap(md => collectMdLinks(md))));
+  let linkResults = [];
+  if (!args.skipLinks) {
+    let linkCache = {};
+    let urlsToCheck = urlsAll;
+    if (args.linkCache) {
+      linkCache = await loadLinkCache(path.resolve(repoRoot, args.linkCache));
+      const now = Date.now() / 1000;
+      const uncached = [];
+      for (const u of urlsAll) {
+        const cached = linkCache[u];
+        if (cached && (now - cached.ts) < args.linkCacheTtl) {
+          if (cached.ok === false) {
+            linkResults.push({ url: u, ok: false, method: "CACHE", status: cached.status || 0, finalUrl: u });
+          }
+          continue;
+        }
+        uncached.push(u);
+      }
+      urlsToCheck = uncached;
+    }
+    const freshResults = urlsToCheck.length > 0 ? await checkLinks(urlsToCheck, args.linkConcurrency) : [];
+    if (args.linkCache && freshResults.length > 0) {
+      for (const r of freshResults) {
+        linkCache[r.url] = { ok: r.ok, ts: Date.now() / 1000, status: r.status, finalUrl: r.finalUrl };
+      }
+      await saveLinkCache(path.resolve(repoRoot, args.linkCache), linkCache);
+    }
+    linkResults = [...linkResults, ...freshResults];
+  }
   report.linkChecks = linkResults;
   for (const r of linkResults) {
     if (!r.ok) {
@@ -987,6 +1045,15 @@ async function main() {
           severity: "low",
           file: "N/A",
           message: `链接无法验证（网络/证书/代理等导致请求失败）：${r.url}（${r.method} final=${r.finalUrl}${r.error ? ` err=${r.error}` : ""}）`,
+        });
+        continue;
+      }
+      if (r.method === "CACHE") {
+        report.defects.push({
+          type: "link",
+          severity: "low",
+          file: "N/A",
+          message: `链接上次检查已失效（缓存）：${r.url}（status=${r.status || 0}）`,
         });
         continue;
       }

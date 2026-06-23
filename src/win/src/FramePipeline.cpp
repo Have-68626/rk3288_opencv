@@ -542,7 +542,16 @@ void FramePipeline::captureLoop() {
             if (consecutiveFail >= 10 && rr.category == ErrorCategory::BackendFailure) {
                 camera_.close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                const auto re = camera_.open(d.deviceId, f.width, f.height, f.fps);
+                CameraDevice dev;
+                CameraFormat fmt;
+                {
+                    std::lock_guard<std::mutex> lock(mu_);
+                    if (activeDeviceIndex_ >= 0 && static_cast<size_t>(activeDeviceIndex_) < devices_.size()) {
+                        dev = devices_[static_cast<size_t>(activeDeviceIndex_)];
+                    }
+                    fmt = desiredFormat_;
+                }
+                const auto re = camera_.open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
                 if (!re.ok) {
                     FrameLogEntry le;
                     le.tsIso8601 = nowIso8601Local();

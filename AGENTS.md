@@ -14,7 +14,7 @@
 - **`OPENCV_ROOT`** must point to OpenCV **source** (not install), set via env or `-D` flag; CMake validates `CMakeLists.txt` inside. **`OPENCV_CONTRIB_ROOT`** is also required (provides `opencv_face` module for `LBPH` recognizer); set both for full builds.
 - **`RK_SKIP_OPENCV=ON`** — build `core_unit_tests` without OpenCV (CI uses this). In Gradle pass as `-PRK_SKIP_OPENCV=true`. Uses mock stubs at `deps/opencv/` for linking.
 - **`RK_ENABLE_NCNN=ON`** — enables ncnn; `RK_NCNN_FETCHCONTENT=ON` for auto-download. Android uses hardcoded paths in `app/build.gradle`.
-- **MSVC** must use `-G "Visual Studio 17 2022" -A x64`; `/utf-8` enforced in CMakeLists.txt.
+- **MSVC** must use `-G "Visual Studio 17 2022" -A x64`; `/utf-8` enforced in CMakeLists.txt. If HDF5 link errors occur, rebuild with `-DBUILD_opencv_hdf=OFF` (x64/arm64 builder mismatch).
 - **Android**: separate `NCNN_DIR_ARMv7`/`NCNN_DIR_ARM64` for per-ABI ncnn paths (hardcoded `D:/ProgramData/NCNN/ncnn-20260113-android-vulkan` in `app/build.gradle`). Default ABIs `armeabi-v7a` + `arm64-v8a` only — pass `-PRK_ENABLE_X86_64=true` for x86_64. Java source/target 11.
 - **FFmpegKit AAR** (`app/libs/ffmpeg-kit.aar`) is optional; RTMP streaming disabled when absent.
 - **RK MPP**: set `RK_MPP_HOME` env or files go to `deps/rk_mpp/` (known path `D:\ProgramData\rkmpp\mpp-1.0.11`). Auto-fallback to CPU on missing headers (`RK_HAVE_MPP=0`).
@@ -87,6 +87,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - **Java source**: `../src/java` (referenced from `app/build.gradle` via `sourceSets.main.java.srcDirs`).
 - **Java unit tests**: `tests/unit/java/` (via `sourceSets.test.java.srcDirs`).
 - **Test fixtures**: `tests/fixtures/mock/` has corrupt/incomplete images for mock preflight guard tests.
+- **CivetWeb** (embedded HTTP server) at `src/win/third_party/civetweb/` — used by Windows local service for REST API + static file hosting; already tracked in repo, no external fetch needed.
 - **OpenCV built as subdirectory**: not via `find_package`; CMakeLists.txt uses `add_subdirectory("${OPENCV_ROOT}" ...)` directly.
 - **libyuv**: auto-fetched via FetchContent on Android (`RK_ENABLE_LIBYUV=ON` by default for Android); host builds default OFF.
 - **Qualcomm SNPE**: optional, falls back to CPU if headers not in `deps/qualcomm_snpe/include` or `$QUALCOMM_HOME`.
@@ -108,7 +109,4 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - UTF-8 encoding enforced throughout (Gradle `options.encoding`, MSVC `/utf-8`)
 - C++17 standard (`CMAKE_CXX_STANDARD 17`)
 - Algorithm-critical logic, JNI boundaries, and hardware-difference handling **must have Chinese comments**
-- No hardcoded secrets/keys in code or logs
-- Branch strategy: `master` (stable), `feature/*`, `hotfix/*`, semantic version tags
-- Release steps: `node scripts/docs-sync-audit.js` → update CHANGELOG.md → tag version
 - Other AI-agent working dirs (`.trae/specs/`, `.Jules/`, `.codegraph/`): scratch history, not authoritative docs

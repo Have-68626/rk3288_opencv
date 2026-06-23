@@ -90,7 +90,7 @@ jobs:
           node-version: "22"
 
       - name: Run Docs Sync Audit
-        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
+        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
 
       - name: Upload Artifacts
         if: always()

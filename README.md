@@ -1,6 +1,6 @@
 # RK3288 机器视觉引擎 (AI Engine)
 
-**更新日期**: 2026-05-18
+**更新日期**: 2026-06-23
 
 ![Platform](https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue)
 ![Language](https://img.shields.io/badge/Language-C%2B%2B17-green)
@@ -131,7 +131,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | P2 | 1:N 搜索 NEON | ✅ `FaceSearchLinearIndex` NEON/SIMD + x86 回退 | ❌ | |
 | — | 加速证据日志输出 | ✅ `Engine::performAccelSelfCheck()` 全加速器覆盖 | ❌ | 日志中已记录启用/回退原因 |
 
-> ⚠️ **关键缺口**：所有加速项均已完成代码实现，但 RK3288 真机实测数据缺失。需在 RK3288 上执行 `inference_bench_cli` 及 `stability_switch_50_adb.ps1`，将结果填入 `docs/acceleration_study.md` 加速机会矩阵。
+> ⚠️ **关键缺口**：所有加速项均已完成代码实现，但 RK3288 真机实测数据缺失。需在 RK3288 上执行 `inference_bench_cli` 及 `stability_switch_50_adb.ps1`，将结果填入 DEVELOP.md 附录 B 加速机会矩阵。
 
 ### 3. 🟡 **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
 

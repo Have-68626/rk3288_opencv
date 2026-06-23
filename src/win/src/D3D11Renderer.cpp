@@ -729,7 +729,15 @@ bool D3D11Renderer::renderFrame(const cv::Mat* bgr) {
         if (!impl_->ensureFrameTexture(bgra.cols, bgra.rows)) return false;
 
         D3D11_MAPPED_SUBRESOURCE ms{};
-        if (FAILED(impl_->context->Map(impl_->frameTex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+        HRESULT mapHr = impl_->context->Map(impl_->frameTex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+        if (FAILED(mapHr)) {
+            if (mapHr == DXGI_ERROR_DEVICE_REMOVED || mapHr == DXGI_ERROR_DEVICE_RESET) {
+                impl_->stats.deviceRemovedCount++;
+                impl_->recreateAll();
+            }
+            impl_->lastError = "Map WriteDiscard 失败";
+            return false;
+        }
         const std::uint8_t* src = bgra.data;
         std::uint8_t* dst = reinterpret_cast<std::uint8_t*>(ms.pData);
         const size_t srcRow = static_cast<size_t>(bgra.cols) * 4;
