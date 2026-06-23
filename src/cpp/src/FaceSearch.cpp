@@ -109,8 +109,9 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
         err = "FaceSearchLinearIndex: dim 不能为 0";
         return false;
     }
-    if (entries.size() > 10000) {
-        err = "FaceSearchLinearIndex: N 超过 10000（当前仅支持线性检索）";
+    static constexpr std::size_t kMaxLinearEntries = 10000;
+    if (entries.size() > kMaxLinearEntries) {
+        err = "FaceSearchLinearIndex: N 超过 " + std::to_string(kMaxLinearEntries) + "（当前仅支持线性检索）";
         return false;
     }
 

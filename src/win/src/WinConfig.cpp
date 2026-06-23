@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <iostream>
 #include <vector>
 
 namespace rk_win {
@@ -21,8 +22,13 @@ constexpr int kInferenceIntervalMaxMs = 500;
 
 std::wstring readIniW(const std::filesystem::path& iniPath, const wchar_t* section, const wchar_t* key, const wchar_t* def) {
 #ifdef _WIN32
-    wchar_t out[4096];
+    wchar_t out[32768];
     DWORD n = GetPrivateProfileStringW(section, key, def, out, static_cast<DWORD>(std::size(out)), iniPath.wstring().c_str());
+    // 若 n == size-1，值可能被截断；日志记录以便排查
+    if (n >= static_cast<DWORD>(std::size(out)) - 1) {
+        std::cerr << "WinConfig: readIniW 缓冲区可能不足, key=" << (key ? "" : "null")
+                  << " n=" << n << " max=" << (std::size(out) - 1) << std::endl;
+    }
     return std::wstring(out, out + n);
 #else
     (void)iniPath;
@@ -53,6 +59,7 @@ std::uint64_t readIniU64(const std::filesystem::path& iniPath, const wchar_t* se
     try {
         return static_cast<std::uint64_t>(std::stoull(s));
     } catch (...) {
+        std::cerr << "WinConfig: readIniU64 解析失败 value='" << s << "'" << std::endl;
         return def;
     }
 }
@@ -63,6 +70,7 @@ double readIniDouble(const std::filesystem::path& iniPath, const wchar_t* sectio
     try {
         return std::stod(s);
     } catch (...) {
+        std::cerr << "WinConfig: readIniDouble 解析失败 value='" << s << "'" << std::endl;
         return def;
     }
 }
