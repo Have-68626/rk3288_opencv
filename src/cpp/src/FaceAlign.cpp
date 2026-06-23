@@ -75,17 +75,14 @@ FaceAlignResult alignFaceForArcFace112(const cv::Mat& bgr, const FaceDetection& 
         return r;
     }
 
-    // 关键路径说明：
-    // - 若有 5 点关键点，优先做仿射对齐到 ArcFace 112x112 参考点（口径固定，便于后续 Android/服务端一致）。
-    // - 关键点不可用/估计失败时，退化为 bbox 裁剪 + resize，保证闭环不断。
-        if (opt.preferKeypoints5 && det.keypoints5.has_value()) {
-            const auto& kps = *det.keypoints5;
-            if (pointsFinite(kps)) {
-                std::array<cv::Point2f, 5> src;
-                std::array<cv::Point2f, 5> dst;
-                for (int i = 0; i < 5; i++) src[static_cast<size_t>(i)] = kps[static_cast<size_t>(i)];
-                const auto ref = arcFace112Ref5();
-                for (int i = 0; i < 5; i++) dst[static_cast<size_t>(i)] = ref[static_cast<size_t>(i)];
+    if (opt.preferKeypoints5 && det.keypoints5.has_value()) {
+        const auto& kps = *det.keypoints5;
+        if (pointsFinite(kps)) {
+            std::array<cv::Point2f, 5> src;
+            std::array<cv::Point2f, 5> dst;
+            for (int i = 0; i < 5; i++) src[static_cast<size_t>(i)] = kps[static_cast<size_t>(i)];
+            const auto ref = arcFace112Ref5();
+            for (int i = 0; i < 5; i++) dst[static_cast<size_t>(i)] = ref[static_cast<size_t>(i)];
 
             cv::Mat M = cv::estimateAffinePartial2D(src, dst, cv::noArray(), cv::LMEDS);
             if (!M.empty() && M.cols == 3 && M.rows == 2) {
