@@ -67,24 +67,11 @@ static std::string buildSimpleErrorJson(bool ok,
     return oss.str();
 }
 
-#if RK_CPP_HAS_OPENCV
 static int errorCodeForStage(const std::string& stage) {
     if (stage == "image_load") return 100;
-    if (stage == "yolo_load") return 200;
-    if (stage == "yolo_detect") return 210;
-    if (stage == "align") return 300;
-    if (stage == "arc_init") return 400;
-    if (stage == "arc_embed") return 410;
-    if (stage == "gallery_load") return 500;
-    if (stage == "search") return 510;
-    if (stage == "exception") return 900;
-    return 1;
-}
-
-#else
-static int errorCodeForStage(const std::string& stage) {
-    if (stage == "image_load") return 100;
+#if !RK_CPP_HAS_OPENCV
     if (stage == "opencv_headers") return 110;
+#endif
     if (stage == "yolo_load") return 200;
     if (stage == "yolo_detect") return 210;
     if (stage == "align") return 300;
@@ -95,7 +82,6 @@ static int errorCodeForStage(const std::string& stage) {
     if (stage == "exception") return 900;
     return 1;
 }
-#endif
 
 }  // namespace
 

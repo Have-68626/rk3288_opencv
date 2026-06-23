@@ -1284,7 +1284,7 @@ int main(int argc, char** argv) {
             // Treat as file path
             inputPath = argv[1];
             useFile = true;
-            std::cout << "Using Input File: " << inputPath << std::endl;
+            std::cout << "cameraId '" << argv[1] << "' is not a number, using as file path: " << inputPath << std::endl;
         }
     }
 
