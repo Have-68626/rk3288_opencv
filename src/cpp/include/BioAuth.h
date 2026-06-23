@@ -35,7 +35,8 @@ public:
      * @param modelPath Path to the trained face recognition model.
      * @return true if initialization successful.
      */
-    bool initialize(const std::string& cascadePath, const std::string& modelPath = "");
+    bool initialize(const std::string& cascadePath, const std::string& modelPath = "",
+                    double scaleFactor = 1.1, int minNeighbors = 3, int minFaceSize = 60);
 
     /**
      * @brief Trains the recognizer with a set of images and labels.
@@ -69,6 +70,9 @@ private:
     static float normalizeLbphConfidence(double distance);
 
     mutable std::mutex mu_;
+    double cascadeScaleFactor_ = 1.1;
+    int cascadeMinNeighbors_ = 3;
+    int cascadeMinFaceSize_ = 60;
     cv::CascadeClassifier faceCascade;
 #ifdef HAS_OPENCV_FACE
     cv::Ptr<cv::face::FaceRecognizer> faceRecognizer;

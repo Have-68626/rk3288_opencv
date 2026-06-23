@@ -100,7 +100,7 @@ struct MfCamera::Impl {
     INT32 stride = 0;
 };
 
-MfCamera::MfCamera() : impl_(new Impl()) {
+MfCamera::MfCamera() : impl_(std::make_unique<Impl>()) {
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
     impl_->started = SUCCEEDED(hr);
 }
@@ -110,7 +110,6 @@ MfCamera::~MfCamera() {
     if (impl_->started) {
         MFShutdown();
     }
-    delete impl_;
 }
 
 std::vector<CameraDevice> MfCamera::enumerateDevices() {

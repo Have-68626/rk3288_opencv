@@ -5,6 +5,7 @@
 #include "StructuredLogger.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -67,7 +68,7 @@ public:
 
 private:
     struct Impl;
-    Impl* impl_;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace rk_win

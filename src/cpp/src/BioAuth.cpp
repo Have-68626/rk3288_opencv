@@ -5,10 +5,7 @@
 #include <iostream>
 
 namespace {
-constexpr double kCascadeScaleFactor = 1.1;
-constexpr int kCascadeMinNeighbors = 3;
 constexpr int kCascadeFlags = 0;
-constexpr int kCascadeMinFaceSize = 60;
 
 cv::Rect clipToImage(const cv::Rect& r, int cols, int rows) {
     return r & cv::Rect(0, 0, cols, rows);
@@ -21,8 +18,12 @@ BioAuth::BioAuth() {
 #endif
 }
 
-bool BioAuth::initialize(const std::string& cascadePath, const std::string& modelPath) {
+bool BioAuth::initialize(const std::string& cascadePath, const std::string& modelPath,
+                         double scaleFactor, int minNeighbors, int minFaceSize) {
     std::lock_guard<std::mutex> lock(mu_);
+    cascadeScaleFactor_ = scaleFactor;
+    cascadeMinNeighbors_ = minNeighbors;
+    cascadeMinFaceSize_ = minFaceSize;
     if (!faceCascade.load(cascadePath)) {
         std::cerr << "Error loading face cascade: " << cascadePath << std::endl;
         return false;
@@ -88,7 +89,7 @@ bool BioAuth::verify(const cv::Mat& frame,
 
     {
         std::lock_guard<std::mutex> lock(mu_);
-        faceCascade.detectMultiScale(gray, faces, kCascadeScaleFactor, kCascadeMinNeighbors, kCascadeFlags, cv::Size(kCascadeMinFaceSize, kCascadeMinFaceSize));
+        faceCascade.detectMultiScale(gray, faces, cascadeScaleFactor_, cascadeMinNeighbors_, kCascadeFlags, cv::Size(cascadeMinFaceSize_, cascadeMinFaceSize_));
     }
 
     if (faces.empty()) {
@@ -142,7 +143,7 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
 
     {
         std::lock_guard<std::mutex> lock(mu_);
-        faceCascade.detectMultiScale(gray, faces, kCascadeScaleFactor, kCascadeMinNeighbors, kCascadeFlags, cv::Size(kCascadeMinFaceSize, kCascadeMinFaceSize));
+        faceCascade.detectMultiScale(gray, faces, cascadeScaleFactor_, cascadeMinNeighbors_, kCascadeFlags, cv::Size(cascadeMinFaceSize_, cascadeMinFaceSize_));
     }
 
     if (faces.empty()) {

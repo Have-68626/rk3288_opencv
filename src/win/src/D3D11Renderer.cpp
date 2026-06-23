@@ -137,6 +137,8 @@ struct D3D11Renderer::Impl {
 
     std::vector<double> frameMs;
     size_t frameMsMax = 4096;
+    size_t writeIdx_ = 0;
+    int samplesSinceStats_ = 0;
 
     bool createDeviceAndFactory() {
         UINT flags = 0;
@@ -492,15 +494,21 @@ float4 ps_main(VSOut i) : SV_Target {
 
     void pushFrameTime(double ms) {
         stats.frameTimes.lastMs = ms;
-        if (frameMs.size() < frameMsMax) frameMs.push_back(ms);
-        else {
-            frameMs.erase(frameMs.begin());
+        if (frameMs.size() < frameMsMax) {
             frameMs.push_back(ms);
+        } else {
+            frameMs[writeIdx_] = ms;
         }
-        auto sorted = sortedCopy(frameMs);
-        stats.frameTimes.p50Ms = percentileFromSorted(sorted, 0.50);
-        stats.frameTimes.p95Ms = percentileFromSorted(sorted, 0.95);
-        stats.frameTimes.p99Ms = percentileFromSorted(sorted, 0.99);
+        writeIdx_ = (writeIdx_ + 1) % frameMsMax;
+        ++samplesSinceStats_;
+        // Update percentile stats every 30 frames instead of every frame (O(N log N) → amortized)
+        if (samplesSinceStats_ >= 30) {
+            samplesSinceStats_ = 0;
+            auto sorted = sortedCopy(frameMs);
+            stats.frameTimes.p50Ms = percentileFromSorted(sorted, 0.50);
+            stats.frameTimes.p95Ms = percentileFromSorted(sorted, 0.95);
+            stats.frameTimes.p99Ms = percentileFromSorted(sorted, 0.99);
+        }
     }
 
     void saveWindowedStyle() {
