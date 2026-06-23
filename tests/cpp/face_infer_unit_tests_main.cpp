@@ -78,6 +78,9 @@ int main() {
         {"int8_mobilefacenet_creates_embedder", test_int8_mobilefacenet_creates_embedder},
         {"int8_precision_detection_iou", test_int8_precision_detection_iou},
         {"int8_precision_arcface_similarity", test_int8_precision_arcface_similarity},
+        {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
+        {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
+        {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

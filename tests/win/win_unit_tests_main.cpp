@@ -31,14 +31,14 @@ bool runAll(const TestCase* cases, int n) {
 
 bool test_lbph_embedder_dim_and_distance();
 bool test_face_metrics_confusion_matrix();
-bool test_http_faces_server_path_validation();
+// test_http_faces_server_path_validation 已在 core_unit_tests 注册,
+// 此处不重复注册, 避免跨测试套件重复执行。
 
 int main() {
     using namespace rk_win_test;
     const TestCase cases[] = {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},
         {"face_metrics_confusion_matrix", test_face_metrics_confusion_matrix},
-        {"http_faces_server_path_validation", test_http_faces_server_path_validation},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
