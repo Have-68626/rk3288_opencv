@@ -6,6 +6,7 @@
 #include "LbphEmbedder.h"
 
 #include "Compat.h"
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -68,7 +69,7 @@ private:
     FaceDatabase db_;
     std::filesystem::path dbPath_;
     int minFaceSizePx_ = 60;
-    double identifyThreshold_ = 55.0;
+    std::atomic<double> identifyThreshold_{55.0};
 };
 
 }  // namespace rk_win

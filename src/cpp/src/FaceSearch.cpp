@@ -102,8 +102,8 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
         return false;
     }
 
-    norms_.clear();
-    norms_.reserve(entries.size());
+    std::vector<float> norms;
+    norms.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); i++) {
         const auto& e = entries[i];
         if (e.id.empty()) {
@@ -120,11 +120,12 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
                 return false;
             }
         }
-        norms_.push_back(l2Norm(e.embedding.data(), dim));
+        norms.push_back(l2Norm(e.embedding.data(), dim));
     }
 
     dim_ = dim;
     entries_ = std::move(entries);
+    norms_ = std::move(norms);
     return true;
 }
 

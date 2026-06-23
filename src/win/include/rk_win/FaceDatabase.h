@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Compat.h"
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,9 +24,10 @@ public:
     std::vector<std::string> listPersonIds() const;
 
     bool updateMean(const std::string& id, const std::vector<float>& embedding);
-    const std::unordered_map<std::string, PersonEntry>& persons() const;
+    std::unordered_map<std::string, PersonEntry> persons() const;
 
 private:
+    mutable std::mutex mu_;
     std::unordered_map<std::string, PersonEntry> persons_;
 };
 

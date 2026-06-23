@@ -173,6 +173,7 @@ bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
                                     const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(key32.data())),
                                     static_cast<ULONG>(key32.size()), 0);
     if (st != 0) {
+        if (!keyObj.empty()) SecureZeroMemory(keyObj.data(), keyObj.size());
         BCryptCloseAlgorithmProvider(hAlg, 0);
         errOut = "BCryptGenerateSymmetricKey failed";
         return false;
@@ -198,6 +199,9 @@ bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
                        0);
 
     BCryptDestroyKey(hKey);
+    if (!keyObj.empty()) {
+        SecureZeroMemory(keyObj.data(), keyObj.size());
+    }
     BCryptCloseAlgorithmProvider(hAlg, 0);
 
     if (st != 0) {
@@ -261,6 +265,7 @@ bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
                                     const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(key32.data())),
                                     static_cast<ULONG>(key32.size()), 0);
     if (st != 0) {
+        if (!keyObj.empty()) SecureZeroMemory(keyObj.data(), keyObj.size());
         BCryptCloseAlgorithmProvider(hAlg, 0);
         errOut = "BCryptGenerateSymmetricKey failed";
         return false;
@@ -287,6 +292,9 @@ bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
                        0);
 
     BCryptDestroyKey(hKey);
+    if (!keyObj.empty()) {
+        SecureZeroMemory(keyObj.data(), keyObj.size());
+    }
     BCryptCloseAlgorithmProvider(hAlg, 0);
 
     if (st != 0) {

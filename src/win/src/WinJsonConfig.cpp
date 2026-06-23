@@ -1360,16 +1360,16 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
 
     std::error_code ec;
     if (!std::filesystem::exists(configPath_)) return true;
-    const auto wt = std::filesystem::last_write_time(configPath_, ec);
-    if (ec) return true;
-
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (lastWriteTime_ == wt) return true;
-    }
 
     std::string txt;
-    if (!readFileAll(configPath_, txt, outErr)) return false;
+    std::filesystem::file_time_type wt;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        wt = std::filesystem::last_write_time(configPath_, ec);
+        if (ec) return true;
+        if (lastWriteTime_ == wt) return true;
+        if (!readFileAll(configPath_, txt, outErr)) return false;
+    }
 
     AppConfig cfg;
     std::string parseErr;
@@ -1408,9 +1408,15 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
     const std::string pretty = buildSettingsJson(cfg, false, true);
     {
         std::lock_guard<std::mutex> lock(mu_);
+        const auto currentWt = std::filesystem::last_write_time(configPath_, ec);
+        if (!ec && currentWt != wt) {
+            // 文件在读取后被再次修改，放弃本次更新以避免覆盖
+            outErr = "配置在读取期间被外部修改，放弃热重载";
+            return false;
+        }
         cfg_ = cfg;
         lastGoodJsonPretty_ = pretty;
-        lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
+        lastWriteTime_ = wt;
     }
     outApplied = true;
     return true;
