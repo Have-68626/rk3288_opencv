@@ -62,11 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/documents/` 目录（重构洞察笔记，已归档）
   - `docs/superpowers/plans/` 目录（AI Agent 执行计划，已归档）
 
-### Code Review (2026-06-23, Round 10) — 全部未决问题
-> 第 10 轮审查覆盖 8 个此前未审核心文件（FaceInferStages、FaceSearch、ArcFaceEmbedder、win_local_service_main 等）。发现 6 项新问题。
+### Code Review (2026-06-23, Round 11) — 全部未决问题
+> 第 11 轮审查覆盖 Windows 端 15 个未审源文件（WinConfig、StructuredLogger、DnnSsdFaceDetector、HttpFacesPoster、FacesJson 等）。发现 6 项新问题。
 
 #### ✅ 已修复确认
-> Round 1-8 发现的 132 项问题已全部修复。Round 9-10 发现 9 项新问题，见下方 🔴 未决问题。
+> Round 1-8 发现的 132 项问题已全部修复。Round 9-11 发现 15 项新问题，见下方 🔴 未决问题。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -105,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
 
-#### 🔴 未决问题（Round 9-10 — 9 项）
+#### 🔴 未决问题（Round 9-11 — 15 项）
 
 ##### CRITICAL
 | # | 模块 | 文件 | 问题 | 状态 |
@@ -127,8 +127,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | MR-50 | 测试 | `tests/cpp/test_resource_cleanup.cpp` | 3 个测试函数未注册到任何 `*_main.cpp` 测试套件 → 死代码 | 🔴 Open |
 | MR-51 | 推理管线 | `FaceInferStages.cpp:178` | `makeFakeEmbedding512ForTest` 公开测试方法在生产代码中 | 🔴 Open |
 | MR-52 | 人脸搜索 | `FaceSearch.cpp:113` | 硬编码魔数 `10000` 作为最大检索条目 | 🔴 Open |
-
-#### Findings Lifecycle Rules
+| MR-53 | 配置 | `WinConfig.cpp:55,66` | `readIniU64`/`readIniDouble` 中 `catch(...)` 静默吞异常，无日志 | 🔴 Open |
+| MR-54 | 配置 | `WinConfig.cpp:24` | `readIniW` 固定 4096 字节缓冲区，长 INI 值静默截断 | 🔴 Open |
+| MR-55 | 日志 | `StructuredLogger.cpp:224`, `EventLogger.cpp:59`, `RenderMetricsLogger.cpp:101` | JSONL 写后无 `flush()`，崩溃时丢失最后一条记录 | 🔴 Open |
+| MR-56 | Windows | `DnnSsdFaceDetector.cpp:63` | `Impl*` 使用原始 `new`/`delete`，应改为 `std::unique_ptr` | 🔴 Open |
+| MR-57 | Windows | `FacesJson.cpp:85,88,115` | `%g` 格式化可输出 `NaN`/`Inf` 到 JSON 中（同 HR-80） | 🔴 Open |
+| MR-58 | Windows | `HttpFacesPoster.cpp:67` | C 风格转型 `(LPVOID)body.data()`，建议 `reinterpret_cast` | 🔴 Open |
 - **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复
 - **🟡 Stale** — 已知但不紧急 | **🟡 Monitoring** — 持续观察
 - **⏸️ Deferred** — 推迟评估
