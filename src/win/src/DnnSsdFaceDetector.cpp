@@ -60,7 +60,7 @@ DnnSsdFaceDetector::~DnnSsdFaceDetector() {
 
 bool DnnSsdFaceDetector::initialize(const DnnSsdConfig& cfg, std::string& error) {
     shutdown();
-    impl_ = new Impl();
+    impl_ = std::make_unique<Impl>();
     impl_->cfg = cfg;
 
     if (impl_->cfg.modelPath.empty()) {
@@ -103,9 +103,7 @@ void DnnSsdFaceDetector::resetForStream() {
 }
 
 void DnnSsdFaceDetector::shutdown() {
-    if (!impl_) return;
-    delete impl_;
-    impl_ = nullptr;
+    impl_.reset();
 }
 
 bool DnnSsdFaceDetector::ready() const {
