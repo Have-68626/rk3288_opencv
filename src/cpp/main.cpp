@@ -486,6 +486,8 @@ static bool readAllBytes(const std::filesystem::path& p, std::vector<std::uint8_
     return true;
 }
 
+// NOTE: 与 FaceInferStages.cpp:loadGalleryDir 逐字重复。
+// 修改时请同步更新另一处，或后续抽出公共函数。
 static bool loadGalleryDir(const std::string& dir,
                            std::vector<FaceSearchEntry>& entriesOut,
                            std::vector<std::string>& warningsOut,
@@ -558,6 +560,8 @@ static std::vector<std::string> listImagesInDir(const std::filesystem::path& dir
     return out;
 }
 
+// NOTE: 与 D3D11Renderer.cpp:percentileFromSorted 功能重复。
+// main.cpp 需要独立实现（不依赖 Windows 渲染器），修改时请保持逻辑一致。
 static double percentileNearestRank(std::vector<double> v, double q) {
     if (v.empty()) return 0.0;
     if (q <= 0.0) q = 0.0;
