@@ -11,7 +11,8 @@ Civetweb License
 
 ### Included with all features.
 
-> Copyright (c) 2013-2021 The CivetWeb developers ([CREDITS.md](https://github.com/civetweb/civetweb/blob/master/CREDITS.md))
+> Copyright (c) 2013-2021 The CivetWeb developers
+([CREDITS.md](https://github.com/civetweb/civetweb/blob/master/CREDITS.md))
 >
 > Copyright (c) 2004-2013 Sergey Lyubka
 >
@@ -43,7 +44,7 @@ Lua License
 
 ### Included only if built with Lua support.
 
-http://www.lua.org/license.html
+<http://www.lua.org/license.html>
 
 > Copyright (C) 1994-2020 Lua.org, PUC-Rio.
 >
@@ -67,7 +68,7 @@ http://www.lua.org/license.html
 
 
 Additional components Copyright (C) Lua.org, PUC-Rio, with MIT license: 
-http://www.inf.puc-rio.br/~roberto/struct/
+<http://www.inf.puc-rio.br/~roberto/struct/>
 
 
 SQLite3 License
@@ -75,7 +76,7 @@ SQLite3 License
 
 ### Included only if built with Lua and SQLite support.
 
-http://www.sqlite.org/copyright.html
+<http://www.sqlite.org/copyright.html>
 
 > 2001-09-15
 >
@@ -90,7 +91,8 @@ http://www.sqlite.org/copyright.html
 lsqlite3 License
 ------
 
-### Included only if built with Lua and SQLite support.
+<a id="included-only-if-built-with-lua-and-sqlite-support-2"></a>
+### Included only if built with Lua and SQLite support.（2）
 
 > Copyright (C) 2002-2016 Tiago Dionizio, Doug Currie
 > All rights reserved.
@@ -120,9 +122,10 @@ lsqlite3 License
 Lua File System License
 ------
 
-### Included only if built with Lua support.
+<a id="included-only-if-built-with-lua-support-2"></a>
+### Included only if built with Lua support.（2）
 
-https://github.com/keplerproject/luafilesystem/blob/master/LICENSE
+<https://github.com/keplerproject/luafilesystem/blob/master/LICENSE>
 
 > Copyright © 2003-2020 Kepler Project.
 >
@@ -154,7 +157,8 @@ LuaXML License
 
 Version 1.8.0 (Lua 5.2), 2013-06-10 by Gerald Franz, eludi.net
 
-Modified and extended 2015 by Bernhard Nortmann, https://github.com/n1tehawk/LuaXML – version 2.0.x, compatible with Lua 5.1 to 5.3 and LuaJIT.
+Modified and extended 2015 by Bernhard Nortmann, <https://github.com/n1tehawk/LuaXML> – version 2.0.x, compatible with
+Lua 5.1 to 5.3 and LuaJIT.
 
 
 > LuaXML License
@@ -189,13 +193,13 @@ Duktape License
 
 ### Included only if built with Duktape support.
 
-https://github.com/svaarala/duktape/blob/master/LICENSE.txt
+<https://github.com/svaarala/duktape/blob/master/LICENSE.txt>
 
 > ===============
 > Duktape license
 > ===============
 >
-> (http://opensource.org/licenses/MIT)
+> (<http://opensource.org/licenses/MIT>)
 >
 > Copyright (c) 2013-2017 by Duktape authors (see AUTHORS.rst)
 >
@@ -224,7 +228,7 @@ zlib License
 
 ### Included only if built with zlib support.
 
-https://www.zlib.net/zlib_license.html
+<https://www.zlib.net/zlib_license.html>
 
 > zlib.h -- interface of the 'zlib' general purpose compression library
 > version 1.2.11, January 15th, 2017

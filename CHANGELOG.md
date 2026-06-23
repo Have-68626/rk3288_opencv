@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Docs**: 修复 INT8 量化文档中 Google Test 引用错误（项目使用自定义 bool 函数，非 Google Test），更新校准图片说明为实际使用的 `deps/WIDER_train/`（`5dd5cbf`）
 - **HttpFacesServer**: SseSession::writeFrame 缺 pipe 空指针检查，修复空转泄漏（`454a7e0`）
 - **HttpFacesServer**: buildJpegWithOverlay 直接修改 rs.bgr → 多线程数据竞争，改用 clone() 隔离副本（`7c4a04b`）
 - **HttpFacesServer**: StreamSession 指针转型未定义行为 — 构造函数注入 server 替换 reinterpret_cast（`68f6cfd`）
@@ -105,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### 🔴 未决问题 — 按严重性分类
 
-##### CRITICAL (12 项)
+##### CRITICAL (已全部修复)
 | # | 模块 | 文件 | 问题 |
 |---|------|------|------|
 | CR-24 | 人脸识别 | `FaceDatabase.cpp:82`, `FaceRecognizer.cpp:83` | `persons_` map + `identifyThreshold_` 双数据竞争（无锁读写）| ✅ 已修 |
@@ -130,7 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | CR-50 | MPP | `VideoManager.cpp:585` | MPP 回退 OpenCV 未校验 `cap.isOpened()` → 空转 | ✅ 已修 |
 | CR-51 | MPP | `VideoManager.cpp:660` | 摄像头读取失败无限重试 | ✅ 已修 |
 
-##### HIGH (30 项)
+##### HIGH (已全部修复)
 | # | 模块 | 文件 | 问题 |
 |---|------|------|------|
 | HR-08 | JNI | `native-lib.cpp:60` | `JNI_OnUnload` 未 join 引擎线程 | ✅ 已修 |
@@ -179,20 +180,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-56 | 日志 | `NativeLog.cpp:69` | 路径仅按 `/` 分割 | ✅ 已修 |
 | HR-57 | 日志 | `NativeLog.cpp:95` | 轮换非原子 | ✅ 已修 |
 | HR-58 | 日志 | `NativeLog.cpp:113` | 每次日志 open/write/close | ✅ 已修 |
-| HR-59 | 日志 | `EventManager.cpp:57` | 32 位 ID 碰撞 |
-| HR-60 | FaceAlign | `FaceAlign.cpp:15` | NaN bbox → UB |
-| HR-61 | FaceTemplate | `FaceTemplate.cpp:74` | `serialize` 未更新 `h.dim` |
-| HR-62 | FileHash | `FileHash.cpp:60` | SHA-256 64B/次 syscall |
-| HR-63 | MPP | `VideoManager.cpp:549` | `cancelToken` 从未被检查 |
-| HR-64 | MPP | `VideoManager.cpp:298` | 1MB 栈分配 |
-| HR-65 | MPP | `MppDecoder.cpp:147,193` | BUFFER_FULL 数据丢失 |
-| HR-66 | 脚本 | `ci.yml:287` | `yolo_face` → `scrfd` CI 量化从未成功 |
-| HR-67 | 脚本 | `verify_opencv_host.bat:42` | `OPENCV_CONTRIB_ROOT` 无验证 |
-| HR-68 | 脚本 | `verify_faces_test_set01.bat:45` | 同上 |
-| HR-69 | 脚本 | `stability_switch_50_adb.ps1:57` | 已废弃 `dumpsys` API |
-| HR-70 | 构建 | `app/build.gradle:64` | 硬编码 ncnn 路径 |
-| HR-71 | 构建 | `app/build.gradle:108` | `minifyEnabled false` |
-| HR-72 | 构建 | `app/build.gradle:109` | proguard 文件缺失 |
+| HR-59 | 日志 | `EventManager.cpp:57` | 32 位 ID 碰撞 | ✅ 已修 `cf90288` |
+| HR-60 | FaceAlign | `FaceAlign.cpp:15` | NaN bbox → UB | ✅ 已修 `cf90288` |
+| HR-61 | FaceTemplate | `FaceTemplate.cpp:74` | `serialize` 未更新 `h.dim` | ✅ 已修 `cf90288` |
+| HR-62 | FileHash | `FileHash.cpp:60` | SHA-256 64B/次 syscall | ✅ 已修 `cf90288` |
+| HR-63 | MPP | `VideoManager.cpp:549` | `cancelToken` 从未被检查 | ✅ 已修 `cf90288` |
+| HR-64 | MPP | `VideoManager.cpp:298` | 1MB 栈分配 | ✅ 已修 `cf90288` |
+| HR-65 | MPP | `MppDecoder.cpp:147,193` | BUFFER_FULL 数据丢失 | ✅ 已修 `cf90288` |
+| HR-66 | 脚本 | `ci.yml:287` | `yolo_face` → `scrfd` CI 量化从未成功 | ✅ 已修 `d2ec0cb` |
+| HR-67 | 脚本 | `verify_opencv_host.bat:42` | `OPENCV_CONTRIB_ROOT` 无验证 | ✅ 已修 `d2ec0cb` |
+| HR-68 | 脚本 | `verify_faces_test_set01.bat:45` | 同上 | ✅ 已修 `d2ec0cb` |
+| HR-69 | 脚本 | `stability_switch_50_adb.ps1:57` | 已废弃 `dumpsys` API | ✅ 已修 `d2ec0cb` |
+| HR-70 | 构建 | `app/build.gradle:64` | 硬编码 ncnn 路径 | ✅ 已修 `d2ec0cb` |
+| HR-71 | 构建 | `app/build.gradle:108` | `minifyEnabled false` | ✅ 已修 `d2ec0cb` |
+| HR-72 | 构建 | `app/build.gradle:109` | proguard 文件缺失 | ✅ 已修 `d2ec0cb` |
 | HR-73 | Android | `StatusService.java:48` | overlay 权限绕过后显示 | ✅ 已修 |
 | HR-74 | Android | `LogViewerActivity.java:63` | ExecutorService 未 shutdown | ✅ 已修 |
 | HR-75 | Android | `LogDetailActivity.java:67` | ExecutorService 未 shutdown | ✅ 已修 |
@@ -203,7 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-80 | 基准 | `inference_bench_cli.cpp:939` | NaN/Inf 输出非法 JSON | ✅ 已修 |
 | HR-81 | 基准 | `FaceInferOutcomeJson.cpp:84` | `%g` 可输出 NaN/Inf | ✅ 已修 |
 
-##### MEDIUM (20 项)
+##### MEDIUM (42 项)
 | # | 模块 | 问题 |
 |---|------|------|
 | MR-05 | Engine | 两个 `initialize()` 重载 40 行重复 |

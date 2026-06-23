@@ -21,38 +21,71 @@
 - Do not commit temporary benchmark scripts, generated binaries, or object files used only for local measurement.
 - Keep performance memory in `.Jules/bolt.md` durable and pattern-based rather than tied to one transient task or measurement run.
 ## 2026-04-17 - Avoid cv::cvtColor for NCNN Pixel Conversion
-**Learning:** Using `cv::cvtColor` to swap color channels (e.g., BGR to RGB) before passing a `cv::Mat` to NCNN introduces redundant memory allocation and copy overhead per frame. This is a common bottleneck in tight inference loops.
-**Action:** Use NCNN's native pixel conversion flags (e.g., `ncnn::Mat::PIXEL_BGR2RGB`) within `ncnn::Mat::from_pixels()` directly. Ensure the input `cv::Mat` is continuous (`isContinuous()`) before conversion to avoid access violations.
+**Learning:** Using `cv::cvtColor` to swap color channels (e.g., BGR to RGB) before passing a `cv::Mat` to NCNN
+introduces redundant memory allocation and copy overhead per frame. This is a common bottleneck in tight inference
+loops.
+**Action:** Use NCNN's native pixel conversion flags (e.g., `ncnn::Mat::PIXEL_BGR2RGB`) within
+`ncnn::Mat::from_pixels()` directly. Ensure the input `cv::Mat` is continuous (`isContinuous()`) before conversion to
+avoid access violations.
 ## 2025-01-20 - YUV420 to I420 Conversion Pointer Optimization
-**Learning:** Double loops with indexing and multiplications (`col * yPixelStride`) inside tight inner loops for YUV420 pixel extraction generate redundant instructions and prevent compiler vectorization, slowing down end-to-end frame decoding times.
-**Action:** Use sequential pointer arithmetic to traverse image rows and pixels, moving the pointer directly rather than recalculating the memory offset on every iteration.
+**Learning:** Double loops with indexing and multiplications (`col * yPixelStride`) inside tight inner loops for YUV420
+pixel extraction generate redundant instructions and prevent compiler vectorization, slowing down end-to-end frame
+decoding times.
+**Action:** Use sequential pointer arithmetic to traverse image rows and pixels, moving the pointer directly rather than
+recalculating the memory offset on every iteration.
 
 ## 2024-05-18 - 优化帧处理与渲染中的内存分配
-**Learning:** `cv::Mat::clone()` 强制执行深度内存拷贝并分配全新内存块。如果在热门的处理循环（如 `Engine::processFrame`、`FramePipeline::processLoop`）中频繁使用，会导致持续的堆内存分配、较高的内存碎片率以及潜在的 GC 抖动（在跨 JNI 或大量小对象分配时尤为明显）。
-**Action:** 使用预先分配的/持久化的缓冲矩阵（如类成员或被置于循环外部的 `drawBuffer`/`frameBuffer`），并配合 `cv::Mat::copyTo()`，从而仅执行数据覆盖而无需重新分配，这在保证同样线程安全性的同时显著降低了动态分配开销。
+**Learning:** `cv::Mat::clone()` 强制执行深度内存拷贝并分配全新内存块。如果在热门的处理循环（如
+`Engine::processFrame`、`FramePipeline::processLoop`）中频繁使用，会导致持续的堆内存分配、较高的内存碎片率以及潜在的 GC 抖动（在跨 JNI 或大量小对象分配时尤为明显）。
+**Action:** 使用预先分配的/持久化的缓冲矩阵（如类成员或被置于循环外部的 `drawBuffer`/`frameBuffer`），并配合
+`cv::Mat::copyTo()`，从而仅执行数据覆盖而无需重新分配，这在保证同样线程安全性的同时显著降低了动态分配开销。
 
 ## 2024-05-25 - Avoid deep copy for read-only D3D11 texture uploads
-**Learning:** Uploading multi-channel frames like `CV_8UC4` to Direct3D 11 textures in `src/win/src/D3D11Renderer.cpp` is a read-only operation from CPU memory. Performing an explicit `bgr->clone()` creates an unnecessary deep copy of the image memory, causing repetitive multi-megabyte heap allocations and high memory bandwidth overhead per frame.
-**Action:** Use a shallow copy (`bgra = *bgr`) when capturing the frame pointer for D3D11 upload if the source is already continuous and formatted correctly (e.g., `CV_8UC4`).
+**Learning:** Uploading multi-channel frames like `CV_8UC4` to Direct3D 11 textures in `src/win/src/D3D11Renderer.cpp`
+is a read-only operation from CPU memory. Performing an explicit `bgr->clone()` creates an unnecessary deep copy of the
+image memory, causing repetitive multi-megabyte heap allocations and high memory bandwidth overhead per frame.
+**Action:** Use a shallow copy (`bgra = *bgr`) when capturing the frame pointer for D3D11 upload if the source is
+already continuous and formatted correctly (e.g., `CV_8UC4`).
 
 ## 2026-05-01 - Avoid Redundant deep copy when uploading cv::Mat to D3D11 Texture
-**Learning:** Uploading a `cv::Mat` frame to a Direct3D 11 texture (e.g., in `D3D11Renderer.cpp`) is inherently a read-only operation. For multi-channel frames that do not require layout conversion (like `CV_8UC4`), using `cv::Mat::clone()` creates a redundant deep copy of the image, leading to excessive memory allocation (e.g., ~8.3MB per 1080p frame). This causes continuous RSS bloat, high memory bandwidth usage, and latency jitter during the render phase.
-**Action:** Use a shallow copy (e.g., `bgra = *bgr`) instead of `clone()` for read-only `CV_8UC4` frame uploads to eliminate per-frame allocations, while still safely incrementing OpenCV's reference counter to keep the buffer alive.
+**Learning:** Uploading a `cv::Mat` frame to a Direct3D 11 texture (e.g., in `D3D11Renderer.cpp`) is inherently a
+read-only operation. For multi-channel frames that do not require layout conversion (like `CV_8UC4`), using
+`cv::Mat::clone()` creates a redundant deep copy of the image, leading to excessive memory allocation (e.g., ~8.3MB per
+1080p frame). This causes continuous RSS bloat, high memory bandwidth usage, and latency jitter during the render phase.
+**Action:** Use a shallow copy (e.g., `bgra = *bgr`) instead of `clone()` for read-only `CV_8UC4` frame uploads to
+eliminate per-frame allocations, while still safely incrementing OpenCV's reference counter to keep the buffer alive.
 
 ## 2026-05-07 - Optimize EventManager JSON formatting
-**Learning:** `std::stringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency logging/event pipelines, this becomes a bottleneck.
-**Action:** Replace `std::stringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+**Learning:** `std::stringstream` has significant overhead for simple string concatenation due to virtual function
+calls, locale handling, and dynamic memory allocations. In high-frequency logging/event pipelines, this becomes a
+bottleneck.
+**Action:** Replace `std::stringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and
+use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable
+performance gains.
 ## 2026-05-18 - Optimize Engine::processFrame string formatting
-**Learning:** `std::ostringstream` has significant overhead for simple string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In high-frequency rendering loops (`Engine::processFrame`), this becomes a bottleneck.
-**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+**Learning:** `std::ostringstream` has significant overhead for simple string concatenation due to virtual function
+calls, locale handling, and dynamic memory allocations. In high-frequency rendering loops (`Engine::processFrame`), this
+becomes a bottleneck.
+**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate sufficient capacity, and
+use `operator+=` for concatenation to avoid reallocation and virtual function overhead, leading to measurable
+performance gains.
 ## 2026-05-24 - Optimize memory ops in loop
-**Learning:** Element-wise loops on std::vector buffers can often be safely and elegantly replaced with std::copy, combined with CV_Assert for size validation, yielding small performance improvements without losing type safety.
-**Action:** Use std::copy for linear float array duplication instead of row/col indexing where continuous buffer constraints hold true.
+**Learning:** Element-wise loops on std::vector buffers can often be safely and elegantly replaced with std::copy,
+combined with CV_Assert for size validation, yielding small performance improvements without losing type safety.
+**Action:** Use std::copy for linear float array duplication instead of row/col indexing where continuous buffer
+constraints hold true.
 
 ## 2024-05-18 - C++ Mat Clone Bottleneck
-**Learning:** In the Windows local server rendering path (`src/win/src/FaceRecognizer.cpp`), `cv::Mat::clone()` was being unnecessarily called on read-only regions (like cropping for inference). Using the direct Region Of Interest (ROI) when resizing/converting cuts down on heap allocations.
-**Action:** Always verify if a `clone()` is actually necessary when dealing with `cv::Mat` objects inside per-frame inference loops. Pass direct ROIs to OpenCV functions instead, unless structural separation is explicitly required.
+**Learning:** In the Windows local server rendering path (`src/win/src/FaceRecognizer.cpp`), `cv::Mat::clone()` was
+being unnecessarily called on read-only regions (like cropping for inference). Using the direct Region Of Interest (ROI)
+when resizing/converting cuts down on heap allocations.
+**Action:** Always verify if a `clone()` is actually necessary when dealing with `cv::Mat` objects inside per-frame
+inference loops. Pass direct ROIs to OpenCV functions instead, unless structural separation is explicitly required.
 
 ## 2026-05-19 - Optimize StructuredLogger and RenderMetricsLogger formatting
-**Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls, locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`, `RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
-**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use `operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading to measurable performance gains.
+**Learning:** `std::ostringstream` has significant overhead for string concatenation due to virtual function calls,
+locale handling, and dynamic memory allocations. In logging loops (`StructuredLogger::append`,
+`RenderMetricsLogger::append`), this creates unnecessary CPU and memory overhead per frame log.
+**Action:** Replace `std::ostringstream` with `std::string`, use `.reserve()` to pre-allocate memory, and use
+`operator+=` for concatenation and `snprintf` for doubles to avoid reallocation and virtual function overhead, leading
+to measurable performance gains.

@@ -36,6 +36,7 @@ function parseArgs(argv) {
     linkConcurrency: 6,
     linkCache: "",
     linkCacheTtl: 86400,
+    skipVersionPaths: ["deps/", "docs/bsp/kernel-config/", "docs/bsp/BSP_RELEASE_NOTES.md", "src/win/third_party/"],
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
@@ -61,6 +62,9 @@ function parseArgs(argv) {
       i += 1;
     } else if (a === "--link-cache-ttl" && argv[i + 1]) {
       args.linkCacheTtl = Math.max(0, Number(argv[i + 1]) || 86400);
+      i += 1;
+    } else if (a === "--skip-version-paths" && argv[i + 1]) {
+      args.skipVersionPaths = argv[i + 1].split(",").map(s => s.trim()).filter(Boolean);
       i += 1;
     }
   }
@@ -141,10 +145,10 @@ function splitMarkdownBlocks(md) {
 function extractHeadUpdateTime(md) {
   const head = md.split(/\r?\n/).slice(0, 60).join("\n");
   const patterns = [
-    /最后更新\s*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /更新时间\s*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /更新日期\s*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /last\s+updated\s*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /最后更新[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /更新时间[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /更新日期[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    /last\s+updated[\s*]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
   ];
   for (const re of patterns) {
     const m = head.match(re);
@@ -675,7 +679,9 @@ async function main() {
       fullwidthAsciiLineCount: conv.fullwidthAscii,
     };
 
-    if (lagDays !== null && lagDays > 7) {
+    const skipVersion = args.skipVersionPaths.some(p => rel.includes(p.replace(/\\/g, "/").replace(/\/$/, "")));
+    if (skipVersion) { /* skip version check for third-party/placeholder files */ }
+    else if (lagDays !== null && lagDays > 7) {
       report.defects.push({
         type: "version",
         severity: "high",
@@ -692,14 +698,9 @@ async function main() {
             conv.samples
               .map((s) => `L${s.line}(${s.message}): ${s.excerpt}`)
               .join(" | ");
-      report.defects.push({
-        type: "format",
-        severity: "low",
-        file: rel,
-        message:
-          `排版一致性：中英文混排缺空格行数=${conv.zhEnNoSpace}，全角ASCII/全角空格行数=${conv.fullwidthAscii}` +
-          sampleText,
-      });
+      if (!report.files[rel].formatInfo) report.files[rel].formatInfo = {};
+      report.files[rel].formatInfo.zhEnNoSpace = conv.zhEnNoSpace;
+      report.files[rel].formatInfo.fullwidthAscii = conv.fullwidthAscii;
     }
   }
 

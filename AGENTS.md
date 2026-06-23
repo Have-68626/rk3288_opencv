@@ -26,14 +26,15 @@
 6 jobs on `master` branch PR/push (ignores `*.md` and `docs/`):
 1. **repo-hygiene** — `node scripts/clean-repo-junk.js scan --ci`
 2. **unit-tests** — Linux CMake + Ninja, `RK_SKIP_OPENCV=ON`, builds/runs `core_unit_tests` + cross-platform compile-check for `src/win/src/*.cpp` via `g++`
-3. **docs-audit** — `node scripts/docs-sync-audit.js`
+3. **docs-audit** — `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json`
 4. **web** — `pnpm install` → `pnpm lint` → `pnpm build` → `pnpm e2e:run:coverage` (E2E failures non-blocking)
 5. **android** — `./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`
 6. **windows** — push only (not PR), triggered by `"Windows"` in commit msg or `workflow_dispatch`. Full OpenCV build from source (cached in `_deps/`). Includes INT8 quantization + precision test steps.
 
 ## Test framework
 
-**Custom `bool` functions** (NOT Google Test). Each test file declares a `bool test_xxx()` function and registers it in a `TestCase` table in the `*_main.cpp` file:
+**Custom `bool` functions** (NOT Google Test). Each test file declares a `bool test_xxx()` function and registers it in
+a `TestCase` table in the `*_main.cpp` file:
 ```cpp
 using TestFn = bool (*)();
 struct TestCase { const char* name; TestFn fn; };

@@ -94,7 +94,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | 脚本 | 用途 | 使用说明 |
 | :--- | :--- | :--- |
 | `clean-repo-junk.js` | 清理仓库垃圾文件 | `node scripts/clean-repo-junk.js scan --ci` |
-| `docs-sync-audit.js` | 审计文档同步状态 | `node scripts/docs-sync-audit.js --out-dir tests/reports` |
+| `docs-sync-audit.js` | 审计文档同步状态 | `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json` |
 | `verify_opencv_host.bat` | 验证 OpenCV 主机环境 | 设置 `OPENCV_ROOT` 后执行 |
 | `verify_faces_test_set01.bat` | 人脸检测参数验证 | 依赖 `tests/test_set01/` 测试集 |
 | `run-web-e2e.ps1` | Web SPA 端到端测试 | Cypress E2E + 覆盖率报告 |
@@ -131,7 +131,8 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 | P2 | 1:N 搜索 NEON | ✅ `FaceSearchLinearIndex` NEON/SIMD + x86 回退 | ❌ | |
 | — | 加速证据日志输出 | ✅ `Engine::performAccelSelfCheck()` 全加速器覆盖 | ❌ | 日志中已记录启用/回退原因 |
 
-> ⚠️ **关键缺口**：所有加速项均已完成代码实现，但 RK3288 真机实测数据缺失。需在 RK3288 上执行 `inference_bench_cli` 及 `stability_switch_50_adb.ps1`，将结果填入 DEVELOP.md 附录 B 加速机会矩阵。
+> ⚠️ **关键缺口**：所有加速项均已完成代码实现，但 RK3288 真机实测数据缺失。需在 RK3288 上执行 `inference_bench_cli` 及 `stability_switch_50_adb.ps1`，将结果填入
+DEVELOP.md 附录 B 加速机会矩阵。
 
 ### 3. 🟡 **[P0] AI 模型与管线管控 (Model & AI Pipeline)**
 
@@ -151,7 +152,7 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
 |:----|:--------:|:-----|
 | repo-hygiene | PR/push → master | `node scripts/clean-repo-junk.js scan --ci` |
 | unit-tests | PR/push → master | Linux CMake + Ninja, `RK_SKIP_OPENCV=ON`, `core_unit_tests` + `src/win/src/*.cpp` 交叉编译检查 |
-| docs-audit | PR/push → master | `node scripts/docs-sync-audit.js` |
+| docs-audit | PR/push → master | `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json` |
 | web | PR/push → master | `pnpm install` → `pnpm lint` → `pnpm build` → `pnpm e2e:run:coverage` (非阻塞) |
 | android | PR/push → master | `gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug` |
 | windows | push only (含 "Windows" 关键词或 workflow_dispatch) | 完整 OpenCV 源码构建 + ctest + INT8 量化 + 精度测试 |
