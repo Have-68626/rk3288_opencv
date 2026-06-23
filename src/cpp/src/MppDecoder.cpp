@@ -230,6 +230,11 @@ bool MppDecoder::read(cv::Mat& outBgr) {
 handle_eos:
     // Rewind for looped playback
     if (mpp_->fileHandle && fileSize_ > 0) {
+        // Reset MPP decoder state before rewinding, otherwise stale EOS/internal state
+        // causes decode_put_packet to reject new data
+        if (mpp_->mpi) {
+            mpp_->mpi->reset(mpp_->ctx);
+        }
         std::fseek(mpp_->fileHandle, 0, SEEK_SET);
         fileReadOffset_ = 0;
         mpp_->eos = false;

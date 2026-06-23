@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class RetinaFaceAdapter : public FaceDetector {
@@ -33,7 +34,18 @@ private:
                         float bx1, float by1, float bx2, float by2);
     void nms(std::vector<FaceDetection>& dets, float threshold);
 
+    /** Cache key: (stride, featW, featH) → precomputed anchors */
+    struct AnchorCacheKey {
+        int stride, featW, featH;
+        bool operator==(const AnchorCacheKey& o) const { return stride == o.stride && featW == o.featW && featH == o.featH; }
+    };
+    struct AnchorCacheKeyHash {
+        std::size_t operator()(const AnchorCacheKey& k) const {
+            return static_cast<std::size_t>(k.stride) ^ (static_cast<std::size_t>(k.featW) << 10) ^ (static_cast<std::size_t>(k.featH) << 20);
+        }
+    };
     mutable std::mutex mu_;
+    std::unordered_map<AnchorCacheKey, std::vector<std::vector<float>>, AnchorCacheKeyHash> anchorCache_;
     cv::dnn::Net net_;
     int inputW_ = 640;
     int inputH_ = 640;

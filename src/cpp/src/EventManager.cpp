@@ -25,7 +25,7 @@ void EventManager::logEvent(const std::string& type, const std::string& descript
     std::string jsonLog = formatEventJson(evt);
     
     // Save to daily log file
-    std::string logFile = Config::CACHE_DIR + "events_" + std::to_string(evt.timestamp / 86400) + ".json";
+    std::string logFile = Config::CACHE_DIR + "events_" + std::to_string(evt.timestamp / 86400) + ".jsonl";
     
     // Ensure cache dir exists
     Storage::ensureDirectory(Config::CACHE_DIR);

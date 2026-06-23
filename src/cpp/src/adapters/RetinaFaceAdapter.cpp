@@ -219,9 +219,21 @@ FaceDetections RetinaFaceAdapter::detect(const cv::Mat& bgr, std::string& err) {
             [stride](const AnchorCfg& ac) { return ac.stride == stride; });
         if (it == anchorCfgs_.end()) continue;
 
+        AnchorCacheKey ck{it->stride, level.featW, level.featH};
         std::vector<std::vector<float>> anchors;
-        generateAnchors(it->stride, it->baseSize, it->ratios, it->scales,
-                        level.featW, level.featH, anchors);
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            auto cached = anchorCache_.find(ck);
+            if (cached != anchorCache_.end()) {
+                anchors = cached->second;
+            }
+        }
+        if (anchors.empty()) {
+            generateAnchors(it->stride, it->baseSize, it->ratios, it->scales,
+                            level.featW, level.featH, anchors);
+            std::lock_guard<std::mutex> lock(mu_);
+            anchorCache_[ck] = anchors;
+        }
 
         int numAnchors = (int)anchors.size();
         int scoreCh = level.channels;  // numAnchors × 2 (bg/fg) 或 numAnchors × 1 (sigmoid)
