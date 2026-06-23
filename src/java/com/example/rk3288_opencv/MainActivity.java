@@ -109,6 +109,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
     private static final String TAG = "MainActivity";
 
+    /** Sentinel: no real camera device, external frame input only */
+    private static final int NO_CAMERA_ID = -1;
+
     private static final int DETECTION_INTERVAL_DEFAULT_MS = 150;
     private static final int DETECTION_INTERVAL_MIN_MS = 80;
     private static final int DETECTION_INTERVAL_MAX_MS = 500;
@@ -2334,7 +2337,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 });
             }).start();
         } else if (wantCamera) {
-            engineInitialized = nativeInit(-1, cascadePath, storagePath);
+            engineInitialized = nativeInit(NO_CAMERA_ID, cascadePath, storagePath);
             if (engineInitialized) {
                 applyFlipToNative();
                 applyInferenceThrottleToNative();

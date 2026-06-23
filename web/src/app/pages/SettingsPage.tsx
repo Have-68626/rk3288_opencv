@@ -23,6 +23,7 @@ import { useEffect, useState } from 'react'
 import { rotateCryptoKey } from '../api/actions'
 import { getModels, reloadModel } from '../api/models'
 import type { ActiveModelInfo, ModelsResponse, ServerSettingsDoc } from '../api/types'
+import { getErrorMessage } from '../api/error'
 import { useAppStore } from '../state/AppStore'
 import { diffPatch } from '../utils/diffPatch'
 
@@ -303,7 +304,7 @@ export function SettingsPage() {
               message.success('保存成功')
               setServerBaseline(normalized) // 作为新的 baseline
             } catch (e: unknown) {
-              message.error((e as Error)?.message || '保存失败')
+              message.error(getErrorMessage(e) || '保存失败')
             }
           }}
         >
@@ -386,7 +387,7 @@ export function SettingsPage() {
                                       message.error(env.error.message)
                                     }
                                   } catch (e: unknown) {
-                                    message.error((e as Error)?.message || '重载失败')
+                                    message.error(getErrorMessage(e) || '重载失败')
                                   } finally {
                                     setReloadingId(null)
                                   }
@@ -542,7 +543,7 @@ export function SettingsPage() {
                         message.success('已触发密钥轮换（敏感字段已重新加密）')
                         refreshServerSettings()
                       } catch (e: unknown) {
-                        message.error((e as Error)?.message || '密钥轮换失败')
+                        message.error(getErrorMessage(e) || '密钥轮换失败')
                       } finally {
                         setIsRotatingKey(false)
                       }

@@ -135,11 +135,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-08 | JNI | `native-lib.cpp:60` | `JNI_OnUnload` 未 join 引擎线程 | ✅ 已修 |
 | HR-09 | Android | `Camera2CaptureController.java:315` | `imageReader` stop 后 NPE | ✅ 已修 |
 | HR-10 | Android | `CameraXCaptureController.java:89,161` | `provider` 字段无同步 | ✅ 已修 |
-| HR-11 | Android | `MainActivity.java:2337` | `nativeInit(-1,...)` 硬编码 |
-| HR-12 | Android | `FileLogSink.java:78` | 持锁 sleep(10) |
-| HR-13 | Web | `AppStore.tsx:71` | 状态层耦合 UI toast |
-| HR-14 | Web | 全局 | `(e as Error)?.message` 模式 15 次 |
-| HR-15 | Web | `SplashPage.tsx:29` | useEffect 缺依赖 |
+| HR-11 | Android | `MainActivity.java:2337` | `nativeInit(-1,...)` 硬编码 | ✅ 已修 |
+| HR-12 | Android | `FileLogSink.java:78` | 持锁 sleep(10) | ✅ 已修 |
+| HR-13 | Web | `AppStore.tsx:71` | 状态层耦合 UI toast | ✅ 已修 |
+| HR-14 | Web | 全局 | `(e as Error)?.message` 模式 15 次 | ✅ 已修 |
+| HR-15 | Web | `SplashPage.tsx:29` | useEffect 缺依赖 | ✅ 已修 |
 | HR-21 | Windows | `MfCamera.cpp:292` | 负 stride 溢出 |
 | HR-22 | Windows | `MfCamera.cpp:224` | IMFMediaSource 打开失败未 Shutdown |
 | HR-23 | Windows | `OverlayRenderer.cpp:51,64` | 每帧 6MB clone |

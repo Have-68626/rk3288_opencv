@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { CameraDeviceInfo } from '../api/cameras'
 import { getCameras } from '../api/cameras'
 import { clearDb, enroll, openPrivacySettings, setFlip } from '../api/actions'
+import { getErrorMessage } from '../api/error'
 import { useAppStore } from '../state/AppStore'
 
 type LoadState =
@@ -63,7 +64,7 @@ export function PreviewPage() {
       })
       .catch((e: unknown) => {
         if (!alive) return
-        setCams({ status: 'error', message: (e as Error)?.message || '加载摄像头列表失败' })
+        setCams({ status: 'error', message: getErrorMessage(e) || '加载摄像头列表失败' })
       })
     return () => {
       alive = false
@@ -232,7 +233,7 @@ export function PreviewPage() {
                   await updateServerSettings({ camera: { preferredDeviceId: deviceId } })
                   message.success('切换摄像头成功')
                 } catch (e: unknown) {
-                  message.error((e as Error)?.message || '切换摄像头失败')
+                  message.error(getErrorMessage(e) || '切换摄像头失败')
                 } finally {
                   hide()
                 }
@@ -262,7 +263,7 @@ export function PreviewPage() {
                   })
                   message.success('更改分辨率成功')
                 } catch (e: unknown) {
-                  message.error((e as Error)?.message || '更改分辨率失败')
+                  message.error(getErrorMessage(e) || '更改分辨率失败')
                 } finally {
                   hide()
                 }
@@ -290,7 +291,7 @@ export function PreviewPage() {
                     message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
                   } catch (e: unknown) {
                     setFlipX(original)
-                    message.error((e as Error)?.message || '设置 X 轴翻转失败')
+                    message.error(getErrorMessage(e) || '设置 X 轴翻转失败')
                   } finally {
                     setIsFlippingX(false)
                   }
@@ -316,7 +317,7 @@ export function PreviewPage() {
                     message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
                   } catch (e: unknown) {
                     setFlipY(original)
-                    message.error((e as Error)?.message || '设置 Y 轴翻转失败')
+                    message.error(getErrorMessage(e) || '设置 Y 轴翻转失败')
                   } finally {
                     setIsFlippingY(false)
                   }
@@ -359,7 +360,7 @@ export function PreviewPage() {
                       message.success('注册指令已发送')
                       setPersonId('')
                     } catch (e: unknown) {
-                      message.error((e as Error)?.message || '注册失败')
+                      message.error(getErrorMessage(e) || '注册失败')
                     } finally {
                       setIsEnrolling(false)
                     }
@@ -381,7 +382,7 @@ export function PreviewPage() {
                   await clearDb(prefs)
                   message.success('清空指令已发送')
                 } catch (e: unknown) {
-                  message.error((e as Error)?.message || '清空失败')
+                  message.error(getErrorMessage(e) || '清空失败')
                 } finally {
                   setIsClearing(false)
                 }
@@ -401,7 +402,7 @@ export function PreviewPage() {
                   await openPrivacySettings(prefs)
                   message.success('已尝试打开隐私设置窗口')
                 } catch (e: unknown) {
-                  message.error((e as Error)?.message || '打开失败')
+                  message.error(getErrorMessage(e) || '打开失败')
                 } finally {
                   setIsOpeningPrivacy(false)
                 }

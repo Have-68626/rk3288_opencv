@@ -1,12 +1,33 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react'
-import { message } from 'antd'
 
 import type { ServerSettingsDoc } from '../api/types'
 import { getServerSettings, putServerSettings } from '../api/settings'
 import type { LocalPrefs } from './prefs'
 import { defaultPrefs, loadPrefs, savePrefs } from './prefs'
 import { ApiError } from '../api/http'
+
+/** Safely extract ApiError from catch clause */
+function toApiError(e: unknown): ApiError {
+  if (e instanceof ApiError) return e
+  const msg = typeof e === 'object' && e !== null && 'message' in e && typeof (e as Record<string, unknown>).message === 'string'
+    ? (e as Record<string, unknown>).message as string
+    : '未知错误'
+  return new ApiError('unknown', msg)
+}
+
+/** Overridable notification sink — production wires to antd message, tests no-op. */
+export let notify: { loading: (msg: string) => () => void; success: (msg: string) => void; error: (msg: string) => void } = {
+  loading: () => () => {},
+  success: () => {},
+  error: () => {},
+}
+
+export function setNotify(
+  n: typeof notify,
+) {
+  notify = n
+}
 
 export type ServerSettingsState =
   | { status: 'idle'; data?: undefined; error?: undefined }
@@ -56,7 +77,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
 
     let hide: (() => void) | undefined
     if (!silent) {
-      hide = message.loading('正在刷新后端设置...', 0)
+      hide = notify.loading('正在刷新后端设置...')
     }
 
     try {
@@ -68,12 +89,12 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         })
       }
       setServerSettings({ status: 'ready', data: env.data })
-      if (!silent) message.success('操作成功')
+      if (!silent) notify.success('操作成功')
       return true
     } catch (e: unknown) {
-      const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
+      const err = toApiError(e)
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
-      if (!silent) message.error(err.message)
+      if (!silent) notify.error(err.message)
       return false
     } finally {
       if (hide) hide()
@@ -95,7 +116,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       }
       setServerSettings({ status: 'ready', data: env.data })
     } catch (e: unknown) {
-      const err = e instanceof ApiError ? e : new ApiError('unknown', (e as Error)?.message || '未知错误')
+      const err = toApiError(e)
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
       throw err
     }
