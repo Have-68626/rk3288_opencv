@@ -216,32 +216,46 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
     std::string detErr;
     std::unique_ptr<YoloFaceDetector> det;
 
+    // 缓存检测器以避免每帧重新加载模型文件
+    static std::mutex s_detMu;
+    static std::string s_detCacheKey;
+    static std::unique_ptr<FaceDetector> s_cachedDet;
+    auto getCachedDet = [&](const std::string& backend, const std::string& modelPath,
+                            std::string& loadErr) -> FaceDetector* {
+        std::string key = backend + ":" + modelPath;
+        {
+            std::lock_guard<std::mutex> lock(s_detMu);
+            if (key == s_detCacheKey && s_cachedDet) return s_cachedDet.get();
+        }
+        ModelRegistry::ensureBuiltinRegistered();
+        auto det = ModelRegistry::instance().createDetector(backend);
+        if (!det) { loadErr = "detector_not_found: " + backend; return nullptr; }
+        if (!det->load(modelPath, loadErr)) return nullptr;
+        std::lock_guard<std::mutex> lock(s_detMu);
+        s_detCacheKey = key;
+        s_cachedDet = std::move(det);
+        return s_cachedDet.get();
+    };
+
     // INT8 量化模型优先选择
     if (req.int8Enabled) {
-        ModelRegistry::ensureBuiltinRegistered();
-        auto int8Det = ModelRegistry::instance().createDetector("yolo_face_int8");
+        std::string loadErr;
+        auto* int8Det = getCachedDet("yolo_face_int8", req.yoloModelPath, loadErr);
         if (int8Det) {
-            std::string loadErr;
-            if (int8Det->load(req.yoloModelPath, loadErr)) {
-                ctx.yoloBackendName = std::string(int8Det->name()) + " (INT8)";
-                const auto td0 = std::chrono::steady_clock::now();
-                ctx.faces = int8Det->detect(ctx.img, detErr);
-                const auto td1 = std::chrono::steady_clock::now();
-                m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
-                if (detErr.empty()) return okStatus();
-            }
-            rklog::logWarn("FaceInferStages", "detectFaces", "INT8 detector failed: " + loadErr + ", falling back to FP32");
+            ctx.yoloBackendName = std::string(int8Det->name()) + " (INT8)";
+            const auto td0 = std::chrono::steady_clock::now();
+            ctx.faces = int8Det->detect(ctx.img, detErr);
+            const auto td1 = std::chrono::steady_clock::now();
+            m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+            if (detErr.empty()) return okStatus();
         }
+        rklog::logWarn("FaceInferStages", "detectFaces", "INT8 detector failed: " + loadErr + ", falling back to FP32");
     }
 
     if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn" || req.yoloBackend == "ncnn") {
-        ModelRegistry::ensureBuiltinRegistered();
-        auto adapter = ModelRegistry::instance().createDetector(req.yoloBackend);
-        if (!adapter) {
-            return failStatus("yolo_load", "detector_not_found: " + req.yoloBackend);
-        }
         std::string loadErr;
-        if (!adapter->load(req.yoloModelPath, loadErr)) {
+        auto* adapter = getCachedDet(req.yoloBackend, req.yoloModelPath, loadErr);
+        if (!adapter) {
             return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
         }
         ctx.yoloBackendName = adapter->name();

@@ -148,7 +148,7 @@ export function PreviewPage() {
           ) : (
             <img
               key={previewKey}
-              src="/api/v1/preview.mjpeg"
+              src={`${import.meta.env.VITE_API_BASE || ''}/api/v1/preview.mjpeg`}
               style={{
                 width: '100%',
                 display: 'block',
