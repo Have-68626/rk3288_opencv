@@ -6,6 +6,10 @@
 #include <wincrypt.h>
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "crypt32.lib")
+
+#ifndef BCRYPT_AUTHENTICATED_CIPHER_MODE_CHAIN_CALL_FLAG
+#define BCRYPT_AUTHENTICATED_CIPHER_MODE_CHAIN_CALL_FLAG 0x00000001
+#endif
 #endif
 
 #include <algorithm>
@@ -128,7 +132,8 @@ bool randomBytes(std::size_t n, std::vector<std::uint8_t>& out, std::string& err
 bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
                       const std::vector<std::uint8_t>& plain,
                       AesGcmCiphertext& out,
-                      std::string& errOut) {
+                      std::string& errOut,
+                      std::string_view aad) {
 #ifdef _WIN32
     errOut.clear();
     out = {};
@@ -187,6 +192,28 @@ bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
     info.cbTag = static_cast<ULONG>(out.tag.size());
 
     ULONG outBytes = 0;
+
+    // Pass AAD first if provided
+    if (!aad.empty()) {
+        st = BCryptEncrypt(hKey,
+                           const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(aad.data())),
+                           static_cast<ULONG>(aad.size()),
+                           &info,
+                           nullptr,
+                           0,
+                           nullptr,
+                           0,
+                           &outBytes,
+                           BCRYPT_AUTHENTICATED_CIPHER_MODE_CHAIN_CALL_FLAG);
+        if (st != 0) {
+            BCryptDestroyKey(hKey);
+            if (!keyObj.empty()) SecureZeroMemory(keyObj.data(), keyObj.size());
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            errOut = "BCryptEncrypt(AAD) failed";
+            return false;
+        }
+    }
+
     st = BCryptEncrypt(hKey,
                        const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(plain.data())),
                        static_cast<ULONG>(plain.size()),
@@ -214,6 +241,7 @@ bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
     (void)key32;
     (void)plain;
     (void)out;
+    (void)aad;
     errOut = "BCrypt not available";
     return false;
 #endif
@@ -222,7 +250,8 @@ bool aes256gcmEncrypt(const std::vector<std::uint8_t>& key32,
 bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
                       const AesGcmCiphertext& in,
                       std::vector<std::uint8_t>& plainOut,
-                      std::string& errOut) {
+                      std::string& errOut,
+                      std::string_view aad) {
 #ifdef _WIN32
     errOut.clear();
     plainOut.clear();
@@ -278,8 +307,31 @@ bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
     info.pbTag = const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(in.tag.data()));
     info.cbTag = static_cast<ULONG>(in.tag.size());
 
-    plainOut.assign(in.ciphertext.size(), 0);
     ULONG outBytes = 0;
+
+    // Pass AAD first if provided
+    if (!aad.empty()) {
+        st = BCryptDecrypt(hKey,
+                           const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(aad.data())),
+                           static_cast<ULONG>(aad.size()),
+                           &info,
+                           nullptr,
+                           0,
+                           nullptr,
+                           0,
+                           &outBytes,
+                           BCRYPT_AUTHENTICATED_CIPHER_MODE_CHAIN_CALL_FLAG);
+        if (st != 0) {
+            BCryptDestroyKey(hKey);
+            if (!keyObj.empty()) SecureZeroMemory(keyObj.data(), keyObj.size());
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            errOut = "BCryptDecrypt(AAD) failed";
+            return false;
+        }
+    }
+
+    plainOut.assign(in.ciphertext.size(), 0);
+    outBytes = 0;
     st = BCryptDecrypt(hKey,
                        const_cast<PUCHAR>(reinterpret_cast<const UCHAR*>(in.ciphertext.data())),
                        static_cast<ULONG>(in.ciphertext.size()),
@@ -308,6 +360,7 @@ bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
     (void)key32;
     (void)in;
     (void)plainOut;
+    (void)aad;
     errOut = "BCrypt not available";
     return false;
 #endif

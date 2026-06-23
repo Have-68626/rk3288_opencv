@@ -112,11 +112,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | CR-26 | 安全 | `JsonLite.cpp:248` | JSON 递归解析无深度限制 → 栈溢出可被利用 | ✅ 已修 |
 | CR-27 | 安全 | `WinCrypto.cpp:144` | AES-GCM 密钥未 `SecureZeroMemory` | ✅ 已修 |
 | CR-28 | 安全 | `WinJsonConfig.cpp:1357` | TOCTOU 竞态 — 配置变更被覆盖 | ✅ 已修 |
-| CR-29 | 安全 | `WinCrypto.cpp:181` | AES-256-GCM 无 AAD → 字段可被交换 |
-| CR-30 | BioAuth | `BioAuth.cpp` 全局 | 零线程安全 — 并发 `verify()` 数据竞争 |
-| CR-31 | BioAuth | `BioAuth.cpp:101,186` | 置信度归一化公式本质错误 → 拒真率接近 100% |
-| CR-32 | MotionDetector | `MotionDetector.cpp` 全局 | 零线程安全 — `detect()` 与 `getMotionMask()` 竞态 |
-| CR-33 | MotionDetector | `MotionDetector.cpp:43` | `getMotionMask()` 浅拷贝 → 共享缓冲区被覆写 |
+| CR-29 | 安全 | `WinCrypto.cpp:181` | AES-256-GCM 无 AAD → 字段可被交换 | ✅ 已修 |
+| CR-30 | BioAuth | `BioAuth.cpp` 全局 | 零线程安全 — 并发 `verify()` 数据竞争 | ✅ 已修 |
+| CR-31 | BioAuth | `BioAuth.cpp:101,186` | 置信度归一化公式本质错误 → 拒真率接近 100% | ✅ 已修 |
+| CR-32 | MotionDetector | `MotionDetector.cpp` 全局 | 零线程安全 — `detect()` 与 `getMotionMask()` 竞态 | ✅ 已修 |
+| CR-33 | MotionDetector | `MotionDetector.cpp:43` | `getMotionMask()` 浅拷贝 → 共享缓冲区被覆写 | ✅ 已修 |
 | CR-41 | FaceInfer | `FaceInferStages.cpp:451` | `assumeL2Normalized` 硬编码 → 非归一化模型检索静默错误 |
 | CR-42 | FaceInfer | `ModelRegistry.cpp:18` | `ensureBuiltinRegistered` 无 `call_once` → 并发 UB |
 | CR-43 | 适配器 | 全部 9 个 `*Adapter.cpp` | 全线零线程安全 |

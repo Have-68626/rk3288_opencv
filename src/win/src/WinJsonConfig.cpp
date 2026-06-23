@@ -751,7 +751,7 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
             std::vector<std::uint8_t> plainBin(plain.begin(), plain.end());
             AesGcmCiphertext ct;
             std::string e;
-            if (!aes256gcmEncrypt(*keyOpt, plainBin, ct, e)) {
+            if (!aes256gcmEncrypt(*keyOpt, plainBin, ct, e, "poster.postUrl")) {
                 errOut = e;
                 return JsonValue{};
             }
@@ -979,7 +979,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
                     return false;
                 }
                 std::vector<std::uint8_t> plain;
-                if (!aes256gcmDecrypt(key, ct, plain, e)) {
+                if (!aes256gcmDecrypt(key, ct, plain, e, "poster.postUrl")) {
                     outErr = "postUrl 解密失败: " + e;
                     return false;
                 }

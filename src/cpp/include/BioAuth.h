@@ -17,6 +17,7 @@
 #endif
 
 #include <memory>
+#include <mutex>
 #include <vector>
 
 class BioAuth {
@@ -41,7 +42,7 @@ public:
      */
     void train(const std::vector<cv::Mat>& images, const std::vector<int>& labels);
 
-    void setFaceSelectMode(FaceSelectMode mode) { faceMode = mode; }
+    void setFaceSelectMode(FaceSelectMode mode);
 
     /**
      * @brief Verifies the identity of persons in the frame.
@@ -65,10 +66,13 @@ public:
     bool verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& outResults, int maxFaces = 3, bool enableRecognition = true);
 
 private:
+    static float normalizeLbphConfidence(double distance);
+
+    mutable std::mutex mu_;
     cv::CascadeClassifier faceCascade;
 #ifdef HAS_OPENCV_FACE
     cv::Ptr<cv::face::FaceRecognizer> faceRecognizer;
 #endif
-    bool isModelLoaded;
+    bool isModelLoaded = false;
     FaceSelectMode faceMode = FaceSelectMode::MAIN_FACE;
 };
