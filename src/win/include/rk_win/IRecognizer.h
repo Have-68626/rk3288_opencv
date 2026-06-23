@@ -3,6 +3,10 @@
 #include <string>
 #include <vector>
 
+namespace cv {
+class Mat;
+}
+
 namespace rk_win {
 
 struct FaceMatch;  // defined in FaceRecognizer.h

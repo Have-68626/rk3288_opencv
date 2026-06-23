@@ -407,8 +407,29 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         return failStatus("arc_init", "arc_backend_unsupported");
     }
 
-    ArcFaceEmbedder emb;
+    // 缓存 embedder 避免每帧重新加载模型文件
+    static std::mutex s_embMu;
+    static std::string s_embCacheKey;
+    static ArcFaceEmbedder s_cachedEmb;
+    static bool s_embInited = false;
+    std::string cacheKey = req.arcBackend + ":" + req.arcModelPath;
     std::string initErr;
+    {
+        std::lock_guard<std::mutex> lock(s_embMu);
+        if (cacheKey == s_embCacheKey && s_embInited) {
+            auto result = s_cachedEmb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
+            if (result.has_value()) {
+                ctx.embedding = std::move(result->values);
+                ctx.embeddingOk = true;
+                ctx.arcBackendName = req.arcBackend;
+                const auto te1 = std::chrono::steady_clock::now();
+                m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+                return okStatus();
+            }
+        }
+    }
+
+    ArcFaceEmbedder emb;
     if (!emb.initialize(cfg, &initErr)) {
         return failStatus("arc_init", initErr.empty() ? "arc_init_failed" : initErr);
     }
@@ -423,15 +444,24 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         ctx.arcBackendName = "unknown";
     }
 
-    std::string embedErr;
-    auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &embedErr);
-    if (!e.has_value()) {
-        return failStatus("arc_embed", embedErr.empty() ? "arc_embed_failed" : embedErr);
+    {
+        auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
+        if (e.has_value()) {
+            ctx.embedding = std::move(e->values);
+            ctx.embeddingOk = true;
+        }
     }
-    ctx.embedding = std::move(e->values);
-    ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
-    ctx.embeddingFake = false;
 
+    {
+        std::lock_guard<std::mutex> lock(s_embMu);
+        s_embCacheKey = cacheKey;
+        s_cachedEmb = std::move(emb);
+        s_embInited = true;
+    }
+
+    if (!ctx.embeddingOk) {
+        return failStatus("arc_embed", "arc_embed_failed");
+    }
     const auto te1 = std::chrono::steady_clock::now();
     m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
     return okStatus();

@@ -70,66 +70,10 @@ bool ArcFaceEmbedder::initialize(const ArcFaceEmbedderConfig& cfg, std::string* 
     }
 
     if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) {
-        if (cfg_.opencvModel.empty()) {
-            if (err) *err = "ArcFaceEmbedder: 缺少 OpenCV DNN 模型路径";
-            return false;
-        }
-
-        auto st = std::make_shared<OpenCvDnnState>();
-        try {
-            if (!cfg_.opencvConfig.empty() && !cfg_.opencvFramework.empty()) {
-                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig, cfg_.opencvFramework);
-            } else if (!cfg_.opencvConfig.empty()) {
-                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig);
-            } else {
-                st->net = cv::dnn::readNet(cfg_.opencvModel);
-            }
-        } catch (const cv::Exception& e) {
-            if (err) *err = std::string("ArcFaceEmbedder: OpenCV readNet 失败: ") + e.what();
-            return false;
-        }
-
-        try {
-            st->net.setPreferableBackend(cfg_.opencvBackend);
-            st->net.setPreferableTarget(cfg_.opencvTarget);
-        } catch (const cv::Exception&) {
-        }
-
-        ocv_ = std::move(st);
-        inited_ = true;
-        return true;
+        return initOpenCvDnn("OpenCvDnn", err);
     } else if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Qualcomm) {
-        // [Qualcomm SDK Placeholder]
-        // 探测失败或硬件不兼容时回退到 CPU (OpenCV DNN)
         rklog::logInfo("ArcFaceEmbedder", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... 待补测");
-        if (cfg_.opencvModel.empty()) {
-            if (err) *err = "ArcFaceEmbedder: 缺少回退的 OpenCV DNN 模型路径";
-            return false;
-        }
-
-        auto st = std::make_shared<OpenCvDnnState>();
-        try {
-            if (!cfg_.opencvConfig.empty() && !cfg_.opencvFramework.empty()) {
-                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig, cfg_.opencvFramework);
-            } else if (!cfg_.opencvConfig.empty()) {
-                st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig);
-            } else {
-                st->net = cv::dnn::readNet(cfg_.opencvModel);
-            }
-        } catch (const cv::Exception& e) {
-            if (err) *err = std::string("ArcFaceEmbedder: OpenCV readNet 失败: ") + e.what();
-            return false;
-        }
-
-        try {
-            st->net.setPreferableBackend(cfg_.opencvBackend);
-            st->net.setPreferableTarget(cfg_.opencvTarget);
-        } catch (const cv::Exception&) {
-        }
-
-        ocv_ = std::move(st);
-        inited_ = true;
-        return true;
+        return initOpenCvDnn("Qualcomm", err);
     }
 
     if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) {
@@ -289,5 +233,36 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
 
     if (err) *err = "ArcFaceEmbedder: 未知后端";
     return std::nullopt;
+}
+
+bool ArcFaceEmbedder::initOpenCvDnn(const char* logTag, std::string* err) {
+    if (cfg_.opencvModel.empty()) {
+        if (err) *err = std::string("ArcFaceEmbedder[") + logTag + "]: 缺少 OpenCV DNN 模型路径";
+        return false;
+    }
+
+    auto st = std::make_shared<OpenCvDnnState>();
+    try {
+        if (!cfg_.opencvConfig.empty() && !cfg_.opencvFramework.empty()) {
+            st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig, cfg_.opencvFramework);
+        } else if (!cfg_.opencvConfig.empty()) {
+            st->net = cv::dnn::readNet(cfg_.opencvModel, cfg_.opencvConfig);
+        } else {
+            st->net = cv::dnn::readNet(cfg_.opencvModel);
+        }
+    } catch (const cv::Exception& e) {
+        if (err) *err = std::string("ArcFaceEmbedder[") + logTag + "]: OpenCV readNet 失败: " + e.what();
+        return false;
+    }
+
+    try {
+        st->net.setPreferableBackend(cfg_.opencvBackend);
+        st->net.setPreferableTarget(cfg_.opencvTarget);
+    } catch (const cv::Exception&) {
+    }
+
+    ocv_ = std::move(st);
+    inited_ = true;
+    return true;
 }
 
