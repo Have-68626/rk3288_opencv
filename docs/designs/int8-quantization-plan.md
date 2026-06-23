@@ -1,12 +1,14 @@
 # INT8 量化工具链 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use compose:subagent (recommended) or compose:execute to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **状态**: ✅ 全部任务已完成。本文档保留为历史跟踪记录，行号以完成时为准。: Use compose:subagent (recommended) or compose:execute to implement this
+plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建立 ncnn INT8 量化工具链，支持 YOLO Face / ArcFace / MobileFaceNet 三个模型的 FP32→INT8 转换、运行时切换和精度验证。
 
-**Architecture:** Python 量化脚本调用 ncnn2int8 工具，ModelRegistry 内建注册 INT8 模型变体，WinConfig 增加 int8Enabled 开关，FaceInferStages 根据配置自动选择 INT8/FP32 模型，face_infer_unit_tests 新增精度对比测试。
+**Architecture:** Python 量化脚本调用 ncnn2int8 工具，ModelRegistry 内建注册 INT8 模型变体，WinConfig 增加 int8Enabled 开关，FaceInferStages
+根据配置自动选择 INT8/FP32 模型，face_infer_unit_tests 新增精度对比测试。
 
-**Tech Stack:** Python 3.8+、ncnn（量化工具 + C++ 推理）、C++17、CMake、Google Test
+**Tech Stack:** Python 3.8+、ncnn（量化工具 + C++ 推理）、C++17、CMake、自定义 C++ bool 函数（非 Google Test）
 
 ---
 

@@ -11,7 +11,7 @@
 
 INT8 量化流水线由 5 个组件组成：
 
-```
+``` bash
 tests/test_set01/          scripts/quantize_ncnn_int8.py     models/
   (校准图片)  ──────►  (ncnn2int8 量化)  ──────►  yolo_face_int8.param/.bin
                                                        arcface_int8.param/.bin
@@ -38,7 +38,7 @@ ModelRegistry             FaceInferStages              face_infer_unit_tests
 python scripts/quantize_ncnn_int8.py \
   --model yolo_face \                    # 模型名（yolo_face / arcface / mobilefacenet）
   --fp32-dir models/yolo_face_ncnn \     # FP32 模型目录（含 .param + .bin）
-  --calib-dir tests/test_set01 \         # 校准图片目录
+  --calib-dir tests/test_set01 \         # 校准图片目录（需自行下载 WIDER Face 数据集，gitignored）
   --output-dir models/yolo_face_int8_ncnn \  # INT8 输出目录
   --size 640 \                           # 输入尺寸（YOLO=640, ArcFace/MobileFaceNet=112）
   --num-samples 100                      # 校准图片采样数
