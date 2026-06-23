@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 7 轮审查累计覆盖项目全量源代码。Round 7（b1bd373）为文档维护审计，未发现实质性新缺陷。
 
 #### ✅ 已修复确认
-> 含 Round 1-8 全部已修复记录。CRITICAL (28项) + HIGH (69项) + MEDIUM (35项) 已全部在 Round 4-8 的 30 个 fix commits 中修复。
+> 全部 8 轮审查发现的 132 项问题已全部修复，无未决问题。CRITICAL (28项) + HIGH (69项) + MEDIUM (35项) 已在 Round 4-8 的 40 个 fix commits 中修复。
 | # | 问题 | 修复 commit(s) | 所属轮次 |
 |---|------|---------------|---------|
 | CR-01 | `escapeJsonString` 控制字符未转义 | `4a13def` | R1 |
@@ -104,21 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-07 | `processFrame` 误导性可变引用 | `ba1ac45` + `740401f` | R3 |
 | HR-20 | `render_.status` 字符串赋值无锁 | `436e068` + `cffa4e3` | R3 |
 | MR-04 | 旋转尺寸检查逻辑修正 | `ba1ac45` | R3 |
-
-#### 🔴 未决问题
-
-##### MEDIUM (9 项)
-| # | 模块 | 问题 | 状态 |
-|---|------|------|------|
-| MR-16 | FaceDB | `e.count` int 溢出 | ✅ 已修 |
-| MR-19 | 构建 | OpenCV 列表重复 10+ 次 | ✅ 已修 |
-| MR-20 | 构建 | `-fPIE` 在链接器标志中 | ✅ 已修 |
-| MR-22 | D3D11 | `pushFrameTime` 每帧 O(N log N) | ✅ 已修 |
-| MR-27 | Config | `MOTION_THRESHOLD` 为 640×480 的绝对值 | ✅ 已修 |
-| MR-38 | 日志 | `std::endl` 强制 flush | ✅ 已修 |
-| MR-41 | Input | `timeoutMs=0` 永久阻塞 | ✅ 已修 |
-| MR-47 | 脚本 | `docs-sync-audit.js:148` — `extractHeadUpdateTime` 正则 `[\s*]*` 意外匹配字面 `*` | ✅ 已修 |
-| MR-48 | 第三方 | `civetweb/LICENSE.md:93,124` — 标题去重附加中文全角 `（2）`，应使用 ASCII `(2)` | ✅ 已修 |
 
 #### Findings Lifecycle Rules
 - **🔴 Open** — 已报告未处理 | **✅ Fixed** — 已提交修复

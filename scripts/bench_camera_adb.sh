@@ -70,7 +70,8 @@ for ((i=1; i<=iterations; i++)); do
 
   lines="$(wait_for_lines)" || true
   if [[ -z "${lines}" ]]; then
-    printf "[%s] Iteration %s: timeout waiting for logcat output\n" "$(date -Iseconds)" "${i}" >&2
+    printf "[%s] Iteration %s: timeout waiting for logcat output, skipping\n" "$(date -Iseconds)" "${i}" >&2
+    continue
   fi
   ttff="$(printf "%s\n" "${lines}" | extract_int "TTFF_MS")"
   capture_ok="$(printf "%s\n" "${lines}" | extract_int "CAPTURE_OK")"
