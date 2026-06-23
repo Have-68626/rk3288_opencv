@@ -41,7 +41,11 @@ static std::string jsonEscapeMinimal(const std::string& s) {
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else if (c < 0x20) out += "?";
+        else if (c < 0x20) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
+            out += buf;
+        }
         else out.push_back(static_cast<char>(c));
     }
     return out;
@@ -53,18 +57,29 @@ static std::string buildSimpleErrorJson(bool ok,
                                         const std::string& message,
                                         long long tsMs,
                                         const std::string& imagePath) {
-    std::ostringstream oss;
-    oss << "{";
-    oss << "\"ok\":" << (ok ? "true" : "false") << ",";
-    oss << "\"errorCode\":" << errorCode << ",";
-    oss << "\"stage\":\"" << jsonEscapeMinimal(stage) << "\",";
-    oss << "\"message\":\"" << jsonEscapeMinimal(message) << "\",";
-    oss << "\"timestamp_ms\":" << tsMs;
+    std::string out;
+    const std::string escStage = jsonEscapeMinimal(stage);
+    const std::string escMsg = jsonEscapeMinimal(message);
+    const std::string escImg = !imagePath.empty() ? jsonEscapeMinimal(imagePath) : "";
+    out.reserve(128 + escStage.size() + escMsg.size() + escImg.size());
+    out += "{";
+    out += "\"ok\":";
+    out += (ok ? "true" : "false");
+    out += ",\"errorCode\":";
+    out += std::to_string(errorCode);
+    out += ",\"stage\":\"";
+    out += escStage;
+    out += "\",\"message\":\"";
+    out += escMsg;
+    out += "\",\"timestamp_ms\":";
+    out += std::to_string(tsMs);
     if (!imagePath.empty()) {
-        oss << ",\"image\":\"" << jsonEscapeMinimal(imagePath) << "\"";
+        out += ",\"image\":\"";
+        out += escImg;
+        out += "\"";
     }
-    oss << "}";
-    return oss.str();
+    out += "}";
+    return out;
 }
 
 static int errorCodeForStage(const std::string& stage) {
