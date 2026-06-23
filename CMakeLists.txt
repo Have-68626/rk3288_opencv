@@ -82,7 +82,16 @@ else()
     set(RK_HAVE_QUALCOMM 0)
 endif()
 
-add_definitions(-DRK_HAVE_MPP=${RK_HAVE_MPP} -DRK_HAVE_QUALCOMM=${RK_HAVE_QUALCOMM})
+set(RK_COMMON_DEFS RK_HAVE_MPP=${RK_HAVE_MPP} RK_HAVE_QUALCOMM=${RK_HAVE_QUALCOMM})
+
+# Collect non-test engine target names for per-target include/dep application
+set(RK_ENGINE_TARGETS
+    core_unit_tests rk3288_cli opencv_verify_cli native-lib
+    win_local_service win_camera_face_recognition
+    face_infer_unit_tests ncnn_precision_test
+    inference_bench_cli win_face_eval_cli win_face_bench_cli
+    win_unit_tests win_face_database_perf
+)
 
 if(ANDROID)
     set(_rk_enable_libyuv_default ON)
@@ -107,10 +116,12 @@ else()
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,relro -Wl,-z,now -fPIE -pie")
 endif()
 
-# Include directories
-include_directories(src/cpp/include)
-include_directories(src/cpp/include/adapters)
-include_directories(src/win/include)
+# Include directories — applied per-target below (not globally)
+set(RK_COMMON_INCLUDES
+    "${CMAKE_SOURCE_DIR}/src/cpp/include"
+    "${CMAKE_SOURCE_DIR}/src/cpp/include/adapters"
+    "${CMAKE_SOURCE_DIR}/src/win/include"
+)
 
 option(RK_SKIP_OPENCV "跳过 OpenCV 构建（仅可用于不依赖 OpenCV 的目标，如 core_unit_tests）" OFF)
 option(RK_BUILD_CORE_UNIT_TESTS "Build core unit tests" ON)
@@ -302,8 +313,36 @@ if(RK_ENABLE_LIBYUV)
 endif()
 
 # Collect Core Source Files (excluding entry points)
-file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
-    "src/cpp/src/*.cpp"
+set(CORE_SOURCES
+    "src/cpp/src/ArcFaceEmbedder.cpp"
+    "src/cpp/src/BioAuth.cpp"
+    "src/cpp/src/Engine.cpp"
+    "src/cpp/src/EventManager.cpp"
+    "src/cpp/src/FaceAlign.cpp"
+    "src/cpp/src/FaceInferencePipeline.cpp"
+    "src/cpp/src/FaceInferOutcomeJson.cpp"
+    "src/cpp/src/FaceInferStages.cpp"
+    "src/cpp/src/FaceSearch.cpp"
+    "src/cpp/src/FaceTemplate.cpp"
+    "src/cpp/src/FileHash.cpp"
+    "src/cpp/src/FrameInputChannel.cpp"
+    "src/cpp/src/ModelRegistry.cpp"
+    "src/cpp/src/MotionDetector.cpp"
+    "src/cpp/src/MppDecoder.cpp"
+    "src/cpp/src/NativeLog.cpp"
+    "src/cpp/src/Storage.cpp"
+    "src/cpp/src/ThresholdPolicy.cpp"
+    "src/cpp/src/VideoManager.cpp"
+    "src/cpp/src/YoloFaceDetector.cpp"
+    "src/cpp/src/adapters/ArcFaceAdapter.cpp"
+    "src/cpp/src/adapters/CascadeAdapter.cpp"
+    "src/cpp/src/adapters/DnnSsdAdapter.cpp"
+    "src/cpp/src/adapters/LbphAdapter.cpp"
+    "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
+    "src/cpp/src/adapters/RetinaFaceAdapter.cpp"
+    "src/cpp/src/adapters/SFaceAdapter.cpp"
+    "src/cpp/src/adapters/YoloFaceAdapter.cpp"
+    "src/cpp/src/adapters/YuNetAdapter.cpp"
 )
 
 if(ANDROID)
@@ -904,6 +943,14 @@ endif()
 if(TARGET win_face_bench_cli)
     install(TARGETS win_face_bench_cli RUNTIME DESTINATION bin)
 endif()
+
+# Apply per-target includes and definitions (replacing global include_directories / add_definitions)
+foreach(t ${RK_ENGINE_TARGETS})
+    if(TARGET ${t})
+        target_include_directories(${t} PRIVATE ${RK_COMMON_INCLUDES})
+        target_compile_definitions(${t} PRIVATE ${RK_COMMON_DEFS})
+    endif()
+endforeach()
 
 endif()
 

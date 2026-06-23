@@ -156,11 +156,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | HR-33 | 人脸识别 | `FaceRecognizer.cpp:97` | `identifyThreshold_` 读写竞争 | ✅ 已修（CR-24） |
 | HR-34 | 人脸识别 | `FaceInferStages.cpp:440` | `std::move` 导致空 gallery | ✅ 已修 |
 | HR-35 | 构建 | `CMakeLists.txt` | 无 `install()` 目标 | ✅ 已修 |
-| HR-36 | 构建 | `CMakeLists.txt:111` | 全局 `include_directories()` |
-| HR-37 | 构建 | `CMakeLists.txt:85` | 废弃 `add_definitions()` |
-| HR-38 | 构建 | `CMakeLists.txt:305` | `file(GLOB_RECURSE)` |
-| HR-39 | BioAuth | `BioAuth.cpp:95,183` | ROI 无边界限制 |
-| HR-40 | BioAuth | `BioAuth.cpp:72,129` | `detectMultiScale` 魔数 |
+| HR-36 | 构建 | `CMakeLists.txt:111` | 全局 `include_directories()` | ✅ 已修 |
+| HR-37 | 构建 | `CMakeLists.txt:85` | 废弃 `add_definitions()` | ✅ 已修 |
+| HR-38 | 构建 | `CMakeLists.txt:305` | `file(GLOB_RECURSE)` | ✅ 已修 |
+| HR-39 | BioAuth | `BioAuth.cpp:95,183` | ROI 无边界限制 | ✅ 已修 |
+| HR-40 | BioAuth | `BioAuth.cpp:72,129` | `detectMultiScale` 魔数 | ✅ 已修 |
 | HR-41 | MotionDetector | `MotionDetector.cpp:16` | 假设 BGR 输入 |
 | HR-42 | 构建 | `app/build.gradle` | 版本硬编码无 catalog |
 | HR-43 | 构建 | `gradle.properties:19` | 单线程 workers |

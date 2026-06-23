@@ -4,6 +4,17 @@
 #include <algorithm>
 #include <iostream>
 
+namespace {
+constexpr double kCascadeScaleFactor = 1.1;
+constexpr int kCascadeMinNeighbors = 3;
+constexpr int kCascadeFlags = 0;
+constexpr int kCascadeMinFaceSize = 60;
+
+cv::Rect clipToImage(const cv::Rect& r, int cols, int rows) {
+    return r & cv::Rect(0, 0, cols, rows);
+}
+}
+
 BioAuth::BioAuth() {
 #ifdef HAS_OPENCV_FACE
     faceRecognizer = cv::face::LBPHFaceRecognizer::create();
@@ -77,7 +88,7 @@ bool BioAuth::verify(const cv::Mat& frame,
 
     {
         std::lock_guard<std::mutex> lock(mu_);
-        faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
+        faceCascade.detectMultiScale(gray, faces, kCascadeScaleFactor, kCascadeMinNeighbors, kCascadeFlags, cv::Size(kCascadeMinFaceSize, kCascadeMinFaceSize));
     }
 
     if (faces.empty()) {
@@ -100,7 +111,7 @@ bool BioAuth::verify(const cv::Mat& frame,
             int label = -1;
             double confidence = 0.0;
 
-            faceRecognizer->predict(gray(largestFace), label, confidence);
+            faceRecognizer->predict(gray(clipToImage(largestFace, gray.cols, gray.rows)), label, confidence);
 
             outIdentity.id = std::to_string(label);
             outIdentity.confidence = normalizeLbphConfidence(confidence);
@@ -131,7 +142,7 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
 
     {
         std::lock_guard<std::mutex> lock(mu_);
-        faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(60, 60));
+        faceCascade.detectMultiScale(gray, faces, kCascadeScaleFactor, kCascadeMinNeighbors, kCascadeFlags, cv::Size(kCascadeMinFaceSize, kCascadeMinFaceSize));
     }
 
     if (faces.empty()) {
@@ -188,7 +199,7 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
 #ifdef HAS_OPENCV_FACE
                 int label = -1;
                 double distance = 0.0;
-                faceRecognizer->predict(gray(face), label, distance);
+                faceRecognizer->predict(gray(clipToImage(face, gray.cols, gray.rows)), label, distance);
 
                 r.identity.id = (label >= 0) ? std::to_string(label) : "unknown";
                 r.identity.confidence = normalizeLbphConfidence(distance);
