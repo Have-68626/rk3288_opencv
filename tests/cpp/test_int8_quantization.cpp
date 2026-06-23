@@ -125,7 +125,7 @@ bool test_int8_precision_detection_iou() {
 
 #ifdef RK_HAVE_NCNN
     {
-        if (!fileExists("models/yolo_face_ncnn/yolo_face.param")) return true;
+        if (skipIfNoModel("models/yolo_face_ncnn/yolo_face.param")) return true;
         // ncnn 推理比较：虚拟输入 → FP32 检测 → INT8 检测 → 输出维度一致
         ncnn::Net fp32, int8;
         if (fp32.load_param("models/yolo_face_ncnn/yolo_face.param") != 0) return false;
@@ -160,7 +160,7 @@ bool test_int8_precision_arcface_similarity() {
 
 #ifdef RK_HAVE_NCNN
     {
-        if (!fileExists("models/arcface_ncnn/arcface.param")) return true;
+        if (skipIfNoModel("models/arcface_ncnn/arcface.param")) return true;
         // ncnn 推理比较：虚拟人脸 → FP32 嵌入 → INT8 嵌入 → cosine ≥ 0.90
         ncnn::Net fp32, int8;
         if (fp32.load_param("models/arcface_ncnn/arcface.param") != 0) return false;
