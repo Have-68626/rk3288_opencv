@@ -654,12 +654,20 @@ void Engine::run() {
                     std::string outPath = outDir + "/engine_perf.csv";
 
                     {
-                        std::ostringstream csv;
+                        std::string csvStr;
+                        // Pre-allocate enough space to avoid reallocation.
+                        // Typical line is ~60 bytes. 30 frames -> 1800 bytes.
+                        csvStr.reserve(perfHistory.size() * 128);
+                        char buf[512];
                         for (const auto& s : perfHistory) {
-                            csv << s.decodeMs << ',' << s.preMs << ',' << s.inferMs << ','
-                                << s.postMs << ',' << s.renderMs << ',' << s.rssBytes << '\n';
+                            int n = snprintf(buf, sizeof(buf), "%g,%g,%g,%g,%g,%zu\n",
+                                             s.decodeMs, s.preMs, s.inferMs,
+                                             s.postMs, s.renderMs, s.rssBytes);
+                            if (n > 0 && n < static_cast<int>(sizeof(buf))) {
+                                csvStr.append(buf, n);
+                            }
                         }
-                        std::thread([outPath, csvStr = csv.str()]() {
+                        std::thread([outPath, csvStr]() {
                             FILE* f = fopen(outPath.c_str(), "a");
                             if (f) {
                                 fwrite(csvStr.data(), 1, csvStr.size(), f);

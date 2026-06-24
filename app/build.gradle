@@ -103,7 +103,7 @@ android {
 
     splits {
         abi {
-            enable true
+            enable false
             reset()
             def enableX86_64 = (project.findProperty("RK_ENABLE_X86_64") ?: System.getenv("RK_ENABLE_X86_64"))?.toString()?.toBoolean() ?: false
             if (enableX86_64) {
