@@ -97,10 +97,11 @@ export function PreviewPage() {
   const currentFormatKey = `${currentW}x${currentH}@${currentFps}`
 
   const handleEnroll = async () => {
-    if (!personId.trim() || isEnrolling) return
+    const trimmedPersonId = personId.trim()
+    if (!trimmedPersonId || isEnrolling) return
     try {
       setIsEnrolling(true)
-      await enroll(prefs, { personId })
+      await enroll(prefs, { personId: trimmedPersonId })
       message.success('注册指令已发送')
       setPersonId('')
     } catch (e: unknown) {
