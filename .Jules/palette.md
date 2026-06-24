@@ -57,3 +57,7 @@ own toasts may leave users confused.
 refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state
 store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should
 NOT emit generic toasts from the store to prevent double notifications.
+
+## $(date +%Y-%m-%d) - Input onPressEnter accessibility pattern
+**Learning:** For standalone `<Input>` fields associated with an action button (e.g., registration), binding the action handler solely to the button's `onClick` fails keyboard accessibility tests. The Enter key does not natively submit standard input fields unless they are inside a properly configured `<form>` that intercepts `onSubmit`.
+**Action:** Always bind the action handler to the input's `onPressEnter` event in addition to the button's `onClick` handler. Ensure the handler manually validates the input (e.g., `!input.trim()`) to maintain functional parity, as the Enter key bypasses the button's `disabled` state.
