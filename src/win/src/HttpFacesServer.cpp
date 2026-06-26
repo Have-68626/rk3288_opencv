@@ -180,7 +180,9 @@ static std::string utf8FromWideLocal(const std::wstring& ws) {
 #if RK_WIN_HAS_OPENCV
 static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
     if (rs.bgr.empty()) return false;
-    cv::Mat img = rs.bgr.clone();
+    // Performance optimization: RenderState::bgr is already an isolated thread-local deep copy.
+    // Avoid redundant clone() per frame in MJPEG stream.
+    cv::Mat img = rs.bgr;
     for (const auto& f : rs.faces) {
         cv::rectangle(img, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     }
