@@ -345,6 +345,19 @@ export function PreviewPage() {
               showCount
               allowClear
               onChange={(e) => setPersonId(e.target.value)}
+              onPressEnter={async () => {
+                if (!personId.trim() || isEnrolling) return
+                try {
+                  setIsEnrolling(true)
+                  await enroll(prefs, { personId })
+                  message.success('注册指令已发送')
+                  setPersonId('')
+                } catch (e: unknown) {
+                  message.error(getErrorMessage(e) || '注册失败')
+                } finally {
+                  setIsEnrolling(false)
+                }
+              }}
               placeholder="例如：alice"
             />
           </Form.Item>
