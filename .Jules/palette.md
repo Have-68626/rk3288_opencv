@@ -57,3 +57,6 @@ own toasts may leave users confused.
 refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state
 store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should
 NOT emit generic toasts from the store to prevent double notifications.
+## 2026-06-27 - Accessible Icon Buttons in Form Labels
+**Learning:** When introducing icon-only actions (like a refresh button) next to Form labels or within constrained layouts, relying solely on visual icons degrades screen reader accessibility.
+**Action:** Always combine a visual `Tooltip` with an explicit `aria-label` on the button itself. This satisfies both sighted users needing context and screen reader users navigating interactively.
