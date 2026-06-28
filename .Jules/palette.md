@@ -57,3 +57,6 @@ own toasts may leave users confused.
 refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state
 store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should
 NOT emit generic toasts from the store to prevent double notifications.
+## 2026-06-28 - Keyboard Accessibility for Input Fields Linked to Action Buttons
+**Learning:** For standalone `<Input>` fields associated with an action button (like a "Registration" input next to an "Enroll" button), relying solely on the button for submission harms keyboard accessibility. Users naturally press Enter, but the native Enter key only triggers a submission if the input is within a `<form>` element.
+**Action:** When implementing an `<Input>` that has a distinct, primary companion action, always extract the submission logic into a reusable handler and bind it to the `<Input>`'s `onPressEnter` event. Ensure this handler manually validates the input (e.g., checking `!input.trim()`) to maintain functional parity with the disabled state of the companion button, which is otherwise bypassed when pressing Enter.
