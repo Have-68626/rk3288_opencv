@@ -403,27 +403,44 @@ void HttpFacesServer::acceptLoop() {
         }
 
         activeClients_++;
-        std::thread([this, cs, lease = std::move(*lease)]() mutable {
-            struct Cleanup {
-                HttpFacesServer* self;
-                std::uintptr_t sockP;
-                ~Cleanup() {
-                    {
-                        std::lock_guard<std::mutex> lk(self->clientMu_);
-                        for (auto it = self->clientSocks_.begin(); it != self->clientSocks_.end(); ++it) {
-                            if (*it == sockP) {
-                                self->clientSocks_.erase(it);
-                                break;
+        try {
+            std::thread([this, cs, lease = std::move(*lease)]() mutable {
+                struct Cleanup {
+                    HttpFacesServer* self;
+                    std::uintptr_t sockP;
+                    ~Cleanup() {
+                        {
+                            std::lock_guard<std::mutex> lk(self->clientMu_);
+                            for (auto it = self->clientSocks_.begin(); it != self->clientSocks_.end(); ++it) {
+                                if (*it == sockP) {
+                                    self->clientSocks_.erase(it);
+                                    break;
+                                }
                             }
                         }
+                        self->activeClients_--;
+                        self->stopCv_.notify_all();
                     }
-                    self->activeClients_--;
-                    self->stopCv_.notify_all();
-                }
-            } cleanup{this, static_cast<std::uintptr_t>(cs)};
+                } cleanup{this, static_cast<std::uintptr_t>(cs)};
 
-            handleClient(static_cast<std::uintptr_t>(cs));
-        }).detach();
+                handleClient(static_cast<std::uintptr_t>(cs));
+            }).detach();
+        } catch (const std::exception&) {
+            // Security: Catch std::system_error (e.g., thread exhaustion) to prevent std::terminate() DOS.
+            // Roll back the state and cleanly reject the connection.
+            activeClients_--;
+            stopCv_.notify_all();
+            {
+                std::lock_guard<std::mutex> lk(clientMu_);
+                for (auto it = clientSocks_.begin(); it != clientSocks_.end(); ++it) {
+                    if (*it == static_cast<std::uintptr_t>(cs)) {
+                        clientSocks_.erase(it);
+                        break;
+                    }
+                }
+            }
+            closesocket(cs);
+        }
     }
 }
 
