@@ -57,3 +57,7 @@ own toasts may leave users confused.
 refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state
 store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should
 NOT emit generic toasts from the store to prevent double notifications.
+
+## 2024-06-29 - Add keyboard accessibility to registration input
+**Learning:** For standalone `<Input>` fields associated with an action button (like registration), users expect the Enter key to trigger the action. Ant Design inputs don't inherently trigger adjacent buttons.
+**Action:** Always bind the action handler to the input's `onPressEnter` event for keyboard accessibility. Ensure the handler manually validates conditions (like empty input or loading state) since the Enter key bypasses the button's `disabled` property.
