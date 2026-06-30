@@ -96,6 +96,20 @@ export function PreviewPage() {
 
   const currentFormatKey = `${currentW}x${currentH}@${currentFps}`
 
+  const handleEnroll = async () => {
+    if (!personId.trim()) return
+    try {
+      setIsEnrolling(true)
+      await enroll(prefs, { personId })
+      message.success('注册指令已发送')
+      setPersonId('')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e) || '注册失败')
+    } finally {
+      setIsEnrolling(false)
+    }
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card
@@ -345,6 +359,7 @@ export function PreviewPage() {
               showCount
               allowClear
               onChange={(e) => setPersonId(e.target.value)}
+              onPressEnter={handleEnroll}
               placeholder="例如：alice"
             />
           </Form.Item>
@@ -355,18 +370,7 @@ export function PreviewPage() {
                 <Button
                   type="primary"
                   icon={<UserAddOutlined />}
-                  onClick={async () => {
-                    try {
-                      setIsEnrolling(true)
-                      await enroll(prefs, { personId })
-                      message.success('注册指令已发送')
-                      setPersonId('')
-                    } catch (e: unknown) {
-                      message.error(getErrorMessage(e) || '注册失败')
-                    } finally {
-                      setIsEnrolling(false)
-                    }
-                  }}
+                  onClick={handleEnroll}
                   disabled={!personId.trim()}
                   loading={isEnrolling}
                   style={{ pointerEvents: !personId.trim() ? 'none' : undefined }}
