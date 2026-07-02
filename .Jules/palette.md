@@ -57,3 +57,4 @@ own toasts may leave users confused.
 refresh from a top navigation bar) should have centralized `message.loading` and success/error feedback inside the state
 store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should
 NOT emit generic toasts from the store to prevent double notifications.
+## 2026-07-02 - Enable Enter key submission for standalone Inputs\n**Learning:** Standalone inputs paired with action buttons fail keyboard accessibility expectations if the action cannot be triggered by the Enter key.\n**Action:** Always bind the action handler to the `onPressEnter` event of the associated `<Input>`, ensuring the handler independently validates input to match the button's disabled state.
