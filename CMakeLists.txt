@@ -690,6 +690,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/FramePipeline.cpp"
             "src/win/src/EventLogger.cpp"
+            "src/win/src/EndpointRegistry.cpp"
+            "src/win/src/JsonEndpointHandlers.cpp"
             "src/cpp/src/FileHash.cpp"
         )
 
@@ -773,6 +775,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/D3D11Renderer.cpp"
             "src/win/src/RenderMetricsLogger.cpp"
             "src/win/src/EventLogger.cpp"
+            "src/win/src/EndpointRegistry.cpp"
+            "src/win/src/JsonEndpointHandlers.cpp"
         )
 
         target_include_directories(win_camera_face_recognition PRIVATE
@@ -887,6 +891,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "tests/win/test_face_metrics.cpp"
         "tests/win/test_lbph_embedder.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "tests/win/test_endpoint_registry.cpp"
+        "src/win/src/EndpointRegistry.cpp"
         "src/cpp/src/FileHash.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/LbphEmbedder.cpp"

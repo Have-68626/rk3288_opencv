@@ -31,6 +31,8 @@ bool runAll(const TestCase* cases, int n) {
 
 bool test_lbph_embedder_dim_and_distance();
 bool test_face_metrics_confusion_matrix();
+bool test_registry_dispatch_returns_200_for_matching_route();
+bool test_registry_returns_405_for_method_mismatch();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
@@ -39,6 +41,8 @@ int main() {
     const TestCase cases[] = {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},
         {"face_metrics_confusion_matrix", test_face_metrics_confusion_matrix},
+        {"registry_dispatch_returns_200", test_registry_dispatch_returns_200_for_matching_route},
+        {"registry_returns_405_for_method_mismatch", test_registry_returns_405_for_method_mismatch},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

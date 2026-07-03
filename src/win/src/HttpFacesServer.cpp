@@ -1,9 +1,11 @@
 #include "rk_win/HttpFacesServer.h"
 #include "rk_win/HttpFacesServerPath.h"
 
+#include "rk_win/EndpointRegistry.h"
 #include "rk_win/EventLogger.h"
 #include "rk_win/FacesJson.h"
 #include "rk_win/FramePipeline.h"
+#include "rk_win/JsonEndpointHandlers.h"
 #include "rk_win/JsonLite.h"
 #include "rk_win/WinConfig.h"
 #include "rk_win/WinJsonConfig.h"
@@ -290,7 +292,10 @@ static const HttpFacesServer::Route kRoutes[] = {
 
 // ──── 构造函数 / 生命周期 ────────────────────────────────────
 
-HttpFacesServer::HttpFacesServer() = default;
+HttpFacesServer::HttpFacesServer()
+    : registry_(std::make_unique<EndpointRegistry>()) {
+    handlers::registerAllHttpApi(*registry_);
+}
 
 HttpFacesServer::~HttpFacesServer() {
     stop();
@@ -617,15 +622,18 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& 
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req) {
-    for (const auto& r : kRoutes) {
-        if (req.path == r.path) {
-            if (r.method[0] != '*' && req.method != r.method) {
-                return jsonErr(405, "method_not_allowed", "仅支持 " + std::string(r.method));
-            }
-            return (this->*r.handler)(req);
-        }
+    // 流式端点由 handleClient 直接处理，不经过 handleApi
+    if (req.path == "/api/v1/preview.mjpeg" ||
+        req.path == "/api/faces/stream" ||
+        req.path == "/api/v1/faces/stream") {
+        return HttpResponse{};
     }
-    return jsonErr(404, "not_found", "未知端点");
+
+    // 已迁移端点通过注册表调度
+    EndpointContext ctx;
+    ctx.pipe = pipe_;
+    ctx.settings = settings_;
+    return registry_->dispatch(req, ctx);
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const HttpRequest& req) {

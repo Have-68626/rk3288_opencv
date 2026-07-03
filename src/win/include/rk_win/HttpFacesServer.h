@@ -16,6 +16,7 @@
 
 namespace rk_win {
 
+class EndpointRegistry;
 class EventLogger;
 class FramePipeline;
 class WinJsonConfigStore;
@@ -28,7 +29,8 @@ public:
     bool start(FramePipeline* pipe, EventLogger* events, int port, WinJsonConfigStore* settings);
     void stop();
 
-private:
+    // ──── 公共类型（端点注册表等外部组件可引用） ──────────────
+public:
     struct HttpRequest {
         std::string method;
         std::string path;
@@ -47,6 +49,7 @@ private:
         bool close = true;
     };
 
+private:
     struct Route {
         const char* path;
         const char* method;
@@ -115,6 +118,10 @@ private:
     ConnectionQuota quota_{MAX_CONCURRENT_CONNECTIONS};
     std::vector<std::uintptr_t> clientSocks_;
     std::atomic<int> activeClients_{0};
+
+    // 端点注册表（JsonEndpointHandlers 填充）
+    std::unique_ptr<EndpointRegistry> registry_;
+
     std::mutex stopMu_;
     std::condition_variable stopCv_;
 };
