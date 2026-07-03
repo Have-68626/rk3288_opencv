@@ -40,10 +40,6 @@ constexpr DWORD kSocketTimeoutMs = 5000;
 #else
 constexpr int kSocketTimeoutMs = 5000;
 #endif
-constexpr int kSsePollMs = 1000;
-constexpr int kSseIdleMs = 100;
-constexpr auto kSseKeepaliveSec = std::chrono::seconds(10);
-constexpr int kMjpegIdleMs = 100;
 constexpr int kStaticCacheMaxAge = 31536000;        // 1 year
 constexpr int kAcceptRetryMs = 50;
 
@@ -196,76 +192,6 @@ static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& out
 
 }  // namespace
 
-// ──── SSE 流会话 ────────────────────────────────────────────
-namespace {
-class SseSession : public HttpFacesServer::StreamSession {
-public:
-    using StreamSession::StreamSession;
-
-    std::string contentType() const override { return "text/event-stream; charset=utf-8"; }
-    int idleMs() const override { return kSseIdleMs; }
-
-private:
-    std::uint64_t lastSeq_ = 0;
-    std::chrono::steady_clock::time_point lastKeep_ = std::chrono::steady_clock::now();
-
-public:
-    bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
-        if (!pipe) return false;
-        std::uint64_t seq = 0;
-        const bool changed = pipe->waitFacesSeqChanged(lastSeq_, kSsePollMs, seq);
-        if (!running) return false;
-        if (changed) {
-            lastSeq_ = seq;
-            FacesSnapshot snap;
-            if (pipe->snapshotFaces(snap)) {
-                const std::string body = buildFacesJson(snap);
-                std::string evt = "data: " + body + "\n\n";
-                return server_->writeRaw(sock, evt.data(), evt.size());
-            }
-        } else {
-            const auto now = std::chrono::steady_clock::now();
-            if (now - lastKeep_ > kSseKeepaliveSec) {
-                const std::string ka = ": keepalive\n\n";
-                lastKeep_ = now;
-                return server_->writeRaw(sock, ka.data(), ka.size());
-            }
-        }
-        return true;
-    }
-};
-
-class MjpegSession : public HttpFacesServer::StreamSession {
-public:
-    using StreamSession::StreamSession;
-
-    std::string contentType() const override {
-        return "multipart/x-mixed-replace; boundary=rk_boundary";
-    }
-    int idleMs() const override { return 100; }
-
-    bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) override {
-#if RK_WIN_HAS_OPENCV
-        if (!pipe) return false;
-        RenderState rs;
-        if (!pipe->tryGetRenderState(rs)) return true;
-        std::vector<std::uint8_t> jpeg;
-        if (!buildJpegWithOverlay(rs, jpeg)) return true;
-        std::string part;
-        part.reserve(128);
-        part += "--rk_boundary\r\nContent-Type: image/jpeg\r\nContent-Length: ";
-        part += std::to_string(jpeg.size());
-        part += "\r\n\r\n";
-        if (!server_->writeRaw(sock, part.data(), part.size())) return false;
-        if (!server_->writeRaw(sock, jpeg.data(), jpeg.size())) return false;
-        if (!server_->writeRaw(sock, "\r\n", 2)) return false;
-#else
-        (void)sock; (void)pipe; (void)running;
-        return false;  // 无 OpenCV 时无法编码 JPEG, 终止流
-#endif
-        return true;
-    }
-};
 }  // namespace
 
 // ──── 端点路由表 ─────────────────────────────────────────────
@@ -290,7 +216,13 @@ static const HttpFacesServer::Route kRoutes[] = {
 
 // ──── 构造函数 / 生命周期 ────────────────────────────────────
 
-HttpFacesServer::HttpFacesServer() = default;
+HttpFacesServer::HttpFacesServer()
+    : streamRunner_(running_, [this](cv::Mat& out) -> bool {
+          RenderState rs;
+          if (!pipe_->tryGetRenderState(rs)) return false;
+          out = rs.bgr;
+          return true;
+      }) {}
 
 HttpFacesServer::~HttpFacesServer() {
     stop();
@@ -299,6 +231,7 @@ HttpFacesServer::~HttpFacesServer() {
 bool HttpFacesServer::start(FramePipeline* pipe, EventLogger* events, int port, WinJsonConfigStore* settings) {
     if (running_) return true;
     pipe_ = pipe;
+    streamRunner_.setPipe(pipe);
     events_ = events;
     settings_ = settings;
     port_ = port;
@@ -947,27 +880,6 @@ HttpFacesServer::HttpResponse HttpFacesServer::onPreviewJpg(const HttpRequest&) 
 #endif
 }
 
-// ──── 流式会话 ───────────────────────────────────────────────
-
-void HttpFacesServer::runStream(std::uintptr_t sock, std::unique_ptr<StreamSession> session) {
-    SocketGuard sg(static_cast<SOCKET>(sock));
-    const std::string ct = session->contentType();
-    std::string head;
-    head.reserve(256);
-    head += "HTTP/1.1 200 OK\r\nContent-Type: ";
-    head += ct;
-    head += "\r\nCache-Control: no-cache\r\n"
-            "X-Content-Type-Options: nosniff\r\n"
-            "X-Frame-Options: DENY\r\n"
-            "Content-Security-Policy: default-src 'none'\r\n"
-            "Connection: keep-alive\r\n\r\n";
-    if (!writeRaw(sock, head.data(), head.size())) return;
-    while (running_) {
-        if (!session->writeFrame(sock, pipe_, running_)) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(session->idleMs()));
-    }
-}
-
 // ──── 客户端处理 ─────────────────────────────────────────────
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
@@ -985,16 +897,14 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
         return;
     }
 
-    // 流式端点：runStream 接管 socket 生命周期
+    // 流式端点统一：StreamSessionRunner 接管 socket 生命周期
     if ((req.path == "/api/faces/stream" || req.path == "/api/v1/faces/stream") && req.method == "GET") {
-        sg.release();
-        runStream(sock, std::make_unique<SseSession>(this));
+        streamRunner_.run(sock, StreamType::Sse);
         return;
     }
 
     if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
-        sg.release();
-        runStream(sock, std::make_unique<MjpegSession>(this));
+        streamRunner_.run(sock, StreamType::Mjpeg);
         return;
     }
 

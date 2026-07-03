@@ -3,6 +3,7 @@
 #include "Compat.h"
 #include "ConnectionQuota.h"
 #include "JsonLite.h"
+#include "StreamSessionRunner.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -55,19 +56,6 @@ private:
         HttpResponse (HttpFacesServer::*handler)(const HttpRequest&);
     };
 
-    // 流式会话基类：提取 SSE/MJPEG 共享的"写头→循环写帧→关闭"模式
-    class StreamSession {
-    public:
-        explicit StreamSession(HttpFacesServer* server) : server_(server) {}
-        virtual ~StreamSession() = default;
-        virtual std::string contentType() const = 0;
-        virtual bool writeFrame(std::uintptr_t sock, FramePipeline* pipe, bool& running) = 0;
-        virtual int idleMs() const = 0;
-
-    protected:
-        HttpFacesServer* server_;
-    };
-
     void acceptLoop();
     void handleClient(std::uintptr_t sock);
     bool readRequest(std::uintptr_t sock, HttpRequest& out, std::string& err);
@@ -99,8 +87,8 @@ private:
     HttpResponse onPrivacyOpen(const HttpRequest& req);
     HttpResponse onPreviewJpg(const HttpRequest& req);
 
-    // 流式会话
-    void runStream(std::uintptr_t sock, std::unique_ptr<StreamSession> session);
+    // 流式会话运行器
+    StreamSessionRunner streamRunner_;
 
     std::atomic<bool> running_{false};
     FramePipeline* pipe_ = nullptr;
