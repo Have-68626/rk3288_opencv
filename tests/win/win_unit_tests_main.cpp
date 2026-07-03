@@ -29,6 +29,8 @@ bool runAll(const TestCase* cases, int n) {
 
 }  // namespace rk_win_test
 
+bool test_registry_dispatch_returns_200_for_matching_route();
+bool test_registry_returns_405_for_method_mismatch();
 bool test_lbph_embedder_dim_and_distance();
 bool test_face_metrics_confusion_matrix();
 bool test_bootstrap_returns_models_on_valid_config();
@@ -41,10 +43,11 @@ int main() {
     const TestCase cases[] = {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},
         {"face_metrics_confusion_matrix", test_face_metrics_confusion_matrix},
+        {"registry_dispatch_returns_200", test_registry_dispatch_returns_200_for_matching_route},
+        {"registry_returns_405_for_method_mismatch", test_registry_returns_405_for_method_mismatch},
         {"test_bootstrap_returns_models_on_valid_config", test_bootstrap_returns_models_on_valid_config},
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
 }
-
