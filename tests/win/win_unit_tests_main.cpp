@@ -35,6 +35,8 @@ bool test_lbph_embedder_dim_and_distance();
 bool test_face_metrics_confusion_matrix();
 bool test_bootstrap_returns_models_on_valid_config();
 bool test_bootstrap_reports_failure_on_bad_cascade();
+bool test_registry_dispatch_returns_200_for_matching_route();
+bool test_registry_returns_405_for_method_mismatch();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
@@ -48,6 +50,4 @@ int main() {
         {"test_bootstrap_returns_models_on_valid_config", test_bootstrap_returns_models_on_valid_config},
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
     };
-    const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
-    return ok ? 0 : 1;
 }

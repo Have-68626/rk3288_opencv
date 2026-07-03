@@ -7,14 +7,18 @@ void EndpointRegistry::add(EndpointDef def) {
 }
 
 HttpFacesServer::HttpResponse EndpointRegistry::dispatch(const HttpFacesServer::HttpRequest& req, EndpointContext& ctx) const {
+    bool pathMatched = false;
     for (const auto& r : routes_) {
         if (req.path == r.path) {
+            pathMatched = true;
             if (r.method[0] != '*' && req.method != r.method) {
-                return ResponseFactory::err(405, "method_not_allowed",
-                                            "仅支持 " + std::string(r.method));
+                continue;  // 方法不匹配，继续查找同路径的其他路由
             }
             return r.handler(req, ctx);
         }
+    }
+    if (pathMatched) {
+        return ResponseFactory::err(405, "method_not_allowed", "不支持的请求方法");
     }
     return ResponseFactory::err(404, "not_found", "未知端点");
 }
