@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rk_win/RuntimeBootstrap.h"
+#include "rk_win/CameraSession.h"
 #include "FaceRecognizer.h"  // FaceMatch
 #include "IRecognizer.h"
 #include "MfCamera.h"
@@ -107,6 +108,11 @@ public:
     void setEventLogger(EventLogger* logger);
     void setPreviewLayout(int previewW, int previewH, int previewScaleMode);
 
+    // ── ReloadPolicy 热更新（Phase 1） ──
+    void switchCamera(const AppConfig& cfg);
+    void reloadRuntime(const AppConfig& cfg);
+    void updatePreviewLayout(int w, int h, const std::string& scaleMode);
+
     void requestEnroll(const std::string& personId);
     void requestClearDb();
 
@@ -137,6 +143,7 @@ private:
     CameraFormat desiredFormat_{};
     std::string activeCameraNameUtf8_;
     std::string activeCameraIdUtf8_;
+    CameraDeviceInfo currentDevice_{};
 
     std::atomic<bool> running_{false};
     std::atomic<bool> cameraRunning_{false};

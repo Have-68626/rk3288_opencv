@@ -342,6 +342,64 @@ void FramePipeline::setPreviewLayout(int previewW, int previewH, int previewScal
     previewScaleMode_ = previewScaleMode;
 }
 
+// ── ReloadPolicy 热更新方法 ──
+
+void FramePipeline::switchCamera(const AppConfig& cfg) {
+    CameraOpenParams params;
+    params.width = cfg.camera.width;
+    params.height = cfg.camera.height;
+    params.fps = cfg.camera.fps;
+
+    // 从 preferredDeviceId 查找设备索引（与 ensureCameraRunning 逻辑一致）
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        int idx = 0;
+        if (!cfg.camera.preferredDeviceId.empty()) {
+            for (int i = 0; i < static_cast<int>(devices_.size()); i++) {
+                if (devices_[static_cast<size_t>(i)].deviceId == cfg.camera.preferredDeviceId) {
+                    idx = i;
+                    break;
+                }
+            }
+        }
+        params.deviceIndex = idx;
+    }
+
+    auto result = CameraSession::switchWithRollback(params, currentDevice_);
+    if (result.ok) {
+        currentDevice_ = result.device;
+    }
+    {
+        std::lock_guard<std::mutex> lock(renderMu_);
+        render_.status = result.code == "ok" ? "摄像头已切换" : result.message;
+    }
+}
+
+void FramePipeline::reloadRuntime(const AppConfig& cfg) {
+    cfg_ = cfg;
+    auto bootstrap = RuntimeBootstrap::build(cfg);
+    {
+        std::lock_guard<std::mutex> lock(modelsMu_);
+        activeModels_ = std::move(bootstrap.models);
+    }
+    recognizer_ = std::move(bootstrap.recognizer);
+    dnn_ = std::move(bootstrap.detector);
+    // 重建 FrameProcessor（它持有 dnn_ 和 recognizer_ 的裸指针）
+    processor_ = std::make_unique<FrameProcessor>(dnn_.get(), recognizer_.get());
+    {
+        std::lock_guard<std::mutex> lock(renderMu_);
+        render_.status = bootstrap.ok ? "模型运行时已重载" : bootstrap.warning;
+    }
+}
+
+void FramePipeline::updatePreviewLayout(int w, int h, const std::string& scaleMode) {
+    // 只更新预览布局，不重建任何线程
+    std::lock_guard<std::mutex> lock(previewMu_);
+    previewW_ = w;
+    previewH_ = h;
+    previewScaleMode_ = std::stoi(scaleMode);
+}
+
 void FramePipeline::requestEnroll(const std::string& personId) {
     if (personId.empty()) return;
     std::lock_guard<std::mutex> lock(mu_);

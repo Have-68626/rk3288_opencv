@@ -62,6 +62,38 @@ void ensureCameraRunning(FramePipeline& pipe, const AppConfig& cfg, EventLogger&
     }
 }
 
+// ── ReloadPolicy 热更新 ──
+enum class ChangeKind { None, Camera, Model, Preview, FullRestart };
+
+ChangeKind classifyChange(const AppConfig& prev, const AppConfig& next) {
+    // 加速参数变化需要整管线重启
+    if (prev.acceleration.enableOpenCL != next.acceleration.enableOpenCL ||
+        prev.acceleration.enableMpp != next.acceleration.enableMpp ||
+        prev.acceleration.enableQualcomm != next.acceleration.enableQualcomm) {
+        return ChangeKind::FullRestart;
+    }
+    // 相机参数变化（仅切换摄像头，不重建模型）
+    if (prev.camera.preferredDeviceId != next.camera.preferredDeviceId ||
+        prev.camera.width != next.camera.width ||
+        prev.camera.height != next.camera.height ||
+        prev.camera.fps != next.camera.fps) {
+        return ChangeKind::Camera;
+    }
+    // 模型参数变化（重建 DNN + Recognizer）
+    if (prev.model.recognition != next.model.recognition ||
+        prev.dnn.enable != next.dnn.enable ||
+        prev.dnn.modelPath != next.dnn.modelPath ||
+        prev.recognition.cascadePath != next.recognition.cascadePath ||
+        prev.recognition.databasePath != next.recognition.databasePath) {
+        return ChangeKind::Model;
+    }
+    // 预览/UI 参数变化（仅更新布局）
+    if (prev.ui.previewScaleMode != next.ui.previewScaleMode) {
+        return ChangeKind::Preview;
+    }
+    return ChangeKind::None;
+}
+
 }  // namespace
 }  // namespace rk_win
 
@@ -128,40 +160,29 @@ int main() {
                 }
             }
 
-            const bool cameraChanged =
-                (next.camera.preferredDeviceId != cfg.camera.preferredDeviceId) ||
-                (next.camera.width != cfg.camera.width) ||
-                (next.camera.height != cfg.camera.height) ||
-                (next.camera.fps != cfg.camera.fps);
-            if (cameraChanged) {
-                rk_win::ensureCameraRunning(pipe, next, events);
-            }
-
-            const bool accelChanged = 
-                (next.acceleration.enableOpenCL != cfg.acceleration.enableOpenCL) ||
-                (next.acceleration.enableMpp != cfg.acceleration.enableMpp) ||
-                (next.acceleration.enableQualcomm != cfg.acceleration.enableQualcomm);
-            
-            if (accelChanged) {
-                events.append("acceleration_apply", "Restarting pipeline for acceleration changes");
+            // ── ReloadPolicy：按变更类型局部热更新 ──
+            auto kind = rk_win::classifyChange(cfg, next);
+            switch (kind) {
+            case rk_win::ChangeKind::Camera:
+                pipe.switchCamera(next);
+                break;
+            case rk_win::ChangeKind::Model:
+                pipe.reloadRuntime(next);
+                break;
+            case rk_win::ChangeKind::Preview:
+                pipe.updatePreviewLayout(next.ui.windowWidth, next.ui.windowHeight,
+                    std::to_string(next.ui.previewScaleMode));
+                break;
+            case rk_win::ChangeKind::FullRestart:
                 cv::ocl::setUseOpenCL(next.acceleration.enableOpenCL);
-                // "Hot restart" pipeline
                 pipe.shutdown();
                 pipe.initialize(next);
                 pipe.setPreviewLayout(1280, 720, next.ui.previewScaleMode);
                 rk_win::ensureCameraRunning(pipe, next, events);
-            } else if (!cameraChanged && (
-                next.dnn.enable != cfg.dnn.enable ||
-                next.dnn.modelPath != cfg.dnn.modelPath ||
-                next.recognition.cascadePath != cfg.recognition.cascadePath ||
-                next.recognition.databasePath != cfg.recognition.databasePath
-            )) {
-                // Config changed, need pipeline re-init
-                events.append("pipeline_apply", "Restarting pipeline for model changes");
-                pipe.shutdown();
-                pipe.initialize(next);
-                pipe.setPreviewLayout(1280, 720, next.ui.previewScaleMode);
-                rk_win::ensureCameraRunning(pipe, next, events);
+                break;
+            case rk_win::ChangeKind::None:
+            default:
+                break;
             }
 
             cfg = std::move(next);
