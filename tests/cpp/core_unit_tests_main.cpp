@@ -47,6 +47,11 @@ bool test_file_hash_known_content();
 bool test_file_hash_empty_file();
 bool test_file_hash_invalid_path();
 
+bool test_tc_creates_new_track_for_first_face();
+bool test_tc_removes_stale_tracks();
+bool test_tc_iou_matches_consecutive_frames();
+bool test_tc_authenticated_upgrades_unknown();
+
 int main() {
     using namespace rk_core_test;
     const TestCase cases[] = {
@@ -67,6 +72,10 @@ int main() {
         {"file_hash_known_content", test_file_hash_known_content},
         {"file_hash_empty_file", test_file_hash_empty_file},
         {"file_hash_invalid_path", test_file_hash_invalid_path},
+        {"tc_creates_new_track_for_first_face", test_tc_creates_new_track_for_first_face},
+        {"tc_removes_stale_tracks", test_tc_removes_stale_tracks},
+        {"tc_iou_matches_consecutive_frames", test_tc_iou_matches_consecutive_frames},
+        {"tc_authenticated_upgrades_unknown", test_tc_authenticated_upgrades_unknown},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
