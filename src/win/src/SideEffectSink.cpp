@@ -62,7 +62,7 @@ SideEffectSink::SideEffectSink(StructuredLogger* logger, RenderState* render)
 // 3. 写结构化日志（若 logger_ 已打开）
 // 4. 通知 facesCb_（若已设置）
 // ──────────────────────────────────────────────
-void SideEffectSink::publish(const FrameResult& result, FrameLogEntry& logEntry) {
+void SideEffectSink::publish(FrameResult& result, FrameLogEntry& logEntry) {
     // ── 1. Overlay 绘制 ──
     drawFacesOverlay(result.drawFrame, result.matches);
 

@@ -4,6 +4,8 @@
 #include "rk_win/DnnSsdFaceDetector.h"
 #include "rk_win/OverlayRenderer.h"
 #include "rk_win/EventLogger.h"
+#include "rk_win/FrameProcessor.h"
+#include "rk_win/SideEffectSink.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -70,6 +72,10 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
                 m.id.c_str(), m.hash.c_str(), match);
         }
     }
+
+    // 装配 FrameProcessor + SideEffectSink（纯计算 + 副作用收口）
+    processor_ = std::make_unique<FrameProcessor>(dnn_.get(), recognizer_.get());
+    sink_ = std::make_unique<SideEffectSink>(&logger_, &render_);
 
     running_ = true;
     processThread_ = std::thread(&FramePipeline::processLoop, this);
@@ -550,31 +556,26 @@ void FramePipeline::processLoop() {
     auto lastFpsT = clock::now();
     std::uint64_t frames = 0;
     double fps = 0.0;
-    std::uint64_t procIndex = 0;
-
     std::uint64_t lastCap = 0;
     std::uint64_t lastDrop = 0;
     double lastDropRate = 0.0;
-    double lastInferMs = 0.0;
-    std::vector<FaceMatch> lastDetections;
-    cv::Mat drawBuffer;
     cv::Mat frameBuffer;
 
     while (running_) {
-        cv::Mat& frame = frameBuffer;
+        // ── 帧获取（保持 captureLoop → processLoop 的缓冲传递机制） ──
         std::uint64_t ts = 0;
-
         {
             std::unique_lock<std::mutex> lock(frameMu_);
             if (!running_) break;
-            frameCv_.wait_for(lock, std::chrono::milliseconds(1000), [this]{ return hasFrame_ || !running_; });
+            frameCv_.wait_for(lock, std::chrono::milliseconds(1000),
+                              [this] { return hasFrame_ || !running_; });
             if (!hasFrame_ || !running_) continue;
-            latestFrame_.copyTo(frame);
+            latestFrame_.copyTo(frameBuffer);
             ts = latestFrameTs_;
             hasFrame_ = false;
         }
 
-        procIndex++;
+        // ── FPS 统计 + 自适应 stride ──
         frames++;
         const auto now = clock::now();
         const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsT).count();
@@ -582,7 +583,6 @@ void FramePipeline::processLoop() {
             fps = (dt > 0) ? (1000.0 * static_cast<double>(frames) / static_cast<double>(dt)) : 0.0;
             frames = 0;
             lastFpsT = now;
-
             const std::uint64_t cap = captureFrameCount_.load();
             const std::uint64_t drop = overwriteDropCount_.load();
             const std::uint64_t capDelta = cap - lastCap;
@@ -590,129 +590,66 @@ void FramePipeline::processLoop() {
             lastCap = cap;
             lastDrop = drop;
             lastDropRate = (capDelta > 0) ? (static_cast<double>(dropDelta) / static_cast<double>(capDelta)) : 0.0;
-
-            const bool bad = (lastInferMs > 100.0) || (lastDropRate > 0.05);
-            const int prevStride = detectStride_;
-            if (cfg_.dnn.enable && dnn_ && dnn_->ready()) {
-                if (bad) {
-                    if (detectStride_ < 8) detectStride_++;
-                } else {
-                    if (detectStride_ > 1) detectStride_--;
-                }
-            }
-            if (detectStride_ != prevStride) {
-                EventLogger* ev = nullptr;
-                {
-                    std::lock_guard<std::mutex> lock(eventsMu_);
-                    ev = events_;
-                }
-                if (ev) {
-                    std::ostringstream oss;
-                    oss << "stride " << prevStride << "->" << detectStride_ << " infer_ms=" << lastInferMs << " drop_rate=" << lastDropRate;
-                    ev->append(bad ? "stride_degrade" : "stride_recover", oss.str());
-                }
-            }
         }
 
-        if (clearDbRequested_.exchange(false)) {
-            recognizer_->clearDb();
-            recognizer_->saveDb();
-            render_.status = "已清空人脸库";
+        // ── 构建控制命令 ──
+        ControlCommand cmd;
+        cmd.clearDb = clearDbRequested_.exchange(false);
+        cmd.enrollRequested = enrollRequested_.load();
+        if (cmd.enrollRequested) {
+            std::lock_guard<std::mutex> lock(mu_);
+            cmd.enrollPersonId = enrollPersonId_;
+            cmd.enrollRemaining = enrollRemaining_;
         }
+        cmd.detectStride = detectStride_;
+        cmd.frameCounter = frameIndex_;
 
-        if (enrollRequested_.load()) {
-            std::string pid;
-            int remaining = 0;
-            {
-                std::lock_guard<std::mutex> lock(mu_);
-                pid = enrollPersonId_;
-                remaining = enrollRemaining_;
-            }
-            if (remaining > 0) {
-                int taken = 0;
-                if (recognizer_->enrollFromFrame(pid, frame, 1, taken) && taken > 0) {
-                    {
-                        std::lock_guard<std::mutex> lock(mu_);
-                        enrollRemaining_ -= taken;
-                        remaining = enrollRemaining_;
-                    }
-                    recognizer_->saveDb();
-                }
-            }
-            if (remaining <= 0) {
-                enrollRequested_ = false;
-                render_.status = "注册完成: " + pid;
-            } else {
-                render_.status = "注册中: " + pid + " 还需样本=" + std::to_string(remaining);
-            }
+        // ── 纯计算（检测/识别/清库/注册/背压跳过） ──
+        auto result = processor_->run(frameBuffer, cmd);
+
+        // ── 同步已消费命令回成员变量 ──
+        detectStride_ = result.consumedCommand.detectStride;
+        if (!result.consumedCommand.enrollRequested) {
+            enrollRequested_ = false;
         }
+        enrollRemaining_ = result.consumedCommand.enrollRemaining;
 
-        std::vector<FaceMatch> matches;
-        double inferMsThisFrame = 0.0;
-        if (cfg_.dnn.enable && dnn_ && dnn_->ready()) {
-            const bool doInfer = (detectStride_ <= 1) ? true : ((procIndex % static_cast<std::uint64_t>(detectStride_)) == 0 || lastDetections.empty());
-            if (doInfer) {
-                std::vector<DnnFaceDetection> dets;
-                {
-                    std::lock_guard<std::mutex> lock(dnnMu_);
-                    dets = dnn_->detect(frame, inferMsThisFrame);
-                }
-                lastInferMs = inferMsThisFrame;
-                lastDetections.clear();
-                lastDetections.reserve(dets.size());
-                for (const auto& d : dets) {
-                    FaceMatch m;
-                    m.rect = d.rect;
-                    m.personId = "";
-                    m.distance = 0.0;
-                    m.confidence = d.confidence;
-                    m.accepted = false;
-                    lastDetections.push_back(std::move(m));
-                }
-            }
-            matches = lastDetections;
-        } else {
-            matches = recognizer_->identify(frame);
-        }
-
-        frame.copyTo(drawBuffer); cv::Mat& draw = drawBuffer;
-        drawFacesOverlay(draw, matches);
-
+        // ── 构建日志条目元数据 ──
         FrameLogEntry le;
         le.tsIso8601 = nowIso8601Local();
+        le.frameIndex = frameIndex_++;
+        le.fps = fps;
         {
             std::lock_guard<std::mutex> lock(mu_);
             le.cameraName = activeCameraNameUtf8_;
             le.cameraId = activeCameraIdUtf8_;
         }
-        le.frameIndex = frameIndex_++;
-        le.frameWidth = frame.cols;
-        le.frameHeight = frame.rows;
-        le.fps = fps;
-        for (const auto& m : matches) {
-            FaceLogEntry fe;
-            fe.x = m.rect.x;
-            fe.y = m.rect.y;
-            fe.w = m.rect.width;
-            fe.h = m.rect.height;
-            fe.personId = m.personId;
-            fe.distance = m.distance;
-            fe.confidence = m.confidence;
-            le.faces.push_back(std::move(fe));
-        }
 
-        logger_.append(le);
-
+        // ── 副作用收口（Overlay 绘制 + 渲染态发布 + 结构化日志） ──
         {
             std::lock_guard<std::mutex> lock(renderMu_);
-            render_.bgr = std::move(draw);
-            render_.faces = std::move(matches);
+            sink_->publish(result, le);
             render_.fps = fps;
-            render_.inferMs = lastInferMs;
+            render_.inferMs = result.inferMs;
             render_.dropRate = lastDropRate;
             render_.stride = detectStride_;
             render_.timestamp100ns = ts;
         }
+
+        // ── 渲染态状态文本（publish 不处理） ──
+        if (result.consumedCommand.clearDb) {
+            render_.status = "已清空人脸库";
+        }
+        if (cmd.enrollRequested) {
+            if (result.consumedCommand.enrollRequested) {
+                render_.status = "注册中: " + cmd.enrollPersonId
+                    + " 还需样本=" + std::to_string(enrollRemaining_);
+            } else {
+                render_.status = "注册完成: " + cmd.enrollPersonId;
+            }
+        }
+
+        // ── 序列通知 ──
         {
             std::lock_guard<std::mutex> lock(facesSeqMu_);
             facesSeq_++;

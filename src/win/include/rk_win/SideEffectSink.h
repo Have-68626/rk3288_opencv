@@ -21,7 +21,7 @@ public:
 
     // 发布副作用：Overlay 绘制 → 渲染态发布 → 结构化日志 → 回调通知
     // logEntry 由调用方填充元数据（时间戳、相机名等），本方法补充 faces 后写入 logger_
-    void publish(const FrameResult& result, FrameLogEntry& logEntry);
+    void publish(FrameResult& result, FrameLogEntry& logEntry);
 
     // 可选回调：匹配结果通知调用方（如 WebSocket 广播）
     using FacesCallback = std::function<void(const std::vector<DetectMatch>&)>;

@@ -6,6 +6,8 @@
 #include "MfCamera.h"
 #include "StructuredLogger.h"
 #include "WinConfig.h"
+#include "rk_win/FrameProcessor.h"
+#include "rk_win/SideEffectSink.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -186,6 +188,9 @@ private:
     int enrollRemaining_ = 0;
 
     std::atomic<bool> clearDbRequested_{false};
+
+    std::unique_ptr<FrameProcessor> processor_;
+    std::unique_ptr<SideEffectSink> sink_;
 
     std::atomic<bool> lastPrivacyDenied_{false};
 
