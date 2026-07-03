@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rk_win/RuntimeBootstrap.h"
 #include "FaceRecognizer.h"  // FaceMatch
 #include "IRecognizer.h"
 #include "MfCamera.h"
@@ -72,32 +73,6 @@ struct CameraSwitchResult {
     std::string reason;
 };
 
-struct ModelSnapshot {
-
-    std::string id;
-
-    std::string displayName;
-
-    std::string taskType;
-
-    std::string configuredPath;
-
-    std::string resolvedPath;
-
-    std::string backend;
-
-    std::string modelVersion;
-
-    std::string hash;
-
-    std::string status;
-
-    bool isInUse = false;
-
-    std::string lastError;
-
-};
-
 struct FacesSnapshot {
     std::vector<FaceMatch> faces;
     int frameWidth = 0;
@@ -147,6 +122,7 @@ private:
     void captureLoop();
     void processLoop();
     void stopCameraLocked();
+    CameraOpenResult openOnce();
     CameraSwitchResult startCameraWithRollbackLocked(int deviceIndex, const CameraFormat& desired, int maxTotalMs);
     std::optional<int> findExactFormatIndexLocked(int deviceIndex, int width, int height, int fps) const;
 

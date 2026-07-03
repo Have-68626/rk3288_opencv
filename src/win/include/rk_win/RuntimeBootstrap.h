@@ -17,6 +17,7 @@ struct ModelSnapshot {
     std::string configuredPath;
     std::string resolvedPath;
     std::string backend;
+    std::string modelVersion;
     std::string hash;
     std::string status;       // "loaded" | "failed" | "missing" | "disabled"
     bool isInUse = false;
