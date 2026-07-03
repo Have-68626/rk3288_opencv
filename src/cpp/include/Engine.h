@@ -1,7 +1,7 @@
 /**
  * @file Engine.h
  * @brief Main application orchestrator.
- * 
+ *
  * Integrates VideoManager, MotionDetector, BioAuth, and EventManager.
  * Implements the main state machine and business logic loop.
  */
@@ -14,6 +14,9 @@
 #include "FrameInputChannel.h"
 #include "Types.h"
 #include "InferenceThrottle.h"
+#include "pipeline/TrackCoordinator.h"
+#include "pipeline/ResultPublisher.h"
+#include "pipeline/PerfReporter.h"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -100,7 +103,7 @@ public:
      *
      * 并发/线程安全：
      * - 该接口只写入原子变量，不触碰 renderFrame/faceTracks 等非线程安全资源；
-     * - Engine 线程在每帧处理时读取原子配置，做到“低锁竞争”的实时生效。
+     * - Engine 线程在每帧处理时读取原子配置，做到"低锁竞争"的实时生效。
      *
      * 行为约束：
      * - mode 支持：auto/manual/off（大小写不敏感），非法值会按 off 处理；
@@ -118,96 +121,47 @@ public:
     InferenceThrottleMode getRecognitionThrottleMode() const;
     int getRecognitionIntervalMs() const;
 
+    void setMaxFrames(int max) { maxFrames_ = max; }
+
+    void setOnResultCallback(std::function<void(std::string)> callback);
+
 private:
     /** Shared by both initialize() overloads: storage, cleanup, BioAuth */
     bool initCommon(const std::string& cascadePath, const std::string& storagePath);
-    void processFrame(const cv::Mat& frame, double decodeMs);
-    void handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence);
     void performAccelSelfCheck();
 
-    std::unique_ptr<VideoManager> videoManager;
-    std::unique_ptr<MotionDetector> motionDetector;
-    std::unique_ptr<BioAuth> bioAuth;
-    std::unique_ptr<EventManager> eventManager;
+    // === 管线组件 ===
+    std::unique_ptr<VideoManager> videoManager_;
+    std::unique_ptr<MotionDetector> motionDetector_;
+    std::unique_ptr<BioAuth> bioAuth_;
+    std::unique_ptr<EventManager> eventManager_;
+    std::unique_ptr<pipeline::TrackCoordinator> trackCoordinator_;
+    std::unique_ptr<pipeline::ResultPublisher> publisher_;
+    std::unique_ptr<pipeline::PerfReporter> perfReporter_;
 
-    std::atomic<bool> isRunning;
-    std::atomic<MonitoringMode> currentMode;
-    std::atomic<bool> externalInputEnabled;
-    std::atomic<bool> initCancelRequested{false};
+    // External frame input
+    std::unique_ptr<FrameInputChannel> externalInput_;
+    std::atomic<bool> externalInputEnabled_{false};
+
+    // === 运行时状态（最小化）===
+    std::atomic<bool> isRunning_{false};
     std::atomic<bool> initialized_{false};
-    std::atomic<bool> flipXEnabled{false};
-    std::atomic<bool> flipYEnabled{false};
-    std::atomic<InferenceThrottleMode> detThrottleMode{InferenceThrottleMode::Off};
-    std::atomic<int> detIntervalMs{kDetectionIntervalDefaultMs};
-    std::atomic<long long> lastDetStartMs{0};
+    std::atomic<MonitoringMode> currentMode_{MonitoringMode::CONTINUOUS};
+    std::atomic<bool> initCancelRequested_{false};
 
-    std::atomic<InferenceThrottleMode> recThrottleMode{InferenceThrottleMode::Off};
-    std::atomic<int> recIntervalMs{kRecognitionIntervalDefaultMs};
-    std::atomic<long long> lastRecStartMs{0};
-    
-    // Rendering
-    cv::Mat renderFrame;
-    uint64_t renderFrameSeq = 0;
-    std::mutex renderMutex;
+    // Preprocess 参数
+    std::atomic<bool> flipXEnabled_{false};
+    std::atomic<bool> flipYEnabled_{false};
 
-    // Performance stats
-    int frameCount;
-    long long lastStatTime;
-    int totalFrames = 0;
-    int maxFrames = 0;
+    // 节流
+    std::atomic<InferenceThrottleMode> detThrottleMode_{InferenceThrottleMode::Off};
+    std::atomic<int> detIntervalMs_{kDetectionIntervalDefaultMs};
+    std::atomic<long long> lastDetStartMs_{0};
+    std::atomic<InferenceThrottleMode> recThrottleMode_{InferenceThrottleMode::Off};
+    std::atomic<int> recIntervalMs_{kRecognitionIntervalDefaultMs};
+    std::atomic<long long> lastRecStartMs_{0};
 
-    struct FramePerfStats {
-        double decodeMs = 0.0;
-        double preMs = 0.0;
-        double inferMs = 0.0;
-        double postMs = 0.0;
-        double renderMs = 0.0;
-        long long rssBytes = 0;
-    };
-    std::vector<FramePerfStats> perfHistory;
-
-    std::string storagePath;
-    std::function<void(std::string)> onResultCallback;
-
-    std::unique_ptr<FrameInputChannel> externalInput;
-
-    long long lastNoFaceMs = 0;
-    long long lastUnknownMs = 0;
-    long long lastVerifiedMs = 0;
-    long long lastMultiMs = 0;
-
-    // Abnormal event throttling (per type)
-    static constexpr long long kAbnormalEventCooldownBaseMs = 2000;
-    static constexpr long long kAbnormalEventCooldownMaxMs = 10000;
-    static constexpr int kAbnormalEventMaxPerMin = 30;
-    std::unordered_map<std::string, long long> lastAbnormalEventMs_;
-    std::unordered_map<std::string, int> abnormalEventCount_;
-    std::unordered_map<std::string, long long> abnormalEventCooldownMs_;
-    long long abnormalEventSessionTotal_ = 0;
-    long long abnormalEventSessionSuppressed_ = 0;
-    std::unordered_map<std::string, long long> abnormalEventHandledByType_;
-    std::unordered_map<std::string, long long> abnormalEventSuppressedByType_;
-    std::mutex abnormalEventMutex_;
-
-    struct FaceTrack {
-        int trackId = 0;
-        cv::Rect bbox;
-        long long lastSeenMs = 0;
-
-        std::string lastId;
-        int lastIdStreak = 0;
-
-        std::string stableId;
-        float stableConfidence = 0.0f;
-    };
-
-    std::vector<FaceTrack> faceTracks;
-    int nextTrackId = 1;
-
-public:
-    void setMaxFrames(int max) { maxFrames = max; }
-
-    void setOnResultCallback(std::function<void(std::string)> callback) {
-        onResultCallback = callback;
-    }
+    // 其他
+    std::string storagePath_;
+    int maxFrames_ = 0;
 };

@@ -1,6 +1,6 @@
 /**
  * @file Engine.cpp
- * @brief Implementation of Engine class.
+ * @brief Implementation of Engine class — 值流管线化编排器。
  */
 #include "Engine.h"
 #include "AccelerationContract.h"
@@ -176,7 +176,6 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 
     auto fallbackOpencvNv21 = [&]() {
         if (stride == w) {
-            // 复制 const 数据到临时缓冲区, 避免 const_cast UB
             std::vector<uint8_t> nv21Copy(f.nv21.begin(), f.nv21.end());
             cv::Mat yuv(h + uvH, w, CV_8UC1, nv21Copy.data());
             cv::cvtColor(yuv, outBgr, cv::COLOR_YUV2BGR_NV21);
@@ -236,8 +235,6 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
     }
 
     const int rot = ((f.meta.rotationDegrees % 360) + 360) % 360;
-    // 检查物理分辨率（旋转前），而非旋转后尺寸——传感器面积不变
-    // 竖屏 90°/270° 时交换宽高会导致 1080×1920 被误判超规格
     if (f.width > 1920 || f.height > 1920) {
         err = "超规格输入: " + std::to_string(f.width) + "x" + std::to_string(f.height);
         return false;
@@ -300,19 +297,6 @@ static long long nowMs() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-static float iou(const cv::Rect& a, const cv::Rect& b) {
-    const int x1 = std::max(a.x, b.x);
-    const int y1 = std::max(a.y, b.y);
-    const int x2 = std::min(a.x + a.width, b.x + b.width);
-    const int y2 = std::min(a.y + a.height, b.y + b.height);
-    const int w = std::max(0, x2 - x1);
-    const int h = std::max(0, y2 - y1);
-    const float inter = static_cast<float>(w * h);
-    const float uni = static_cast<float>(a.area() + b.area()) - inter;
-    return (uni <= 0.0f) ? 0.0f : (inter / uni);
-}
-
-
 // [Qualcomm/MPP Backend Feature Placeholder]
 // 待补充代码接入: Qualcomm SDK inference delegate initialization
 static bool initQualcommDelegate(bool requested) {
@@ -322,15 +306,13 @@ static bool initQualcommDelegate(bool requested) {
         return false;
     }
     rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK detected, preparing to load backend...");
-    // 真实的 SDK 初始化代码写这里
     return true;
 #else
     rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... (RK_HAVE_QUALCOMM not defined or 0)");
-    return false; // Fallback
+    return false;
 #endif
 }
 
-// 待补充代码接入: MPP Hardware Decoding
 static bool initMppDecoder(bool requested) {
 #if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
     if (!requested) {
@@ -338,7 +320,6 @@ static bool initMppDecoder(bool requested) {
         return false;
     }
     rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, probing decoder...");
-    // Probe MPP library availability with a lightweight create/destroy
     MppCtx ctx = nullptr;
     MppApi* mpi = nullptr;
     MPP_RET ret = mpp_create(&ctx, &mpi);
@@ -384,18 +365,15 @@ static void logAccelSelfCheckStatus(const rk_accel::AccelContractStatus& status)
 }
 }  // namespace
 
-Engine::Engine() 
-    : isRunning(false),
-      currentMode(MonitoringMode::CONTINUOUS),
-      externalInputEnabled(false),
-      frameCount(0),
-      lastStatTime(0) {
-    videoManager = std::make_unique<VideoManager>();
+Engine::Engine()
+    : isRunning_(false),
+      currentMode_(MonitoringMode::CONTINUOUS),
+      externalInputEnabled_(false) {
+    videoManager_ = std::make_unique<VideoManager>();
 
     bool useQualcomm = getEnvBool("RK_USE_QUALCOMM");
     bool useMpp = getEnvBool("RK_USE_MPP");
-    
-    // 探测失败或硬件不兼容时回退到 CPU
+
     initQualcommDelegate(useQualcomm);
     initMppDecoder(useMpp);
 
@@ -409,13 +387,18 @@ Engine::Engine()
     } else {
         rklog::logInfo("Engine", "initOpenCL", "RK_USE_OPENCL not set. Defaulting to conservative switch (false).");
     }
-    videoManager->setUseOpenCL(useOpencl);
+    videoManager_->setUseOpenCL(useOpencl);
 
-    motionDetector = std::make_unique<MotionDetector>();
-    bioAuth = std::make_unique<BioAuth>();
-    eventManager = std::make_unique<EventManager>();
-    externalInput = std::make_unique<FrameInputChannel>();
-    externalInput->configure(FrameBackpressureMode::LatestOnly, 1);
+    motionDetector_ = std::make_unique<MotionDetector>();
+    bioAuth_ = std::make_unique<BioAuth>();
+    eventManager_ = std::make_unique<EventManager>();
+    externalInput_ = std::make_unique<FrameInputChannel>();
+    externalInput_->configure(FrameBackpressureMode::LatestOnly, 1);
+
+    // Pipeline 组件
+    trackCoordinator_ = std::make_unique<pipeline::TrackCoordinator>();
+    publisher_ = std::make_unique<pipeline::ResultPublisher>();
+    perfReporter_ = std::make_unique<pipeline::PerfReporter>();
 }
 
 Engine::~Engine() {
@@ -424,10 +407,10 @@ Engine::~Engine() {
 
 void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
     const auto m = parseInferenceThrottleMode(mode);
-    detThrottleMode.store(m);
-    detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
-    recThrottleMode.store(m);
-    recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
+    detThrottleMode_.store(m);
+    detIntervalMs_.store(clampDetectionIntervalMs(intervalMs));
+    recThrottleMode_.store(m);
+    recIntervalMs_.store(clampRecognitionIntervalMs(intervalMs));
     rklog::logInfo(
         "Engine",
         "updateInferenceThrottle",
@@ -436,7 +419,7 @@ void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
             m != InferenceThrottleMode::Off,
             m != InferenceThrottleMode::Off,
             "ok",
-            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(detIntervalMs.load())
+            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(detIntervalMs_.load())
         }));
     rklog::logInfo(
         "Engine",
@@ -446,22 +429,22 @@ void Engine::updateInferenceThrottle(const std::string& mode, int intervalMs) {
             m != InferenceThrottleMode::Off,
             m != InferenceThrottleMode::Off,
             "ok",
-            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(recIntervalMs.load())
+            "mode=" + std::string(throttleModeName(m)) + " interval_ms=" + std::to_string(recIntervalMs_.load())
         }));
 }
 
 InferenceThrottleMode Engine::getInferenceThrottleMode() const {
-    return recThrottleMode.load();
+    return recThrottleMode_.load();
 }
 
 int Engine::getInferenceIntervalMs() const {
-    return recIntervalMs.load();
+    return recIntervalMs_.load();
 }
 
 void Engine::updateDetectionThrottle(const std::string& mode, int intervalMs) {
-    detThrottleMode.store(parseInferenceThrottleMode(mode));
-    detIntervalMs.store(clampDetectionIntervalMs(intervalMs));
-    const auto current = detThrottleMode.load();
+    detThrottleMode_.store(parseInferenceThrottleMode(mode));
+    detIntervalMs_.store(clampDetectionIntervalMs(intervalMs));
+    const auto current = detThrottleMode_.load();
     rklog::logInfo(
         "Engine",
         "updateDetectionThrottle",
@@ -470,22 +453,22 @@ void Engine::updateDetectionThrottle(const std::string& mode, int intervalMs) {
             current != InferenceThrottleMode::Off,
             current != InferenceThrottleMode::Off,
             "ok",
-            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(detIntervalMs.load())
+            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(detIntervalMs_.load())
         }));
 }
 
 InferenceThrottleMode Engine::getDetectionThrottleMode() const {
-    return detThrottleMode.load();
+    return detThrottleMode_.load();
 }
 
 int Engine::getDetectionIntervalMs() const {
-    return detIntervalMs.load();
+    return detIntervalMs_.load();
 }
 
 void Engine::updateRecognitionThrottle(const std::string& mode, int intervalMs) {
-    recThrottleMode.store(parseInferenceThrottleMode(mode));
-    recIntervalMs.store(clampRecognitionIntervalMs(intervalMs));
-    const auto current = recThrottleMode.load();
+    recThrottleMode_.store(parseInferenceThrottleMode(mode));
+    recIntervalMs_.store(clampRecognitionIntervalMs(intervalMs));
+    const auto current = recThrottleMode_.load();
     rklog::logInfo(
         "Engine",
         "updateRecognitionThrottle",
@@ -494,16 +477,16 @@ void Engine::updateRecognitionThrottle(const std::string& mode, int intervalMs) 
             current != InferenceThrottleMode::Off,
             current != InferenceThrottleMode::Off,
             "ok",
-            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(recIntervalMs.load())
+            "mode=" + std::string(throttleModeName(current)) + " interval_ms=" + std::to_string(recIntervalMs_.load())
         }));
 }
 
 InferenceThrottleMode Engine::getRecognitionThrottleMode() const {
-    return recThrottleMode.load();
+    return recThrottleMode_.load();
 }
 
 int Engine::getRecognitionIntervalMs() const {
-    return recIntervalMs.load();
+    return recIntervalMs_.load();
 }
 
 bool Engine::initCommon(const std::string& cascadePath, const std::string& storagePath) {
@@ -512,21 +495,21 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
         return true;
     }
     RKLOG_ENTER("Engine");
-    initCancelRequested.store(false);
-    videoManager->setCancelToken(&initCancelRequested);
+    initCancelRequested_.store(false);
+    videoManager_->setCancelToken(&initCancelRequested_);
     std::string base = storagePath;
     if (!base.empty() && base.back() != '/' && base.back() != '\\') {
         base.append("/");
     }
-    this->storagePath = base + "cache/";
+    this->storagePath_ = base + "cache/";
 
-    if (!Storage::ensureDirectory(this->storagePath)) {
-        std::cerr << "Failed to init storage: " << this->storagePath << std::endl;
+    if (!Storage::ensureDirectory(this->storagePath_)) {
+        std::cerr << "Failed to init storage: " << this->storagePath_ << std::endl;
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
-    Storage::cleanupOldData(this->storagePath, Config::OFFLINE_CACHE_DAYS);
-    if (!bioAuth->initialize(cascadePath)) {
+    Storage::cleanupOldData(this->storagePath_, Config::OFFLINE_CACHE_DAYS);
+    if (!bioAuth_->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
         return false;
     }
@@ -536,8 +519,8 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
     if (!initCommon(cascadePath, storagePath)) return false;
     if (cameraId >= 0) {
-        if (initCancelRequested.load()) return false;
-        if (!videoManager->open(cameraId)) {
+        if (initCancelRequested_.load()) return false;
+        if (!videoManager_->open(cameraId)) {
             std::cerr << "Failed to open camera " << cameraId << "." << std::endl;
             rklog::logError("Engine", __func__, "Failed to open camera");
             return false;
@@ -551,14 +534,14 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
     if (!initCommon(cascadePath, storagePath)) return false;
-    if (initCancelRequested.load()) return false;
-    if (!videoManager->open(filePath)) {
+    if (initCancelRequested_.load()) return false;
+    if (!videoManager_->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
-        rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager->getLastMockRejectReason());
+        rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager_->getLastMockRejectReason());
         return false;
     }
-    if (initCancelRequested.load()) {
-        videoManager->close();
+    if (initCancelRequested_.load()) {
+        videoManager_->close();
         return false;
     }
     performAccelSelfCheck();
@@ -566,494 +549,145 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
 }
 
 void Engine::requestCancelInit() {
-    initCancelRequested.store(true);
+    initCancelRequested_.store(true);
 }
 
 void Engine::clearCancelInit() {
-    initCancelRequested.store(false);
+    initCancelRequested_.store(false);
 }
 
 void Engine::run() {
     RKLOG_ENTER("Engine");
-    isRunning = true;
+    isRunning_ = true;
     cv::Mat frame;
 
     std::cout << "Engine started." << std::endl;
 
-    while (isRunning) {
-        // 外部帧输入：优先消费外部通道，必要时再回退到 VideoManager（便于在采集失败时仍能跑通 UI/推理链路）。
-        bool processed = false;
+    while (isRunning_) {
+        // 1. 取帧：优先消费外部帧通道，其次回退到 VideoManager
         double decodeMs = 0.0;
-        long long t0 = nowMs();
+        bool processed = false;
 
-        if (externalInputEnabled.load()) {
+        if (externalInputEnabled_.load() && externalInput_) {
             ExternalFrame ef;
-            if (externalInput && externalInput->waitPop(ef, 30)) {
-                long long t1 = nowMs();
-                decodeMs = static_cast<double>(t1 - t0);
-                cv::Mat bgr;
+            if (externalInput_->waitPop(ef, 30)) {
                 std::string err;
-                if (toBgrFromExternalFrame(ef, bgr, err)) {
-                    processFrame(bgr, decodeMs);
+                if (toBgrFromExternalFrame(ef, frame, err)) {
+                    decodeMs = 0.0;  // 外部帧不计解码耗时
                     processed = true;
                 } else {
                     rklog::logWarn("Engine", __func__, "外部帧转换失败: " + err + " / " + ef.brief());
                 }
             }
         }
+        if (!processed && videoManager_->getLatestFrame(frame)) {
+            processed = true;
+        }
 
         if (!processed) {
-            t0 = nowMs();
-            if (videoManager->getLatestFrame(frame)) {
-                long long t1 = nowMs();
-                decodeMs = static_cast<double>(t1 - t0);
-                processFrame(frame, decodeMs);
-                processed = true;
-            }
-        }
-
-        if (processed) {
-            frameCount++;
-            totalFrames++;
-            long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            if (now - lastStatTime > 1000) {
-                if (perfHistory.size() >= 30) {
-                    std::vector<double> preMs, inferMs, totalMs;
-                    for (const auto& s : perfHistory) {
-                        preMs.push_back(s.preMs);
-                        inferMs.push_back(s.inferMs);
-                        totalMs.push_back(s.decodeMs + s.preMs + s.inferMs + s.postMs + s.renderMs);
-                    }
-                    auto pct = [](std::vector<double>& v, double p) {
-                        if(v.empty()) return 0.0;
-                        std::sort(v.begin(), v.end());
-                        int idx = static_cast<int>(p * v.size());
-                        return v[std::min(idx, (int)v.size()-1)];
-                    };
-                    auto avg = [](std::vector<double>& v) {
-                        if(v.empty()) return 0.0;
-                        double sum = 0;
-                        for(auto& val : v) sum += val;
-                        return sum / v.size();
-                    };
-                    auto max_v = [](std::vector<double>& v) {
-                        if(v.empty()) return 0.0;
-                        return *std::max_element(v.begin(), v.end());
-                    };
-
-                    double totalMean = avg(totalMs);
-                    double total50 = pct(totalMs, 0.50);
-                    double total95 = pct(totalMs, 0.95);
-                    double totalMax = max_v(totalMs);
-
-                    std::cout << "Perf Total: Mean=" << totalMean << "ms, P50=" << total50 << "ms, P95=" << total95 << "ms, Max=" << totalMax << "ms | Peak RSS: " << (perfHistory.back().rssBytes / 1024 / 1024) << "MB" << std::endl;
-
-                    const char* envOutDir = std::getenv("RK_BENCH_OUT_DIR");
-                    std::string outDir = envOutDir ? envOutDir : "tests/metrics";
-                    std::string outPath = outDir + "/engine_perf.csv";
-
-                    {
-                        std::string csvStr;
-                        // Pre-allocate enough space to avoid reallocation.
-                        // Typical line is ~60 bytes. 30 frames -> 1800 bytes.
-                        csvStr.reserve(perfHistory.size() * 128);
-                        char buf[512];
-                        for (const auto& s : perfHistory) {
-                            int n = snprintf(buf, sizeof(buf), "%g,%g,%g,%g,%g,%zu\n",
-                                             s.decodeMs, s.preMs, s.inferMs,
-                                             s.postMs, s.renderMs, s.rssBytes);
-                            if (n > 0 && n < static_cast<int>(sizeof(buf))) {
-                                csvStr.append(buf, n);
-                            }
-                        }
-                        std::thread([outPath, csvStr]() {
-                            FILE* f = fopen(outPath.c_str(), "a");
-                            if (f) {
-                                fwrite(csvStr.data(), 1, csvStr.size(), f);
-                                fclose(f);
-                            }
-                        }).detach();
-                    }
-                    perfHistory.clear();
-                }
-                frameCount = 0;
-                lastStatTime = now;
-            }
-            if (maxFrames > 0 && totalFrames >= maxFrames) {
-                std::cout << "Reached max frames (" << maxFrames << "). Stopping." << std::endl;
-                stop();
-            }
-        } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
         }
+
+        // 2. Motion gate：MOTION_TRIGGERED 模式下仅在有运动时执行管线
+        if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
+            !motionDetector_->detect(frame)) {
+            pipeline::FrameOutcome outcome;
+            outcome.renderFrame = frame.clone();
+            cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
+            publisher_->publish(outcome);
+            continue;
+        }
+
+        // 3. 预处理：resize + flip（内联，避免额外函数调用开销）
+        cv::Mat processed2;
+        if (frame.cols != Config::FRAME_WIDTH || frame.rows != Config::FRAME_HEIGHT) {
+            cv::resize(frame, processed2, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT),
+                       0.0, 0.0, cv::INTER_AREA);
+        } else {
+            processed2 = frame;
+        }
+        const bool fx = flipXEnabled_.load();
+        const bool fy = flipYEnabled_.load();
+        if (fx || fy) {
+            int code = (fx && fy) ? -1 : (fy ? 0 : 1);
+            cv::flip(processed2, processed2, code);
+        }
+
+        // 4. 检测 + 识别（委托 BioAuth）
+        std::vector<BioAuth::FaceAuthResult> results;
+        bioAuth_->verifyMulti(processed2, results, 4, true);
+
+        // 5. 转化为 DetectedFace + 跟踪（委托 TrackCoordinator）
+        std::vector<pipeline::DetectedFace> faces;
+        faces.reserve(results.size());
+        for (auto& r : results) {
+            pipeline::DetectedFace df;
+            df.bbox = r.face;
+            df.identityId = r.identity.id;
+            df.confidence = r.identity.confidence;
+            df.isAuthenticated = r.identity.isAuthenticated;
+            faces.push_back(df);
+        }
+        auto tracks = trackCoordinator_->update(faces, nowMs());
+
+        // 6. 组装 FrameOutcome
+        pipeline::FrameOutcome outcome;
+        outcome.tracks = tracks;
+        outcome.renderFrame = processed2.clone();
+        outcome.stats.decodeMs = decodeMs;
+
+        // 7. 副作用：回调 + 渲染帧持久化 + 性能统计
+        publisher_->publish(outcome);
+        perfReporter_->submit(outcome.stats);
     }
 }
 
 void Engine::stop() {
     initialized_.store(false);
     RKLOG_ENTER("Engine");
-    isRunning = false;
-    if (videoManager) videoManager->close();
-    if (externalInput) {
-        externalInput->clear();
+    isRunning_ = false;
+    if (videoManager_) videoManager_->close();
+    if (externalInput_) {
+        externalInput_->clear();
     }
 }
 
 void Engine::setMode(MonitoringMode mode) {
     RKLOG_ENTER("Engine");
-    currentMode = mode;
+    currentMode_ = mode;
     std::cout << "Switched to mode: " << (mode == MonitoringMode::CONTINUOUS ? "Continuous" : "Motion") << std::endl;
 }
 
 void Engine::setExternalInputEnabled(bool enabled) {
     RKLOG_ENTER("Engine");
-    externalInputEnabled.store(enabled);
-    if (externalInput && !enabled) {
-        externalInput->clear();
+    externalInputEnabled_.store(enabled);
+    if (externalInput_ && !enabled) {
+        externalInput_->clear();
     }
     rklog::logInfo("Engine", __func__, std::string("外部帧输入通道 ") + (enabled ? "已启用" : "已禁用"));
 }
 
 void Engine::configureExternalInput(FrameBackpressureMode mode, std::size_t capacity) {
     RKLOG_ENTER("Engine");
-    if (!externalInput) {
-        externalInput = std::make_unique<FrameInputChannel>();
+    if (!externalInput_) {
+        externalInput_ = std::make_unique<FrameInputChannel>();
     }
-    externalInput->configure(mode, capacity);
+    externalInput_->configure(mode, capacity);
     rklog::logInfo("Engine", __func__, "外部帧背压配置: mode=" + std::to_string(static_cast<int>(mode)) +
-        " capacity=" + std::to_string(externalInput->capacity()));
+        " capacity=" + std::to_string(externalInput_->capacity()));
 }
 
 bool Engine::pushExternalFrame(ExternalFrame frame) {
-    if (!externalInputEnabled.load()) {
+    if (!externalInputEnabled_.load()) {
         return false;
     }
-    if (!externalInput) {
-        externalInput = std::make_unique<FrameInputChannel>();
+    if (!externalInput_) {
+        externalInput_ = std::make_unique<FrameInputChannel>();
     }
-    externalInput->push(std::move(frame));
+    externalInput_->push(std::move(frame));
     return true;
-}
-
-void Engine::processFrame(const cv::Mat& inputFrame, double decodeMs) {
-    FramePerfStats stats;
-    stats.decodeMs = decodeMs;
-
-#ifdef __linux__
-    struct rusage r_usage;
-    getrusage(RUSAGE_SELF, &r_usage);
-    stats.rssBytes = r_usage.ru_maxrss * 1024LL;
-#endif
-
-    long long preStart = nowMs();
-
-    cv::Mat frame;
-    if (inputFrame.cols != Config::FRAME_WIDTH || inputFrame.rows != Config::FRAME_HEIGHT) {
-        cv::resize(inputFrame, frame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT), 0.0, 0.0, cv::INTER_AREA);
-    } else {
-        frame = inputFrame;
-    }
-
-    const bool fx = flipXEnabled.load();
-    const bool fy = flipYEnabled.load();
-    if (fx || fy) {
-        int code = 1;
-        if (fx && fy) code = -1;
-        else if (fy) code = 0;
-        else code = 1;
-        cv::flip(frame, frame, code);
-    }
-
-    stats.preMs = static_cast<double>(nowMs() - preStart);
-    long long inferStart = nowMs();
-
-    // 1. Motion Detection check for Non-Continuous mode
-    if (currentMode == MonitoringMode::MOTION_TRIGGERED) {
-        if (!motionDetector->detect(frame)) {
-            // Even if no motion, we update render frame
-            std::lock_guard<std::mutex> lock(renderMutex);
-            // Performance optimization: Reusing renderFrame buffer via copyTo avoids reallocation
-            // Why: Avoids `clone()` which allocates a new block of memory each frame
-            // Rollback: Revert to `renderFrame = frame.clone();`
-            frame.copyTo(renderFrame);
-            renderFrameSeq++;
-            return; 
-        }
-        // Visualize motion (optional: draw contours)
-        cv::putText(frame, "MOTION DETECTED", cv::Point(20, 40),
-            cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
-    }
-
-    const long long now = nowMs();
-    const long long trackTtlMs = 1200;
-    const float matchIouThreshold = 0.3f;
-    const int stableFrames = 3;
-
-    for (auto& t : faceTracks) {
-        if (now - t.lastSeenMs > trackTtlMs) {
-            t.lastSeenMs = 0;
-        }
-    }
-    faceTracks.erase(
-        std::remove_if(faceTracks.begin(), faceTracks.end(), [](const FaceTrack& t) { return t.lastSeenMs == 0; }),
-        faceTracks.end()
-    );
-
-    auto drawTracks = [&]() {
-        for (const FaceTrack& t : faceTracks) {
-            const bool authed = (!t.stableId.empty() && t.stableId != "Unknown");
-            cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-            cv::rectangle(frame, t.bbox, color, 2);
-
-            std::string label;
-            label.reserve(32);
-            label += "T";
-            label += std::to_string(t.trackId);
-            label += " ";
-            label += (t.stableId.empty() ? "Unknown" : t.stableId);
-            if (authed) {
-                label += " ";
-                label += std::to_string(static_cast<int>(t.stableConfidence * 100));
-                label += "%";
-            }
-
-            const cv::Point origin(std::max(0, t.bbox.x), std::max(0, t.bbox.y - 8));
-            cv::putText(frame, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
-        }
-    };
-
-    bool shouldDetect = true;
-    const auto detMode = detThrottleMode.load();
-    if (detMode != InferenceThrottleMode::Off) {
-        const long long last = lastDetStartMs.load();
-        const int interval = detIntervalMs.load();
-        if (last > 0 && (now - last) < static_cast<long long>(interval)) {
-            shouldDetect = false;
-        } else {
-            lastDetStartMs.store(now);
-        }
-    }
-
-    if (!shouldDetect) {
-        drawTracks();
-        stats.inferMs = static_cast<double>(nowMs() - inferStart);
-        stats.postMs = 0.0;  // 未执行后处理, 显式标记而非 ≈0ms 假象
-        long long renderStart = nowMs();
-        {
-            std::lock_guard<std::mutex> lock(renderMutex);
-            frame.copyTo(renderFrame);
-            renderFrameSeq++;
-        }
-        stats.renderMs = static_cast<double>(nowMs() - renderStart);
-        perfHistory.push_back(stats);
-        return;
-    }
-
-    bool shouldRecognize = true;
-    const auto recMode = recThrottleMode.load();
-    if (recMode != InferenceThrottleMode::Off) {
-        const long long last = lastRecStartMs.load();
-        const int interval = recIntervalMs.load();
-        if (last > 0 && (now - last) < static_cast<long long>(interval)) {
-            shouldRecognize = false;
-        } else {
-            lastRecStartMs.store(now);
-        }
-    }
-
-    std::vector<BioAuth::FaceAuthResult> results;
-    bool faceDetected = bioAuth->verifyMulti(frame, results, 4, shouldRecognize);
-    stats.inferMs = static_cast<double>(nowMs() - inferStart);
-    if ((!faceDetected || results.empty()) && !faceTracks.empty()) {
-        drawTracks();
-        stats.postMs = 0.0;  // 无实际后处理, 显式标记
-        long long renderStart = nowMs();
-        {
-            std::lock_guard<std::mutex> lock(renderMutex);
-            frame.copyTo(renderFrame);
-            renderFrameSeq++;
-        }
-        stats.renderMs = static_cast<double>(nowMs() - renderStart);
-        perfHistory.push_back(stats);
-        return;
-    }
-
-    std::vector<int> detOrder(results.size());
-    for (int i = 0; i < static_cast<int>(results.size()); i++) detOrder[i] = i;
-    std::sort(detOrder.begin(), detOrder.end(), [&](int a, int b) {
-        return results[a].face.area() > results[b].face.area();
-    });
-
-    std::vector<bool> trackUsed(faceTracks.size(), false);
-    std::vector<int> detToTrack(results.size(), -1);
-
-    for (int idx : detOrder) {
-        float best = 0.0f;
-        int bestTrack = -1;
-        for (int ti = 0; ti < static_cast<int>(faceTracks.size()); ti++) {
-            if (trackUsed[ti]) continue;
-            float s = iou(faceTracks[ti].bbox, results[idx].face);
-            if (s > best) {
-                best = s;
-                bestTrack = ti;
-            }
-        }
-        if (bestTrack >= 0 && best >= matchIouThreshold) {
-            trackUsed[bestTrack] = true;
-            detToTrack[idx] = bestTrack;
-        }
-    }
-
-    for (int i = 0; i < static_cast<int>(results.size()); i++) {
-        if (detToTrack[i] >= 0) continue;
-        FaceTrack t;
-        t.trackId = nextTrackId++;
-        t.bbox = results[i].face;
-        t.lastSeenMs = now;
-        t.lastId = "";
-        t.lastIdStreak = 0;
-        t.stableId = "";
-        t.stableConfidence = 0.0f;
-        faceTracks.push_back(std::move(t));
-        detToTrack[i] = static_cast<int>(faceTracks.size()) - 1;
-    }
-
-    std::vector<FaceTrack*> activeTracks;
-    activeTracks.reserve(results.size());
-
-    for (int i = 0; i < static_cast<int>(results.size()); i++) {
-        const int ti = detToTrack[i];
-        if (ti < 0 || ti >= static_cast<int>(faceTracks.size())) continue;
-        FaceTrack& t = faceTracks[ti];
-        t.bbox = results[i].face;
-        t.lastSeenMs = now;
-
-        if (shouldRecognize) {
-            const bool authed = results[i].identity.isAuthenticated;
-            const std::string rawId = authed ? results[i].identity.id : "Unknown";
-            const float rawConf = results[i].identity.confidence;
-
-            // 已稳定认证的跟踪永不接受非认证覆盖
-            const bool hasStableAuth = (!t.stableId.empty() && t.stableId != "Unknown");
-
-            if (authed && rawId == t.lastId) {
-                t.lastIdStreak++;
-            } else if (authed) {
-                t.lastId = rawId;
-                t.lastIdStreak = 1;
-            } else {
-                // 非认证帧只清零 streak, 不清 lastId → 保留已认证 track
-                t.lastIdStreak = 0;
-            }
-
-            if (authed && t.lastIdStreak >= stableFrames) {
-                t.stableId = rawId;
-                t.stableConfidence = rawConf;
-            } else if (!hasStableAuth && t.stableId.empty()) {
-                t.stableId = rawId;
-                t.stableConfidence = rawConf;
-            }
-        } else {
-            if (t.stableId.empty()) {
-                t.stableId = "Unknown";
-                t.stableConfidence = 0.0f;
-            }
-        }
-
-        activeTracks.push_back(&t);
-    }
-
-    if (!activeTracks.empty()) {
-        std::sort(activeTracks.begin(), activeTracks.end(), [](const FaceTrack* a, const FaceTrack* b) {
-            return a->trackId < b->trackId;
-        });
-
-        FaceTrack* bestAuth = nullptr;
-        for (FaceTrack* t : activeTracks) {
-            if (t->stableId == "Unknown") continue;
-            if (!bestAuth || t->stableConfidence > bestAuth->stableConfidence) {
-                bestAuth = t;
-            }
-        }
-
-        for (FaceTrack* t : activeTracks) {
-            const bool authed = (t->stableId != "Unknown");
-            cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-            int thickness = (bestAuth && t->trackId == bestAuth->trackId) ? 3 : 2;
-            cv::rectangle(frame, t->bbox, color, thickness);
-
-            std::string label;
-            label.reserve(32);
-            label += "T";
-            label += std::to_string(t->trackId);
-            label += " ";
-            label += t->stableId;
-            if (authed) {
-                label += " ";
-                label += std::to_string(static_cast<int>(t->stableConfidence * 100));
-                label += "%";
-            }
-
-            const cv::Point origin(std::max(0, t->bbox.x), std::max(0, t->bbox.y - 8));
-            cv::putText(frame, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
-        }
-
-        if (onResultCallback && (now - lastMultiMs > 650)) {
-            lastMultiMs = now;
-            std::string msg;
-            msg.reserve(32 + activeTracks.size() * 32);
-            msg += "FACES ";
-            msg += std::to_string(activeTracks.size());
-            for (FaceTrack* t : activeTracks) {
-                msg += " T";
-                msg += std::to_string(t->trackId);
-                msg += "=";
-                msg += t->stableId;
-                if (t->stableId != "Unknown") {
-                    msg += "(";
-                    msg += std::to_string(static_cast<int>(t->stableConfidence * 100));
-                    msg += "%)";
-                }
-            }
-            onResultCallback(msg);
-        }
-
-        if (bestAuth) {
-            if (onResultCallback && (now - lastVerifiedMs > 800)) {
-                lastVerifiedMs = now;
-                std::string msg = "VERIFIED " + bestAuth->stableId + " " + std::to_string(static_cast<int>(bestAuth->stableConfidence * 100)) + "%";
-                onResultCallback(msg);
-            }
-        } else if (shouldRecognize) {
-            handleAbnormalEvent("AUTH_FAIL", "Unknown person detected", frame);
-            if (onResultCallback && (now - lastUnknownMs > 1200)) {
-                lastUnknownMs = now;
-                onResultCallback("AUTH_FAIL Unknown");
-            }
-        }
-    } else {
-        if (onResultCallback && (now - lastNoFaceMs > 2000)) {
-            lastNoFaceMs = now;
-            onResultCallback("NO_FACE");
-        }
-    }
-
-    // Update the render frame safely
-    stats.postMs = static_cast<double>(nowMs() - postStart);
-    long long renderStart = nowMs();
-    {
-        std::lock_guard<std::mutex> lock(renderMutex);
-        // Performance optimization: Reusing renderFrame buffer via copyTo avoids reallocation
-        // Why: Avoids `clone()` which allocates a new block of memory each frame
-        // Rollback: Revert to `renderFrame = frame.clone();`
-        frame.copyTo(renderFrame);
-        renderFrameSeq++;
-    }
-    stats.renderMs = static_cast<double>(nowMs() - renderStart);
-
-    // Save to history
-    perfHistory.push_back(stats);
 }
 
 bool Engine::getRenderFrame(cv::Mat& outFrame) {
@@ -1062,108 +696,18 @@ bool Engine::getRenderFrame(cv::Mat& outFrame) {
 }
 
 bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& inOutSeq) {
-    std::lock_guard<std::mutex> lock(renderMutex);
-    if (renderFrame.empty()) return false;
-    if (renderFrameSeq == inOutSeq) return false;  // 无新帧
-    renderFrame.copyTo(outFrame);
-    inOutSeq = renderFrameSeq;
-    return true;
+    if (!publisher_) return false;
+    return publisher_->getRenderFrame(outFrame, inOutSeq);
 }
 
 void Engine::setFlip(bool flipX, bool flipY) {
-    flipXEnabled.store(flipX);
-    flipYEnabled.store(flipY);
+    flipXEnabled_.store(flipX);
+    flipYEnabled_.store(flipY);
 }
 
-void Engine::handleAbnormalEvent(const std::string& type, const std::string& desc, const cv::Mat& evidence) {
-    RKLOG_ENTER("Engine");
-
-    bool shouldHandle = false;
-    long long sessionTotal = 0;
-    long long sessionSuppressed = 0;
-    long long typeHandled = 0;
-    long long typeSuppressed = 0;
-    {
-        std::lock_guard<std::mutex> lock(abnormalEventMutex_);
-
-        long long now = nowMs();
-        abnormalEventSessionTotal_++;
-        sessionTotal = abnormalEventSessionTotal_;
-
-        // Initialize cooldown for this event type if first time seen
-        if (abnormalEventCooldownMs_.find(type) == abnormalEventCooldownMs_.end()) {
-            abnormalEventCooldownMs_[type] = kAbnormalEventCooldownBaseMs;
-        }
-
-        // Check cooldown: skip if within cooldown period
-        auto lastIt = lastAbnormalEventMs_.find(type);
-        if (lastIt != lastAbnormalEventMs_.end()) {
-            long long elapsed = now - lastIt->second;
-            long long cooldown = abnormalEventCooldownMs_[type];
-            if (elapsed < cooldown) {
-                abnormalEventSessionSuppressed_++;
-                abnormalEventSuppressedByType_[type]++;
-                sessionSuppressed = abnormalEventSessionSuppressed_;
-                typeSuppressed = abnormalEventSuppressedByType_[type];
-                if (typeSuppressed == 1 || (typeSuppressed % 10) == 0) {
-                    rklog::logWarn("Engine", "handleAbnormalEvent",
-                        "type=" + type +
-                        " action=suppressed reason=cooldown elapsed_ms=" + std::to_string(elapsed) +
-                        " cooldown_ms=" + std::to_string(cooldown) +
-                        " session_total=" + std::to_string(sessionTotal) +
-                        " session_suppressed=" + std::to_string(sessionSuppressed) +
-                        " type_suppressed=" + std::to_string(typeSuppressed));
-                }
-                return;
-            }
-            // Reset cooldown if no events for > 1 minute
-            if (elapsed > 60000) {
-                abnormalEventCooldownMs_[type] = kAbnormalEventCooldownBaseMs;
-                abnormalEventCount_[type] = 0;
-                rklog::logWarn("Engine", "handleAbnormalEvent",
-                    "type=" + type + " cooldown reset to base (" +
-                    std::to_string(kAbnormalEventCooldownBaseMs) + "ms) after idle");
-            }
-        }
-
-        // Update last event time
-        lastAbnormalEventMs_[type] = now;
-
-        // Increment count and check rate limit
-        int& count = abnormalEventCount_[type];
-        count++;
-        if (count > kAbnormalEventMaxPerMin) {
-            long long& cd = abnormalEventCooldownMs_[type];
-            cd = std::min(cd * 2, kAbnormalEventCooldownMaxMs);
-            rklog::logWarn("Engine", "handleAbnormalEvent",
-                "type=" + type + " count=" + std::to_string(count) +
-                " exceeded limit, cooldown increased to " + std::to_string(cd) + "ms");
-            count = 0;
-        }
-
-        shouldHandle = true;
-        abnormalEventHandledByType_[type]++;
-        typeHandled = abnormalEventHandledByType_[type];
-        sessionSuppressed = abnormalEventSessionSuppressed_;
-    }  // Release abnormalEventMutex_ before I/O
-
-    if (!shouldHandle) return;
-
-    if (typeHandled == 1 || (typeHandled % 10) == 0) {
-        rklog::logInfo("Engine", "handleAbnormalEvent",
-            "type=" + type +
-            " action=handled session_total=" + std::to_string(sessionTotal) +
-            " session_suppressed=" + std::to_string(sessionSuppressed) +
-            " type_handled=" + std::to_string(typeHandled));
-    }
-
-    // Original event handling (disk I/O outside the mutex)
-    std::string timestamp = std::to_string(std::time(nullptr));
-    std::string imgPath = this->storagePath + type + "_" + timestamp + ".jpg";
-
-    if (Storage::saveImage(imgPath, evidence)) {
-        eventManager->logEvent(type, desc, imgPath);
-        std::cout << "Event Logged: " << desc << std::endl;
+void Engine::setOnResultCallback(std::function<void(std::string)> callback) {
+    if (publisher_) {
+        publisher_->setCallback(std::move(callback));
     }
 }
 
