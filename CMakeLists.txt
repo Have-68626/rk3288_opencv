@@ -167,6 +167,10 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
     )
+    # Mock OpenCV stubs (cv::Rect etc.) for zero-dependency build
+    target_include_directories(core_unit_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
+    )
     target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
@@ -774,6 +778,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/AbcTestRunner.cpp"
             "src/win/src/FramePipeline.cpp"
+            "src/win/src/CameraSession.cpp"
             "src/win/src/RuntimeBootstrap.cpp"
             "src/win/src/DisplaySettings.cpp"
             "src/win/src/D3D11Renderer.cpp"
