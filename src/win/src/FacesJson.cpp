@@ -80,9 +80,20 @@ std::string buildFacesJson(const FacesSnapshot& s) {
     jsonStr += ",\"scale_mode\":\"";
     jsonStr += scaleModeText(s.previewScaleMode);
     jsonStr += "\"},\"perf\":{\"infer_ms\":";
-    jsonStr += std::isfinite(s.inferMs) ? std::to_string(s.inferMs) : "null";
+    char buf[512];
+    if (std::isfinite(s.inferMs)) {
+        std::snprintf(buf, sizeof(buf), "%g", s.inferMs);
+        jsonStr += buf;
+    } else {
+        jsonStr += "null";
+    }
     jsonStr += ",\"drop_rate\":";
-    jsonStr += std::isfinite(s.dropRate) ? std::to_string(s.dropRate) : "null";
+    if (std::isfinite(s.dropRate)) {
+        std::snprintf(buf, sizeof(buf), "%g", s.dropRate);
+        jsonStr += buf;
+    } else {
+        jsonStr += "null";
+    }
     jsonStr += ",\"stride\":";
     jsonStr += std::to_string(s.stride);
     jsonStr += "},\"faces\":[";
@@ -108,7 +119,12 @@ std::string buildFacesJson(const FacesSnapshot& s) {
         jsonStr += ",\"h\":";
         jsonStr += std::to_string(dr.h);
         jsonStr += "},\"confidence\":";
-        jsonStr += std::isfinite(f.confidence) ? std::to_string(f.confidence) : "null";
+        if (std::isfinite(f.confidence)) {
+            std::snprintf(buf, sizeof(buf), "%g", f.confidence);
+            jsonStr += buf;
+        } else {
+            jsonStr += "null";
+        }
         jsonStr += "}";
     }
     jsonStr += "]}";
