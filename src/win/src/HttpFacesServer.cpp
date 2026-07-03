@@ -403,27 +403,43 @@ void HttpFacesServer::acceptLoop() {
         }
 
         activeClients_++;
-        std::thread([this, cs, lease = std::move(*lease)]() mutable {
-            struct Cleanup {
-                HttpFacesServer* self;
-                std::uintptr_t sockP;
-                ~Cleanup() {
-                    {
-                        std::lock_guard<std::mutex> lk(self->clientMu_);
-                        for (auto it = self->clientSocks_.begin(); it != self->clientSocks_.end(); ++it) {
-                            if (*it == sockP) {
-                                self->clientSocks_.erase(it);
-                                break;
+        try {
+            std::thread([this, cs, lease = std::move(*lease)]() mutable {
+                struct Cleanup {
+                    HttpFacesServer* self;
+                    std::uintptr_t sockP;
+                    ~Cleanup() {
+                        {
+                            std::lock_guard<std::mutex> lk(self->clientMu_);
+                            for (auto it = self->clientSocks_.begin(); it != self->clientSocks_.end(); ++it) {
+                                if (*it == sockP) {
+                                    self->clientSocks_.erase(it);
+                                    break;
+                                }
                             }
                         }
+                        self->activeClients_--;
+                        self->stopCv_.notify_all();
                     }
-                    self->activeClients_--;
-                    self->stopCv_.notify_all();
-                }
-            } cleanup{this, static_cast<std::uintptr_t>(cs)};
+                } cleanup{this, static_cast<std::uintptr_t>(cs)};
 
-            handleClient(static_cast<std::uintptr_t>(cs));
-        }).detach();
+                handleClient(static_cast<std::uintptr_t>(cs));
+            }).detach();
+        } catch (const std::exception&) {
+            // 线程创建失败：回滚连接状态，防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)
+            {
+                std::lock_guard<std::mutex> lk(clientMu_);
+                for (auto it = clientSocks_.begin(); it != clientSocks_.end(); ++it) {
+                    if (*it == sockP) {
+                        clientSocks_.erase(it);
+                        break;
+                    }
+                }
+            }
+            activeClients_--;
+            stopCv_.notify_all();
+            closesocket(cs);
+        }
     }
 }
 
