@@ -696,6 +696,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/HttpFacesServerPath.cpp"
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/FramePipeline.cpp"
+            "src/win/src/FrameProcessor.cpp"
+            "src/win/src/SideEffectSink.cpp"
             "src/win/src/CameraSession.cpp"
             "src/win/src/RuntimeBootstrap.cpp"
             "src/win/src/EndpointRegistry.cpp"
@@ -779,6 +781,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/AbcTestRunner.cpp"
             "src/win/src/FramePipeline.cpp"
+            "src/win/src/FrameProcessor.cpp"
+            "src/win/src/SideEffectSink.cpp"
             "src/win/src/CameraSession.cpp"
             "src/win/src/RuntimeBootstrap.cpp"
             "src/win/src/EndpointRegistry.cpp"
@@ -914,6 +918,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "src/win/src/JsonLite.cpp"
         "src/win/src/WinCrypto.cpp"
         "src/win/src/WinJsonConfig.cpp"
+        "src/win/src/FrameProcessor.cpp"
+        "src/win/src/SideEffectSink.cpp"
     )
     target_include_directories(win_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
