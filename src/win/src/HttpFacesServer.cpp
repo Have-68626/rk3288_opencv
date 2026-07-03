@@ -425,7 +425,8 @@ void HttpFacesServer::acceptLoop() {
 
                 handleClient(static_cast<std::uintptr_t>(cs));
             }).detach();
-        } catch (const std::exception& /*e*/) {
+        } catch (const std::exception&) {
+            // 线程创建失败：回滚连接状态，防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)
             {
                 std::lock_guard<std::mutex> lk(clientMu_);
                 for (auto it = clientSocks_.begin(); it != clientSocks_.end(); ++it) {
