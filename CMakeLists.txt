@@ -354,6 +354,8 @@ set(CORE_SOURCES
     "src/cpp/src/VideoManager.cpp"
     "src/cpp/src/YoloFaceDetector.cpp"
     "src/cpp/src/pipeline/TrackCoordinator.cpp"
+    "src/cpp/src/pipeline/ResultPublisher.cpp"
+    "src/cpp/src/pipeline/PerfReporter.cpp"
     "src/cpp/src/adapters/ArcFaceAdapter.cpp"
     "src/cpp/src/adapters/CascadeAdapter.cpp"
     "src/cpp/src/adapters/DnnSsdAdapter.cpp"
@@ -546,6 +548,7 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/test_face_align.cpp"
             "tests/cpp/test_resource_cleanup.cpp"
             "tests/cpp/test_gallery_cache.cpp"
+            "tests/cpp/test_result_publisher.cpp"
             "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/cpp/src/FaceAlign.cpp"
             "src/cpp/src/FaceInferOutcomeJson.cpp"
@@ -572,6 +575,8 @@ if(NOT RK_SKIP_OPENCV)
             "src/win/src/DnnSsdFaceDetector.cpp"
             "src/win/src/FaceDetector.cpp"
             "src/win/src/LbphEmbedder.cpp"
+            "src/cpp/src/pipeline/ResultPublisher.cpp"
+            "src/cpp/src/pipeline/PerfReporter.cpp"
         )
         target_include_directories(face_infer_unit_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
