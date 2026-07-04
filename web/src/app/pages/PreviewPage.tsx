@@ -314,7 +314,7 @@ export function PreviewPage() {
               />
               <label
                 htmlFor="preview-flip-x"
-                style={{ cursor: isFlippingY ? 'not-allowed' : 'pointer' }}
+                style={{ cursor: isFlippingX ? 'not-allowed' : 'pointer' }}
                 onClick={(e) => {
                   e.preventDefault();
                   if (!isFlippingY) {
@@ -322,7 +322,7 @@ export function PreviewPage() {
                   }
                 }}
               >
-                <Typography.Text disabled={isFlippingY}>翻转 X</Typography.Text>
+                <Typography.Text disabled={isFlippingX}>翻转 X</Typography.Text>
               </label>
             </Space>
             <Space>
@@ -349,15 +349,15 @@ export function PreviewPage() {
               />
               <label
                 htmlFor="preview-flip-y"
-                style={{ cursor: isFlippingX ? 'not-allowed' : 'pointer' }}
+                style={{ cursor: isFlippingY ? 'not-allowed' : 'pointer' }}
                 onClick={(e) => {
                   e.preventDefault();
-                  if (!isFlippingX) {
+                  if (!isFlippingY) {
                     document.getElementById('preview-flip-y')?.click();
                   }
                 }}
               >
-                <Typography.Text disabled={isFlippingX}>翻转 Y</Typography.Text>
+                <Typography.Text disabled={isFlippingY}>翻转 Y</Typography.Text>
               </label>
             </Space>
           </Space>
