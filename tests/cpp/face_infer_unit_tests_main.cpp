@@ -67,6 +67,9 @@ bool test_cleanup_file_write_and_read();
 bool test_gallery_cache_empty_dir();
 bool test_gallery_cache_repeated_call();
 
+bool test_publisher_emits_no_face_on_empty_tracks();
+bool test_publisher_throttles_repeated_calls();
+
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
@@ -99,6 +102,8 @@ int main() {
         {"cleanup_file_write_and_read", test_cleanup_file_write_and_read},
         {"gallery_cache_empty_dir", test_gallery_cache_empty_dir},
         {"gallery_cache_repeated_call", test_gallery_cache_repeated_call},
+        {"publisher_emits_no_face_on_empty_tracks", test_publisher_emits_no_face_on_empty_tracks},
+        {"publisher_throttles_repeated_calls", test_publisher_throttles_repeated_calls},
         {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
         {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
         {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},

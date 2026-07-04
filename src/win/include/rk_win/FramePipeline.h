@@ -1,10 +1,14 @@
 #pragma once
 
+#include "rk_win/RuntimeBootstrap.h"
+#include "rk_win/CameraSession.h"
 #include "FaceRecognizer.h"  // FaceMatch
 #include "IRecognizer.h"
 #include "MfCamera.h"
 #include "StructuredLogger.h"
 #include "WinConfig.h"
+#include "rk_win/FrameProcessor.h"
+#include "rk_win/SideEffectSink.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -72,32 +76,6 @@ struct CameraSwitchResult {
     std::string reason;
 };
 
-struct ModelSnapshot {
-
-    std::string id;
-
-    std::string displayName;
-
-    std::string taskType;
-
-    std::string configuredPath;
-
-    std::string resolvedPath;
-
-    std::string backend;
-
-    std::string modelVersion;
-
-    std::string hash;
-
-    std::string status;
-
-    bool isInUse = false;
-
-    std::string lastError;
-
-};
-
 struct FacesSnapshot {
     std::vector<FaceMatch> faces;
     int frameWidth = 0;
@@ -130,6 +108,11 @@ public:
     void setEventLogger(EventLogger* logger);
     void setPreviewLayout(int previewW, int previewH, int previewScaleMode);
 
+    // ── ReloadPolicy 热更新（Phase 1） ──
+    void switchCamera(const AppConfig& cfg);
+    void reloadRuntime(const AppConfig& cfg);
+    void updatePreviewLayout(int w, int h, const std::string& scaleMode);
+
     void requestEnroll(const std::string& personId);
     void requestClearDb();
 
@@ -147,6 +130,7 @@ private:
     void captureLoop();
     void processLoop();
     void stopCameraLocked();
+    CameraOpenResult openOnce();
     CameraSwitchResult startCameraWithRollbackLocked(int deviceIndex, const CameraFormat& desired, int maxTotalMs);
     std::optional<int> findExactFormatIndexLocked(int deviceIndex, int width, int height, int fps) const;
 
@@ -159,6 +143,7 @@ private:
     CameraFormat desiredFormat_{};
     std::string activeCameraNameUtf8_;
     std::string activeCameraIdUtf8_;
+    CameraDeviceInfo currentDevice_{};
 
     std::atomic<bool> running_{false};
     std::atomic<bool> cameraRunning_{false};
@@ -210,6 +195,9 @@ private:
     int enrollRemaining_ = 0;
 
     std::atomic<bool> clearDbRequested_{false};
+
+    std::unique_ptr<FrameProcessor> processor_;
+    std::unique_ptr<SideEffectSink> sink_;
 
     std::atomic<bool> lastPrivacyDenied_{false};
 

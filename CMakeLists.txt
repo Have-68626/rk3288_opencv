@@ -150,11 +150,13 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_file_hash.cpp"
         "tests/cpp/test_connection_quota.cpp"
         "tests/cpp/test_acceleration_contract.cpp"
+        "tests/cpp/test_track_coordinator.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/FaceSearch.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
         "src/cpp/src/EventManager.cpp"
         "src/cpp/src/FileHash.cpp"
+        "src/cpp/src/pipeline/TrackCoordinator.cpp"
         "tests/win/test_http_faces_server.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/JsonLite.cpp"
@@ -164,6 +166,10 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     )
     target_include_directories(core_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+    )
+    # Mock OpenCV stubs (cv::Rect etc.) for zero-dependency build
+    target_include_directories(core_unit_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
     )
     target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
     if(MSVC)
@@ -347,6 +353,9 @@ set(CORE_SOURCES
     "src/cpp/src/ThresholdPolicy.cpp"
     "src/cpp/src/VideoManager.cpp"
     "src/cpp/src/YoloFaceDetector.cpp"
+    "src/cpp/src/pipeline/TrackCoordinator.cpp"
+    "src/cpp/src/pipeline/ResultPublisher.cpp"
+    "src/cpp/src/pipeline/PerfReporter.cpp"
     "src/cpp/src/adapters/ArcFaceAdapter.cpp"
     "src/cpp/src/adapters/CascadeAdapter.cpp"
     "src/cpp/src/adapters/DnnSsdAdapter.cpp"
@@ -539,6 +548,7 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/test_face_align.cpp"
             "tests/cpp/test_resource_cleanup.cpp"
             "tests/cpp/test_gallery_cache.cpp"
+            "tests/cpp/test_result_publisher.cpp"
             "src/cpp/src/ArcFaceEmbedder.cpp"
             "src/cpp/src/FaceAlign.cpp"
             "src/cpp/src/FaceInferOutcomeJson.cpp"
@@ -565,6 +575,8 @@ if(NOT RK_SKIP_OPENCV)
             "src/win/src/DnnSsdFaceDetector.cpp"
             "src/win/src/FaceDetector.cpp"
             "src/win/src/LbphEmbedder.cpp"
+            "src/cpp/src/pipeline/ResultPublisher.cpp"
+            "src/cpp/src/pipeline/PerfReporter.cpp"
         )
         target_include_directories(face_infer_unit_tests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
@@ -686,9 +698,15 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/OverlayRenderer.cpp"
             "src/win/src/FacesJson.cpp"
             "src/win/src/HttpFacesServer.cpp"
+            "src/win/src/StreamSessionRunner.cpp"
             "src/win/src/HttpFacesServerPath.cpp"
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/FramePipeline.cpp"
+            "src/win/src/FrameProcessor.cpp"
+            "src/win/src/SideEffectSink.cpp"
+            "src/win/src/CameraSession.cpp"
+            "src/win/src/RuntimeBootstrap.cpp"
+            "src/win/src/EndpointRegistry.cpp"
             "src/win/src/EventLogger.cpp"
             "src/win/src/EndpointRegistry.cpp"
             "src/win/src/JsonEndpointHandlers.cpp"
@@ -767,10 +785,16 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
             "src/win/src/OverlayRenderer.cpp"
             "src/win/src/FacesJson.cpp"
             "src/win/src/HttpFacesServer.cpp"
+            "src/win/src/StreamSessionRunner.cpp"
             "src/win/src/HttpFacesServerPath.cpp"
             "src/win/src/HttpFacesPoster.cpp"
             "src/win/src/AbcTestRunner.cpp"
             "src/win/src/FramePipeline.cpp"
+            "src/win/src/FrameProcessor.cpp"
+            "src/win/src/SideEffectSink.cpp"
+            "src/win/src/CameraSession.cpp"
+            "src/win/src/RuntimeBootstrap.cpp"
+            "src/win/src/EndpointRegistry.cpp"
             "src/win/src/DisplaySettings.cpp"
             "src/win/src/D3D11Renderer.cpp"
             "src/win/src/RenderMetricsLogger.cpp"
@@ -891,6 +915,9 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "tests/win/test_face_metrics.cpp"
         "tests/win/test_lbph_embedder.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "tests/win/test_runtime_bootstrap.cpp"
+        "tests/win/test_endpoint_registry.cpp"
+        "src/win/src/RuntimeBootstrap.cpp"
         "tests/win/test_endpoint_registry.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/cpp/src/FileHash.cpp"
@@ -903,6 +930,8 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         "src/win/src/JsonLite.cpp"
         "src/win/src/WinCrypto.cpp"
         "src/win/src/WinJsonConfig.cpp"
+        "src/win/src/FrameProcessor.cpp"
+        "src/win/src/SideEffectSink.cpp"
     )
     target_include_directories(win_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
