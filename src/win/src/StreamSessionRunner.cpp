@@ -59,7 +59,7 @@ bool StreamSessionRunner::writeRaw(std::uintptr_t sock, const void* data, std::s
 void StreamSessionRunner::runSse(std::uintptr_t sock) {
     // 防御：pipe_ 可能尚未注入（start() 调用顺序）
     if (!pipe_) {
-        const char* shutdown = "HTTP/1.1 503 Service Unavailable\r\n\r\n";
+        const char* shutdown = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         writeRaw(sock, shutdown, std::strlen(shutdown));
         return;
     }
