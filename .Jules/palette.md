@@ -58,3 +58,6 @@ refresh from a top navigation bar) should have centralized `message.loading` and
 store. Update actions that receive context-specific feedback from callers (like saving specific form sections) should
 NOT emit generic toasts from the store to prevent double notifications.
 ## 2026-07-02 - Enable Enter key submission for standalone Inputs\n**Learning:** Standalone inputs paired with action buttons fail keyboard accessibility expectations if the action cannot be triggered by the Enter key.\n**Action:** Always bind the action handler to the `onPressEnter` event of the associated `<Input>`, ensuring the handler independently validates input to match the button's disabled state.
+## 2025-02-23 - Switch Label Accessibility
+**Learning:** Native `<label>` elements bound to Ant Design `Switch` components only focus the component instead of toggling it because the `Switch` renders as a `<button>` instead of an `<input type="checkbox">`.
+**Action:** Always add an explicit `onClick` handler to labels bound to Ant Design `Switch` components to manually trigger the click event on the target button, and manually mirror any `disabled` states visually (e.g. using `cursor: 'not-allowed'` and `disabled={true}`).
