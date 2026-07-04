@@ -111,3 +111,12 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - C++17 standard (`CMAKE_CXX_STANDARD 17`)
 - Algorithm-critical logic, JNI boundaries, and hardware-difference handling **must have Chinese comments**
 - Other AI-agent working dirs (`.trae/specs/`, `.Jules/`, `.codegraph/`): scratch history, not authoritative docs
+
+## PR workflow
+
+Before merging any PR into `master`:
+1. **审查 comments** — 检查 PR 上的 review comments 和 issue comments，确认全部已解决或已明确忽略
+2. **解决冲突** — 检查并修复所有 merge conflicts
+3. **等待 CI** — 等待 CI 流水线（`.github/workflows/ci.yml` 中 6 个 job）全部通过后，方可合并
+4. **合并策略** — 使用 squash merge（默认）或 rebase merge
+5. **不修改 PR 规则** — 不绕开或更改分支保护规则（`--admin` 标志仅在紧急修复时使用）

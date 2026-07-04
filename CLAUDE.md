@@ -83,7 +83,30 @@ gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 cmake --build build_win --config Release --target win_face_eval_cli win_face_bench_cli
 ```
 
-## Architecture notes
+## Architecture notes (post-refactor)
+
+### Three core modules → Pipeline architecture
+
+After the triple refactor (2026-07, PR #427), the three monolithic classes are now thin coordinators:
+
+**EngineRuntime** (`src/cpp/src/Engine.cpp: ~280 lines, was 1294`)
+- `FrameSource` — unified input (VideoManager / ExternalInput)
+- `TrackCoordinator` — pure-function IoU matching + stableId + TTL (**zero OpenCV dep, in core_unit_tests**)
+- `ResultPublisher` — callback throttling + render frame publishing
+- `PerfReporter` — async P50/P95 aggregation + CSV write
+
+**FramePipeline** (`src/win/src/FramePipeline.cpp: ~350 lines, was 747`)
+- `RuntimeBootstrap::build()` — recognizer/DNN/ModelSnapshot assembly
+- `CameraSession::switchWithRollback()` — camera open/fallback/first-frame timeout
+- `FrameProcessor::run()` — pure computation (detect → recognize → result)
+- `SideEffectSink::publish()` — overlay drawing + structured log + render state
+
+**HttpFacesServer** (`src/win/src/HttpFacesServer.cpp: ~500 lines, was 1005`)
+- `EndpointRegistry` — Route table + method validation + unified error formatting
+- `JsonEndpointHandlers` — endpoint handlers by domain (models/settings/cameras/actions)
+- `StreamSessionRunner` — SSE + MJPEG unified streaming
+
+### Acceleration contract
 
 - **Acceleration contract**: every accelerator (MPP, ncnn, libyuv, Qualcomm, OpenCL) uses `requested`/`effective`/`evidence`/`reason` pattern in `Engine::performAccelSelfCheck()` or `inference_bench_cli`. Fixed reason codes: `ok`, `build_disabled`, `unsupported_platform`, `missing_dependency`, `missing_model`, `runtime_init_failed`, `unsupported_input`.
 - **Windows config**: `%APPDATA%\rk_wcfr\config.json` (source of truth, JSON Schema at `docs/windows-web-spa/config.schema.json`). Legacy `config/windows_camera_face_recognition.ini` for migration only.
@@ -116,6 +139,15 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - Algorithm-critical logic, JNI boundaries, and hardware-difference handling **must have Chinese comments**
 - Other AI-agent working dirs (`.trae/specs/`, `.Jules/`, `.codegraph/`): scratch history, not authoritative docs
 
+## PR workflow
+
+Before merging any PR into `master`:
+1. **审查 comments** — 检查 PR 上的 review comments 和 issue comments，确认全部已解决或已明确忽略
+2. **解决冲突** — 检查并修复所有 merge conflicts
+3. **等待 CI** — 等待 CI 流水线（`.github/workflows/ci.yml` 中 6 个 job）全部通过后，方可合并
+4. **合并策略** — 使用 squash merge（默认）或 rebase merge，不做普通 merge commit
+5. **不修改 PR 规则** — 不绕开或更改分支保护规则（如 `--admin` 标志仅在紧急修复时使用）
+
 ## Scripts & tools
 
 | Script | Purpose |
@@ -133,3 +165,5 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - **README.md** — project overview, quick start, todo list status
 - **docs/windows-web-spa/openapi.yaml** — REST API spec
 - **docs/windows-web-spa/config.schema.json** — Windows config JSON Schema
+- **docs/superpowers/specs/2026-07-03-triple-refactor-design.md** — 三层重构设计文档
+- **docs/superpowers/plans/2026-07-03-triple-refactor-plan.md** — 三层重构实施计划
