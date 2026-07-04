@@ -1,11 +1,9 @@
 #include "rk_win/HttpFacesServer.h"
 #include "rk_win/HttpFacesServerPath.h"
 
-#include "rk_win/EndpointRegistry.h"
 #include "rk_win/EventLogger.h"
 #include "rk_win/FacesJson.h"
 #include "rk_win/FramePipeline.h"
-#include "rk_win/JsonEndpointHandlers.h"
 #include "rk_win/JsonLite.h"
 #include "rk_win/WinConfig.h"
 #include "rk_win/WinJsonConfig.h"
@@ -220,6 +218,7 @@ static const HttpFacesServer::Route kRoutes[] = {
 
 HttpFacesServer::HttpFacesServer()
     : streamRunner_(running_, [this](cv::Mat& out) -> bool {
+          if (!pipe_) return false;  // 防御：pipe_ 尚未注入（在 start() 中设置）
           RenderState rs;
           if (!pipe_->tryGetRenderState(rs)) return false;
           out = rs.bgr;
@@ -555,18 +554,15 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& 
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req) {
-    // 流式端点由 handleClient 直接处理，不经过 handleApi
-    if (req.path == "/api/v1/preview.mjpeg" ||
-        req.path == "/api/faces/stream" ||
-        req.path == "/api/v1/faces/stream") {
-        return HttpResponse{};
+    for (const auto& r : kRoutes) {
+        if (req.path == r.path) {
+            if (r.method[0] != '*' && req.method != r.method) {
+                return jsonErr(405, "method_not_allowed", "仅支持 " + std::string(r.method));
+            }
+            return (this->*r.handler)(req);
+        }
     }
-
-    // 已迁移端点通过注册表调度
-    EndpointContext ctx;
-    ctx.pipe = pipe_;
-    ctx.settings = settings_;
-    return registry_->dispatch(req, ctx);
+    return jsonErr(404, "not_found", "未知端点");
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const HttpRequest& req) {

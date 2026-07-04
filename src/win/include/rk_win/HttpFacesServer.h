@@ -17,7 +17,6 @@
 
 namespace rk_win {
 
-class EndpointRegistry;
 class EventLogger;
 class FramePipeline;
 class WinJsonConfigStore;
@@ -106,10 +105,6 @@ private:
     ConnectionQuota quota_{MAX_CONCURRENT_CONNECTIONS};
     std::vector<std::uintptr_t> clientSocks_;
     std::atomic<int> activeClients_{0};
-
-    // 端点注册表（JsonEndpointHandlers 填充）
-    std::unique_ptr<EndpointRegistry> registry_;
-
     std::mutex stopMu_;
     std::condition_variable stopCv_;
 };
