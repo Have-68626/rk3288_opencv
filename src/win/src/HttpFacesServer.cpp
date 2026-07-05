@@ -134,45 +134,6 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
 }
 
 
-static std::string escapeJsonString(std::string_view s) {
-    std::string out;
-    out.reserve(s.size() + s.size() / 4);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    out += buf;
-                } else {
-                    out.push_back(c);
-                }
-                break;
-        }
-    }
-    return out;
-}
-
-static std::string utf8FromWideLocal(const std::wstring& ws) {
-    if (ws.empty()) return {};
-#ifdef _WIN32
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-#else
-    return std::string(ws.begin(), ws.end());
-#endif
-}
-
 #if RK_WIN_HAS_OPENCV
 static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
     if (rs.bgr.empty()) return false;
@@ -822,8 +783,8 @@ HttpFacesServer::HttpResponse HttpFacesServer::onCameras(const HttpRequest&) {
     for (size_t i = 0; i < devs.size(); i++) {
         JsonValue d = JsonValue::makeObject();
         d.o["index"] = JsonValue::makeNumber(static_cast<double>(i));
-        d.o["name"] = JsonValue::makeString(utf8FromWideLocal(devs[i].name));
-        d.o["deviceId"] = JsonValue::makeString(utf8FromWideLocal(devs[i].deviceId));
+        d.o["name"] = JsonValue::makeString(utf8FromWide(devs[i].name));
+        d.o["deviceId"] = JsonValue::makeString(utf8FromWide(devs[i].deviceId));
         JsonValue formats = JsonValue::makeArray();
         for (const auto& f : devs[i].formats) {
             JsonValue fmt = JsonValue::makeObject();

@@ -1,4 +1,5 @@
 #include "rk_win/MfCamera.h"
+#include "rk_win/WinConfig.h"
 
 #ifdef _WIN32
 
@@ -18,15 +19,6 @@ namespace rk_win {
 namespace {
 
 using Microsoft::WRL::ComPtr;
-
-std::string utf8FromWide(const std::wstring& ws) {
-    if (ws.empty()) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-}
 
 std::wstring wideFromGuid(const GUID& g) {
     wchar_t buf[64];

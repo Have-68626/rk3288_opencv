@@ -2,6 +2,7 @@
 
 #include "Compat.h"
 #include "ConnectionQuota.h"
+#include "EndpointRegistry.h"
 #include "JsonLite.h"
 #include "StreamSessionRunner.h"
 
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -89,6 +91,9 @@ private:
 
     // 流式会话运行器
     StreamSessionRunner streamRunner_;
+
+    // 端点注册表（替代 kRoutes + Route 表）
+    std::unique_ptr<EndpointRegistry> registry_;
 
     std::atomic<bool> running_{false};
     FramePipeline* pipe_ = nullptr;

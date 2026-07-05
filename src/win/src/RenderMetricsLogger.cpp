@@ -1,6 +1,7 @@
 #include "rk_win/RenderMetricsLogger.h"
 
 #include "rk_win/StructuredLogger.h"
+#include "rk_win/WinStringUtil.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -13,34 +14,6 @@
 #include <sstream>
 
 namespace rk_win {
-
-std::string RenderMetricsLogger::escapeJson(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        switch (c) {
-            case '\\':
-                out += "\\\\";
-                break;
-            case '"':
-                out += "\\\"";
-                break;
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out.push_back(c);
-                break;
-        }
-    }
-    return out;
-}
 
 bool RenderMetricsLogger::open(const std::filesystem::path& dir) {
     std::lock_guard<std::mutex> lock(mu_);
