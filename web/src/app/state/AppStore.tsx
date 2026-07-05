@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import type { ServerSettingsDoc } from '../api/types'
 import { getServerSettings, putServerSettings } from '../api/settings'
@@ -48,6 +48,8 @@ const Ctx = createContext<AppStore | null>(null)
 
 export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   const [prefs, setPrefsState] = useState<LocalPrefs>(() => loadPrefs())
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
   const [serverSettings, setServerSettings] = useState<ServerSettingsState>({
     status: 'idle',
   })
@@ -81,7 +83,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      const env = await getServerSettings(prefs)
+      const env = await getServerSettings(prefsRef.current)
 
       if (!env.ok) {
         throw new ApiError(env.error.code, env.error.message, {
@@ -99,7 +101,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (hide) hide()
     }
-  }, [prefs])
+  }, [])
 
   const updateServerSettings = useCallback(async (patch: Partial<ServerSettingsDoc>) => {
     setServerSettings((prev) => ({
@@ -107,7 +109,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       data: prev.data,
     }))
     try {
-      const env = await putServerSettings(prefs, patch)
+      const env = await putServerSettings(prefsRef.current, patch)
 
       if (!env.ok) {
         throw new ApiError(env.error.code, env.error.message, {
@@ -120,7 +122,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
       throw err
     }
-  }, [prefs])
+  }, [])
 
   const value = useMemo<AppStore>(
     () => ({

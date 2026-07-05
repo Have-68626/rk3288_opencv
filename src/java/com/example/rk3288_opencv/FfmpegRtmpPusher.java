@@ -69,11 +69,10 @@ final class FfmpegRtmpPusher {
         
         cmdArgs.add(rtmpUrl);
 
-        StringBuilder cmd = new StringBuilder();
-        for (int i = 0; i < cmdArgs.size(); i++) {
-            if (i > 0) cmd.append(" ");
-            cmd.append(escapeFFmpegArgument(cmdArgs.get(i)));
-        }
+        // Shell 拼接代码已删除（—— 审计 P2.16）
+        // 使用 FFmpeg 参数列表方式传递，避免命令注入
+        // 参数已经由 start() 方法的参数列表直接传入 executeAsync(String[]...)
+        // (原 StringBuilder 循环构建 cmd 为死代码，从未使用)
 
         try {
             Class<?> kit = Class.forName("com.arthenica.ffmpegkit.FFmpegKit");

@@ -34,6 +34,7 @@ export interface ServerSettingsDoc {
     minFaceSizePx: number
     identifyThreshold: number
     enrollSamples: number
+    arcFaceModelPath?: string
   }
   inference: {
     throttleMode: string
@@ -61,6 +62,7 @@ export interface ServerSettingsDoc {
     detectorBackend: string
     recognitionBackend: string
     autoFallback: boolean
+    int8Enabled?: boolean
   }
   http: {
     enable: boolean
@@ -120,8 +122,8 @@ export interface ActiveModelInfo {
   id: string
   displayName: string
   taskType: string
-  configuredPath: string
-  resolvedPath: string
+  configuredPath?: string
+  resolvedPath?: string
   backend: string
   hash?: string
   status: 'loaded' | 'failed' | 'missing'

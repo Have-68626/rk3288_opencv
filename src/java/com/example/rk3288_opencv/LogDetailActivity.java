@@ -44,8 +44,9 @@ public class LogDetailActivity extends AppCompatActivity {
 
     public static final String EXTRA_LOG_PATH = "extra_log_path";
     public static final String EXTRA_DELETED_LOG_PATH = "extra_deleted_log_path";
-    private static final int DEFAULT_TAIL_BYTES = 256 * 1024;
-    private static final int PAGE_BYTES = 256 * 1024;
+    private static final int DEFAULT_TAIL_BYTES = 1024 * 50;
+    private static final int PAGE_BYTES = 1024 * 50;
+    private static final long PAGE_SIZE = 1024 * 50; // 50KB per page (audit P2.17)
     private static final int MAX_FILTER_OUTPUT_LINES = 5000;
     private static final int MAX_FILTER_OUTPUT_CHARS = 1_200_000;
     private static final int MAX_FILTER_HIGHLIGHTS = 6000;
@@ -78,6 +79,13 @@ public class LogDetailActivity extends AppCompatActivity {
     private volatile boolean showLineNumbers = true;
     private static final String PREFS_NAME = "RK3288_Prefs";
     private static final String PREF_LOG_LINE_NUMBERS = "pref_log_line_numbers";
+
+    // Page navigation (audit P2.17)
+    private Button btnPagePrev;
+    private Button btnPageNext;
+    private TextView tvPageInfo;
+    private int currentPage = 0;
+    private int totalPages = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -125,6 +133,15 @@ public class LogDetailActivity extends AppCompatActivity {
             if (btnFilterMain != null) btnFilterMain.setOnClickListener(v -> applyQuickFilter("MainActivity"));
             if (btnFilterService != null) btnFilterService.setOnClickListener(v -> applyQuickFilter("StatusService"));
             if (btnFilterJni != null) btnFilterJni.setOnClickListener(v -> applyQuickFilter("RK3288_JNI"));
+
+            // Page navigation (audit P2.17)
+            btnPagePrev = findViewById(R.id.btn_page_prev);
+            btnPageNext = findViewById(R.id.btn_page_next);
+            tvPageInfo = findViewById(R.id.tv_page_info);
+            if (btnPagePrev != null) btnPagePrev.setOnClickListener(v -> navigatePage(-1));
+            if (btnPageNext != null) btnPageNext.setOnClickListener(v -> navigatePage(1));
+            updatePageInfoUi();
+
             loadTail();
         } else {
             Toast.makeText(this, "File not found", Toast.LENGTH_SHORT).show();
@@ -170,6 +187,9 @@ public class LogDetailActivity extends AppCompatActivity {
         if (file == null) return;
         executor.execute(() -> {
             long startMs = SystemClock.elapsedRealtime();
+            long fileLen = file.length();
+            totalPages = Math.max(1, (int) ((fileLen + PAGE_SIZE - 1) / PAGE_SIZE));
+            currentPage = totalPages;
             String out = readTailUtf8(file, DEFAULT_TAIL_BYTES);
             lastLoadDurationMs = Math.max(0L, SystemClock.elapsedRealtime() - startMs);
             lastLoadOp = "看末尾";
@@ -178,6 +198,7 @@ public class LogDetailActivity extends AppCompatActivity {
             handler.post(() -> {
                 applyFilterFromUi(true, true);
                 updateLoadInfoUi();
+                updatePageInfoUi();
             });
         });
     }
@@ -201,6 +222,7 @@ public class LogDetailActivity extends AppCompatActivity {
             handler.post(() -> {
                 applyFilterFromUi(false, false);
                 updateLoadInfoUi();
+                updatePageInfoUi();
             });
         });
     }
@@ -228,6 +250,7 @@ public class LogDetailActivity extends AppCompatActivity {
             handler.post(() -> {
                 applyFilterFromUi(false, false);
                 updateLoadInfoUi();
+                updatePageInfoUi();
                 if (truncated) {
                     Toast.makeText(this, "日志过大：仅加载末尾 " + (MAX_ALL_BYTES / (1024 * 1024)) + "MB，可继续“加载更多”", Toast.LENGTH_LONG).show();
                 }
@@ -390,6 +413,53 @@ public class LogDetailActivity extends AppCompatActivity {
         String cost = lastLoadDurationMs > 0 ? (lastLoadDurationMs + "ms") : "--";
         String op = (lastLoadOp == null || lastLoadOp.isEmpty()) ? "" : (lastLoadOp + "  ");
         tvLoadInfo.setText(op + range + "  " + full + "  用时 " + cost);
+    }
+
+    private void navigatePage(int direction) {
+        int target = currentPage + direction;
+        if (target < 1 || target > totalPages) return;
+        loadPage(target);
+    }
+
+    private void loadPage(int page) {
+        File file = currentFile;
+        if (file == null) return;
+        executor.execute(() -> {
+            long fileLen = file.length();
+            long startOffset = Math.min((page - 1) * PAGE_SIZE, fileLen);
+            long readLen = Math.min(PAGE_SIZE, fileLen - startOffset);
+            if (readLen <= 0) {
+                handler.post(() -> updatePageInfoUi());
+                return;
+            }
+            long readStartMs = SystemClock.elapsedRealtime();
+            String content = readRangeUtf8(file, startOffset, readLen);
+            rawContent = content;
+            maskedContent = SensitiveDataUtil.maskSensitiveData(rawContent);
+            currentStartOffset = startOffset;
+            fullyLoaded = (startOffset == 0L);
+            currentPage = page;
+            totalPages = Math.max(1, (int) ((fileLen + PAGE_SIZE - 1) / PAGE_SIZE));
+            lastLoadDurationMs = Math.max(0L, SystemClock.elapsedRealtime() - readStartMs);
+            lastLoadOp = "第 " + page + "/" + totalPages + " 页";
+            handler.post(() -> {
+                applyFilterFromUi(false, false);
+                updateLoadInfoUi();
+                updatePageInfoUi();
+            });
+        });
+    }
+
+    private void updatePageInfoUi() {
+        if (tvPageInfo != null) {
+            if (totalPages > 0) {
+                tvPageInfo.setText("第 " + currentPage + "/" + totalPages + " 页");
+            } else {
+                tvPageInfo.setText("第 0/0 页");
+            }
+        }
+        if (btnPagePrev != null) btnPagePrev.setEnabled(currentPage > 1);
+        if (btnPageNext != null) btnPageNext.setEnabled(currentPage < totalPages);
     }
 
     private static String formatBytes(long bytes) {
