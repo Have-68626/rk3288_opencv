@@ -2,93 +2,131 @@ openapi: 3.0.3
 info:
   title: rk_wcfr Local API
   version: "1.0"
+  description: |
+    RK_WCFR（Windows Camera Face Recognition）本地 REST API。
+    服务以 Windows 本地服务形式运行，默认监听 http://127.0.0.1:8080。
+    所有响应包装在统一 Envelope 中，通过 `ok` 字段表示业务成功与否。
+
 servers:
   - url: http://127.0.0.1:{port}
     variables:
       port:
         default: "8080"
+        description: 本地服务端口，可在配置中修改
+
 paths:
   /api/v1/health:
     get:
       summary: 健康检查
       responses:
         "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-  /api/v1/openapi:
-    get:
-      summary: OpenAPI（JSON）
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-  /api/v1/settings:
-    get:
-      summary: 获取配置（脱敏）
-      responses:
-        "200":
-          description: OK
+          description: 服务正常运行
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+
+  /api/v1/openapi:
+    get:
+      summary: 获取本 OpenAPI 规范（JSON）
+      responses:
+        "200":
+          description: 返回 OpenAPI 规范的 JSON 表示
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/settings:
+    get:
+      summary: 获取完整配置（敏感字段已脱敏）
+      description: |
+        返回当前生效的完整配置。敏感字段（如 poster.postUrl 中的加密凭据）不会以明文返回。
+        返回结构体 Envelope.data 包含 camera、recognition、dnn、http、poster、log、ui、display、acceleration 等字段。
+      responses:
+        "200":
+          description: 配置数据（脱敏）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Settings"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
     put:
       summary: 更新配置（局部更新；敏感字段会加密落盘）
+      description: |
+        支持局部更新，只发送需要修改的字段即可。
+        poster.postUrl 若为加密对象（含 v/alg/nonce/ciphertext/tag），会在服务端解密后加密落盘。
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
+              $ref: "#/components/schemas/Settings"
       responses:
         "200":
-          description: OK
+          description: 更新成功，返回新的完整配置（脱敏）
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Envelope"
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Settings"
         "400":
-          description: Schema 校验失败/请求不合法
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /api/v1/cameras:
     get:
-      summary: 枚举摄像头与能力
+      summary: 枚举可用摄像头与能力
+      description: 返回系统可用摄像头列表，含设备 ID、描述、朝向等属性。
       responses:
         "200":
-          description: OK
+          description: 摄像头列表
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+
   /api/v1/preview.jpg:
     get:
       summary: 获取单帧预览 JPEG
+      description: 返回当前处理帧的单帧 JPEG 图像。
       responses:
         "200":
-          description: OK
+          description: JPEG 图像
           content:
             image/jpeg:
               schema:
                 type: string
                 format: binary
+
   /api/v1/preview.mjpeg:
     get:
       summary: 获取 MJPEG 预览流
+      description: 返回持续的 MJPEG 流（multipart/x-mixed-replace），适用于浏览器 img 标签直接显示。
       responses:
         "200":
-          description: OK
+          description: MJPEG 视频流
           content:
             multipart/x-mixed-replace:
               schema:
                 type: string
+
   /api/v1/actions/enroll:
     post:
-      summary: 注册当前人脸到库
+      summary: 注册当前检测到的人脸到人脸库
+      description: 将当前帧中检测到的主脸注册到人脸库，关联指定的 personId。
       requestBody:
         required: true
         content:
@@ -99,30 +137,61 @@ paths:
               properties:
                 personId:
                   type: string
+                  description: 人员唯一标识
+                  example: "user_001"
       responses:
         "200":
-          description: OK
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/actions/db/clear:
     post:
-      summary: 清空人脸库
+      summary: 清空人脸数据库
+      description: 删除所有人脸特征模板。此操作不可逆，执行前建议备份配置目录。
       responses:
         "200":
-          description: OK
+          description: 已清空
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
   /api/v1/actions/privacy/open:
     post:
       summary: 打开 Windows 摄像头隐私设置
+      description: 调用系统设置打开 Windows 摄像头隐私设置页面。
       responses:
         "200":
-          description: OK
+          description: 已打开设置页面
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
   /api/v1/actions/crypto/rotate:
     post:
-      summary: 轮换敏感字段加密密钥并重新加密落盘
+      summary: 轮换加密密钥并重新加密敏感字段落盘
+      description: |
+        生成新密钥，重新加密配置文件中所有敏感字段（如 poster.postUrl 中的加密凭据），
+        并将新密文落盘。旧密钥标记为废弃。
       responses:
         "200":
-          description: OK
+          description: 密钥轮换完成
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
   /api/v1/camera/flip:
     put:
-      summary: 设置画面翻转（运行时生效）
+      summary: 设置画面翻转（运行时即时生效）
       requestBody:
         required: true
         content:
@@ -130,24 +199,41 @@ paths:
             schema:
               type: object
               properties:
-                flipX: { type: boolean }
-                flipY: { type: boolean }
+                flipX:
+                  type: boolean
+                  description: 水平翻转
+                  example: false
+                flipY:
+                  type: boolean
+                  description: 垂直翻转
+                  example: true
       responses:
         "200":
-          description: OK
-  /api/v1/models:
-    get:
-      summary: 获取模型状态列表
-      responses:
-        "200":
-          description: OK
+          description: 翻转设置已生效
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/models:
+    get:
+      summary: 获取模型状态列表
+      description: |
+        列出所有已注册的检测和识别模型，含模型 ID、显示名称、任务类型、推荐场景等元数据。
+      responses:
+        "200":
+          description: 模型列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
   /api/v1/models/reload:
     post:
       summary: 重载指定模型
+      description: 按模型 ID 重载模型。重载后后续推理使用新模型实例。
       requestBody:
         required: true
         content:
@@ -158,23 +244,578 @@ paths:
               properties:
                 id:
                   type: string
-                  description: 模型 ID
+                  description: 模型 ID（如 `yolo_face`、`arcface`）
+                  example: "yolo_face"
       responses:
         "200":
-          description: OK
+          description: 重载成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
+  securitySchemes:
+    # 当前版本未启用认证。后续版本可能通过 Windows 本地服务绑定至 loopback 接口
+    # 或增加 Bearer Token / Windows Integrated Auth。
+    # 部署时建议在防火墙层面限制对 8080 端口的访问。
+    loopbackOnly:
+      type: apiKey
+      in: header
+      name: X-Loopback-Only
+      description: |
+        当前 API 仅监听 127.0.0.1，网络级安全依赖 Windows 防火墙。
+        该头部当前未强制执行，仅作为占位。
+
   schemas:
     Envelope:
       type: object
+      description: 通用响应信封。所有 API 均以该结构返回。
       properties:
-        ok: { type: boolean }
-        data: { type: object }
+        ok:
+          type: boolean
+          description: 业务成功标志
+          example: true
+        data:
+          type: object
+          description: 响应数据（具体结构因端点而异）
         error:
           type: object
+          description: 错误信息（ok=false 时提供）
           properties:
-            code: { type: string }
-            message: { type: string }
+            code:
+              type: string
+              description: 错误码
+              example: "SCHEMA_VALIDATION_FAILED"
+            message:
+              type: string
+              description: 人类可读的错误描述
+              example: "字段 camera.width 超出范围 [1, 8192]"
             details:
               type: array
-              items: { type: string }
+              description: 详细错误信息列表
+              items:
+                type: string
+                example: "camera.width: 9000 超出允许范围 [1, 8192]"
 
+    Settings:
+      type: object
+      description: 完整配置对象
+      required:
+        - schemaVersion
+        - camera
+        - recognition
+        - dnn
+        - http
+        - poster
+        - log
+        - ui
+        - display
+      properties:
+        schemaVersion:
+          type: number
+          description: Schema 版本号
+          example: 1
+        camera:
+          $ref: "#/components/schemas/CameraSettings"
+        recognition:
+          $ref: "#/components/schemas/RecognitionSettings"
+        dnn:
+          $ref: "#/components/schemas/DnnSettings"
+        http:
+          $ref: "#/components/schemas/HttpSettings"
+        poster:
+          $ref: "#/components/schemas/PosterSettings"
+        log:
+          $ref: "#/components/schemas/LogSettings"
+        ui:
+          $ref: "#/components/schemas/UiSettings"
+        display:
+          $ref: "#/components/schemas/DisplaySettings"
+        acceleration:
+          $ref: "#/components/schemas/AccelerationSettings"
+
+    CameraSettings:
+      type: object
+      description: 摄像头采集配置
+      required:
+        - preferredDeviceId
+        - width
+        - height
+        - fps
+      properties:
+        preferredDeviceId:
+          type: string
+          description: 优先使用的摄像头设备 ID
+          example: "0"
+        width:
+          type: number
+          description: 采集宽度（像素）
+          minimum: 1
+          maximum: 8192
+          example: 640
+        height:
+          type: number
+          description: 采集高度（像素）
+          minimum: 1
+          maximum: 8192
+          example: 480
+        fps:
+          type: number
+          description: 目标帧率
+          minimum: 1
+          maximum: 240
+          example: 30
+
+    RecognitionSettings:
+      type: object
+      description: 人脸识别配置
+      required:
+        - cascadePath
+        - databasePath
+        - minFaceSizePx
+        - identifyThreshold
+        - enrollSamples
+      properties:
+        cascadePath:
+          type: string
+          description: Haar/LBP 级联分类器 XML 路径
+          example: "C:\\ProgramData\\rk_wcfr\\haarcascade_frontalface_default.xml"
+        databasePath:
+          type: string
+          description: 人脸特征库路径
+          example: "C:\\ProgramData\\rk_wcfr\\face_db"
+        minFaceSizePx:
+          type: number
+          description: 最小检测脸尺寸（像素边长）
+          minimum: 10
+          maximum: 10000
+          example: 60
+        identifyThreshold:
+          type: number
+          description: 识别阈值（LBPH 距离/余弦相似度）
+          minimum: 1
+          maximum: 100000
+          example: 2000
+        enrollSamples:
+          type: number
+          description: 注册所需样本数
+          minimum: 1
+          maximum: 1000
+          example: 5
+
+    DnnSettings:
+      type: object
+      description: DNN（深度学习）推理配置
+      required:
+        - enable
+        - modelPath
+        - configPath
+        - inputWidth
+        - inputHeight
+        - scale
+        - meanB
+        - meanG
+        - meanR
+        - swapRB
+        - confThreshold
+        - backend
+        - target
+      properties:
+        enable:
+          type: boolean
+          description: 是否启用 DNN 推理
+          example: true
+        modelPath:
+          type: string
+          description: DNN 模型文件路径
+          example: "C:\\ProgramData\\rk_wcfr\\models\\face_detector.caffemodel"
+        configPath:
+          type: string
+          description: DNN 配置文件路径
+          example: "C:\\ProgramData\\rk_wcfr\\models\\face_detector.prototxt"
+        inputWidth:
+          type: number
+          description: 网络输入宽度（像素）
+          minimum: 1
+          maximum: 8192
+          example: 300
+        inputHeight:
+          type: number
+          description: 网络输入高度（像素）
+          minimum: 1
+          maximum: 8192
+          example: 300
+        scale:
+          type: number
+          description: 输入缩放因子
+          example: 1.0
+        meanB:
+          type: number
+          description: 蓝色通道均值
+          example: 0
+        meanG:
+          type: number
+          description: 绿色通道均值
+          example: 0
+        meanR:
+          type: number
+          description: 红色通道均值
+          example: 0
+        swapRB:
+          type: boolean
+          description: BGR/RGB 通道交换
+          example: true
+        confThreshold:
+          type: number
+          description: 置信度阈值
+          minimum: 0
+          maximum: 1
+          example: 0.5
+        backend:
+          type: number
+          description: OpenCV DNN 后端（0=default, 3=OpenVINO, 4=onnxruntime, 5=TimVX）
+          example: 0
+        target:
+          type: number
+          description: OpenCV DNN 目标设备（0=CPU, 1=OpenCL, 2=OpenCL_FP16, 3=VPU, 4=Vulkan）
+          example: 0
+
+    HttpSettings:
+      type: object
+      description: HTTP 服务配置
+      required:
+        - enable
+        - port
+      properties:
+        enable:
+          type: boolean
+          description: 是否启用 HTTP 服务
+          example: true
+        port:
+          type: number
+          description: 监听端口
+          minimum: 1
+          maximum: 65535
+          example: 8080
+
+    PosterSettings:
+      type: object
+      description: 识别结果推送配置
+      required:
+        - enable
+        - postUrl
+        - throttleMs
+        - backoffMinMs
+        - backoffMaxMs
+      properties:
+        enable:
+          type: boolean
+          description: 是否启用推送
+          example: false
+        postUrl:
+          oneOf:
+            - type: string
+              description: 明文推送 URL
+              example: "http://10.0.0.1:9090/events"
+            - type: object
+              description: 加密推送 URL（含密钥轮换密码箱）
+              required:
+                - v
+                - alg
+                - nonce
+                - ciphertext
+                - tag
+              properties:
+                v:
+                  type: number
+                  description: 加密方案版本
+                  example: 1
+                alg:
+                  type: string
+                  description: 加密算法标识
+                  example: "AES-256-GCM"
+                nonce:
+                  type: string
+                  description: Base64 编码的 Nonce
+                  example: "dGhpcyBpcyBhIG5vbmNl"
+                ciphertext:
+                  type: string
+                  description: Base64 编码的密文
+                  example: "U29tZUVuY3J5cHRlZERhdGE="
+                tag:
+                  type: string
+                  description: Base64 编码的认证标签
+                  example: "QXV0aFRhZw=="
+        throttleMs:
+          type: number
+          description: 推送节流间隔（毫秒）
+          minimum: 0
+          maximum: 3600000
+          example: 1000
+        backoffMinMs:
+          type: number
+          description: 退避最小间隔（毫秒）
+          minimum: 50
+          maximum: 3600000
+          example: 500
+        backoffMaxMs:
+          type: number
+          description: 退避最大间隔（毫秒）
+          minimum: 50
+          maximum: 3600000
+          example: 60000
+
+    LogSettings:
+      type: object
+      description: 日志配置
+      required:
+        - logDir
+        - maxFileBytes
+        - maxRollFiles
+      properties:
+        logDir:
+          type: string
+          description: 日志文件存放目录
+          example: "C:\\ProgramData\\rk_wcfr\\logs"
+        maxFileBytes:
+          type: number
+          description: 单日志文件最大字节数
+          minimum: 1024
+          maximum: 1073741824
+          example: 5242880
+        maxRollFiles:
+          type: number
+          description: 滚动保留日志文件数
+          minimum: 1
+          maximum: 1000
+          example: 10
+
+    UiSettings:
+      type: object
+      description: 用户界面配置
+      required:
+        - windowWidth
+        - windowHeight
+        - previewScaleMode
+      properties:
+        windowWidth:
+          type: number
+          description: 主窗口宽度
+          minimum: 320
+          maximum: 7680
+          example: 1280
+        windowHeight:
+          type: number
+          description: 主窗口高度
+          minimum: 240
+          maximum: 4320
+          example: 720
+        previewScaleMode:
+          type: number
+          description: 预览画面缩放模式（0=适应, 1=裁剪）
+          minimum: 0
+          maximum: 1
+          example: 0
+
+    DisplaySettings:
+      type: object
+      description: 显示输出配置（服务渲染用）
+      required:
+        - outputIndex
+        - width
+        - height
+        - refreshNumerator
+        - refreshDenominator
+        - vsync
+        - swapchainBuffers
+        - fullscreen
+        - allowSystemModeSwitch
+        - enableSRGB
+        - gamma
+        - colorTempK
+        - aaSamples
+        - anisoLevel
+      properties:
+        outputIndex:
+          type: number
+          description: 显示输出索引
+          minimum: 0
+          maximum: 32
+          example: 0
+        width:
+          type: number
+          description: 显示宽度（像素）
+          minimum: 0
+          maximum: 7680
+          example: 1920
+        height:
+          type: number
+          description: 显示高度（像素）
+          minimum: 0
+          maximum: 4320
+          example: 1080
+        refreshNumerator:
+          type: number
+          description: 刷新率分子
+          minimum: 0
+          maximum: 1000000
+          example: 60000
+        refreshDenominator:
+          type: number
+          description: 刷新率分母
+          minimum: 1
+          maximum: 1000000
+          example: 1001
+        vsync:
+          type: boolean
+          description: 是否启用垂直同步
+          example: true
+        swapchainBuffers:
+          type: number
+          description: Swapchain 缓冲区数
+          minimum: 1
+          maximum: 8
+          example: 2
+        fullscreen:
+          type: boolean
+          description: 是否全屏
+          example: false
+        allowSystemModeSwitch:
+          type: boolean
+          description: 是否允许系统模式切换
+          example: true
+        enableSRGB:
+          type: boolean
+          description: 是否启用 sRGB
+          example: true
+        gamma:
+          type: number
+          description: Gamma 校正值
+          minimum: 0.1
+          maximum: 10
+          example: 2.2
+        colorTempK:
+          type: number
+          description: 色温（开尔文）
+          minimum: 1000
+          maximum: 20000
+          example: 6500
+        aaSamples:
+          type: number
+          description: 抗锯齿采样数
+          minimum: 1
+          maximum: 16
+          example: 4
+        anisoLevel:
+          type: number
+          description: 各向异性过滤等级
+          minimum: 1
+          maximum: 16
+          example: 4
+
+    AccelerationSettings:
+      type: object
+      description: 硬件加速器配置
+      required:
+        - enableOpenCL
+        - enableMpp
+        - enableQualcomm
+      properties:
+        enableOpenCL:
+          type: boolean
+          description: 是否启用 OpenCL 加速
+          example: false
+        enableMpp:
+          type: boolean
+          description: 是否启用 Rockchip MPP 硬件解码
+          example: false
+        enableQualcomm:
+          type: boolean
+          description: 是否启用 Qualcomm SNPE 加速（仅骁龙平台）
+          example: false
+
+  responses:
+    BadRequest:
+      description: 请求格式错误或校验失败
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: "SCHEMA_VALIDATION_FAILED"
+                      message:
+                        type: string
+                        example: "字段 camera.width 超出范围 [1, 8192]"
+                      details:
+                        type: array
+                        items:
+                          type: string
+                        example:
+                          - "camera.width: 9000 超出允许范围 [1, 8192]"
+
+    NotFound:
+      description: 请求的资源不存在
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: "MODEL_NOT_FOUND"
+                      message:
+                        type: string
+                        example: "模型 ID 'unknown_model' 未注册"
+                      details:
+                        type: array
+                        items:
+                          type: string
+
+    ServiceUnavailable:
+      description: 服务暂不可用（引擎未初始化或正在重启）
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: "SERVICE_UNAVAILABLE"
+                      message:
+                        type: string
+                        example: "引擎未初始化，请稍后重试"
+                      details:
+                        type: array
+                        items:
+                          type: string
