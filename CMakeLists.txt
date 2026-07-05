@@ -141,6 +141,15 @@ option(RK_BUILD_CORE_UNIT_TESTS "Build core unit tests" ON)
 
 if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     enable_testing()
+    include(FetchContent)
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        FetchContent_Declare(googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG release-1.12.1
+        )
+        FetchContent_MakeAvailable(googletest)
+    endif()
     add_executable(core_unit_tests
         "tests/cpp/core_unit_tests_main.cpp"
         "tests/cpp/test_frame_input_channel.cpp"
@@ -174,7 +183,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
     )
     target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
-    target_link_libraries(core_unit_tests PRIVATE rk_core)
+    target_link_libraries(core_unit_tests PRIVATE GTest::gtest GTest::gtest_main rk_core)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
@@ -616,6 +625,55 @@ if(NOT RK_SKIP_OPENCV)
             ${RK_NCNN_TARGET}
         )
         add_test(NAME ncnn_precision_test COMMAND ncnn_precision_test)
+    endif()
+
+    # ── GTest 基础测试（Engine / BioAuth / MotionDetector / ModelRegistry）─────
+    if(NOT ANDROID)
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG release-1.12.1
+        )
+        set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+
+        add_executable(core_gtest_tests
+            "tests/cpp/test_engine.cpp"
+            "tests/cpp/test_bioauth.cpp"
+            "tests/cpp/test_motion.cpp"
+            "tests/cpp/test_adapters.cpp"
+            ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
+            ${RK_PIPELINE_SOURCES}
+            "tests/cpp/mpp_decoder_stub.cpp"
+            "src/win/src/DnnSsdFaceDetector.cpp"
+            "src/win/src/FaceDetector.cpp"
+            "src/win/src/LbphEmbedder.cpp"
+        )
+        target_include_directories(core_gtest_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include/rk_win
+        )
+        if(MSVC)
+            target_compile_options(core_gtest_tests PRIVATE /utf-8)
+        endif()
+        if(WIN32)
+            target_compile_definitions(core_gtest_tests PRIVATE
+                NOMINMAX WIN32_LEAN_AND_MEAN
+                RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>
+                RK_HAVE_MPP=0
+            )
+        endif()
+        target_link_libraries(core_gtest_tests
+            GTest::gtest_main
+            ${RK_OPENCV_FULL_LIBS}
+        )
+        if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
+            target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
+        endif()
+        add_test(NAME core_gtest_tests COMMAND core_gtest_tests)
     endif()
 endif()
 
