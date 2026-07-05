@@ -151,11 +151,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_connection_quota.cpp"
         "tests/cpp/test_acceleration_contract.cpp"
         "tests/cpp/test_track_coordinator.cpp"
-        "src/cpp/src/FrameInputChannel.cpp"
-        "src/cpp/src/FaceSearch.cpp"
-        "src/cpp/src/ThresholdPolicy.cpp"
-        "src/cpp/src/EventManager.cpp"
-        "src/cpp/src/FileHash.cpp"
+        ${RK_CORE_LITE_SOURCES}
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
         "tests/win/test_http_faces_server.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
@@ -172,6 +168,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
     )
     target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
+    target_link_libraries(core_unit_tests PRIVATE rk_core)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
@@ -367,11 +364,56 @@ set(CORE_SOURCES
     "src/cpp/src/adapters/YuNetAdapter.cpp"
 )
 
+# ── CORE_SOURCES 分组变量 ──────────────────────────
+set(RK_CORE_LITE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/EventManager.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FileHash.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FrameInputChannel.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ThresholdPolicy.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceSearch.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceTemplate.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferOutcomeJson.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/NativeLog.cpp
+)
+
+set(RK_FACE_INFER_CORE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ArcFaceEmbedder.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/BioAuth.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceAlign.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferencePipeline.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferStages.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/MotionDetector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/Storage.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/YoloFaceDetector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/Engine.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ModelRegistry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/VideoManager.cpp
+)
+
+set(RK_ADAPTER_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/ArcFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/CascadeAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/DnnSsdAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/LbphAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/MobileFaceNetAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/RetinaFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/SFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/YoloFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/YuNetAdapter.cpp
+)
+
+# ── rk_core：核心静态库 ─────────────────────────────
+add_library(rk_core STATIC ${RK_CORE_LITE_SOURCES})
+target_include_directories(rk_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
+)
+
 if(ANDROID)
     # 1. Android JNI Shared Library
     if(NOT RK_SKIP_OPENCV)
         add_library(native-lib SHARED
-            ${CORE_SOURCES}
+            ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
             "src/cpp/native-lib.cpp"
             "src/win/src/FaceDetector.cpp"
             "src/win/src/LbphEmbedder.cpp"
@@ -397,7 +439,7 @@ if(ANDROID)
             opencv_stitching
         )
     else()
-        add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib-stub.cpp")
+        add_library(native-lib SHARED ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} "src/cpp/native-lib-stub.cpp")
     endif()
 
     target_link_libraries(
@@ -433,7 +475,7 @@ if(NOT RK_SKIP_OPENCV)
     # 2. Native Executable (CLI) for RK3288 (and Host Testing)
     add_executable(rk3288_cli
         "src/cpp/main.cpp"
-        ${CORE_SOURCES}
+        ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/DnnSsdFaceDetector.cpp"
@@ -549,29 +591,8 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/test_resource_cleanup.cpp"
             "tests/cpp/test_gallery_cache.cpp"
             "tests/cpp/test_result_publisher.cpp"
-            "src/cpp/src/ArcFaceEmbedder.cpp"
-            "src/cpp/src/FaceAlign.cpp"
-            "src/cpp/src/FaceInferOutcomeJson.cpp"
-            "src/cpp/src/FaceInferStages.cpp"
-            "src/cpp/src/FaceInferencePipeline.cpp"
-            "src/cpp/src/FaceSearch.cpp"
-            "src/cpp/src/FaceTemplate.cpp"
-            "src/cpp/src/FileHash.cpp"
-            "src/cpp/src/VideoManager.cpp"
+            ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
             "tests/cpp/mpp_decoder_stub.cpp"
-            "src/cpp/src/ModelRegistry.cpp"
-            "src/cpp/src/NativeLog.cpp"
-            "src/cpp/src/ThresholdPolicy.cpp"
-            "src/cpp/src/YoloFaceDetector.cpp"
-            "src/cpp/src/adapters/ArcFaceAdapter.cpp"
-            "src/cpp/src/adapters/YoloFaceAdapter.cpp"
-            "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
-            "src/cpp/src/adapters/YuNetAdapter.cpp"
-            "src/cpp/src/adapters/SFaceAdapter.cpp"
-            "src/cpp/src/adapters/RetinaFaceAdapter.cpp"
-            "src/cpp/src/adapters/DnnSsdAdapter.cpp"
-            "src/cpp/src/adapters/CascadeAdapter.cpp"
-            "src/cpp/src/adapters/LbphAdapter.cpp"
             "src/win/src/DnnSsdFaceDetector.cpp"
             "src/win/src/FaceDetector.cpp"
             "src/win/src/LbphEmbedder.cpp"
