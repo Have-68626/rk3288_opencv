@@ -201,6 +201,11 @@ DEVELOP.md 附录 B 加速机会矩阵。
 ## 📄 许可证
 MIT License
 
+### 密码学声明
+
+本项目使用 AES-256-GCM（通过 Android KeyStore / Windows BCrypt）进行人脸特征模板加密。
+密码学功能仅用于本地数据保护，不涉及通信加密或数字签名。
+
 ## 项目治理计划
 
 > 基于 2026-07-04 全项目审计报告 ([AUDIT_REPORT.md](AUDIT_REPORT.md))，按模块分批次渐进治理。
