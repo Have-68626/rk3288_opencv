@@ -82,6 +82,8 @@ import java.util.Locale;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
+import androidx.lifecycle.ViewModelProvider;
+
 public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     // Load native library
@@ -156,6 +158,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Button btnStopRtmp;
     private final FfmpegRtmpPusher rtmpPusher = new FfmpegRtmpPusher();
 
+    // Delegate helpers (preliminary split P1.7)
+    private CameraFragment cameraFragment;
+    private EngineViewModel engineViewModel;
+
     private View panelRecognitionEvents;
     private RecyclerView rvRecognitionEvents;
     private FloatingActionButton fabToggleEvents;
@@ -228,14 +234,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         flipXEnabled = isChecked;
         flipXHasOverride = true;
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        prefs.edit().putBoolean(PREF_FLIP_X_PREFIX + getFlipSourceKey(), isChecked).apply();
+        prefs.edit().putBoolean(PREF_FLIP_X_PREFIX + cameraFragment.getFlipSourceKey(), isChecked).apply();
         applyFlipToNative();
     };
     private final CompoundButton.OnCheckedChangeListener flipYSwitchListener = (buttonView, isChecked) -> {
         flipYEnabled = isChecked;
         flipYHasOverride = true;
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        prefs.edit().putBoolean(PREF_FLIP_Y_PREFIX + getFlipSourceKey(), isChecked).apply();
+        prefs.edit().putBoolean(PREF_FLIP_Y_PREFIX + cameraFragment.getFlipSourceKey(), isChecked).apply();
         applyFlipToNative();
     };
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -246,7 +252,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Runnable captureWatchdog;
     
     private String selectedCameraId = "0";
-    private List<CameraInfo> availableCameras = new ArrayList<>();
+    private List<CameraFragment.CameraInfo> availableCameras = new ArrayList<>();
     private ArrayAdapter<String> cameraAdapter;
     private boolean isSpinnerInitialized = false;
 
@@ -717,7 +723,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void handleCameraSpinnerSelection(int position) {
         if (availableCameras == null || position < 0 || position >= availableCameras.size()) return;
 
-        CameraInfo info = availableCameras.get(position);
+        CameraFragment.CameraInfo info = availableCameras.get(position);
         if ("-1".equals(info.id)) {
             AppLog.i("MainActivity", "onItemSelected", "Selected Mock Source");
             pickMediaFile();
@@ -1048,7 +1054,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void persistInferenceThrottleIni() {
-        String baseDir = getAppStoragePath();
+        String baseDir = engineViewModel.getAppStoragePath();
         if (baseDir == null || baseDir.trim().isEmpty()) return;
         File ini = new File(baseDir, INFERENCE_INI_FILENAME);
 
@@ -1195,7 +1201,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private InferenceIni readInferenceIniIfExists() {
-        String baseDir = getAppStoragePath();
+        String baseDir = engineViewModel.getAppStoragePath();
         if (baseDir == null || baseDir.trim().isEmpty()) return new InferenceIni(null, null, null, null, null, null);
         File ini = new File(baseDir, INFERENCE_INI_FILENAME);
         if (!ini.exists()) return new InferenceIni(null, null, null, null, null, null);
@@ -1351,7 +1357,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         recognitionEventsVisible = prefs.getBoolean(PREF_EVENTS_VISIBLE, true);
         captureAutoEnabled = prefs.getBoolean(PREF_CAPTURE_AUTO, true);
         String schemeRaw = prefs.getString(PREF_CAPTURE_SCHEME, CaptureScheme.CAMERA2.name());
-        preferredCaptureScheme = parseCaptureScheme(schemeRaw, CaptureScheme.CAMERA2);
+        preferredCaptureScheme = EngineViewModel.parseCaptureScheme(schemeRaw, CaptureScheme.CAMERA2);
         loadInferenceThrottleSettings(prefs);
 
         cameraAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
@@ -1375,6 +1381,37 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         ExternalFrameSink sink = this::pushExternalYuv420888;
         camera2Capture = new Camera2CaptureController(this, sink, this, () -> getDeviceRotationDegrees());
         cameraXCapture = new CameraXCaptureController(this, this, sink, this, () -> getDeviceRotationDegrees());
+
+        // Init CameraFragment and EngineViewModel (preliminary split P1.7)
+        cameraFragment = new CameraFragment();
+        getSupportFragmentManager().beginTransaction()
+            .add(cameraFragment, "camera_fragment")
+            .commitNow();
+        cameraFragment.setCallback(new CameraFragment.Callback() {
+            @Override
+            public void onCameraChanged() {
+                refreshFlipFromPrefs(true);
+                if (isRunning) {
+                    stopMonitoring();
+                    handler.postDelayed(() -> startMonitoring(), 500);
+                } else {
+                    initEngine();
+                }
+            }
+            @Override
+            public void onInitEngine() { initEngine(); }
+            @Override
+            public void onStopMonitoring() { stopMonitoring(); }
+            @Override
+            public void onStartMonitoring(long delayMs) {
+                handler.postDelayed(() -> startMonitoring(), delayMs);
+            }
+            @Override
+            public void onCameraSpinnerInitialized(boolean initialized) {
+                isSpinnerInitialized = initialized;
+            }
+        });
+        engineViewModel = new ViewModelProvider(this).get(EngineViewModel.class);
 
         if (previewSurface == null) {
             frameBitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
@@ -1741,7 +1778,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     }
                 } catch (Throwable ignored) {
                 }
-                ext = sanitizeExtension(ext);
+                ext = CameraFragment.sanitizeExtension(ext);
 
                 // ---- Magic number pre-check ----
                 String magicCheckErr = null;
@@ -1751,9 +1788,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         try {
                             byte[] magic = new byte[16];
                             int magicN = magicIs.read(magic);
-                            String hexMagic = bytesToHex(magic, Math.max(0, magicN));
+                            String hexMagic = CameraFragment.bytesToHex(magic, Math.max(0, magicN));
                             AppLog.i("MockMode", "handleMockFileSelection", "Magic bytes: " + hexMagic + " ext=" + ext);
-                            if (!isValidMagicNumber(magic, magicN, ext)) {
+                            if (!CameraFragment.isValidMagicNumber(magic, magicN, ext)) {
                                 magicCheckErr = "不支持的文件格式或文件已损坏（魔数校验失败）";
                                 AppLog.w("MockMode", "handleMockFileSelection",
                                     "Magic check REJECTED: " + hexMagic + " ext=" + ext);
@@ -1831,8 +1868,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                             lastUiMs = nowMs;
                             long elapsedMs = Math.max(1L, nowMs - startMs);
                             double speed = (copied / 1024.0) / (elapsedMs / 1000.0);
-                            String msg = "已复制 " + formatBytes(copied) +
-                                    (totalBytes > 0 ? (" / " + formatBytes(totalBytes)) : "") +
+                            String msg = "已复制 " + CameraFragment.formatBytes(copied) +
+                                    (totalBytes > 0 ? (" / " + CameraFragment.formatBytes(totalBytes)) : "") +
                                     "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
                             int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, copied / 1024L));
                             runOnUiThread(() -> {
@@ -1982,8 +2019,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             Size[] sizes = map != null ? map.getOutputSizes(ImageFormat.YUV_420_888) : null;
             Range<Integer>[] fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
 
-            Size chosen = chooseBestSizeNoMoreThan1080p(sizes);
-            Range<Integer> fps = chooseBestFpsNoMoreThan60(fpsRanges);
+            Size chosen = CameraFragment.chooseBestSizeNoMoreThan1080p(sizes);
+            Range<Integer> fps = CameraFragment.chooseBestFpsNoMoreThan60(fpsRanges);
 
             StringBuilder sb = new StringBuilder();
             sb.append("相机预检: Cam ").append(selectedCameraId);
@@ -2299,8 +2336,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             return;
         }
 
-        String cascadePath = copyAssetToCache("lbpcascade_frontalface.xml");
-        String storagePath = getAppStoragePath();
+        String cascadePath = engineViewModel.copyAssetToCache("lbpcascade_frontalface.xml");
+        String storagePath = engineViewModel.getAppStoragePath();
         
         if (wantMock) {
             ProgressDialog dialog = new ProgressDialog(this);
@@ -2403,7 +2440,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private void refreshFlipFromPrefs(boolean applyToNativeIfReady) {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        String sourceKey = getFlipSourceKey();
+        String sourceKey = cameraFragment.getFlipSourceKey();
         String kx = PREF_FLIP_X_PREFIX + sourceKey;
         String ky = PREF_FLIP_Y_PREFIX + sourceKey;
 
@@ -2412,7 +2449,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
         boolean defaultX = false;
         if (selectedCameraId != null && mockFilePath == null) {
-            defaultX = isFrontCamera(selectedCameraId);
+            defaultX = cameraFragment.isFrontCamera(selectedCameraId);
         }
         boolean nextX = hasX ? prefs.getBoolean(kx, defaultX) : defaultX;
         boolean nextY = hasY ? prefs.getBoolean(ky, false) : false;
@@ -2987,7 +3024,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     }
 
                     String desc = String.format("Cam %s (%s)", id, facingStr);
-                    availableCameras.add(new CameraInfo(id, desc, facing != null ? facing : -1));
+                    availableCameras.add(new CameraFragment.CameraInfo(id, desc, facing != null ? facing : -1));
                     displayNames.add(desc);
 
                     // Check if this matches selected ID
@@ -3009,10 +3046,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
         
         // Add Mock Option
-        availableCameras.add(new CameraInfo("-1", "Mock Source (File Picker)", -1));
+        availableCameras.add(new CameraFragment.CameraInfo("-1", "Mock Source (File Picker)", -1));
         displayNames.add("Mock Source (File Picker)");
         
-        availableCameras.add(new CameraInfo("-2", "Mock Camera (System App)", -1));
+        availableCameras.add(new CameraFragment.CameraInfo("-2", "Mock Camera (System App)", -1));
         displayNames.add("Mock Camera (System App)");
         
         // If current selection is -1 (Mock), set index to last
