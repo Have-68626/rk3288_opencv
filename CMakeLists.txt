@@ -401,19 +401,30 @@ set(RK_ADAPTER_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/YuNetAdapter.cpp
 )
 
+# ── Pipeline 依赖（TrackCoordinator/ResultPublisher/PerfReporter）─────
+set(RK_PIPELINE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/TrackCoordinator.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ResultPublisher.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/PerfReporter.cpp
+)
+
+# rk_core 必须在 if(NOT RK_SKIP_OPENCV) 之前定义，因为 core_unit_tests 无条件链接它
+# rk_core 包含零 OpenCV 依赖的源文件，SKIP_OPENCV 模式下也可用
+add_library(rk_core STATIC ${RK_CORE_LITE_SOURCES})
+target_include_directories(rk_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
+)
+target_compile_definitions(rk_core PRIVATE RK_CORE_LIBRARY)
+
 # ── OpenCV 模块分组变量 ──────────────────────────────
-set(RK_OPENCV_LIBS
+set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc)
+set(RK_OPENCV_FULL_LIBS
   opencv_core opencv_imgproc opencv_video opencv_objdetect
   opencv_face opencv_imgcodecs opencv_calib3d opencv_features2d
   opencv_flann opencv_dnn opencv_ml opencv_photo opencv_videoio
   opencv_highgui opencv_stitching
 )
-
-# ── rk_core：核心静态库 ─────────────────────────────
-add_library(rk_core STATIC ${RK_CORE_LITE_SOURCES})
-target_include_directories(rk_core PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
 )
 
 if(ANDROID)
@@ -429,7 +440,7 @@ if(ANDROID)
         # Link Libraries for JNI
         target_link_libraries(
             native-lib
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
         )
     else()
         add_library(native-lib SHARED ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} "src/cpp/native-lib-stub.cpp")
@@ -495,7 +506,7 @@ if(NOT RK_SKIP_OPENCV)
     if(ANDROID)
         target_link_libraries(
             rk3288_cli
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
             ${log-lib}
             ${jnigraphics-lib}
@@ -505,7 +516,7 @@ if(NOT RK_SKIP_OPENCV)
         # Host Build (Windows/Linux)
         target_link_libraries(
             rk3288_cli
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
             # No android/log libs on host
         )
@@ -521,14 +532,14 @@ if(NOT RK_SKIP_OPENCV)
     if(ANDROID)
         target_link_libraries(
             opencv_verify_cli
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             ${log-lib}
             android
         )
     else()
         target_link_libraries(
             opencv_verify_cli
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
         )
     endif()
 
@@ -567,7 +578,7 @@ if(NOT RK_SKIP_OPENCV)
             target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
         endif()
         target_link_libraries(face_infer_unit_tests
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
         )
         if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
             target_link_libraries(face_infer_unit_tests ${RK_NCNN_TARGET})
@@ -595,7 +606,7 @@ if(NOT RK_SKIP_OPENCV)
                 MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         endif()
         target_link_libraries(ncnn_precision_test
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             ${RK_NCNN_TARGET}
         )
         add_test(NAME ncnn_precision_test COMMAND ncnn_precision_test)
@@ -618,14 +629,14 @@ if(NOT RK_SKIP_OPENCV)
     if(ANDROID)
         target_link_libraries(
             inference_bench_cli
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             ${log-lib}
             android
         )
     else()
         target_link_libraries(
             inference_bench_cli
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
         )
     endif()
 
@@ -688,7 +699,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         endif()
 
         target_link_libraries(win_local_service
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             mfplat
             mfreadwrite
             mfuuid
@@ -774,7 +785,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         endif()
 
         target_link_libraries(win_camera_face_recognition
-            ${RK_OPENCV_LIBS}
+            ${RK_OPENCV_FULL_LIBS}
             mfplat
             mfreadwrite
             mfuuid
@@ -826,7 +837,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_face_eval_cli PRIVATE /utf-8)
     endif()
     target_link_libraries(win_face_eval_cli
-        ${RK_OPENCV_LIBS}
+        ${RK_OPENCV_FULL_LIBS}
         shlwapi
         shell32
         bcrypt
@@ -853,7 +864,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_face_bench_cli PRIVATE /utf-8)
     endif()
     target_link_libraries(win_face_bench_cli
-        ${RK_OPENCV_LIBS}
+        ${RK_OPENCV_FULL_LIBS}
         psapi
         bcrypt
         crypt32
@@ -892,7 +903,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_unit_tests PRIVATE /utf-8)
     endif()
     target_link_libraries(win_unit_tests
-        ${RK_OPENCV_LIBS}
+        ${RK_OPENCV_FULL_LIBS}
         bcrypt
         crypt32
     )
@@ -911,7 +922,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_face_database_perf PRIVATE /utf-8)
     endif()
     target_link_libraries(win_face_database_perf
-        ${RK_OPENCV_LIBS}
+        ${RK_OPENCV_FULL_LIBS}
     )
     add_test(NAME win_face_database_perf COMMAND win_face_database_perf)
 
