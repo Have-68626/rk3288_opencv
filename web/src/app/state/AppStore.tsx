@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import type { ServerSettingsDoc } from '../api/types'
 import { getServerSettings, putServerSettings } from '../api/settings'
