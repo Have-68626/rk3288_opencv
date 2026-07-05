@@ -15,11 +15,9 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
 - Web: pnpm -C web install && pnpm -C web build
 - Android: gradlew.bat --no-daemon :app:assembleDebug
 
-<<<<<<< Updated upstream
 ## 测试框架
 使用 GTest（自 Batch 5 起）。TEST(Group, Name) 宏。
 测试文件在 tests/cpp/ 和 tests/win/ 目录。
-=======
 | Subsystem | Build | Entrypoint | Tests |
 |-----------|-------|------------|-------|
 | Android App (`app/` + `src/java/`) | `gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug` | `src/cpp/native-lib.cpp` (JNI), `MainActivity.java` | `tests/unit/java/` via Gradle |
