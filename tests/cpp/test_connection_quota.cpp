@@ -1,33 +1,21 @@
 #include "rk_win/ConnectionQuota.h"
+#include <gtest/gtest.h>
 
-#include <iostream>
 #include <vector>
 
-bool test_connection_quota_acquire_release() {
+TEST(ConnectionQuota, AcquireRelease) {
     rk_win::ConnectionQuota q(4);
 
     std::vector<rk_win::ConnectionQuota::Lease> leases;
     for (int i = 0; i < 4; i++) {
         auto l = q.tryAcquire();
-        if (!l.has_value()) {
-            std::cout << "FAIL: tryAcquire should succeed at i=" << i << std::endl;
-            return false;
-        }
+        ASSERT_TRUE(l.has_value()) << "tryAcquire should succeed at i=" << i;
         leases.push_back(std::move(*l));
     }
 
-    if (q.tryAcquire().has_value()) {
-        std::cout << "FAIL: tryAcquire should fail when full" << std::endl;
-        return false;
-    }
+    EXPECT_FALSE(q.tryAcquire().has_value()) << "tryAcquire should fail when full";
 
     leases.pop_back();
 
-    if (!q.tryAcquire().has_value()) {
-        std::cout << "FAIL: tryAcquire should succeed after release" << std::endl;
-        return false;
-    }
-
-    return true;
+    EXPECT_TRUE(q.tryAcquire().has_value()) << "tryAcquire should succeed after release";
 }
-

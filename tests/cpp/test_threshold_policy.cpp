@@ -1,9 +1,10 @@
 #include "ThresholdPolicy.h"
 #include "InferenceThrottle.h"
+#include <gtest/gtest.h>
 
 #include <string>
 
-bool test_threshold_policy_version_and_consecutive() {
+TEST(ThresholdPolicy, VersionAndConsecutive) {
     ThresholdPolicyVersion v1;
     v1.versionId = "v1";
     v1.acceptThreshold = 0.80f;
@@ -12,32 +13,32 @@ bool test_threshold_policy_version_and_consecutive() {
     ThresholdDecisionPolicy p(v1);
 
     auto r1 = p.feed(0.90f, true);
-    if (!r1.passNow) return false;
-    if (r1.triggeredNow) return false;
-    if (r1.passStreak != 1) return false;
+    EXPECT_TRUE(r1.passNow);
+    EXPECT_FALSE(r1.triggeredNow);
+    EXPECT_EQ(r1.passStreak, 1);
 
     auto r2 = p.feed(0.85f, true);
-    if (!r2.passNow) return false;
-    if (r2.triggeredNow) return false;
-    if (r2.passStreak != 2) return false;
+    EXPECT_TRUE(r2.passNow);
+    EXPECT_FALSE(r2.triggeredNow);
+    EXPECT_EQ(r2.passStreak, 2);
 
     auto r3 = p.feed(0.81f, true);
-    if (!r3.passNow) return false;
-    if (!r3.triggeredNow) return false;
-    if (!r3.triggeredLatched) return false;
-    if (r3.passStreak != 3) return false;
+    EXPECT_TRUE(r3.passNow);
+    EXPECT_TRUE(r3.triggeredNow);
+    EXPECT_TRUE(r3.triggeredLatched);
+    EXPECT_EQ(r3.passStreak, 3);
 
     auto r4 = p.feed(0.95f, true);
-    if (!r4.passNow) return false;
-    if (r4.triggeredNow) return false;
-    if (!r4.triggeredLatched) return false;
-    if (r4.passStreak != 4) return false;
+    EXPECT_TRUE(r4.passNow);
+    EXPECT_FALSE(r4.triggeredNow);
+    EXPECT_TRUE(r4.triggeredLatched);
+    EXPECT_EQ(r4.passStreak, 4);
 
     auto r5 = p.feed(0.10f, true);
-    if (r5.passNow) return false;
-    if (r5.triggeredNow) return false;
-    if (r5.triggeredLatched) return false;
-    if (r5.passStreak != 0) return false;
+    EXPECT_FALSE(r5.passNow);
+    EXPECT_FALSE(r5.triggeredNow);
+    EXPECT_FALSE(r5.triggeredLatched);
+    EXPECT_EQ(r5.passStreak, 0);
 
     ThresholdPolicyVersion v2;
     v2.versionId = "v2";
@@ -45,34 +46,32 @@ bool test_threshold_policy_version_and_consecutive() {
     v2.consecutivePassesToTrigger = 2;
 
     std::string err;
-    if (!p.apply(v2, err)) return false;
-    if (!err.empty()) return false;
-    if (p.active().versionId != "v2") return false;
-    if (p.active().acceptThreshold != 0.50f) return false;
-    if (p.active().consecutivePassesToTrigger != 2) return false;
+    ASSERT_TRUE(p.apply(v2, err));
+    EXPECT_TRUE(err.empty());
+    EXPECT_EQ(p.active().versionId, "v2");
+    EXPECT_EQ(p.active().acceptThreshold, 0.50f);
+    EXPECT_EQ(p.active().consecutivePassesToTrigger, 2);
 
     auto r6 = p.feed(0.60f, true);
-    if (!r6.passNow) return false;
-    if (r6.triggeredNow) return false;
-    if (r6.passStreak != 1) return false;
+    EXPECT_TRUE(r6.passNow);
+    EXPECT_FALSE(r6.triggeredNow);
+    EXPECT_EQ(r6.passStreak, 1);
 
     auto r7 = p.feed(0.60f, true);
-    if (!r7.passNow) return false;
-    if (!r7.triggeredNow) return false;
-    if (r7.passStreak != 2) return false;
+    EXPECT_TRUE(r7.passNow);
+    EXPECT_TRUE(r7.triggeredNow);
+    EXPECT_EQ(r7.passStreak, 2);
 
-    if (!p.rollbackPrevious(err)) return false;
-    if (!err.empty()) return false;
-    if (p.active().versionId != "v1") return false;
+    ASSERT_TRUE(p.rollbackPrevious(err));
+    EXPECT_TRUE(err.empty());
+    EXPECT_EQ(p.active().versionId, "v1");
 
     auto r8 = p.feed(0.79f, true);
-    if (r8.passNow) return false;
-    if (r8.passStreak != 0) return false;
-
-    return true;
+    EXPECT_FALSE(r8.passNow);
+    EXPECT_EQ(r8.passStreak, 0);
 }
 
-bool test_threshold_policy_rollback_empty_history() {
+TEST(ThresholdPolicy, RollbackEmptyHistory) {
     ThresholdPolicyVersion v1;
     v1.versionId = "v1";
     v1.acceptThreshold = 0.80f;
@@ -83,23 +82,17 @@ bool test_threshold_policy_rollback_empty_history() {
     std::string err;
     bool success = p.rollbackPrevious(err);
 
-    // Verify it fails
-    if (success) return false;
-
-    // Verify error message contains expected substring
-    if (err.find("无可回滚版本") == std::string::npos) return false;
-
-    return true;
+    EXPECT_FALSE(success);
+    EXPECT_NE(err.find("无可回滚版本"), std::string::npos);
 }
 
-bool test_inference_throttle_parse_and_clamp() {
-    if (parseInferenceThrottleMode("off") != InferenceThrottleMode::Off) return false;
-    if (parseInferenceThrottleMode("AUTO") != InferenceThrottleMode::Auto) return false;
-    if (parseInferenceThrottleMode("manual") != InferenceThrottleMode::Manual) return false;
-    if (parseInferenceThrottleMode("x") != InferenceThrottleMode::Off) return false;
+TEST(InferenceThrottle, ParseAndClamp) {
+    EXPECT_EQ(parseInferenceThrottleMode("off"), InferenceThrottleMode::Off);
+    EXPECT_EQ(parseInferenceThrottleMode("AUTO"), InferenceThrottleMode::Auto);
+    EXPECT_EQ(parseInferenceThrottleMode("manual"), InferenceThrottleMode::Manual);
+    EXPECT_EQ(parseInferenceThrottleMode("x"), InferenceThrottleMode::Off);
 
-    if (clampInferenceIntervalMs(0) != kInferenceIntervalMinMs) return false;
-    if (clampInferenceIntervalMs(9999) != kInferenceIntervalMaxMs) return false;
-    if (clampInferenceIntervalMs(150) != 150) return false;
-    return true;
+    EXPECT_EQ(clampInferenceIntervalMs(0), kInferenceIntervalMinMs);
+    EXPECT_EQ(clampInferenceIntervalMs(9999), kInferenceIntervalMaxMs);
+    EXPECT_EQ(clampInferenceIntervalMs(150), 150);
 }

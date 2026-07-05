@@ -141,6 +141,7 @@ option(RK_BUILD_CORE_UNIT_TESTS "Build core unit tests" ON)
 
 if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     enable_testing()
+    find_package(GTest REQUIRED)
     add_executable(core_unit_tests
         "tests/cpp/core_unit_tests_main.cpp"
         "tests/cpp/test_frame_input_channel.cpp"
@@ -174,7 +175,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
     )
     target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
-    target_link_libraries(core_unit_tests PRIVATE rk_core)
+    target_link_libraries(core_unit_tests PRIVATE GTest::gtest GTest::gtest_main rk_core)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()

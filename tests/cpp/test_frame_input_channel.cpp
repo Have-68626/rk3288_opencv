@@ -1,5 +1,5 @@
 #include "FrameInputChannel.h"
-
+#include <gtest/gtest.h>
 
 namespace {
 ExternalFrame mkFrame(int w, int h, int64_t ts) {
@@ -14,7 +14,7 @@ ExternalFrame mkFrame(int w, int h, int64_t ts) {
 }
 }  // namespace
 
-bool test_frame_input_latest_only_keeps_newest() {
+TEST(FrameInputChannel, LatestOnlyKeepsNewest) {
     FrameInputChannel ch;
     ch.configure(FrameBackpressureMode::LatestOnly, 1);
 
@@ -22,18 +22,16 @@ bool test_frame_input_latest_only_keeps_newest() {
     ch.push(mkFrame(2, 2, 200));
 
     ExternalFrame out;
-    if (!ch.tryPop(out)) return false;
-    if (out.meta.timestampNs != 200) return false;
+    ASSERT_TRUE(ch.tryPop(out));
+    EXPECT_EQ(out.meta.timestampNs, 200);
 
     const auto s = ch.stats();
-    if (s.pushed != 2) return false;
-    if (s.popped != 1) return false;
-    if (s.dropped != 1) return false;
-
-    return true;
+    EXPECT_EQ(s.pushed, 2);
+    EXPECT_EQ(s.popped, 1);
+    EXPECT_EQ(s.dropped, 1);
 }
 
-bool test_frame_input_bounded_queue_drops_oldest() {
+TEST(FrameInputChannel, BoundedQueueDropsOldest) {
     FrameInputChannel ch;
     ch.configure(FrameBackpressureMode::BoundedQueue, 2);
 
@@ -43,15 +41,13 @@ bool test_frame_input_bounded_queue_drops_oldest() {
 
     ExternalFrame out1;
     ExternalFrame out2;
-    if (!ch.tryPop(out1)) return false;
-    if (!ch.tryPop(out2)) return false;
-    if (out1.meta.timestampNs != 200) return false;
-    if (out2.meta.timestampNs != 300) return false;
+    ASSERT_TRUE(ch.tryPop(out1));
+    ASSERT_TRUE(ch.tryPop(out2));
+    EXPECT_EQ(out1.meta.timestampNs, 200);
+    EXPECT_EQ(out2.meta.timestampNs, 300);
 
     const auto s = ch.stats();
-    if (s.pushed != 3) return false;
-    if (s.popped != 2) return false;
-    if (s.dropped != 1) return false;
-
-    return true;
+    EXPECT_EQ(s.pushed, 3);
+    EXPECT_EQ(s.popped, 2);
+    EXPECT_EQ(s.dropped, 1);
 }

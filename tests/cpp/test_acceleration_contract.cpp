@@ -1,4 +1,5 @@
 #include "AccelerationContract.h"
+#include <gtest/gtest.h>
 
 #include <string>
 
@@ -10,26 +11,25 @@ bool contains(const std::string& s, const std::string& sub) {
 
 }  // namespace
 
-bool test_accel_contract_normalize_key_and_backend() {
+TEST(AccelerationContract, NormalizeKeyAndBackend) {
     using rk_accel::normalizeBackendName;
     using rk_accel::normalizeContractKey;
 
-    if (normalizeContractKey("enable_opencl") != "opencl") return false;
-    if (normalizeContractKey("RK_USE_MPP") != "mpp") return false;
-    if (normalizeContractKey("enableQualcomm") != "qualcomm") return false;
-    if (normalizeContractKey("detector_backend") != "detector_backend") return false;
-    if (normalizeContractKey("recognitionBackend") != "recognition_backend") return false;
-    if (normalizeContractKey("unknown_key") != "unknown_key") return false;
+    EXPECT_EQ(normalizeContractKey("enable_opencl"), "opencl");
+    EXPECT_EQ(normalizeContractKey("RK_USE_MPP"), "mpp");
+    EXPECT_EQ(normalizeContractKey("enableQualcomm"), "qualcomm");
+    EXPECT_EQ(normalizeContractKey("detector_backend"), "detector_backend");
+    EXPECT_EQ(normalizeContractKey("recognitionBackend"), "recognition_backend");
+    EXPECT_EQ(normalizeContractKey("unknown_key"), "unknown_key");
 
-    if (normalizeBackendName("OpenCV") != "opencv_dnn") return false;
-    if (normalizeBackendName("opencv-dnn") != "opencv_dnn") return false;
-    if (normalizeBackendName("NCNN") != "ncnn") return false;
-    if (normalizeBackendName("Qualcomm") != "qualcomm") return false;
-    if (normalizeBackendName("") != "opencv_dnn") return false;
-    return true;
+    EXPECT_EQ(normalizeBackendName("OpenCV"), "opencv_dnn");
+    EXPECT_EQ(normalizeBackendName("opencv-dnn"), "opencv_dnn");
+    EXPECT_EQ(normalizeBackendName("NCNN"), "ncnn");
+    EXPECT_EQ(normalizeBackendName("Qualcomm"), "qualcomm");
+    EXPECT_EQ(normalizeBackendName(""), "opencv_dnn");
 }
 
-bool test_accel_contract_format_self_check_line() {
+TEST(AccelerationContract, FormatSelfCheckLine) {
     rk_accel::AccelContractStatus st;
     st.key = "opencl";
     st.requested = true;
@@ -38,12 +38,11 @@ bool test_accel_contract_format_self_check_line() {
     st.evidence = "haveOpenCL=0";
 
     const std::string line = rk_accel::formatSelfCheckLine(st);
-    if (!contains(line, "ACCEL_SELF_CHECK")) return false;
-    if (!contains(line, "[path=opencl]")) return false;
-    if (!contains(line, "key=opencl")) return false;
-    if (!contains(line, "requested=1")) return false;
-    if (!contains(line, "effective=0")) return false;
-    if (!contains(line, "reason=missing_dependency")) return false;
-    if (!contains(line, "evidence=haveOpenCL=0")) return false;
-    return true;
+    EXPECT_TRUE(contains(line, "ACCEL_SELF_CHECK"));
+    EXPECT_TRUE(contains(line, "[path=opencl]"));
+    EXPECT_TRUE(contains(line, "key=opencl"));
+    EXPECT_TRUE(contains(line, "requested=1"));
+    EXPECT_TRUE(contains(line, "effective=0"));
+    EXPECT_TRUE(contains(line, "reason=missing_dependency"));
+    EXPECT_TRUE(contains(line, "evidence=haveOpenCL=0"));
 }
