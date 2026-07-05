@@ -12,7 +12,7 @@ export function SettingsPage() {
   return (
     <Tabs
       items={items}
-      defaultActiveKey=”local”
+      defaultActiveKey="local"
       destroyInactiveTabPane={false}
     />
   )
