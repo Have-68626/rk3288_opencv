@@ -154,7 +154,6 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
         "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
-        "src/cpp/src/FaceInferOutcomeJson.cpp"
         "src/cpp/src/FileHash.cpp"
         "src/cpp/src/FrameInputChannel.cpp"
         "src/cpp/src/ThresholdPolicy.cpp"
@@ -354,7 +353,6 @@ set(CORE_SOURCES
     "src/cpp/src/EventManager.cpp"
     "src/cpp/src/FaceAlign.cpp"
     "src/cpp/src/FaceInferencePipeline.cpp"
-    "src/cpp/src/FaceInferOutcomeJson.cpp"
     "src/cpp/src/FaceInferStages.cpp"
     "src/cpp/src/FaceSearch.cpp"
     "src/cpp/src/FaceTemplate.cpp"
@@ -390,7 +388,6 @@ set(RK_CORE_LITE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ThresholdPolicy.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceSearch.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceTemplate.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferOutcomeJson.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/NativeLog.cpp
 )
 
