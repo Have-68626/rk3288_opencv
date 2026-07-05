@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+namespace rk_core {
+
 /**
  * @brief Unified face detector interface for ModelRegistry.
  *
@@ -40,3 +42,5 @@ public:
      */
     virtual const char* name() const = 0;
 };
+
+} // namespace rk_core

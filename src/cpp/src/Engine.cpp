@@ -368,10 +368,20 @@ static void logAccelSelfCheckStatus(const rk_accel::AccelContractStatus& status)
 }  // namespace
 
 Engine::Engine()
+    : Engine(std::make_unique<VideoManager>(),
+             std::make_unique<BioAuth>(),
+             std::make_unique<EventManager>()) {
+}
+
+Engine::Engine(std::unique_ptr<VideoManager> vm,
+               std::unique_ptr<BioAuth> ba,
+               std::unique_ptr<EventManager> em)
     : isRunning_(false),
       currentMode_(MonitoringMode::CONTINUOUS),
       externalInputEnabled_(false) {
-    videoManager_ = std::make_unique<VideoManager>();
+    videoManager_ = std::move(vm);
+    bioAuth_ = std::move(ba);
+    eventManager_ = std::move(em);
 
     bool useQualcomm = getEnvBool("RK_USE_QUALCOMM");
     bool useMpp = getEnvBool("RK_USE_MPP");
@@ -392,8 +402,6 @@ Engine::Engine()
     videoManager_->setUseOpenCL(useOpencl);
 
     motionDetector_ = std::make_unique<MotionDetector>();
-    bioAuth_ = std::make_unique<BioAuth>();
-    eventManager_ = std::make_unique<EventManager>();
     externalInput_ = std::make_unique<FrameInputChannel>();
     externalInput_->configure(FrameBackpressureMode::LatestOnly, 1);
 

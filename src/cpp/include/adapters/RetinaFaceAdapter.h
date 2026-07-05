@@ -10,6 +10,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace rk_core {
+
 class RetinaFaceAdapter : public FaceDetector {
 public:
     RetinaFaceAdapter();
@@ -57,3 +59,5 @@ private:
     std::vector<AnchorCfg> anchorCfgs_;
     std::vector<std::string> outputNames_;
 };
+
+} // namespace rk_core

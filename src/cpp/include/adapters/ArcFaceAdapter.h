@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 
+namespace rk_core {
+
 class ArcFaceAdapter : public Embedder {
 public:
     ArcFaceAdapter();
@@ -23,3 +25,5 @@ private:
     bool loaded_ = false;
     std::string currentName_;
 };
+
+} // namespace rk_core

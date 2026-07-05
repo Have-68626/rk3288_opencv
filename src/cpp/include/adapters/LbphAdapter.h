@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 
+namespace rk_core {
+
 class LbphAdapter : public Embedder {
 public:
     LbphAdapter();
@@ -22,3 +24,5 @@ private:
     bool loaded_ = false;
     std::string currentName_;
 };
+
+} // namespace rk_core

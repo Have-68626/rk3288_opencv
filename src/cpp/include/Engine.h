@@ -31,6 +31,9 @@ namespace rk_core {
 class Engine {
 public:
     Engine();
+    explicit Engine(std::unique_ptr<VideoManager> vm,
+                    std::unique_ptr<BioAuth> ba,
+                    std::unique_ptr<EventManager> em);
     ~Engine();
 
     /**

@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 
+namespace rk_core {
+
 class YoloFaceAdapter : public FaceDetector {
 public:
     YoloFaceAdapter();
@@ -22,3 +24,5 @@ private:
     YoloFaceOptions opt_;
     bool loaded_ = false;
 };
+
+} // namespace rk_core

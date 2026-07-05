@@ -8,6 +8,8 @@
 #include <mutex>
 #include <string>
 
+namespace rk_core {
+
 class YuNetAdapter : public FaceDetector {
 public:
     YuNetAdapter();
@@ -28,3 +30,5 @@ private:
     bool loaded_ = false;
     std::string currentName_;
 };
+
+} // namespace rk_core
