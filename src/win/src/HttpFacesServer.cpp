@@ -1,5 +1,6 @@
 #include "rk_win/HttpFacesServer.h"
 #include "rk_win/HttpFacesServerPath.h"
+#include "rk_win/StreamSession.h"
 
 #include "rk_win/EventLogger.h"
 #include "rk_win/FramePipeline.h"
@@ -20,11 +21,6 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
-
-#if RK_WIN_HAS_OPENCV
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
-#endif
 
 namespace rk_win {
 namespace {
@@ -140,13 +136,7 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
 // ──── 构造函数 / 生命周期 ────────────────────────────────────
 
 HttpFacesServer::HttpFacesServer()
-    : streamRunner_(running_, [this](cv::Mat& out) -> bool {
-          if (!pipe_) return false;  // 防御：pipe_ 尚未注入（在 start() 中设置）
-          RenderState rs;
-          if (!pipe_->tryGetRenderState(rs)) return false;
-          out = rs.bgr;
-          return true;
-      })
+    : streamRunner_(running_, stream::makeFrameProvider(&pipe_))
     , registry_(std::make_unique<EndpointRegistry>()) {
     handlers::registerAllHttpApi(*registry_);
 }
@@ -563,13 +553,11 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
     }
 
     // 流式端点统一：StreamSessionRunner 接管 socket 生命周期
-    if ((req.path == "/api/faces/stream" || req.path == "/api/v1/faces/stream") && req.method == "GET") {
-        streamRunner_.run(sock, StreamType::Sse);
-        return;
-    }
-
-    if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
-        streamRunner_.run(sock, StreamType::Mjpeg);
+    if (stream::isStreamRequest(req.path, req.method)) {
+        const StreamType st = (req.path == "/api/v1/preview.mjpeg")
+                                  ? StreamType::Mjpeg
+                                  : StreamType::Sse;
+        streamRunner_.run(sock, st);
         return;
     }
 
