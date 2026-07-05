@@ -174,6 +174,24 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
 endif()
 
+# rk_core 必须在 if(NOT RK_SKIP_OPENCV) 之前定义（core_unit_tests 无条件链接它）
+# 源文件路径与下方分组变量一致，此处用字面路径避免 CMake 变量顺序依赖
+add_library(rk_core STATIC
+    src/cpp/src/EventManager.cpp
+    src/cpp/src/FileHash.cpp
+    src/cpp/src/FrameInputChannel.cpp
+    src/cpp/src/ThresholdPolicy.cpp
+    src/cpp/src/FaceSearch.cpp
+    src/cpp/src/FaceTemplate.cpp
+    src/cpp/src/FaceInferOutcomeJson.cpp
+    src/cpp/src/NativeLog.cpp
+)
+target_include_directories(rk_core PUBLIC
+    src/cpp/include
+    src/cpp/include/adapters
+)
+target_compile_definitions(rk_core PRIVATE RK_CORE_LIBRARY)
+
 if(NOT RK_SKIP_OPENCV)
 
 # Define OpenCV Root Paths
@@ -407,15 +425,6 @@ set(RK_PIPELINE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ResultPublisher.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/PerfReporter.cpp
 )
-
-# rk_core 必须在 if(NOT RK_SKIP_OPENCV) 之前定义，因为 core_unit_tests 无条件链接它
-# rk_core 包含零 OpenCV 依赖的源文件，SKIP_OPENCV 模式下也可用
-add_library(rk_core STATIC ${RK_CORE_LITE_SOURCES})
-target_include_directories(rk_core PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include/adapters
-)
-target_compile_definitions(rk_core PRIVATE RK_CORE_LIBRARY)
 
 # ── OpenCV 模块分组变量 ──────────────────────────────
 set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc)
