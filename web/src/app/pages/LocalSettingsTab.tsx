@@ -6,7 +6,6 @@ import {
   InputNumber,
   Select,
   Space,
-  Typography,
 } from 'antd'
 import { useEffect } from 'react'
 
