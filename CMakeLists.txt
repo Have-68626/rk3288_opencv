@@ -151,13 +151,15 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_connection_quota.cpp"
         "tests/cpp/test_acceleration_contract.cpp"
         "tests/cpp/test_track_coordinator.cpp"
-        "src/cpp/src/FrameInputChannel.cpp"
-        "src/cpp/src/FaceSearch.cpp"
-        "src/cpp/src/ThresholdPolicy.cpp"
-        "src/cpp/src/EventManager.cpp"
-        "src/cpp/src/FileHash.cpp"
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
+        "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "src/cpp/src/FileHash.cpp"
+        "src/cpp/src/FrameInputChannel.cpp"
+        "src/cpp/src/ThresholdPolicy.cpp"
+        "src/cpp/src/FaceSearch.cpp"
+        "src/cpp/src/FaceTemplate.cpp"
+        "src/cpp/src/NativeLog.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/JsonLite.cpp"
     )
@@ -172,11 +174,23 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
     )
     target_compile_definitions(core_unit_tests PRIVATE RK_SKIP_OPENCV=1)
+    target_link_libraries(core_unit_tests PRIVATE rk_core)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
 endif()
+
+# rk_core 接口库（无编译对象，仅传播包含路径和编译定义）
+# 多个文件（EventManager/FaceInferOutcomeJson 等）通过包含链间接依赖 OpenCV，
+# 不能作为 STATIC 库在 SKIP_OPENCV 模式下编译。使用 INTERFACE 库，
+# 实际源文件由 core_unit_tests 直接编译（带 Mock OpenCV stubs）。
+add_library(rk_core INTERFACE)
+target_include_directories(rk_core INTERFACE
+    src/cpp/include
+    src/cpp/include/adapters
+)
+target_compile_definitions(rk_core INTERFACE RK_CORE_LIBRARY)
 
 if(NOT RK_SKIP_OPENCV)
 
@@ -339,7 +353,6 @@ set(CORE_SOURCES
     "src/cpp/src/EventManager.cpp"
     "src/cpp/src/FaceAlign.cpp"
     "src/cpp/src/FaceInferencePipeline.cpp"
-    "src/cpp/src/FaceInferOutcomeJson.cpp"
     "src/cpp/src/FaceInferStages.cpp"
     "src/cpp/src/FaceSearch.cpp"
     "src/cpp/src/FaceTemplate.cpp"
@@ -367,11 +380,64 @@ set(CORE_SOURCES
     "src/cpp/src/adapters/YuNetAdapter.cpp"
 )
 
+# ── CORE_SOURCES 分组变量 ──────────────────────────
+set(RK_CORE_LITE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/EventManager.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FileHash.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FrameInputChannel.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ThresholdPolicy.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceSearch.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceTemplate.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/NativeLog.cpp
+)
+
+set(RK_FACE_INFER_CORE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ArcFaceEmbedder.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/BioAuth.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceAlign.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferencePipeline.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferStages.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/MotionDetector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/Storage.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/YoloFaceDetector.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/Engine.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ModelRegistry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/VideoManager.cpp
+)
+
+set(RK_ADAPTER_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/ArcFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/CascadeAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/DnnSsdAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/LbphAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/MobileFaceNetAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/RetinaFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/SFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/YoloFaceAdapter.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/adapters/YuNetAdapter.cpp
+)
+
+# ── Pipeline 依赖（TrackCoordinator/ResultPublisher/PerfReporter）─────
+set(RK_PIPELINE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/TrackCoordinator.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ResultPublisher.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/PerfReporter.cpp
+)
+
+# ── OpenCV 模块分组变量 ──────────────────────────────
+set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc)
+set(RK_OPENCV_FULL_LIBS
+  opencv_core opencv_imgproc opencv_video opencv_objdetect
+  opencv_face opencv_imgcodecs opencv_calib3d opencv_features2d
+  opencv_flann opencv_dnn opencv_ml opencv_photo opencv_videoio
+  opencv_highgui opencv_stitching
+)
+
 if(ANDROID)
     # 1. Android JNI Shared Library
     if(NOT RK_SKIP_OPENCV)
         add_library(native-lib SHARED
-            ${CORE_SOURCES}
+            ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
             "src/cpp/native-lib.cpp"
             "src/win/src/FaceDetector.cpp"
             "src/win/src/LbphEmbedder.cpp"
@@ -380,24 +446,10 @@ if(ANDROID)
         # Link Libraries for JNI
         target_link_libraries(
             native-lib
-            opencv_core
-            opencv_imgproc
-            opencv_video
-            opencv_objdetect
-            opencv_face
-            opencv_imgcodecs
-            opencv_calib3d
-            opencv_features2d
-            opencv_flann
-            opencv_dnn
-            opencv_ml
-            opencv_photo
-            opencv_videoio
-            opencv_highgui
-            opencv_stitching
+            ${RK_OPENCV_FULL_LIBS}
         )
     else()
-        add_library(native-lib SHARED ${CORE_SOURCES} "src/cpp/native-lib-stub.cpp")
+        add_library(native-lib SHARED ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} "src/cpp/native-lib-stub.cpp")
     endif()
 
     target_link_libraries(
@@ -433,7 +485,7 @@ if(NOT RK_SKIP_OPENCV)
     # 2. Native Executable (CLI) for RK3288 (and Host Testing)
     add_executable(rk3288_cli
         "src/cpp/main.cpp"
-        ${CORE_SOURCES}
+        ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/DnnSsdFaceDetector.cpp"
@@ -460,20 +512,7 @@ if(NOT RK_SKIP_OPENCV)
     if(ANDROID)
         target_link_libraries(
             rk3288_cli
-            opencv_core
-            opencv_imgproc
-            opencv_video
-            opencv_objdetect
-            opencv_imgcodecs
-            opencv_calib3d
-            opencv_features2d
-            opencv_flann
-            opencv_dnn
-            opencv_ml
-            opencv_photo
-            opencv_videoio
-            opencv_highgui
-            opencv_stitching
+            ${RK_OPENCV_FULL_LIBS}
             $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
             ${log-lib}
             ${jnigraphics-lib}
@@ -483,20 +522,7 @@ if(NOT RK_SKIP_OPENCV)
         # Host Build (Windows/Linux)
         target_link_libraries(
             rk3288_cli
-            opencv_core
-            opencv_imgproc
-            opencv_video
-            opencv_objdetect
-            opencv_imgcodecs
-            opencv_calib3d
-            opencv_features2d
-            opencv_flann
-            opencv_dnn
-            opencv_ml
-            opencv_photo
-            opencv_videoio
-            opencv_highgui
-            opencv_stitching
+            ${RK_OPENCV_FULL_LIBS}
             $<$<BOOL:${RK_HAVE_LIBYUV}>:${RK_LIBYUV_TARGET}>
             # No android/log libs on host
         )
@@ -506,32 +532,20 @@ if(NOT RK_SKIP_OPENCV)
         target_link_libraries(rk3288_cli ${RK_NCNN_TARGET})
     endif()
 
-    if(TARGET opencv_face)
-        target_link_libraries(rk3288_cli opencv_face)
-    endif()
-
     # 3. OpenCV Verification CLI (static image validation)
     add_executable(opencv_verify_cli "src/cpp/opencv_verify_cli.cpp")
 
     if(ANDROID)
         target_link_libraries(
             opencv_verify_cli
-            opencv_core
-            opencv_imgproc
-            opencv_imgcodecs
-            opencv_objdetect
-            opencv_features2d
+            ${RK_OPENCV_FULL_LIBS}
             ${log-lib}
             android
         )
     else()
         target_link_libraries(
             opencv_verify_cli
-            opencv_core
-            opencv_imgproc
-            opencv_imgcodecs
-            opencv_objdetect
-            opencv_features2d
+            ${RK_OPENCV_FULL_LIBS}
         )
     endif()
 
@@ -549,29 +563,8 @@ if(NOT RK_SKIP_OPENCV)
             "tests/cpp/test_resource_cleanup.cpp"
             "tests/cpp/test_gallery_cache.cpp"
             "tests/cpp/test_result_publisher.cpp"
-            "src/cpp/src/ArcFaceEmbedder.cpp"
-            "src/cpp/src/FaceAlign.cpp"
-            "src/cpp/src/FaceInferOutcomeJson.cpp"
-            "src/cpp/src/FaceInferStages.cpp"
-            "src/cpp/src/FaceInferencePipeline.cpp"
-            "src/cpp/src/FaceSearch.cpp"
-            "src/cpp/src/FaceTemplate.cpp"
-            "src/cpp/src/FileHash.cpp"
-            "src/cpp/src/VideoManager.cpp"
+            ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
             "tests/cpp/mpp_decoder_stub.cpp"
-            "src/cpp/src/ModelRegistry.cpp"
-            "src/cpp/src/NativeLog.cpp"
-            "src/cpp/src/ThresholdPolicy.cpp"
-            "src/cpp/src/YoloFaceDetector.cpp"
-            "src/cpp/src/adapters/ArcFaceAdapter.cpp"
-            "src/cpp/src/adapters/YoloFaceAdapter.cpp"
-            "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
-            "src/cpp/src/adapters/YuNetAdapter.cpp"
-            "src/cpp/src/adapters/SFaceAdapter.cpp"
-            "src/cpp/src/adapters/RetinaFaceAdapter.cpp"
-            "src/cpp/src/adapters/DnnSsdAdapter.cpp"
-            "src/cpp/src/adapters/CascadeAdapter.cpp"
-            "src/cpp/src/adapters/LbphAdapter.cpp"
             "src/win/src/DnnSsdFaceDetector.cpp"
             "src/win/src/FaceDetector.cpp"
             "src/win/src/LbphEmbedder.cpp"
@@ -591,13 +584,7 @@ if(NOT RK_SKIP_OPENCV)
             target_compile_definitions(face_infer_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
         endif()
         target_link_libraries(face_infer_unit_tests
-            opencv_core
-            opencv_imgproc
-            opencv_imgcodecs
-            opencv_calib3d
-            opencv_dnn
-            opencv_objdetect
-            opencv_videoio
+            ${RK_OPENCV_FULL_LIBS}
         )
         if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
             target_link_libraries(face_infer_unit_tests ${RK_NCNN_TARGET})
@@ -625,9 +612,7 @@ if(NOT RK_SKIP_OPENCV)
                 MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         endif()
         target_link_libraries(ncnn_precision_test
-            opencv_core
-            opencv_imgproc
-            opencv_imgcodecs
+            ${RK_OPENCV_FULL_LIBS}
             ${RK_NCNN_TARGET}
         )
         add_test(NAME ncnn_precision_test COMMAND ncnn_precision_test)
@@ -650,18 +635,14 @@ if(NOT RK_SKIP_OPENCV)
     if(ANDROID)
         target_link_libraries(
             inference_bench_cli
-            opencv_core
-            opencv_imgproc
-            opencv_dnn
+            ${RK_OPENCV_FULL_LIBS}
             ${log-lib}
             android
         )
     else()
         target_link_libraries(
             inference_bench_cli
-            opencv_core
-            opencv_imgproc
-            opencv_dnn
+            ${RK_OPENCV_FULL_LIBS}
         )
     endif()
 
@@ -724,11 +705,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         endif()
 
         target_link_libraries(win_local_service
-            opencv_core
-            opencv_imgproc
-            opencv_objdetect
-            opencv_imgcodecs
-            opencv_dnn
+            ${RK_OPENCV_FULL_LIBS}
             mfplat
             mfreadwrite
             mfuuid
@@ -814,11 +791,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         endif()
 
         target_link_libraries(win_camera_face_recognition
-            opencv_core
-            opencv_imgproc
-            opencv_objdetect
-            opencv_imgcodecs
-            opencv_dnn
+            ${RK_OPENCV_FULL_LIBS}
             mfplat
             mfreadwrite
             mfuuid
@@ -870,10 +843,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_face_eval_cli PRIVATE /utf-8)
     endif()
     target_link_libraries(win_face_eval_cli
-        opencv_core
-        opencv_imgproc
-        opencv_objdetect
-        opencv_imgcodecs
+        ${RK_OPENCV_FULL_LIBS}
         shlwapi
         shell32
         bcrypt
@@ -900,10 +870,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_face_bench_cli PRIVATE /utf-8)
     endif()
     target_link_libraries(win_face_bench_cli
-        opencv_core
-        opencv_imgproc
-        opencv_objdetect
-        opencv_imgcodecs
+        ${RK_OPENCV_FULL_LIBS}
         psapi
         bcrypt
         crypt32
@@ -942,10 +909,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_unit_tests PRIVATE /utf-8)
     endif()
     target_link_libraries(win_unit_tests
-        opencv_core
-        opencv_imgproc
-        opencv_objdetect
-        opencv_imgcodecs
+        ${RK_OPENCV_FULL_LIBS}
         bcrypt
         crypt32
     )
@@ -964,10 +928,7 @@ if(WIN32 AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
         target_compile_options(win_face_database_perf PRIVATE /utf-8)
     endif()
     target_link_libraries(win_face_database_perf
-        opencv_core
-        opencv_imgproc
-        opencv_objdetect
-        opencv_imgcodecs
+        ${RK_OPENCV_FULL_LIBS}
     )
     add_test(NAME win_face_database_perf COMMAND win_face_database_perf)
 
@@ -995,9 +956,7 @@ if(TARGET win_face_bench_cli)
     install(TARGETS win_face_bench_cli RUNTIME DESTINATION bin)
 endif()
 
-# Common OpenCV library lists for test/CLI targets (reduces 10+ repetitions)
-set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc opencv_imgcodecs opencv_objdetect)
-set(RK_OPENCV_CORE_DNN_LIBS ${RK_OPENCV_CORE_LIBS} opencv_dnn)
+endif()
 
 # Apply per-target includes and definitions (replacing global include_directories / add_definitions)
 foreach(t ${RK_ENGINE_TARGETS})
@@ -1006,7 +965,5 @@ foreach(t ${RK_ENGINE_TARGETS})
         target_compile_definitions(${t} PRIVATE ${RK_COMMON_DEFS})
     endif()
 endforeach()
-
-endif()
 
 endif()

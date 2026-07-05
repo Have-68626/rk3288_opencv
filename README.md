@@ -201,6 +201,11 @@ DEVELOP.md 附录 B 加速机会矩阵。
 ## 📄 许可证
 MIT License
 
+### 密码学声明
+
+本项目使用 AES-256-GCM（通过 Android KeyStore / Windows BCrypt）进行人脸特征模板加密。
+密码学功能仅用于本地数据保护，不涉及通信加密或数字签名。
+
 ## 项目治理计划
 
 > 基于 2026-07-04 全项目审计报告 ([AUDIT_REPORT.md](AUDIT_REPORT.md))，按模块分批次渐进治理。
@@ -211,7 +216,7 @@ MIT License
 | 批次 | 模块 | 评分(前→后) | 状态 | 进度 |
 |:----:|:-----|:-----------:|:----:|:----:|
 | Batch 0 | 治理看板初始化 | — | ✅ 完成 | 1/1 |
-| Batch 1 | 法律 + 构建基础设施 | 2.3→3.5 | ⬜ 待启动 | 0/8 |
+| Batch 1 | 法律 + 构建基础设施 | 2.3→3.5 | ✅ 完成 | 8/8 |
 | Batch 2 | C++ 核心引擎 | 2.8→3.5 | ⬜ 待启动 | 0/7 |
 | Batch 3 | Windows 本地服务 | 2.65→3.5 | ⬜ 待启动 | 0/8 |
 | Batch 4 | Web SPA + Android | 3.7/3.1→4.0/3.8 | ⬜ 待启动 | 0/8 |
@@ -220,11 +225,11 @@ MIT License
 
 ### Batch 1 子任务清单
 
-- [ ] 1.1 添加 LICENSE 文件
-- [ ] 1.2 修复 CMake 编译宏泄漏
-- [ ] 1.3 CORE_SOURCES 变量抽象
-- [ ] 1.4 rk_core 静态库创建
-- [ ] 1.5 修复 CI Windows PR 门控
-- [ ] 1.6 OpenCV 链接变量提取
-- [ ] 1.7 配置 CI ccache + Gradle 缓存
-- [ ] 1.8 出口合规声明
+- [x] 1.1 添加 LICENSE 文件
+- [x] 1.2 修复 CMake 编译宏泄漏
+- [x] 1.3 CORE_SOURCES 变量抽象
+- [x] 1.4 rk_core 静态库创建
+- [x] 1.5 修复 CI Windows PR 门控
+- [x] 1.6 OpenCV 链接变量提取
+- [x] 1.7 配置 CI ccache + Gradle 缓存
+- [x] 1.8 出口合规声明
