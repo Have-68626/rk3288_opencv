@@ -141,7 +141,15 @@ option(RK_BUILD_CORE_UNIT_TESTS "Build core unit tests" ON)
 
 if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     enable_testing()
-    find_package(GTest REQUIRED)
+    include(FetchContent)
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        FetchContent_Declare(googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG release-1.12.1
+        )
+        FetchContent_MakeAvailable(googletest)
+    endif()
     add_executable(core_unit_tests
         "tests/cpp/core_unit_tests_main.cpp"
         "tests/cpp/test_frame_input_channel.cpp"
