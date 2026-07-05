@@ -10,7 +10,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Switch,
   Tooltip,
   Typography,
   message,
@@ -23,6 +22,7 @@ import type { ServerSettingsDoc } from '../api/types'
 import { clearDb, enroll, openPrivacySettings, setFlip } from '../api/actions'
 import { getErrorMessage } from '../api/error'
 import { useAppStore } from '../state/AppStore'
+import FlipSwitch from '../components/FlipSwitch'
 
 type LoadState =
   | { status: 'idle' }
@@ -300,76 +300,44 @@ export function PreviewPage() {
           <Divider style={{ margin: '12px 0' }} />
 
           <Space wrap>
-            <Space>
-              <Switch
-                id="preview-flip-x"
-                checked={flipX}
-                loading={isFlippingX}
-                disabled={isFlippingY}
-                aria-label="翻转 X"
-                onChange={async (v) => {
-                  const original = flipX
-                  setFlipX(v)
-                  setIsFlippingX(true)
-                  try {
-                    await setFlip(prefs, { flipX: v, flipY })
-                    message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
-                  } catch (e: unknown) {
-                    setFlipX(original)
-                    message.error(getErrorMessage(e) || '设置 X 轴翻转失败')
-                  } finally {
-                    setIsFlippingX(false)
-                  }
-                }}
-              />
-              <label
-                htmlFor="preview-flip-x"
-                style={{ cursor: isFlippingX ? 'not-allowed' : 'pointer' }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  if (!isFlippingY) {
-                    document.getElementById('preview-flip-x')?.click();
-                  }
-                }}
-              >
-                <Typography.Text disabled={isFlippingX}>翻转 X</Typography.Text>
-              </label>
-            </Space>
-            <Space>
-              <Switch
-                id="preview-flip-y"
-                checked={flipY}
-                loading={isFlippingY}
-                disabled={isFlippingX}
-                aria-label="翻转 Y"
-                onChange={async (v) => {
-                  const original = flipY
-                  setFlipY(v)
-                  setIsFlippingY(true)
-                  try {
-                    await setFlip(prefs, { flipX, flipY: v })
-                    message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
-                  } catch (e: unknown) {
-                    setFlipY(original)
-                    message.error(getErrorMessage(e) || '设置 Y 轴翻转失败')
-                  } finally {
-                    setIsFlippingY(false)
-                  }
-                }}
-              />
-              <label
-                htmlFor="preview-flip-y"
-                style={{ cursor: isFlippingY ? 'not-allowed' : 'pointer' }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  if (!isFlippingY) {
-                    document.getElementById('preview-flip-y')?.click();
-                  }
-                }}
-              >
-                <Typography.Text disabled={isFlippingY}>翻转 Y</Typography.Text>
-              </label>
-            </Space>
+            <FlipSwitch
+              label="翻转 X"
+              checked={flipX}
+              disabled={isFlippingY}
+              onChange={async (v) => {
+                const original = flipX
+                setFlipX(v)
+                setIsFlippingX(true)
+                try {
+                  await setFlip(prefs, { flipX: v, flipY })
+                  message.success(`画面已${v ? '开启' : '关闭'} X 轴翻转`)
+                } catch (e: unknown) {
+                  setFlipX(original)
+                  message.error(getErrorMessage(e) || '设置 X 轴翻转失败')
+                } finally {
+                  setIsFlippingX(false)
+                }
+              }}
+            />
+            <FlipSwitch
+              label="翻转 Y"
+              checked={flipY}
+              disabled={isFlippingX}
+              onChange={async (v) => {
+                const original = flipY
+                setFlipY(v)
+                setIsFlippingY(true)
+                try {
+                  await setFlip(prefs, { flipX, flipY: v })
+                  message.success(`画面已${v ? '开启' : '关闭'} Y 轴翻转`)
+                } catch (e: unknown) {
+                  setFlipY(original)
+                  message.error(getErrorMessage(e) || '设置 Y 轴翻转失败')
+                } finally {
+                  setIsFlippingY(false)
+                }
+              }}
+            />
           </Space>
 
           <Divider style={{ margin: '12px 0' }} />
