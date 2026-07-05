@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -52,12 +51,6 @@ public:
     };
 
 private:
-    struct Route {
-        const char* path;
-        const char* method;
-        HttpResponse (HttpFacesServer::*handler)(const HttpRequest&);
-    };
-
     void acceptLoop();
     void handleClient(std::uintptr_t sock);
     bool readRequest(std::uintptr_t sock, HttpRequest& out, std::string& err);
@@ -72,22 +65,6 @@ private:
     static HttpResponse jsonOk(JsonValue data);
     static HttpResponse jsonErr(int httpStatus, const std::string& code, const std::string& message,
                                 const std::vector<std::string>& details = {});
-
-    // 端点 handler（由 Route 表调度）
-    HttpResponse onHealth(const HttpRequest& req);
-    HttpResponse onModels(const HttpRequest& req);
-    HttpResponse onModelReload(const HttpRequest& req);
-    HttpResponse onAcceleration(const HttpRequest& req);
-    HttpResponse onOpenApi(const HttpRequest& req);
-    HttpResponse onSettings(const HttpRequest& req);
-    HttpResponse onCryptoRotate(const HttpRequest& req);
-    HttpResponse onFaces(const HttpRequest& req);
-    HttpResponse onCameras(const HttpRequest& req);
-    HttpResponse onCameraFlip(const HttpRequest& req);
-    HttpResponse onEnroll(const HttpRequest& req);
-    HttpResponse onDbClear(const HttpRequest& req);
-    HttpResponse onPrivacyOpen(const HttpRequest& req);
-    HttpResponse onPreviewJpg(const HttpRequest& req);
 
     // 流式会话运行器
     StreamSessionRunner streamRunner_;
