@@ -425,7 +425,6 @@ set(RK_OPENCV_FULL_LIBS
   opencv_flann opencv_dnn opencv_ml opencv_photo opencv_videoio
   opencv_highgui opencv_stitching
 )
-)
 
 if(ANDROID)
     # 1. Android JNI Shared Library
