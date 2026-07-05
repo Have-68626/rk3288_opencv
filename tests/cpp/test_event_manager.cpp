@@ -4,6 +4,7 @@
 #include <string>
 
 using namespace rk_core;
+namespace rk_core {
 
 // Stubs for Storage methods used by EventManager to avoid linking full Storage class
 // which requires opencv
@@ -55,3 +56,4 @@ TEST(EventManager, UniqueId) {
         ids.insert(id);
     }
 }
+} // namespace rk_core
