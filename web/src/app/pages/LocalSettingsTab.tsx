@@ -140,7 +140,7 @@ export function LocalSettingsTab() {
         type="info"
         showIcon
         message="说明"
-        description={'"“应用设置”不写入后端 /api/v1/settings（后端 schema 禁止多余字段），仅用于控制前端行为。"'}
+        description={'“应用设置”不写入后端 /api/v1/settings（后端 schema 禁止多余字段），仅用于控制前端行为。'}
       />
     </Space>
   )
