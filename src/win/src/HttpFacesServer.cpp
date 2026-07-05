@@ -296,8 +296,18 @@ void HttpFacesServer::stop() {
     std::unique_lock<std::mutex> lk(stopMu_);
     stopCv_.wait(lk, [this]() { return activeClients_.load() == 0; });
 
+    // 所有客户端线程已完成 → join 清理
+    serverStopping_ = true;
     {
-        std::lock_guard<std::mutex> lk2(clientMu_);
+        std::lock_guard<std::mutex> lk2(clientThreadsMu_);
+        for (auto& t : clientThreads_) {
+            if (t.joinable()) t.join();
+        }
+        clientThreads_.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lk3(clientMu_);
         clientSocks_.clear();
     }
 }
@@ -341,7 +351,8 @@ void HttpFacesServer::acceptLoop() {
 
         activeClients_++;
         try {
-            std::thread([this, cs, lease = std::move(*lease)]() mutable {
+            auto running = std::make_shared<std::atomic<bool>>(true);
+            std::thread t([this, cs, lease = std::move(*lease), running]() mutable {
                 struct Cleanup {
                     HttpFacesServer* self;
                     std::uintptr_t sockP;
@@ -361,7 +372,12 @@ void HttpFacesServer::acceptLoop() {
                 } cleanup{this, static_cast<std::uintptr_t>(cs)};
 
                 handleClient(static_cast<std::uintptr_t>(cs));
-            }).detach();
+                *running = false;
+            });
+            {
+                std::lock_guard<std::mutex> lk(clientThreadsMu_);
+                clientThreads_.push_back(std::move(t));
+            }
         } catch (const std::exception&) {
             // 线程创建失败：回滚连接状态，防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)
             {

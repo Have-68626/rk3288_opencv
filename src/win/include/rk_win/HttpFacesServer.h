@@ -107,6 +107,11 @@ private:
     std::atomic<int> activeClients_{0};
     std::mutex stopMu_;
     std::condition_variable stopCv_;
+
+    // 客户端线程 RAII 管理（替代 detach）
+    std::vector<std::thread> clientThreads_;
+    std::mutex clientThreadsMu_;
+    std::atomic<bool> serverStopping_{false};
 };
 
 }  // namespace rk_win
