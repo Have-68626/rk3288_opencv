@@ -72,6 +72,16 @@ export function PreviewPage() {
     }
   }, [prefs, camRetry])
 
+  // 组件卸载时取消 MJPEG 流请求
+  useEffect(() => {
+    return () => {
+      const img = document.querySelector('img[src*="preview.mjpeg"]');
+      if (img) {
+        (img as HTMLImageElement).src = '';
+      }
+    };
+  }, [])
+
   const deviceOptions = useMemo(() => {
     if (cams.status !== 'ready') return []
     return cams.devices.map((d) => ({
