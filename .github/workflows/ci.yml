@@ -185,7 +185,11 @@ jobs:
 
   windows:
     name: windows-build-test
-    if: github.event_name != 'pull_request' && (contains(github.event.head_commit.message, 'Windows') || github.event_name == 'workflow_dispatch')
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    paths:
+      - 'src/win/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ci.yml'
     runs-on: windows-latest
     timeout-minutes: 120
     env:
