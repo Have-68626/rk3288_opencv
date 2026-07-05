@@ -152,6 +152,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_acceleration_contract.cpp"
         "tests/cpp/test_track_coordinator.cpp"
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
+        "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/JsonLite.cpp"
@@ -176,8 +177,9 @@ endif()
 
 # rk_core 必须在 if(NOT RK_SKIP_OPENCV) 之前定义（core_unit_tests 无条件链接它）
 # 源文件路径与下方分组变量一致，此处用字面路径避免 CMake 变量顺序依赖
+# 注意：EventManager.cpp 因包含 Storage.h 间接依赖 OpenCV，不能放入 rk_core
+# 它由 core_unit_tests 直接编译（依赖 Mock OpenCV stubs）
 add_library(rk_core STATIC
-    src/cpp/src/EventManager.cpp
     src/cpp/src/FileHash.cpp
     src/cpp/src/FrameInputChannel.cpp
     src/cpp/src/ThresholdPolicy.cpp
