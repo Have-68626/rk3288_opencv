@@ -190,31 +190,39 @@ Java_com_example_rk3288_1opencv_NativeBridge_nativeInferFaceFromImage(
         jfloat threshold,
         jboolean fakeDetect,
         jboolean fakeEmbedding) {
-    const char* img = imagePath ? env->GetStringUTFChars(imagePath, nullptr) : nullptr;
-    const char* yolo = yoloModelPath ? env->GetStringUTFChars(yoloModelPath, nullptr) : nullptr;
-    const char* arc = arcModelPath ? env->GetStringUTFChars(arcModelPath, nullptr) : nullptr;
-    const char* gal = galleryDir ? env->GetStringUTFChars(galleryDir, nullptr) : nullptr;
+    try {
+        const char* img = imagePath ? env->GetStringUTFChars(imagePath, nullptr) : nullptr;
+        const char* yolo = yoloModelPath ? env->GetStringUTFChars(yoloModelPath, nullptr) : nullptr;
+        const char* arc = arcModelPath ? env->GetStringUTFChars(arcModelPath, nullptr) : nullptr;
+        const char* gal = galleryDir ? env->GetStringUTFChars(galleryDir, nullptr) : nullptr;
 
-    FaceInferRequest req;
-    req.imagePath = img ? img : "";
-    req.yoloBackend = "opencv";
-    req.yoloModelPath = yolo ? yolo : "";
-    req.arcBackend = "opencv";
-    req.arcModelPath = arc ? arc : "";
-    req.galleryDir = gal ? gal : "";
-    req.topK = topK > 0 ? static_cast<std::size_t>(topK) : 5;
-    req.acceptThreshold = static_cast<float>(threshold);
-    req.thresholdVersionId = "thr_v1";
-    req.fakeDetect = (fakeDetect == JNI_TRUE);
-    req.fakeEmbedding = (fakeEmbedding == JNI_TRUE);
+        FaceInferRequest req;
+        req.imagePath = img ? img : "";
+        req.yoloBackend = "opencv";
+        req.yoloModelPath = yolo ? yolo : "";
+        req.arcBackend = "opencv";
+        req.arcModelPath = arc ? arc : "";
+        req.galleryDir = gal ? gal : "";
+        req.topK = topK > 0 ? static_cast<std::size_t>(topK) : 5;
+        req.acceptThreshold = static_cast<float>(threshold);
+        req.thresholdVersionId = "thr_v1";
+        req.fakeDetect = (fakeDetect == JNI_TRUE);
+        req.fakeEmbedding = (fakeEmbedding == JNI_TRUE);
 
-    if (img) env->ReleaseStringUTFChars(imagePath, img);
-    if (yolo) env->ReleaseStringUTFChars(yoloModelPath, yolo);
-    if (arc) env->ReleaseStringUTFChars(arcModelPath, arc);
-    if (gal) env->ReleaseStringUTFChars(galleryDir, gal);
+        if (img) env->ReleaseStringUTFChars(imagePath, img);
+        if (yolo) env->ReleaseStringUTFChars(yoloModelPath, yolo);
+        if (arc) env->ReleaseStringUTFChars(arcModelPath, arc);
+        if (gal) env->ReleaseStringUTFChars(galleryDir, gal);
 
-    const auto o = runFaceInferOnce(req);
-    return env->NewStringUTF(o.json.c_str());
+        const auto o = runFaceInferOnce(req);
+        return env->NewStringUTF(o.json.c_str());
+    } catch (const std::exception& e) {
+        return env->NewStringUTF((
+            "{\"ok\":false,\"error\":{\"code\":\"JNI_INFER_FAILED\",\"message\":\""
+            + std::string(e.what()) + "\"}}").c_str());
+    } catch (...) {
+        return env->NewStringUTF("{\"ok\":false,\"error\":{\"code\":\"JNI_UNKNOWN\",\"message\":\"Unknown JNI error\"}}");
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
