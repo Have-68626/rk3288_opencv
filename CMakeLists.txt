@@ -154,6 +154,13 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
         "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
+        "src/cpp/src/FaceInferOutcomeJson.cpp"
+        "src/cpp/src/FileHash.cpp"
+        "src/cpp/src/FrameInputChannel.cpp"
+        "src/cpp/src/ThresholdPolicy.cpp"
+        "src/cpp/src/FaceSearch.cpp"
+        "src/cpp/src/FaceTemplate.cpp"
+        "src/cpp/src/NativeLog.cpp"
         "src/win/src/HttpFacesServerPath.cpp"
         "src/win/src/JsonLite.cpp"
     )
@@ -175,24 +182,16 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
 endif()
 
-# rk_core 必须在 if(NOT RK_SKIP_OPENCV) 之前定义（core_unit_tests 无条件链接它）
-# 源文件路径与下方分组变量一致，此处用字面路径避免 CMake 变量顺序依赖
-# 注意：EventManager.cpp 因包含 Storage.h 间接依赖 OpenCV，不能放入 rk_core
-# 它由 core_unit_tests 直接编译（依赖 Mock OpenCV stubs）
-add_library(rk_core STATIC
-    src/cpp/src/FileHash.cpp
-    src/cpp/src/FrameInputChannel.cpp
-    src/cpp/src/ThresholdPolicy.cpp
-    src/cpp/src/FaceSearch.cpp
-    src/cpp/src/FaceTemplate.cpp
-    src/cpp/src/FaceInferOutcomeJson.cpp
-    src/cpp/src/NativeLog.cpp
-)
-target_include_directories(rk_core PUBLIC
+# rk_core 接口库（无编译对象，仅传播包含路径和编译定义）
+# 多个文件（EventManager/FaceInferOutcomeJson 等）通过包含链间接依赖 OpenCV，
+# 不能作为 STATIC 库在 SKIP_OPENCV 模式下编译。使用 INTERFACE 库，
+# 实际源文件由 core_unit_tests 直接编译（带 Mock OpenCV stubs）。
+add_library(rk_core INTERFACE)
+target_include_directories(rk_core INTERFACE
     src/cpp/include
     src/cpp/include/adapters
 )
-target_compile_definitions(rk_core PRIVATE RK_CORE_LIBRARY)
+target_compile_definitions(rk_core INTERFACE RK_CORE_LIBRARY)
 
 if(NOT RK_SKIP_OPENCV)
 
