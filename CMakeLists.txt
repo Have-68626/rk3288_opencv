@@ -999,6 +999,8 @@ endif()
 set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc opencv_imgcodecs opencv_objdetect)
 set(RK_OPENCV_CORE_DNN_LIBS ${RK_OPENCV_CORE_LIBS} opencv_dnn)
 
+endif()
+
 # Apply per-target includes and definitions (replacing global include_directories / add_definitions)
 foreach(t ${RK_ENGINE_TARGETS})
     if(TARGET ${t})
@@ -1006,7 +1008,5 @@ foreach(t ${RK_ENGINE_TARGETS})
         target_compile_definitions(${t} PRIVATE ${RK_COMMON_DEFS})
     endif()
 endforeach()
-
-endif()
 
 endif()
