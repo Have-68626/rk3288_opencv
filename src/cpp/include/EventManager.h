@@ -10,6 +10,9 @@
 #include "Types.h"
 #include <string>
 
+// 前向声明，供 rk_core 命名空间内的 friend 使用
+bool test_event_manager_unique_id();
+
 namespace rk_core {
 
 class EventManager {
