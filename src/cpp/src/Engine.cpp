@@ -29,6 +29,8 @@
 #include <mpp_err.h>
 #endif
 
+using namespace rk_core;
+
 namespace {
 static bool getEnvBool(const char* envName);
 static const char* throttleModeName(InferenceThrottleMode mode);
@@ -366,10 +368,20 @@ static void logAccelSelfCheckStatus(const rk_accel::AccelContractStatus& status)
 }  // namespace
 
 Engine::Engine()
+    : Engine(std::make_unique<VideoManager>(),
+             std::make_unique<BioAuth>(),
+             std::make_unique<EventManager>()) {
+}
+
+Engine::Engine(std::unique_ptr<VideoManager> vm,
+               std::unique_ptr<BioAuth> ba,
+               std::unique_ptr<EventManager> em)
     : isRunning_(false),
       currentMode_(MonitoringMode::CONTINUOUS),
       externalInputEnabled_(false) {
-    videoManager_ = std::make_unique<VideoManager>();
+    videoManager_ = std::move(vm);
+    bioAuth_ = std::move(ba);
+    eventManager_ = std::move(em);
 
     bool useQualcomm = getEnvBool("RK_USE_QUALCOMM");
     bool useMpp = getEnvBool("RK_USE_MPP");
@@ -390,8 +402,6 @@ Engine::Engine()
     videoManager_->setUseOpenCL(useOpencl);
 
     motionDetector_ = std::make_unique<MotionDetector>();
-    bioAuth_ = std::make_unique<BioAuth>();
-    eventManager_ = std::make_unique<EventManager>();
     externalInput_ = std::make_unique<FrameInputChannel>();
     externalInput_->configure(FrameBackpressureMode::LatestOnly, 1);
 
@@ -508,7 +518,7 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
-    Storage::cleanupOldData(this->storagePath_, Config::OFFLINE_CACHE_DAYS);
+    Storage::cleanupOldData(this->storagePath_, rk_core::config::OFFLINE_CACHE_DAYS);
     if (!bioAuth_->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
         return false;
@@ -600,48 +610,74 @@ void Engine::run() {
             continue;
         }
 
-        // 3. 预处理：resize + flip（内联，避免额外函数调用开销）
-        cv::Mat processed2;
-        if (frame.cols != Config::FRAME_WIDTH || frame.rows != Config::FRAME_HEIGHT) {
-            cv::resize(frame, processed2, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT),
-                       0.0, 0.0, cv::INTER_AREA);
-        } else {
-            processed2 = frame;
-        }
-        const bool fx = flipXEnabled_.load();
-        const bool fy = flipYEnabled_.load();
-        if (fx || fy) {
-            int code = (fx && fy) ? -1 : (fy ? 0 : 1);
-            cv::flip(processed2, processed2, code);
-        }
-
-        // 4. 检测 + 识别（委托 BioAuth）
-        std::vector<BioAuth::FaceAuthResult> results;
-        bioAuth_->verifyMulti(processed2, results, 4, true);
-
-        // 5. 转化为 DetectedFace + 跟踪（委托 TrackCoordinator）
-        std::vector<pipeline::DetectedFace> faces;
-        faces.reserve(results.size());
-        for (auto& r : results) {
-            pipeline::DetectedFace df;
-            df.bbox = r.face;
-            df.identityId = r.identity.id;
-            df.confidence = r.identity.confidence;
-            df.isAuthenticated = r.identity.isAuthenticated;
-            faces.push_back(df);
-        }
-        auto tracks = trackCoordinator_->update(faces, nowMs());
-
-        // 6. 组装 FrameOutcome
-        pipeline::FrameOutcome outcome;
-        outcome.tracks = tracks;
-        outcome.renderFrame = processed2.clone();
-        outcome.stats.decodeMs = decodeMs;
-
-        // 7. 副作用：回调 + 渲染帧持久化 + 性能统计
-        publisher_->publish(outcome);
-        perfReporter_->submit(outcome.stats);
+        // 3-7. 委托 processFrame 管线
+        processFrame(frame, decodeMs);
     }
+}
+
+bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
+    // 3. 预处理：resize + flip
+    if (!preprocessFrame(rawFrame)) return false;
+
+    // 4. 检测 + 识别（委托 BioAuth）
+    std::vector<BioAuth::FaceAuthResult> results;
+    bioAuth_->verifyMulti(processedFrame_, results, 4, true);
+
+    // 5. 转化为 DetectedFace + 跟踪（委托 TrackCoordinator）
+    std::vector<pipeline::DetectedFace> faces;
+    faces.reserve(results.size());
+    for (auto& r : results) {
+        pipeline::DetectedFace df;
+        df.bbox = r.face;
+        df.identityId = r.identity.id;
+        df.confidence = r.identity.confidence;
+        df.isAuthenticated = r.identity.isAuthenticated;
+        faces.push_back(df);
+    }
+    trackFaces(faces);
+
+    // 6-7. 渲染 + 性能统计
+    currentStats_.decodeMs = decodeMs;
+    renderResults();
+    collectStats();
+    return true;
+}
+
+bool Engine::preprocessFrame(const cv::Mat& frame) {
+    if (frame.cols != rk_core::config::FRAME_WIDTH || frame.rows != rk_core::config::FRAME_HEIGHT) {
+        cv::resize(frame, processedFrame_, cv::Size(rk_core::config::FRAME_WIDTH, rk_core::config::FRAME_HEIGHT),
+                   0.0, 0.0, cv::INTER_AREA);
+    } else {
+        processedFrame_ = frame;
+    }
+    const bool fx = flipXEnabled_.load();
+    const bool fy = flipYEnabled_.load();
+    if (fx || fy) {
+        int code = (fx && fy) ? -1 : (fy ? 0 : 1);
+        cv::flip(processedFrame_, processedFrame_, code);
+    }
+    return !processedFrame_.empty();
+}
+
+void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
+    currentTracks_ = trackCoordinator_->update(faces, nowMs());
+}
+
+bool Engine::evaluateThrottle() {
+    // 当前未实现实时节流评估，预留扩展点
+    return true;
+}
+
+void Engine::renderResults() {
+    pipeline::FrameOutcome outcome;
+    outcome.tracks = currentTracks_;
+    outcome.renderFrame = processedFrame_.clone();
+    outcome.stats = currentStats_;
+    publisher_->publish(outcome);
+}
+
+void Engine::collectStats() {
+    perfReporter_->submit(currentStats_);
 }
 
 void Engine::stop() {

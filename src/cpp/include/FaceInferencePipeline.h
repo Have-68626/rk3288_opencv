@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+namespace rk_core {
+
 struct FaceInferRequest {
     std::string imagePath;
 
@@ -79,3 +81,5 @@ struct FaceInferOutcome {
 };
 
 FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req);
+
+} // namespace rk_core

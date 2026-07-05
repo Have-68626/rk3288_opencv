@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <iostream>
 
+using namespace rk_core;
+
 namespace {
 constexpr int kCascadeFlags = 0;
 
@@ -117,7 +119,7 @@ bool BioAuth::verify(const cv::Mat& frame,
 
             outIdentity.id = std::to_string(label);
             outIdentity.confidence = normalizeLbphConfidence(confidence);
-            outIdentity.isAuthenticated = (outIdentity.confidence >= Config::BIO_AUTH_THRESHOLD);
+            outIdentity.isAuthenticated = (outIdentity.confidence >= rk_core::config::BIO_AUTH_THRESHOLD);
 #else
             outIdentity.id = "unknown_no_module";
             outIdentity.confidence = 0.0f;
@@ -204,7 +206,7 @@ bool BioAuth::verifyMulti(const cv::Mat& frame, std::vector<FaceAuthResult>& out
 
                 r.identity.id = (label >= 0) ? std::to_string(label) : "unknown";
                 r.identity.confidence = normalizeLbphConfidence(distance);
-                r.identity.isAuthenticated = (r.identity.confidence >= Config::BIO_AUTH_THRESHOLD);
+                r.identity.isAuthenticated = (r.identity.confidence >= rk_core::config::BIO_AUTH_THRESHOLD);
 #else
                 r.identity.id = "unknown_no_module";
                 r.identity.confidence = 0.0f;

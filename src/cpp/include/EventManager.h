@@ -10,6 +10,11 @@
 #include "Types.h"
 #include <string>
 
+// 前向声明，供 rk_core 命名空间内的 friend 使用
+bool test_event_manager_unique_id();
+
+namespace rk_core {
+
 class EventManager {
 public:
     EventManager();
@@ -30,6 +35,8 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
-    friend bool test_event_manager_unique_id();
+    friend bool ::test_event_manager_unique_id();
     std::string generateUniqueId();
 };
+
+} // namespace rk_core

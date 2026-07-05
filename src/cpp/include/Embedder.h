@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+namespace rk_core {
+
 /**
  * @brief Unified embedder (face recognition) interface for ModelRegistry.
  *
@@ -50,3 +52,5 @@ public:
      */
     virtual std::uint32_t apiVersion() const { return 1; }
 };
+
+} // namespace rk_core

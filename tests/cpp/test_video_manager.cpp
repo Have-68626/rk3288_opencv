@@ -1,6 +1,8 @@
 #include "VideoManager.h"
 #include <string>
 
+using namespace rk_core;
+
 bool test_video_manager_is_url_source_valid_urls() {
     if (!VideoManager::isUrlSource("http://example.com/video.mp4")) return false;
     if (!VideoManager::isUrlSource("https://example.com/video.mp4")) return false;

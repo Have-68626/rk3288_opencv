@@ -11,6 +11,8 @@
 #include <mutex>
 #include <opencv2/imgcodecs.hpp>
 
+using namespace rk_core;
+
 namespace {
     std::mutex g_logMutex;
 }

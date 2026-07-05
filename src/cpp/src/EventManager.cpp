@@ -12,6 +12,8 @@
 #include <ctime>
 #include <random>
 
+using namespace rk_core;
+
 EventManager::EventManager() {}
 
 void EventManager::logEvent(const std::string& type, const std::string& description, const std::string& snapshotPath) {
@@ -25,10 +27,10 @@ void EventManager::logEvent(const std::string& type, const std::string& descript
     std::string jsonLog = formatEventJson(evt);
     
     // Save to daily log file
-    std::string logFile = Config::CACHE_DIR + "events_" + std::to_string(evt.timestamp / 86400) + ".jsonl";
+    std::string logFile = rk_core::config::CACHE_DIR + "events_" + std::to_string(evt.timestamp / 86400) + ".jsonl";
     
     // Ensure cache dir exists
-    Storage::ensureDirectory(Config::CACHE_DIR);
+    Storage::ensureDirectory(rk_core::config::CACHE_DIR);
     
     Storage::appendLog(logFile, jsonLog);
 }

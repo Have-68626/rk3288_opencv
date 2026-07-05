@@ -1,5 +1,7 @@
 #include "FaceInferStages.h"
 
+using namespace rk_core;
+
 #include "ArcFaceEmbedder.h"
 #include "FaceAlign.h"
 #include "FaceTemplate.h"
@@ -213,35 +215,29 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
         return okStatus();
     }
 
-    std::string detErr;
-    std::unique_ptr<YoloFaceDetector> det;
-
-    // 缓存检测器以避免每帧重新加载模型文件
-    static std::mutex s_detMu;
-    static std::string s_detCacheKey;
-    static std::unique_ptr<FaceDetector> s_cachedDet;
-    auto getCachedDet = [&](const std::string& backend, const std::string& modelPath,
-                            std::string& loadErr) -> FaceDetector* {
-        std::string key = backend + ":" + modelPath;
-        {
-            std::lock_guard<std::mutex> lock(s_detMu);
-            if (key == s_detCacheKey && s_cachedDet) return s_cachedDet.get();
+    // 使用外部注入的检测器实例（调用方管理生命周期，每帧复用避免重复加载模型）
+    if (ctx.detector) {
+        ctx.yoloBackendName = ctx.detector->name();
+        std::string detErr;
+        const auto td0 = std::chrono::steady_clock::now();
+        ctx.faces = ctx.detector->detect(ctx.img, detErr);
+        const auto td1 = std::chrono::steady_clock::now();
+        m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+        if (!detErr.empty()) {
+            return failStatus("yolo_detect", detErr);
         }
-        ModelRegistry::ensureBuiltinRegistered();
-        auto det = ModelRegistry::instance().createDetector(backend);
-        if (!det) { loadErr = "detector_not_found: " + backend; return nullptr; }
-        if (!det->load(modelPath, loadErr)) return nullptr;
-        std::lock_guard<std::mutex> lock(s_detMu);
-        s_detCacheKey = key;
-        s_cachedDet = std::move(det);
-        return s_cachedDet.get();
-    };
+        return okStatus();
+    }
+
+    // Fallback: 创建临时检测器（无缓存，兼容旧调用方）
+    std::string detErr;
 
     // INT8 量化模型优先选择
     if (req.int8Enabled) {
         std::string loadErr;
-        auto* int8Det = getCachedDet("yolo_face_int8", req.yoloModelPath, loadErr);
-        if (int8Det) {
+        ModelRegistry::ensureBuiltinRegistered();
+        auto int8Det = ModelRegistry::instance().createDetector("yolo_face_int8");
+        if (int8Det && int8Det->load(req.yoloModelPath, loadErr)) {
             ctx.yoloBackendName = std::string(int8Det->name()) + " (INT8)";
             const auto td0 = std::chrono::steady_clock::now();
             ctx.faces = int8Det->detect(ctx.img, detErr);
@@ -253,9 +249,13 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
     }
 
     if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn" || req.yoloBackend == "ncnn") {
-        std::string loadErr;
-        auto* adapter = getCachedDet(req.yoloBackend, req.yoloModelPath, loadErr);
+        ModelRegistry::ensureBuiltinRegistered();
+        auto adapter = ModelRegistry::instance().createDetector(req.yoloBackend);
         if (!adapter) {
+            return failStatus("yolo_load", "detector_not_found: " + req.yoloBackend);
+        }
+        std::string loadErr;
+        if (!adapter->load(req.yoloModelPath, loadErr)) {
             return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
         }
         ctx.yoloBackendName = adapter->name();
@@ -269,7 +269,7 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
         return okStatus();
     } else if (req.yoloBackend == "qualcomm") {
         rklog::logInfo("FaceInferStages", "yoloBackend", "Qualcomm SDK fallback to CPU... 待补测");
-        det = CreateOpenCvDnnYoloFaceDetector();
+        std::unique_ptr<YoloFaceDetector> det = CreateOpenCvDnnYoloFaceDetector();
         YoloFaceModelSpec spec;
         spec.modelPath = req.yoloModelPath;
         spec.configPath = req.yoloConfigPath;
@@ -295,19 +295,19 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
         if (!det->load(spec, opt, loadErr)) {
             return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
         }
+
+        ctx.yoloBackendName = det->backendName();
+        const auto td0 = std::chrono::steady_clock::now();
+        ctx.faces = det->detect(ctx.img, detErr);
+        const auto td1 = std::chrono::steady_clock::now();
+        m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+        if (!detErr.empty()) {
+            return failStatus("yolo_detect", detErr);
+        }
+        return okStatus();
     } else {
         return failStatus("yolo_load", "yolo_backend_unsupported");
     }
-
-    ctx.yoloBackendName = det ? det->backendName() : "";
-    const auto td0 = std::chrono::steady_clock::now();
-    ctx.faces = det ? det->detect(ctx.img, detErr) : FaceDetections{};
-    const auto td1 = std::chrono::steady_clock::now();
-    m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
-    if (!detErr.empty()) {
-        return failStatus("yolo_detect", detErr);
-    }
-    return okStatus();
 }
 
 void FaceInferStages::selectMainFace(const FaceInferRequest& req, FaceInferContext& ctx) {
@@ -351,6 +351,23 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
         return okStatus();
     }
+
+    // 使用外部注入的嵌入器实例（调用方管理生命周期，每帧复用避免重复加载模型）
+    if (ctx.embedder) {
+        std::string embedErr;
+        auto e = ctx.embedder->embedAlignedFaceBgr(ctx.aligned112, &embedErr);
+        if (e.has_value()) {
+            ctx.embedding = std::move(e->values);
+            ctx.embeddingOk = true;
+            ctx.arcBackendName = req.arcBackend;
+            const auto te1 = std::chrono::steady_clock::now();
+            m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+            return okStatus();
+        }
+        return failStatus("arc_embed", embedErr.empty() ? "arc_embed_failed" : embedErr);
+    }
+
+    // Fallback: 创建临时嵌入器（无缓存，兼容旧调用方）
 
     // INT8 量化模型优先选择
     if (req.int8Enabled) {
@@ -407,29 +424,8 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         return failStatus("arc_init", "arc_backend_unsupported");
     }
 
-    // 缓存 embedder 避免每帧重新加载模型文件
-    static std::mutex s_embMu;
-    static std::string s_embCacheKey;
-    static ArcFaceEmbedder s_cachedEmb;
-    static bool s_embInited = false;
-    std::string cacheKey = req.arcBackend + ":" + req.arcModelPath;
-    std::string initErr;
-    {
-        std::lock_guard<std::mutex> lock(s_embMu);
-        if (cacheKey == s_embCacheKey && s_embInited) {
-            auto result = s_cachedEmb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
-            if (result.has_value()) {
-                ctx.embedding = std::move(result->values);
-                ctx.embeddingOk = true;
-                ctx.arcBackendName = req.arcBackend;
-                const auto te1 = std::chrono::steady_clock::now();
-                m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-                return okStatus();
-            }
-        }
-    }
-
     ArcFaceEmbedder emb;
+    std::string initErr;
     if (!emb.initialize(cfg, &initErr)) {
         return failStatus("arc_init", initErr.empty() ? "arc_init_failed" : initErr);
     }
@@ -452,13 +448,6 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(s_embMu);
-        s_embCacheKey = cacheKey;
-        s_cachedEmb = std::move(emb);
-        s_embInited = true;
-    }
-
     if (!ctx.embeddingOk) {
         return failStatus("arc_embed", "arc_embed_failed");
     }
@@ -468,36 +457,10 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
 }
 
 FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, FaceInferContext& ctx) {
-    // Simple mtime-based cache to avoid re-reading unchanged gallery on every frame
-    static std::mutex s_cacheMu;
-    static std::string s_lastDir;
-    static std::filesystem::file_time_type s_lastMtime;
-    static std::vector<FaceSearchEntry> s_cachedEntries;
-    static std::vector<std::string> s_cachedWarnings;
-
-    std::error_code ec;
-    auto currentMtime = std::filesystem::exists(req.galleryDir, ec)
-        ? std::filesystem::last_write_time(req.galleryDir, ec) : std::filesystem::file_time_type{};
-    {
-        std::lock_guard<std::mutex> lock(s_cacheMu);
-        if (!ec && currentMtime == s_lastMtime && req.galleryDir == s_lastDir && !s_cachedEntries.empty()) {
-            ctx.galleryEntries = s_cachedEntries;
-            ctx.galleryWarnings = s_cachedWarnings;
-            return okStatus();
-        }
-    }
-
     std::string galleryErr;
     if (!loadGalleryDir(req.galleryDir, ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
         ctx.galleryEntries.clear();
         return failStatus("gallery_load", galleryErr.empty() ? "gallery_load_failed" : galleryErr);
-    }
-    {
-        std::lock_guard<std::mutex> lock(s_cacheMu);
-        s_lastDir = req.galleryDir;
-        s_lastMtime = currentMtime;
-        s_cachedEntries = ctx.galleryEntries;
-        s_cachedWarnings = ctx.galleryWarnings;
     }
     return okStatus();
 }

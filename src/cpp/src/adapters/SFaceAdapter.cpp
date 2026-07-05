@@ -1,5 +1,7 @@
 #include "adapters/SFaceAdapter.h"
 
+using namespace rk_core;
+
 SFaceAdapter::SFaceAdapter() = default;
 SFaceAdapter::~SFaceAdapter() = default;
 

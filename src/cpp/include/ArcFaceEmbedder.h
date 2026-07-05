@@ -8,6 +8,8 @@
 
 #include <opencv2/core.hpp>
 
+namespace rk_core {
+
 struct ArcFaceEmbedderConfig {
     enum class BackendType { OpenCvDnn = 1, Ncnn = 2, Qualcomm = 3 };
 
@@ -73,3 +75,5 @@ private:
     struct NcnnState;
     std::shared_ptr<NcnnState> ncnn_;
 };
+
+} // namespace rk_core

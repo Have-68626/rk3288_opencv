@@ -9,6 +9,8 @@
 #include <net.h>
 #endif
 
+namespace rk_core {
+
 class MobileFaceNetAdapter : public Embedder {
 public:
     MobileFaceNetAdapter();
@@ -29,3 +31,5 @@ private:
     int inputW_ = 112;
     int inputH_ = 112;
 };
+
+} // namespace rk_core

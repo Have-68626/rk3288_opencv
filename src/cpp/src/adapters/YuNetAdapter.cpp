@@ -1,5 +1,7 @@
 #include "adapters/YuNetAdapter.h"
 
+using namespace rk_core;
+
 YuNetAdapter::YuNetAdapter() = default;
 YuNetAdapter::~YuNetAdapter() = default;
 

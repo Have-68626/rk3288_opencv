@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+namespace rk_core {
+
 struct FaceInferStageStatus {
     bool ok = true;
     std::string stage;
@@ -29,4 +31,6 @@ public:
     /** Generate a deterministic fake 512-dim embedding for test/debug mode (used when req.fakeEmbedding == true) */
     static std::vector<float> makeFakeEmbedding512(const cv::Rect2f& bbox, const cv::Size& imgSz);
 };
+
+} // namespace rk_core
 

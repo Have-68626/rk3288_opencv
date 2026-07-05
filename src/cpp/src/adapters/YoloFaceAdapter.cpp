@@ -2,6 +2,8 @@
 
 #include "NativeLog.h"
 
+using namespace rk_core;
+
 #include <filesystem>
 
 static constexpr int kDefaultInputW = 320;

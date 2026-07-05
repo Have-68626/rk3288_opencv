@@ -1,5 +1,7 @@
 #include "FaceInferOutcomeJson.h"
 
+using namespace rk_core;
+
 #include <cmath>
 #include <cstdint>
 #include <sstream>
@@ -211,6 +213,8 @@ static void writeRequestJson(JsonWriter& j, const FaceInferRequest& req) {
 
 }  // namespace
 
+namespace rk_core {
+
 std::string buildImageLoadFailureJson(const FaceInferOutcomeJsonInput& in) {
     if (!in.metrics) return "{}";
 
@@ -416,4 +420,6 @@ std::string buildExceptionJson(const FaceInferOutcomeJsonInput& in) {
     j.endObject();
     return j.str();
 }
+
+} // namespace rk_core
 

@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+namespace rk_core {
+
 /**
  * @brief Metadata entry for a registered model.
  *
@@ -81,3 +83,5 @@ private:
     std::unordered_map<std::string, DetectorSlot> detectors_;
     std::unordered_map<std::string, EmbedderSlot> embedders_;
 };
+
+} // namespace rk_core

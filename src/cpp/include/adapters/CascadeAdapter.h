@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 
+namespace rk_core {
+
 class CascadeAdapter : public FaceDetector {
 public:
     CascadeAdapter();
@@ -22,3 +24,5 @@ private:
     std::string currentName_;
     int minFaceSizePx_ = 60;
 };
+
+} // namespace rk_core
