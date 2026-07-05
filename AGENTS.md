@@ -105,6 +105,15 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - **SCRFD → PNNX note**: ncnn2int8 cannot handle `splitncnn` nodes (multi-scale detection heads). Only PNNX-direct output (optlevel=2) produces clean graphs for INT8 quantization.
 - **Android**: INT8 tests are structural only (fileExists skip). `ncnn_precision_test` is NOT built on Android.
 
+## PR 合并规则
+
+合并任何 PR 之前必须：
+1. **检查 PR comment** — 逐条阅读并解决所有评论意见，未解决的不得合并
+2. **检查并修复 conflict** — `git merge origin/master` 如有冲突必须全部解决
+3. **CI 验证** — 等待 CI 全部通过后方可合并到 `master` 分支
+4. 合并方式：squash merge（非 merge commit，非 rebase）
+5. 删除已合并的源分支
+
 ## Conventions
 
 - UTF-8 encoding enforced throughout (Gradle `options.encoding`, MSVC `/utf-8`)
