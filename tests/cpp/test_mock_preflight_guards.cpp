@@ -1,5 +1,7 @@
 #include "VideoManager.h"
 
+using namespace rk_core;
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>

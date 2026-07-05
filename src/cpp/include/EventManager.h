@@ -10,6 +10,8 @@
 #include "Types.h"
 #include <string>
 
+namespace rk_core {
+
 class EventManager {
 public:
     EventManager();
@@ -33,3 +35,5 @@ private:
     friend bool test_event_manager_unique_id();
     std::string generateUniqueId();
 };
+
+} // namespace rk_core

@@ -18,6 +18,8 @@
 
 class MppDecoder;
 
+namespace rk_core {
+
 class VideoManager {
 public:
     VideoManager();
@@ -136,3 +138,5 @@ private:
     std::string lastMockRejectReason_;
     mutable std::mutex mockMetaMutex_;
 };
+
+} // namespace rk_core

@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+namespace rk_core {
+
 struct YoloFaceOptions {
     int inputW = 320;
     int inputH = 320;
@@ -69,4 +71,6 @@ struct NcnnYoloFaceModelSpec {
 
 std::unique_ptr<YoloFaceDetector> CreateNcnnYoloFaceDetector(const NcnnYoloFaceModelSpec& ncnnSpec);
 #endif
+
+} // namespace rk_core
 

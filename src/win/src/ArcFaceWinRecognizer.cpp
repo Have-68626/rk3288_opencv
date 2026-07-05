@@ -1,6 +1,8 @@
 #include "rk_win/ArcFaceWinRecognizer.h"
 #include "rk_win/FaceRecognizer.h"
 
+using namespace rk_core;
+
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>

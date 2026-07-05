@@ -31,6 +31,8 @@
 #include <filesystem>
 #include <vector>
 
+using namespace rk_core;
+
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>

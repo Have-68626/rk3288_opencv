@@ -1,5 +1,7 @@
 #include "ArcFaceEmbedder.h"
 
+using namespace rk_core;
+
 #include "NativeLog.h"
 
 #include <algorithm>

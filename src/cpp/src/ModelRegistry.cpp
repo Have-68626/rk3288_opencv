@@ -1,4 +1,7 @@
 #include "ModelRegistry.h"
+
+using namespace rk_core;
+
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
 #include "adapters/MobileFaceNetAdapter.h"

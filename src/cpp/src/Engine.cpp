@@ -29,6 +29,8 @@
 #include <mpp_err.h>
 #endif
 
+using namespace rk_core;
+
 namespace {
 static bool getEnvBool(const char* envName);
 static const char* throttleModeName(InferenceThrottleMode mode);
@@ -508,7 +510,7 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
         rklog::logError("Engine", __func__, "Failed to init storage");
         return false;
     }
-    Storage::cleanupOldData(this->storagePath_, Config::OFFLINE_CACHE_DAYS);
+    Storage::cleanupOldData(this->storagePath_, rk_core::config::OFFLINE_CACHE_DAYS);
     if (!bioAuth_->initialize(cascadePath)) {
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
         return false;
@@ -602,8 +604,8 @@ void Engine::run() {
 
         // 3. 预处理：resize + flip（内联，避免额外函数调用开销）
         cv::Mat processed2;
-        if (frame.cols != Config::FRAME_WIDTH || frame.rows != Config::FRAME_HEIGHT) {
-            cv::resize(frame, processed2, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT),
+        if (frame.cols != rk_core::config::FRAME_WIDTH || frame.rows != rk_core::config::FRAME_HEIGHT) {
+            cv::resize(frame, processed2, cv::Size(rk_core::config::FRAME_WIDTH, rk_core::config::FRAME_HEIGHT),
                        0.0, 0.0, cv::INTER_AREA);
         } else {
             processed2 = frame;

@@ -1,5 +1,7 @@
 #include "FaceInferencePipeline.h"
 
+using namespace rk_core;
+
 #include "FaceInferStages.h"
 
 #include "FaceTemplate.h"

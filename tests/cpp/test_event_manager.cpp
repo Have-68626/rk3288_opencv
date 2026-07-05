@@ -3,6 +3,8 @@
 #include <set>
 #include <string>
 
+using namespace rk_core;
+
 // Stubs for Storage methods used by EventManager to avoid linking full Storage class
 // which requires opencv
 #include "Storage.h"

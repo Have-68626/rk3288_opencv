@@ -1,6 +1,8 @@
 #include "FaceInferStages.h"
 #include "FaceInferencePipeline.h"
 
+using namespace rk_core;
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>

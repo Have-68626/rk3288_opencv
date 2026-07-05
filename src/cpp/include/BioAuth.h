@@ -20,6 +20,8 @@
 #include <mutex>
 #include <vector>
 
+namespace rk_core {
+
 class BioAuth {
 public:
     BioAuth();
@@ -82,3 +84,5 @@ private:
     bool isModelLoaded = false;
     FaceSelectMode faceMode = FaceSelectMode::MAIN_FACE;
 };
+
+} // namespace rk_core

@@ -1,4 +1,7 @@
 #include "YoloFaceDetector.h"
+
+using namespace rk_core;
+
 #include "FileHash.h"
 
 #include <opencv2/dnn.hpp>

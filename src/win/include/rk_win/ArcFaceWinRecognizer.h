@@ -12,6 +12,9 @@
 
 namespace rk_win {
 
+using rk_core::ArcFaceEmbedder;
+using rk_core::ArcFaceEmbedderConfig;
+
 class ArcFaceWinRecognizer : public IRecognizer {
 public:
     bool initialize(const std::string& cascadePath, const std::filesystem::path& dbPath,

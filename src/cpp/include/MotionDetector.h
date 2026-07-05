@@ -3,6 +3,8 @@
 #include <opencv2/core.hpp>
 #include <mutex>
 
+namespace rk_core {
+
 class MotionDetector {
 public:
     MotionDetector();
@@ -19,3 +21,5 @@ private:
     cv::Mat prevFrame;
     cv::Mat motionMask;
 };
+
+} // namespace rk_core

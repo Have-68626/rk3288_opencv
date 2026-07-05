@@ -14,14 +14,19 @@
 #define RK_CPP_HAS_OPENCV 0
 #endif
 
+using namespace rk_core;
+
 #include <chrono>
 #include <sstream>
 #include <vector>
 
 #if RK_CPP_HAS_OPENCV
+#include "ArcFaceEmbedder.h"
+#include "FaceDetector.h"
 #include "FaceInferOutcomeJson.h"
 #include "FaceInferPipelineData.h"
 #include "FaceInferStages.h"
+#include "ModelRegistry.h"
 #endif
 
 namespace {
@@ -109,6 +114,85 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         FaceInferContext ctx;
         FaceInferMetrics m;
         ctx.arcBackendName = req.arcBackend;
+
+        // 缓存检测器实例以避免每帧重新加载模型文件（调用方管理生命周期）
+        if (!req.fakeDetect) {
+            static std::mutex s_detMu;
+            static std::string s_detCacheKey;
+            static std::unique_ptr<FaceDetector> s_cachedDet;
+
+            const std::string detKey = req.yoloBackend + ":" + req.yoloModelPath;
+            {
+                std::lock_guard<std::mutex> lock(s_detMu);
+                if (detKey == s_detCacheKey && s_cachedDet) {
+                    ctx.detector = s_cachedDet.get();
+                }
+            }
+            if (!ctx.detector) {
+                ModelRegistry::ensureBuiltinRegistered();
+                auto det = ModelRegistry::instance().createDetector(req.yoloBackend);
+                if (det) {
+                    std::string loadErr;
+                    if (det->load(req.yoloModelPath, loadErr)) {
+                        std::lock_guard<std::mutex> lock(s_detMu);
+                        s_detCacheKey = detKey;
+                        s_cachedDet = std::move(det);
+                        ctx.detector = s_cachedDet.get();
+                    }
+                }
+            }
+        }
+
+        // 缓存嵌入器实例以避免每帧重新加载模型文件（调用方管理生命周期）
+        if (!req.fakeEmbedding) {
+            static std::mutex s_embMu;
+            static std::string s_embCacheKey;
+            static std::unique_ptr<ArcFaceEmbedder> s_cachedEmb;
+
+            const std::string embKey = req.arcBackend + ":" + req.arcModelPath;
+            {
+                std::lock_guard<std::mutex> lock(s_embMu);
+                if (embKey == s_embCacheKey && s_cachedEmb && s_cachedEmb->isInitialized()) {
+                    ctx.embedder = s_cachedEmb.get();
+                }
+            }
+            if (!ctx.embedder) {
+                ArcFaceEmbedderConfig cfg;
+                cfg.inputW = req.arcInputW;
+                cfg.inputH = req.arcInputH;
+                cfg.modelVersion = req.arcModelVersion;
+                cfg.preprocessVersion = req.arcPreprocessVersion;
+                cfg.opencvModel = req.arcModelPath;
+                cfg.opencvConfig = req.arcConfigPath;
+                cfg.opencvFramework = req.arcFramework;
+                cfg.opencvOutput = req.arcOutputName;
+                cfg.opencvInput = req.arcInputName;
+
+                if (req.arcBackend == "opencv" || req.arcBackend == "opencv_dnn") {
+                    cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
+                } else if (req.arcBackend == "ncnn") {
+                    cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
+                    cfg.ncnnParam = req.arcNcnnParam;
+                    cfg.ncnnBin = req.arcNcnnBin;
+                    cfg.ncnnInput = req.arcNcnnInput;
+                    cfg.ncnnOutput = req.arcNcnnOutput;
+                    cfg.ncnnThreads = req.arcNcnnThreads;
+                    cfg.ncnnLightmode = req.arcNcnnLightmode;
+                } else if (req.arcBackend == "qualcomm") {
+                    cfg.backend = ArcFaceEmbedderConfig::BackendType::Qualcomm;
+                    cfg.qualcommModel = req.arcModelPath;
+                }
+
+                auto emb = std::make_unique<ArcFaceEmbedder>();
+                std::string initErr;
+                if (emb->initialize(cfg, &initErr)) {
+                    std::lock_guard<std::mutex> lock(s_embMu);
+                    s_embCacheKey = embKey;
+                    s_cachedEmb = std::move(emb);
+                    ctx.embedder = s_cachedEmb.get();
+                }
+            }
+        }
 
         static std::atomic<std::uint64_t> s_auditSeq{0};
         const auto makeAuditFilename = [&]() {

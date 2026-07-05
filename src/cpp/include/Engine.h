@@ -26,6 +26,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace rk_core {
+
 class Engine {
 public:
     Engine();
@@ -165,3 +167,5 @@ private:
     std::string storagePath_;
     int maxFrames_ = 0;
 };
+
+} // namespace rk_core

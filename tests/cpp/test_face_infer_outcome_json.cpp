@@ -3,6 +3,8 @@
 #include "FaceInferPipelineData.h"
 #include "ThresholdPolicy.h"
 
+using namespace rk_core;
+
 #include <string>
 #include <vector>
 #include <iostream>

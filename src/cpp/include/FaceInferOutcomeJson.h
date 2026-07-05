@@ -6,6 +6,8 @@
 
 #include <string>
 
+namespace rk_core {
+
 struct FaceInferOutcomeJsonInput {
     const FaceInferOutcome& out;
     const FaceInferRequest& req;
@@ -18,4 +20,6 @@ struct FaceInferOutcomeJsonInput {
 std::string buildImageLoadFailureJson(const FaceInferOutcomeJsonInput& in);
 std::string buildOutcomeJson(const FaceInferOutcomeJsonInput& in);
 std::string buildExceptionJson(const FaceInferOutcomeJsonInput& in);
+
+} // namespace rk_core
 

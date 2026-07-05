@@ -1,5 +1,7 @@
 #include "FaceInferOutcomeJson.h"
 
+using namespace rk_core;
+
 #include <cmath>
 #include <cstdint>
 #include <sstream>

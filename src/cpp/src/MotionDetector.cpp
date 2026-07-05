@@ -2,6 +2,8 @@
 #include "Config.h"
 #include <opencv2/imgproc.hpp>
 
+using namespace rk_core;
+
 MotionDetector::MotionDetector() {
 }
 
@@ -30,14 +32,14 @@ bool MotionDetector::detect(const cv::Mat& currentFrame) {
 
         cv::Mat diff;
         cv::absdiff(prevFrame, blurred, diff);
-        cv::threshold(diff, motionMask, Config::MOTION_THRESHOLD, 255, cv::THRESH_BINARY);
+        cv::threshold(diff, motionMask, rk_core::config::MOTION_THRESHOLD, 255, cv::THRESH_BINARY);
         cv::swap(blurred, prevFrame);
 
         int changedPixels = cv::countNonZero(motionMask);
         // MIN_MOTION_AREA = 500 是为 640x480 校准的绝对值;
         // 对于不同分辨率，按帧面积比例缩放
         const double areaScale = static_cast<double>(currentFrame.total()) / (640.0 * 480.0);
-        const int minArea = static_cast<int>(Config::MIN_MOTION_AREA * areaScale);
+        const int minArea = static_cast<int>(rk_core::config::MIN_MOTION_AREA * areaScale);
         return changedPixels > minArea;
     }
 }

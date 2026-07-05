@@ -18,6 +18,8 @@
 #include <filesystem>
 #include <cstdint>
 
+using namespace rk_core;
+
 namespace {
 
 constexpr std::uintmax_t kMockMaxImageBytes = 50ULL * 1024ULL * 1024ULL;
@@ -217,9 +219,9 @@ bool VideoManager::open(int deviceId) {
 
     // Configure for performance
     try {
-        cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-        cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-        cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, rk_core::config::FRAME_WIDTH);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, rk_core::config::FRAME_HEIGHT);
+        cap.set(cv::CAP_PROP_FPS, rk_core::config::TARGET_FPS);
     } catch (const std::exception& e) {
         std::cerr << "Exception in cap.set(device): " << e.what() << std::endl;
     } catch (...) {
@@ -315,8 +317,8 @@ bool VideoManager::open(const std::string& filePath) {
                 return false;
             }
             // Resize to match config if needed
-            if (staticFrame.cols != Config::FRAME_WIDTH || staticFrame.rows != Config::FRAME_HEIGHT) {
-                cv::resize(staticFrame, staticFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
+            if (staticFrame.cols != rk_core::config::FRAME_WIDTH || staticFrame.rows != rk_core::config::FRAME_HEIGHT) {
+                cv::resize(staticFrame, staticFrame, cv::Size(rk_core::config::FRAME_WIDTH, rk_core::config::FRAME_HEIGHT));
             }
             mockState = MockState::LOADING;
             rklog::logInfo("MockMode", "open", "Static image decoded, w=" + std::to_string(staticFrame.cols) +
@@ -433,9 +435,9 @@ bool VideoManager::open(const std::string& filePath) {
                     rklog::logWarn("MockMode", "open", "MPP backup cap.open failed (non-fatal, MPP will be primary)");
                 } else {
                     try {
-                        cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-                        cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-                        cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+                        cap.set(cv::CAP_PROP_FRAME_WIDTH, rk_core::config::FRAME_WIDTH);
+                        cap.set(cv::CAP_PROP_FRAME_HEIGHT, rk_core::config::FRAME_HEIGHT);
+                        cap.set(cv::CAP_PROP_FPS, rk_core::config::TARGET_FPS);
                     } catch (...) {}
                 }
             } else {
@@ -449,9 +451,9 @@ bool VideoManager::open(const std::string& filePath) {
                     return false;
                 }
                 try {
-                    cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-                    cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-                    cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+                    cap.set(cv::CAP_PROP_FRAME_WIDTH, rk_core::config::FRAME_WIDTH);
+                    cap.set(cv::CAP_PROP_FRAME_HEIGHT, rk_core::config::FRAME_HEIGHT);
+                    cap.set(cv::CAP_PROP_FPS, rk_core::config::TARGET_FPS);
                 } catch (const std::exception& e) {
                     rklog::logWarn("MockMode", "open", "cap.set exception: " + std::string(e.what()));
                 } catch (...) {
@@ -469,9 +471,9 @@ bool VideoManager::open(const std::string& filePath) {
                 return false;
             }
             try {
-                cap.set(cv::CAP_PROP_FRAME_WIDTH, Config::FRAME_WIDTH);
-                cap.set(cv::CAP_PROP_FRAME_HEIGHT, Config::FRAME_HEIGHT);
-                cap.set(cv::CAP_PROP_FPS, Config::TARGET_FPS);
+                cap.set(cv::CAP_PROP_FRAME_WIDTH, rk_core::config::FRAME_WIDTH);
+                cap.set(cv::CAP_PROP_FRAME_HEIGHT, rk_core::config::FRAME_HEIGHT);
+                cap.set(cv::CAP_PROP_FPS, rk_core::config::TARGET_FPS);
             } catch (const std::exception& e) {
                 rklog::logWarn("MockMode", "open", "cap.set exception: " + std::string(e.what()));
             } catch (...) {
@@ -659,8 +661,8 @@ void VideoManager::captureLoop() {
                         }
                         firstFrameValidated = true;
                     }
-                    if (tempFrame.cols != Config::FRAME_WIDTH || tempFrame.rows != Config::FRAME_HEIGHT) {
-                        cv::resize(tempFrame, tempFrame, cv::Size(Config::FRAME_WIDTH, Config::FRAME_HEIGHT));
+                    if (tempFrame.cols != rk_core::config::FRAME_WIDTH || tempFrame.rows != rk_core::config::FRAME_HEIGHT) {
+                        cv::resize(tempFrame, tempFrame, cv::Size(rk_core::config::FRAME_WIDTH, rk_core::config::FRAME_HEIGHT));
                     }
                     // Swap buffers instead of copy if possible, or move
                     // Since tempFrame is reused, we must copy. 

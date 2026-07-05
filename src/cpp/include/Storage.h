@@ -16,6 +16,8 @@
 namespace cv { class Mat; }
 #endif
 
+namespace rk_core {
+
 class Storage {
 public:
     /**
@@ -56,3 +58,5 @@ public:
      */
     static bool hasEnoughSpace(const std::string& path, size_t minBytes = 1024 * 1024 * 50);
 };
+
+} // namespace rk_core
