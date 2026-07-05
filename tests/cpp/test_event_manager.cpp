@@ -1,14 +1,14 @@
 #include "EventManager.h"
+#include "Storage.h"
 #include <gtest/gtest.h>
 #include <set>
 #include <string>
 
 using namespace rk_core;
-namespace rk_core {
 
 // Stubs for Storage methods used by EventManager to avoid linking full Storage class
 // which requires opencv
-#include "Storage.h"
+namespace rk_core {
 bool Storage::ensureDirectory(const std::string& path) { return true; }
 bool Storage::appendLog(const std::string& filename, const std::string& content) { return true; }
 void Storage::cleanupOldData(const std::string& directoryPath, int daysToKeep) {}
