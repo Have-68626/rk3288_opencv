@@ -2,6 +2,8 @@
 
 #include "NativeLog.h"
 
+using namespace rk_core;
+
 DnnSsdAdapter::DnnSsdAdapter() {
     cfg_.inputWidth = 300;
     cfg_.inputHeight = 300;

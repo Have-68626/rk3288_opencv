@@ -135,6 +135,13 @@ private:
     bool initCommon(const std::string& cascadePath, const std::string& storagePath);
     void performAccelSelfCheck();
 
+    // === processFrame 子方法（P2.1）===
+    bool preprocessFrame(const cv::Mat& frame);
+    void trackFaces(const std::vector<pipeline::DetectedFace>& faces);
+    bool evaluateThrottle();
+    void renderResults();
+    void collectStats();
+
     // === 管线组件 ===
     std::unique_ptr<VideoManager> videoManager_;
     std::unique_ptr<MotionDetector> motionDetector_;
@@ -165,6 +172,11 @@ private:
     std::atomic<InferenceThrottleMode> recThrottleMode_{InferenceThrottleMode::Off};
     std::atomic<int> recIntervalMs_{kRecognitionIntervalDefaultMs};
     std::atomic<long long> lastRecStartMs_{0};
+
+    // === processFrame 子方法间共享状态 ===
+    cv::Mat processedFrame_;
+    std::vector<pipeline::TrackView> currentTracks_;
+    pipeline::PerfStats currentStats_;
 
     // 其他
     std::string storagePath_;

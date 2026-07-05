@@ -1,5 +1,7 @@
 #include "adapters/RetinaFaceAdapter.h"
 
+using namespace rk_core;
+
 #include <algorithm>
 #include <cmath>
 #include <set>

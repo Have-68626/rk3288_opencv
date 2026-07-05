@@ -105,6 +105,8 @@ static int errorCodeForStage(const std::string& stage) {
 
 }  // namespace
 
+namespace rk_core {
+
 #if RK_CPP_HAS_OPENCV
 FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
     FaceInferOutcome out;
@@ -310,3 +312,5 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
     return out;
 }
 #endif
+
+} // namespace rk_core

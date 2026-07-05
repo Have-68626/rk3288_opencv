@@ -1,6 +1,8 @@
 #include "adapters/LbphAdapter.h"
 #include "NativeLog.h"
 
+using namespace rk_core;
+
 #include <opencv2/imgproc.hpp>
 
 LbphAdapter::LbphAdapter() = default;

@@ -2,6 +2,8 @@
 
 #include "NativeLog.h"
 
+using namespace rk_core;
+
 CascadeAdapter::CascadeAdapter() = default;
 CascadeAdapter::~CascadeAdapter() = default;
 

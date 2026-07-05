@@ -519,6 +519,8 @@ private:
 
 }  // namespace
 
+namespace rk_core {
+
 std::unique_ptr<YoloFaceDetector> CreateOpenCvDnnYoloFaceDetector() {
     return std::make_unique<OpenCvDnnYoloFaceDetector>();
 }
@@ -528,3 +530,5 @@ std::unique_ptr<YoloFaceDetector> CreateNcnnYoloFaceDetector(const NcnnYoloFaceM
     return std::make_unique<NcnnYoloFaceDetector>(ncnnSpec);
 }
 #endif
+
+} // namespace rk_core
