@@ -64,7 +64,6 @@ public:
 private:
     void rollIfNeededLocked(const std::filesystem::path& path);
     static std::string escapeCsv(const std::string& s);
-    static std::string escapeJson(const std::string& s);
 
     std::mutex mu_;
     std::filesystem::path dir_;

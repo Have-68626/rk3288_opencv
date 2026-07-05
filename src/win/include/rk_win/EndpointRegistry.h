@@ -14,6 +14,7 @@ class WinJsonConfigStore;
 struct EndpointContext {
     FramePipeline* pipe = nullptr;
     WinJsonConfigStore* settings = nullptr;
+    int port = 0;  // 服务器监听端口（health 端点使用）
 };
 
 /// 路由定义：method/path + handler

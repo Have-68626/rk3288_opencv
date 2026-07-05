@@ -1,5 +1,6 @@
 #include "rk_win/CameraSession.h"
 #include "rk_win/MfCamera.h"
+#include "rk_win/WinConfig.h"
 
 #include <chrono>
 #include <string>
@@ -12,17 +13,6 @@
 
 namespace rk_win {
 namespace {
-
-std::string utf8FromWide(const std::wstring& ws) {
-#ifdef _WIN32
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-#else
-    return std::string(ws.begin(), ws.end());
-#endif
-}
 
 // 打开指定摄像头并等待首帧，成功时 result.ok=true
 // 失败时返回具体错误码（open_failed / first_frame_timeout）

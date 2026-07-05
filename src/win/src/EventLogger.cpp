@@ -1,39 +1,12 @@
 #include "rk_win/EventLogger.h"
 
 #include "rk_win/StructuredLogger.h"
+#include "rk_win/WinStringUtil.h"
 
 #include <filesystem>
 #include <sstream>
 
 namespace rk_win {
-
-std::string EventLogger::escapeJson(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        switch (c) {
-            case '\\':
-                out += "\\\\";
-                break;
-            case '"':
-                out += "\\\"";
-                break;
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out.push_back(c);
-                break;
-        }
-    }
-    return out;
-}
 
 bool EventLogger::open(const std::filesystem::path& dir) {
     std::lock_guard<std::mutex> lock(mu_);

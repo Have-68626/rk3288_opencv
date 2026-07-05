@@ -28,8 +28,6 @@ public:
     void append(const RenderMetricsSample& s);
 
 private:
-    static std::string escapeJson(const std::string& s);
-
     std::mutex mu_;
     std::filesystem::path path_;
     std::ofstream out_;

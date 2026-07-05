@@ -1,8 +1,8 @@
 #include "rk_win/HttpFacesServer.h"
 #include "rk_win/HttpFacesServerPath.h"
+#include "rk_win/StreamSession.h"
 
 #include "rk_win/EventLogger.h"
-#include "rk_win/FacesJson.h"
 #include "rk_win/FramePipeline.h"
 #include "rk_win/JsonLite.h"
 #include "rk_win/WinConfig.h"
@@ -21,11 +21,6 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
-
-#if RK_WIN_HAS_OPENCV
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
-#endif
 
 namespace rk_win {
 namespace {
@@ -134,96 +129,14 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
 }
 
 
-static std::string escapeJsonString(std::string_view s) {
-    std::string out;
-    out.reserve(s.size() + s.size() / 4);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    out += buf;
-                } else {
-                    out.push_back(c);
-                }
-                break;
-        }
-    }
-    return out;
-}
-
-static std::string utf8FromWideLocal(const std::wstring& ws) {
-    if (ws.empty()) return {};
-#ifdef _WIN32
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-#else
-    return std::string(ws.begin(), ws.end());
-#endif
-}
-
-#if RK_WIN_HAS_OPENCV
-static bool buildJpegWithOverlay(RenderState& rs, std::vector<std::uint8_t>& outJpeg) {
-    if (rs.bgr.empty()) return false;
-    // Performance optimization: RenderState::bgr is already an isolated thread-local deep copy.
-    // Avoid redundant clone() per frame in MJPEG stream.
-    cv::Mat img = rs.bgr;
-    for (const auto& f : rs.faces) {
-        cv::rectangle(img, f.rect, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
-    }
-    static const std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
-    std::vector<uchar> buf;
-    if (!cv::imencode(".jpg", img, buf, params)) return false;
-    outJpeg.assign(buf.begin(), buf.end());
-    return true;
-}
-#endif
-
 }  // namespace
 
 }  // namespace
-
-// ──── 端点路由表 ─────────────────────────────────────────────
-static const HttpFacesServer::Route kRoutes[] = {
-    {"/api/v1/health",             "GET",  &HttpFacesServer::onHealth},
-    {"/api/v1/models",             "GET",  &HttpFacesServer::onModels},
-    {"/api/v1/models/reload",      "POST", &HttpFacesServer::onModelReload},
-    {"/api/v1/acceleration",       "GET",  &HttpFacesServer::onAcceleration},
-    {"/api/v1/openapi",            "GET",  &HttpFacesServer::onOpenApi},
-    {"/openapi.json",              "GET",  &HttpFacesServer::onOpenApi},
-    {"/api/v1/settings",           "*",    &HttpFacesServer::onSettings},
-    {"/api/v1/actions/crypto/rotate", "POST", &HttpFacesServer::onCryptoRotate},
-    {"/api/faces",                 "GET",  &HttpFacesServer::onFaces},
-    {"/api/v1/faces",              "GET",  &HttpFacesServer::onFaces},
-    {"/api/v1/cameras",            "GET",  &HttpFacesServer::onCameras},
-    {"/api/v1/camera/flip",        "PUT",  &HttpFacesServer::onCameraFlip},
-    {"/api/v1/actions/enroll",     "POST", &HttpFacesServer::onEnroll},
-    {"/api/v1/actions/db/clear",   "POST", &HttpFacesServer::onDbClear},
-    {"/api/v1/actions/privacy/open", "POST", &HttpFacesServer::onPrivacyOpen},
-    {"/api/v1/preview.jpg",        "GET",  &HttpFacesServer::onPreviewJpg},
-};
 
 // ──── 构造函数 / 生命周期 ────────────────────────────────────
 
 HttpFacesServer::HttpFacesServer()
-    : streamRunner_(running_, [this](cv::Mat& out) -> bool {
-          if (!pipe_) return false;  // 防御：pipe_ 尚未注入（在 start() 中设置）
-          RenderState rs;
-          if (!pipe_->tryGetRenderState(rs)) return false;
-          out = rs.bgr;
-          return true;
-      })
+    : streamRunner_(running_, stream::makeFrameProvider(&pipe_))
     , registry_(std::make_unique<EndpointRegistry>()) {
     handlers::registerAllHttpApi(*registry_);
 }
@@ -296,8 +209,18 @@ void HttpFacesServer::stop() {
     std::unique_lock<std::mutex> lk(stopMu_);
     stopCv_.wait(lk, [this]() { return activeClients_.load() == 0; });
 
+    // 所有客户端线程已完成 → join 清理
+    serverStopping_ = true;
     {
-        std::lock_guard<std::mutex> lk2(clientMu_);
+        std::lock_guard<std::mutex> lk2(clientThreadsMu_);
+        for (auto& t : clientThreads_) {
+            if (t.joinable()) t.join();
+        }
+        clientThreads_.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lk3(clientMu_);
         clientSocks_.clear();
     }
 }
@@ -341,7 +264,8 @@ void HttpFacesServer::acceptLoop() {
 
         activeClients_++;
         try {
-            std::thread([this, cs, lease = std::move(*lease)]() mutable {
+            auto running = std::make_shared<std::atomic<bool>>(true);
+            std::thread t([this, cs, lease = std::move(*lease), running]() mutable {
                 struct Cleanup {
                     HttpFacesServer* self;
                     std::uintptr_t sockP;
@@ -361,7 +285,12 @@ void HttpFacesServer::acceptLoop() {
                 } cleanup{this, static_cast<std::uintptr_t>(cs)};
 
                 handleClient(static_cast<std::uintptr_t>(cs));
-            }).detach();
+                *running = false;
+            });
+            {
+                std::lock_guard<std::mutex> lk(clientThreadsMu_);
+                clientThreads_.push_back(std::move(t));
+            }
         } catch (const std::exception&) {
             // 线程创建失败：回滚连接状态，防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)
             {
@@ -554,15 +483,11 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& 
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleApi(const HttpRequest& req) {
-    for (const auto& r : kRoutes) {
-        if (req.path == r.path) {
-            if (r.method[0] != '*' && req.method != r.method) {
-                return jsonErr(405, "method_not_allowed", "仅支持 " + std::string(r.method));
-            }
-            return (this->*r.handler)(req);
-        }
-    }
-    return jsonErr(404, "not_found", "未知端点");
+    EndpointContext ctx;
+    ctx.pipe = pipe_;
+    ctx.settings = settings_;
+    ctx.port = port_;
+    return registry_->dispatch(req, ctx);
 }
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const HttpRequest& req) {
@@ -608,281 +533,7 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
     return r;
 }
 
-// ──── 端点 Handler ───────────────────────────────────────────
-
-HttpFacesServer::HttpResponse HttpFacesServer::onHealth(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-    d.o["name"] = JsonValue::makeString("rk_wcfr");
-    d.o["port"] = JsonValue::makeNumber(port_);
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onModels(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-
-    JsonValue supported = JsonValue::makeArray();
-    {
-        JsonValue s1 = JsonValue::makeObject();
-        s1.o["id"] = JsonValue::makeString("cascade_frontalface");
-        s1.o["displayName"] = JsonValue::makeString("Cascade Frontal Face (LBP)");
-        s1.o["taskType"] = JsonValue::makeString("detect_recognize_pipeline");
-        s1.o["notes"] = JsonValue::makeString("LBP 级联分类器，极轻量。适合低资源环境，精度低于 DNN 方案。Windows 管线默认检测器。");
-        s1.o["recommendedFor"] = JsonValue::makeString("high_speed");
-        supported.a.push_back(std::move(s1));
-
-        JsonValue s2 = JsonValue::makeObject();
-        s2.o["id"] = JsonValue::makeString("dnn_face_detector");
-        s2.o["displayName"] = JsonValue::makeString("OpenCV DNN Face Detector");
-        s2.o["taskType"] = JsonValue::makeString("detect");
-        s2.o["notes"] = JsonValue::makeString("ResNet SSD 300x300，OpenCV DNN 后端检测器。精度高于 Cascade，适合 Windows 管线。");
-        s2.o["recommendedFor"] = JsonValue::makeString("balanced");
-        supported.a.push_back(std::move(s2));
-    }
-    d.o["supportedModels"] = std::move(supported);
-
-    JsonValue active = JsonValue::makeArray();
-    int totalConfigured = 0;
-    int totalLoaded = 0;
-    int totalFailed = 0;
-    int totalMissing = 0;
-
-    if (pipe_) {
-        std::vector<ModelSnapshot> models = pipe_->getActiveModels();
-        totalConfigured = models.size();
-        for (const auto& mSnap : models) {
-            if (mSnap.status == "loaded") totalLoaded++;
-            else if (mSnap.status == "failed") totalFailed++;
-            else if (mSnap.status == "missing") totalMissing++;
-
-            JsonValue am = JsonValue::makeObject();
-            am.o["id"] = JsonValue::makeString(mSnap.id);
-            am.o["displayName"] = JsonValue::makeString(mSnap.displayName);
-            am.o["taskType"] = JsonValue::makeString(mSnap.taskType);
-            am.o["backend"] = JsonValue::makeString(mSnap.backend);
-            if (!mSnap.hash.empty()) am.o["hash"] = JsonValue::makeString(mSnap.hash);
-            am.o["status"] = JsonValue::makeString(mSnap.status);
-            am.o["isInUse"] = JsonValue::makeBool(mSnap.isInUse);
-            if (!mSnap.modelVersion.empty()) am.o["modelVersion"] = JsonValue::makeString(mSnap.modelVersion);
-            if (!mSnap.lastError.empty()) am.o["lastError"] = JsonValue::makeString(mSnap.lastError);
-            active.a.push_back(std::move(am));
-        }
-    }
-    d.o["activeModels"] = std::move(active);
-
-    JsonValue summary = JsonValue::makeObject();
-    summary.o["totalSupported"] = JsonValue::makeNumber(2);
-    summary.o["totalConfigured"] = JsonValue::makeNumber(totalConfigured);
-    summary.o["totalLoaded"] = JsonValue::makeNumber(totalLoaded);
-    summary.o["totalFailed"] = JsonValue::makeNumber(totalFailed);
-    summary.o["totalMissing"] = JsonValue::makeNumber(totalMissing);
-    d.o["summary"] = std::move(summary);
-
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onModelReload(const HttpRequest& req) {
-    JsonValue body;
-    std::string perr;
-    if (!parseJson(req.body, body, perr) || !body.isObject()) {
-        return jsonErr(400, "invalid_json", "请求体需为 JSON object");
-    }
-    const std::string* id = nullptr;
-    if (const JsonValue* idv = body.find("id"); idv && idv->isString()) {
-        id = &idv->s;
-    }
-    if (!id || id->empty()) {
-        return jsonErr(400, "missing_id", "缺少 id 字段");
-    }
-    std::string status = "not_found";
-    if (pipe_) {
-        auto models = pipe_->getActiveModels();
-        for (const auto& m : models) {
-            if (m.id == *id) {
-                status = "reload_requested";
-                break;
-            }
-        }
-    }
-    JsonValue o = JsonValue::makeObject();
-    o.o["id"] = JsonValue::makeString(*id);
-    o.o["status"] = JsonValue::makeString(status);
-    return jsonOk(std::move(o));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onAcceleration(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-
-    if (settings_) {
-        std::string redacted = settings_->currentRedactedJsonPretty();
-        JsonValue settingsDoc;
-        std::string perr;
-        if (parseJson(redacted, settingsDoc, perr) && settingsDoc.isObject()) {
-            if (const JsonValue* accel = settingsDoc.find("acceleration"); accel && accel->isObject()) {
-                d.o["config"] = *accel;
-            }
-            if (const JsonValue* dnn = settingsDoc.find("dnn"); dnn && dnn->isObject()) {
-                JsonValue dnnSummary = JsonValue::makeObject();
-                if (const JsonValue* e = dnn->find("enable")) dnnSummary.o["enable"] = *e;
-                if (const JsonValue* b = dnn->find("backend")) dnnSummary.o["backend"] = *b;
-                if (const JsonValue* bt = dnn->find("confThreshold")) dnnSummary.o["confThreshold"] = *bt;
-                d.o["dnn"] = std::move(dnnSummary);
-            }
-        }
-    }
-
-    JsonValue backends = JsonValue::makeArray();
-    if (pipe_) {
-        auto models = pipe_->getActiveModels();
-        for (const auto& m : models) {
-            if (m.isInUse) {
-                JsonValue b = JsonValue::makeObject();
-                b.o["id"] = JsonValue::makeString(m.id);
-                b.o["backend"] = JsonValue::makeString(m.backend);
-                b.o["status"] = JsonValue::makeString(m.status);
-                backends.a.push_back(std::move(b));
-            }
-        }
-    }
-    d.o["activeBackends"] = std::move(backends);
-
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onOpenApi(const HttpRequest&) {
-    JsonValue d = JsonValue::makeObject();
-    d.o["note"] = JsonValue::makeString("OpenAPI 文档见 docs/windows-web-spa/openapi.yaml；此端点为最小联调占位");
-    return jsonOk(std::move(d));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onSettings(const HttpRequest& req) {
-    if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
-    if (req.method == "GET") {
-        JsonValue doc;
-        std::string perr;
-        if (!parseJson(settings_->currentRedactedJsonPretty(), doc, perr)) {
-            return jsonErr(500, "settings_parse_error", "设置数据解析失败", {perr});
-        }
-        return jsonOk(std::move(doc));
-    }
-    if (req.method == "PUT") {
-        const auto res = settings_->updateFromJsonBody(req.body);
-        if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "invalid_request" : res.code, res.message, res.details);
-        JsonValue doc;
-        std::string perr;
-        if (!parseJson(settings_->currentRedactedJsonPretty(), doc, perr)) {
-            return jsonErr(500, "settings_parse_error", "设置数据解析失败", {perr});
-        }
-        return jsonOk(std::move(doc));
-    }
-    return jsonErr(405, "method_not_allowed", "仅支持 GET/PUT");
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onCryptoRotate(const HttpRequest&) {
-    if (!settings_) return jsonErr(503, "settings_unavailable", "settings 存储未初始化");
-    const auto res = settings_->rotateKeyAndReencrypt();
-    if (!res.ok) return jsonErr(res.httpStatus, res.code.empty() ? "internal_error" : res.code, res.message, res.details);
-    return jsonOk(JsonValue::makeObject());
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onFaces(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    FacesSnapshot snap;
-    if (!pipe_->snapshotFaces(snap)) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    HttpResponse r;
-    r.status = 200;
-    r.reason = "OK";
-    r.contentType = "application/json; charset=utf-8";
-    r.body = buildFacesJson(snap);
-    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
-    r.headers.push_back({"X-Frame-Options", "DENY"});
-    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
-    return r;
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onCameras(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    const auto devs = pipe_->devices();
-    JsonValue devices = JsonValue::makeArray();
-    for (size_t i = 0; i < devs.size(); i++) {
-        JsonValue d = JsonValue::makeObject();
-        d.o["index"] = JsonValue::makeNumber(static_cast<double>(i));
-        d.o["name"] = JsonValue::makeString(utf8FromWideLocal(devs[i].name));
-        d.o["deviceId"] = JsonValue::makeString(utf8FromWideLocal(devs[i].deviceId));
-        JsonValue formats = JsonValue::makeArray();
-        for (const auto& f : devs[i].formats) {
-            JsonValue fmt = JsonValue::makeObject();
-            fmt.o["w"] = JsonValue::makeNumber(static_cast<double>(f.width));
-            fmt.o["h"] = JsonValue::makeNumber(static_cast<double>(f.height));
-            fmt.o["fps"] = JsonValue::makeNumber(static_cast<double>(f.fps));
-            formats.a.push_back(std::move(fmt));
-        }
-        d.o["formats"] = std::move(formats);
-        devices.a.push_back(std::move(d));
-    }
-    JsonValue data = JsonValue::makeObject();
-    data.o["devices"] = std::move(devices);
-    return jsonOk(std::move(data));
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onCameraFlip(const HttpRequest& req) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    JsonValue doc;
-    std::string perr;
-    if (!parseJson(req.body, doc, perr) || !doc.isObject()) return jsonErr(400, "invalid_request", "JSON 解析失败", {perr});
-    bool flipX = false;
-    bool flipY = false;
-    if (const JsonValue* v = doc.find("flipX"); v && v->isBool()) flipX = v->b;
-    if (const JsonValue* v = doc.find("flipY"); v && v->isBool()) flipY = v->b;
-    pipe_->setFlip(flipX, flipY);
-    return jsonOk(JsonValue::makeObject());
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onEnroll(const HttpRequest& req) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    JsonValue doc;
-    std::string perr;
-    if (!parseJson(req.body, doc, perr) || !doc.isObject()) return jsonErr(400, "invalid_request", "JSON 解析失败", {perr});
-    std::string personId;
-    if (const JsonValue* v = doc.find("personId"); v && v->isString()) personId = v->s;
-    personId = trim(personId);
-    if (personId.empty()) return jsonErr(400, "invalid_request", "personId 不能为空");
-    pipe_->requestEnroll(personId);
-    return jsonOk(JsonValue::makeObject());
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onDbClear(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    pipe_->requestClearDb();
-    return jsonOk(JsonValue::makeObject());
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onPrivacyOpen(const HttpRequest&) {
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    pipe_->openPrivacySettings();
-    return jsonOk(JsonValue::makeObject());
-}
-
-HttpFacesServer::HttpResponse HttpFacesServer::onPreviewJpg(const HttpRequest&) {
-#if RK_WIN_HAS_OPENCV
-    if (!pipe_) return jsonErr(503, "pipeline_unavailable", "Pipeline 不可用");
-    RenderState rs;
-    if (!pipe_->tryGetRenderState(rs)) return jsonErr(503, "frame_unavailable", "暂无可用画面");
-    std::vector<std::uint8_t> jpeg;
-    if (!buildJpegWithOverlay(rs, jpeg)) return jsonErr(500, "encode_failed", "JPEG 编码失败");
-    HttpResponse r;
-    r.status = 200;
-    r.reason = "OK";
-    r.contentType = "image/jpeg";
-    r.headers.push_back({"Cache-Control", "no-cache"});
-    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
-    r.headers.push_back({"X-Frame-Options", "DENY"});
-    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
-    r.body.assign(reinterpret_cast<const char*>(jpeg.data()), jpeg.size());
-    return r;
-#else
-    return jsonErr(503, "opencv_unavailable", "OpenCV 不可用，无法输出预览");
-#endif
-}
+// ──── 客户端处理 ─────────────────────────────────────────────
 
 // ──── 客户端处理 ─────────────────────────────────────────────
 
@@ -902,13 +553,11 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
     }
 
     // 流式端点统一：StreamSessionRunner 接管 socket 生命周期
-    if ((req.path == "/api/faces/stream" || req.path == "/api/v1/faces/stream") && req.method == "GET") {
-        streamRunner_.run(sock, StreamType::Sse);
-        return;
-    }
-
-    if (req.path == "/api/v1/preview.mjpeg" && req.method == "GET") {
-        streamRunner_.run(sock, StreamType::Mjpeg);
+    if (stream::isStreamRequest(req.path, req.method)) {
+        const StreamType st = (req.path == "/api/v1/preview.mjpeg")
+                                  ? StreamType::Mjpeg
+                                  : StreamType::Sse;
+        streamRunner_.run(sock, st);
         return;
     }
 

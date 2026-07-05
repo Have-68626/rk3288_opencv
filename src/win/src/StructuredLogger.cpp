@@ -1,5 +1,7 @@
 #include "rk_win/StructuredLogger.h"
 
+#include "rk_win/WinStringUtil.h"
+
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
@@ -108,34 +110,6 @@ std::string StructuredLogger::escapeCsv(const std::string& s) {
         out.push_back(c);
     }
     out.push_back('"');
-    return out;
-}
-
-std::string StructuredLogger::escapeJson(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        switch (c) {
-            case '\\':
-                out += "\\\\";
-                break;
-            case '"':
-                out += "\\\"";
-                break;
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out.push_back(c);
-                break;
-        }
-    }
     return out;
 }
 

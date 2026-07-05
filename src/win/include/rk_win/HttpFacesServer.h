@@ -2,6 +2,7 @@
 
 #include "Compat.h"
 #include "ConnectionQuota.h"
+#include "EndpointRegistry.h"
 #include "JsonLite.h"
 #include "StreamSessionRunner.h"
 
@@ -50,12 +51,6 @@ public:
     };
 
 private:
-    struct Route {
-        const char* path;
-        const char* method;
-        HttpResponse (HttpFacesServer::*handler)(const HttpRequest&);
-    };
-
     void acceptLoop();
     void handleClient(std::uintptr_t sock);
     bool readRequest(std::uintptr_t sock, HttpRequest& out, std::string& err);
@@ -71,24 +66,11 @@ private:
     static HttpResponse jsonErr(int httpStatus, const std::string& code, const std::string& message,
                                 const std::vector<std::string>& details = {});
 
-    // 端点 handler（由 Route 表调度）
-    HttpResponse onHealth(const HttpRequest& req);
-    HttpResponse onModels(const HttpRequest& req);
-    HttpResponse onModelReload(const HttpRequest& req);
-    HttpResponse onAcceleration(const HttpRequest& req);
-    HttpResponse onOpenApi(const HttpRequest& req);
-    HttpResponse onSettings(const HttpRequest& req);
-    HttpResponse onCryptoRotate(const HttpRequest& req);
-    HttpResponse onFaces(const HttpRequest& req);
-    HttpResponse onCameras(const HttpRequest& req);
-    HttpResponse onCameraFlip(const HttpRequest& req);
-    HttpResponse onEnroll(const HttpRequest& req);
-    HttpResponse onDbClear(const HttpRequest& req);
-    HttpResponse onPrivacyOpen(const HttpRequest& req);
-    HttpResponse onPreviewJpg(const HttpRequest& req);
-
     // 流式会话运行器
     StreamSessionRunner streamRunner_;
+
+    // 端点注册表（替代 kRoutes + Route 表）
+    std::unique_ptr<EndpointRegistry> registry_;
 
     std::atomic<bool> running_{false};
     FramePipeline* pipe_ = nullptr;
@@ -107,6 +89,11 @@ private:
     std::atomic<int> activeClients_{0};
     std::mutex stopMu_;
     std::condition_variable stopCv_;
+
+    // 客户端线程 RAII 管理（替代 detach）
+    std::vector<std::thread> clientThreads_;
+    std::mutex clientThreadsMu_;
+    std::atomic<bool> serverStopping_{false};
 };
 
 }  // namespace rk_win
