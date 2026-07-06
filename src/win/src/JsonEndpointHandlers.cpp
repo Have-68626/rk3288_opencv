@@ -257,24 +257,6 @@ HttpResp handleClearDb(const HttpReq&, EndpointContext& ctx) {
     return okJson(JsonValue::makeObject());
 }
 
-HttpResp handleGetModelsStatus(const HttpReq&, EndpointContext& ctx) {
-    if (!ctx.pipe) return errJson(503, "pipeline_unavailable", "Pipeline 不可用");
-    auto models = ctx.pipe->getActiveModels();
-    int total = 0, loaded = 0, failed = 0, missing = 0;
-    for (const auto& m : models) {
-        if (m.status == "loaded") loaded++;
-        else if (m.status == "failed") failed++;
-        else if (m.status == "missing") missing++;
-        total++;
-    }
-    JsonValue summary = JsonValue::makeObject();
-    summary.o["totalConfigured"] = JsonValue::makeNumber(total);
-    summary.o["totalLoaded"] = JsonValue::makeNumber(loaded);
-    summary.o["totalFailed"] = JsonValue::makeNumber(failed);
-    summary.o["totalMissing"] = JsonValue::makeNumber(missing);
-    return okJson(std::move(summary));
-}
-
 // ──── crypto / privacy / preview ─────────────────────────────────
 
 HttpResp handleCryptoRotate(const HttpReq&, EndpointContext& ctx) {

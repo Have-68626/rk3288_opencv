@@ -3,7 +3,8 @@
 
 TEST(AdapterTest, ModelRegistryInstance) {
     auto& registry = ModelRegistry::instance();
-    SUCCEED();
+    // 单例必须始终有效
+    EXPECT_NE(&registry, nullptr);
 }
 
 TEST(AdapterTest, ModelRegistryListAllEmpty) {

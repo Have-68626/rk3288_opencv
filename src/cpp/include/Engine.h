@@ -138,7 +138,6 @@ private:
     // === processFrame 子方法（P2.1）===
     bool preprocessFrame(const cv::Mat& frame);
     void trackFaces(const std::vector<pipeline::DetectedFace>& faces);
-    bool evaluateThrottle();
     void renderResults();
     void collectStats();
 

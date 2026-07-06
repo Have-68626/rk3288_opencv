@@ -50,18 +50,18 @@ public class CameraFragment extends Fragment {
     private Context appContext;
 
     // Camera state
-    public String selectedCameraId = "0";
-    public List<CameraInfo> availableCameras = new ArrayList<>();
-    public ArrayAdapter<String> cameraAdapter;
-    public boolean isSpinnerInitialized = false;
-    public String mockFilePath = null;
-    public String currentPhotoPath;
+    private String selectedCameraId = "0";
+    private List<CameraInfo> availableCameras = new ArrayList<>();
+    private ArrayAdapter<String> cameraAdapter;
+    private boolean isSpinnerInitialized = false;
+    private String mockFilePath = null;
+    private String currentPhotoPath;
 
     // Flip state
-    public boolean flipXEnabled = false;
-    public boolean flipYEnabled = false;
-    public boolean flipXHasOverride = false;
-    public boolean flipYHasOverride = false;
+    private boolean flipXEnabled = false;
+    private boolean flipYEnabled = false;
+    private boolean flipXHasOverride = false;
+    private boolean flipYHasOverride = false;
 
     public static final int REQUEST_CODE_PICK_MEDIA = 2001;
     public static final int REQUEST_CODE_TAKE_PHOTO = 1003;
