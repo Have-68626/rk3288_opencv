@@ -666,7 +666,10 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;
-    outcome.renderFrame = processedFrame_.clone();
+    // Performance optimization: Use shallow copy because publisher_->publish() internally performs copyTo()
+    // Why: Saves redundant heap allocation and deep copy overhead per frame.
+    // Rollback: Revert to `outcome.renderFrame = processedFrame_.clone();`
+    outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(outcome);
 }
