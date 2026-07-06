@@ -86,7 +86,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="4dp 12dp"
+        android:paddingLeft="12dp" android:paddingRight="12dp" android:paddingTop="4dp" android:paddingBottom="4dp"
         android:gravity="center"
         app:layout_constraintTop_toBottomOf="@id/layout_detail_actions">
 
