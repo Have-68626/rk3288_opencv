@@ -1,62 +1,36 @@
+/**
+ * @file native-lib.cpp
+ * @brief JNI 入口（精简版）
+ *
+ * 仅保留全局变量定义、共享辅助函数、JNI_OnLoad/JNI_OnUnload。
+ * JNI 函数实现已按领域拆分到 src/cpp/jni/ 目录。
+ */
+
 #include <jni.h>
-#include <cstdint>
-#include <cstdlib>
-#include <atomic>
-#include <string>
-#include <thread>
+#include <memory>
 #include <mutex>
-#include <cstring>
-#include <android/log.h>
-#include <android/bitmap.h>
-#include <android/native_window_jni.h>
-#include <opencv2/imgproc.hpp>
+#include <atomic>
+#include <thread>
+#include <string>
+#include <android/native_window.h>
+
 #include "Engine.h"
-#include "FaceInferencePipeline.h"
-#include "NativeLog.h"
 
-using namespace rk_core;
+// ========== 共享全局变量（外部链接，供 jni/*.cpp 引用） ==========
+std::unique_ptr<rk_core::Engine> g_engine;
+std::thread g_engineThread;
+std::mutex g_engineThreadMutex;
+JavaVM* g_vm = nullptr;
+jobject g_activity = nullptr;
+std::mutex g_activityMutex;
+std::mutex g_previewMutex;
+ANativeWindow* g_previewWindow = nullptr;
+std::atomic<uint64_t> g_previewGeneration{0};
+std::atomic<bool> g_cancelInit{false};
 
-#define TAG "RK3288_JNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+// ========== 共享辅助函数 ==========
 
-// JSON 字符串转义：防止异常消息含 " 或 \ 破坏 JSON 结构
-static std::string jsonEscape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    // 控制字符不可见于 JSON，替换为空格
-                    out += ' ';
-                } else {
-                    out += c;
-                }
-                break;
-        }
-    }
-    return out;
-}
-
-// Global Engine Instance
-static std::unique_ptr<Engine> g_engine;
-static std::thread g_engineThread;
-static std::mutex g_engineThreadMutex;
-static JavaVM* g_vm = nullptr;
-static jobject g_activity = nullptr;
-static std::mutex g_activityMutex;
-static std::mutex g_previewMutex;
-static ANativeWindow* g_previewWindow = nullptr;
-static std::atomic<uint64_t> g_previewGeneration{0};
-static std::atomic<bool> g_cancelInit{false};
-
-static void stopAndJoinEngineThreadIfRunning() {
+void stopAndJoinEngineThreadIfRunning() {
     std::thread t;
     {
         std::lock_guard<std::mutex> lock(g_engineThreadMutex);
@@ -80,20 +54,6 @@ static void stopAndJoinEngineThreadIfRunning() {
     }
 }
 
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    g_vm = vm;
-    return JNI_VERSION_1_6;
-}
-
-JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
-    stopAndJoinEngineThreadIfRunning();
-    std::lock_guard<std::mutex> lock(g_previewMutex);
-    if (g_previewWindow) {
-        ANativeWindow_release(g_previewWindow);
-        g_previewWindow = nullptr;
-    }
-}
-
 void sendRecognitionResult(const std::string& result) {
     jobject activityLocal;
     {
@@ -103,7 +63,7 @@ void sendRecognitionResult(const std::string& result) {
     if (!g_vm || !activityLocal) return;
 
     JNIEnv* env;
-    int getEnvStat = g_vm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    int getEnvStat = g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     bool attached = false;
 
     if (getEnvStat == JNI_EDETACHED) {
@@ -123,8 +83,6 @@ void sendRecognitionResult(const std::string& result) {
         }
         env->DeleteLocalRef(jStr);
     }
-
-    // Clean up local ref to class not strictly needed but good practice
     env->DeleteLocalRef(cls);
 
     if (attached) {
@@ -132,719 +90,29 @@ void sendRecognitionResult(const std::string& result) {
     }
 }
 
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
-        JNIEnv* env,
-        jobject thiz,
-        jstring filePath,
-        jstring cascadePath,
-        jstring storagePath) {
-    RKLOG_ENTER(TAG);
+// ========== JNI 入口/出口 ==========
 
+// registerAllNativeMethods 由 jni/registry.cpp 实现
+jint registerAllNativeMethods(JNIEnv* env);
+
+extern "C" JNIEXPORT jint JNICALL
+JNI_OnLoad(JavaVM* vm, void* /* reserved */) {
+    g_vm = vm;
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    const jint registered = registerAllNativeMethods(env);
+    if (registered < 0) return JNI_ERR;
+    return JNI_VERSION_1_6;
+}
+
+extern "C" JNIEXPORT void JNICALL
+JNI_OnUnload(JavaVM* /* vm */, void* /* reserved */) {
     stopAndJoinEngineThreadIfRunning();
-
-    // Update global activity ref (受 g_activityMutex 保护)
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity) env->DeleteGlobalRef(g_activity);
-        g_activity = env->NewGlobalRef(thiz);
-    }
-    const char* path = filePath ? env->GetStringUTFChars(filePath, nullptr) : nullptr;
-    const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
-    const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
-
-    std::string pathStr = path ? path : "";
-    std::string cascadeStr = cascade ? cascade : "";
-    std::string storageStr = storage ? storage : "";
-
-    if (path) env->ReleaseStringUTFChars(filePath, path);
-    if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
-    if (storage) env->ReleaseStringUTFChars(storagePath, storage);
-    
-    LOGI("Initializing Engine with Mock File: %s...", pathStr.c_str());
-    if (!g_engine) {
-        g_engine = std::make_unique<Engine>();
-    }
-
-    g_cancelInit.store(false);
-    g_engine->clearCancelInit();
-    g_engine->setOnResultCallback(sendRecognitionResult);
-    
-    try {
-        return g_engine->initialize(pathStr, cascadeStr, storageStr);
-    } catch (const std::exception& e) {
-        LOGE("Engine::initialize threw std::exception: %s", e.what());
-        return JNI_FALSE;
-    } catch (...) {
-        LOGE("Engine::initialize threw unknown exception");
-        return JNI_FALSE;
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_NativeBridge_nativeConfigureLog(
-        JNIEnv* env,
-        jclass,
-        jstring internalDir,
-        jstring externalDir,
-        jstring filename) {
-    const char* in = internalDir ? env->GetStringUTFChars(internalDir, nullptr) : nullptr;
-    const char* ex = externalDir ? env->GetStringUTFChars(externalDir, nullptr) : nullptr;
-    const char* fn = filename ? env->GetStringUTFChars(filename, nullptr) : nullptr;
-    
-    std::string inStr = in ? in : "";
-    std::string exStr = ex ? ex : "";
-    std::string fnStr = fn ? fn : "rk3288.log"; // Fallback
-    
-    if (in) env->ReleaseStringUTFChars(internalDir, in);
-    if (ex) env->ReleaseStringUTFChars(externalDir, ex);
-    if (fn) env->ReleaseStringUTFChars(filename, fn);
-    
-    rklog::setLogDirs(inStr, exStr, fnStr);
-    rklog::logInfo(TAG, __func__, "nativeConfigureLog configured: " + fnStr);
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_rk3288_1opencv_NativeBridge_nativeInferFaceFromImage(
-        JNIEnv* env,
-        jclass,
-        jstring imagePath,
-        jstring yoloModelPath,
-        jstring arcModelPath,
-        jstring galleryDir,
-        jint topK,
-        jfloat threshold,
-        jboolean fakeDetect,
-        jboolean fakeEmbedding) {
-    try {
-        const char* img = imagePath ? env->GetStringUTFChars(imagePath, nullptr) : nullptr;
-        const char* yolo = yoloModelPath ? env->GetStringUTFChars(yoloModelPath, nullptr) : nullptr;
-        const char* arc = arcModelPath ? env->GetStringUTFChars(arcModelPath, nullptr) : nullptr;
-        const char* gal = galleryDir ? env->GetStringUTFChars(galleryDir, nullptr) : nullptr;
-
-        FaceInferRequest req;
-        req.imagePath = img ? img : "";
-        req.yoloBackend = "opencv";
-        req.yoloModelPath = yolo ? yolo : "";
-        req.arcBackend = "opencv";
-        req.arcModelPath = arc ? arc : "";
-        req.galleryDir = gal ? gal : "";
-        req.topK = topK > 0 ? static_cast<std::size_t>(topK) : 5;
-        req.acceptThreshold = static_cast<float>(threshold);
-        req.thresholdVersionId = "thr_v1";
-        req.fakeDetect = (fakeDetect == JNI_TRUE);
-        req.fakeEmbedding = (fakeEmbedding == JNI_TRUE);
-
-        if (img) env->ReleaseStringUTFChars(imagePath, img);
-        if (yolo) env->ReleaseStringUTFChars(yoloModelPath, yolo);
-        if (arc) env->ReleaseStringUTFChars(arcModelPath, arc);
-        if (gal) env->ReleaseStringUTFChars(galleryDir, gal);
-
-        const auto o = runFaceInferOnce(req);
-        return env->NewStringUTF(o.json.c_str());
-    } catch (const std::exception& e) {
-        return env->NewStringUTF((
-            "{\"ok\":false,\"error\":{\"code\":\"JNI_INFER_FAILED\",\"message\":\""
-            + jsonEscape(e.what()) + "\"}}").c_str());
-    } catch (...) {
-        return env->NewStringUTF("{\"ok\":false,\"error\":{\"code\":\"JNI_UNKNOWN\",\"message\":\"Unknown JNI error\"}}");
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_NativeBridge_nativeSetInferenceThrottle(
-        JNIEnv* env,
-        jclass,
-        jstring mode,
-        jint intervalMs) {
-    if (!g_engine) return;
-
-    const char* m = mode ? env->GetStringUTFChars(mode, nullptr) : nullptr;
-    std::string modeStr = m ? m : "off";
-    if (m) env->ReleaseStringUTFChars(mode, m);
-
-    // JNI 边界：该接口只更新 Engine 内的原子配置，确保运行中更新不会引入锁竞争或悬挂引用。
-    g_engine->updateInferenceThrottle(modeStr, static_cast<int>(intervalMs));
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_NativeBridge_nativeSetDetectionThrottle(
-        JNIEnv* env,
-        jclass,
-        jstring mode,
-        jint intervalMs) {
-    if (!g_engine) return;
-    const char* m = mode ? env->GetStringUTFChars(mode, nullptr) : nullptr;
-    std::string modeStr = m ? m : "off";
-    if (m) env->ReleaseStringUTFChars(mode, m);
-    g_engine->updateDetectionThrottle(modeStr, static_cast<int>(intervalMs));
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_NativeBridge_nativeSetRecognitionThrottle(
-        JNIEnv* env,
-        jclass,
-        jstring mode,
-        jint intervalMs) {
-    if (!g_engine) return;
-    const char* m = mode ? env->GetStringUTFChars(mode, nullptr) : nullptr;
-    std::string modeStr = m ? m : "off";
-    if (m) env->ReleaseStringUTFChars(mode, m);
-    g_engine->updateRecognitionThrottle(modeStr, static_cast<int>(intervalMs));
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(
-        JNIEnv* env,
-        jobject /* this */) {
-    RKLOG_ENTER(TAG);
-    std::string hello = "Hello from RK3288 C++ Engine";
-    return env->NewStringUTF(hello.c_str());
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeInit(
-        JNIEnv* env,
-        jobject thiz,
-        jstring cameraId,
-        jstring cascadePath,
-        jstring storagePath) {
-    RKLOG_ENTER(TAG);
-
-    stopAndJoinEngineThreadIfRunning();
-
-    // Update global activity ref (受 g_activityMutex 保护)
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity) env->DeleteGlobalRef(g_activity);
-        g_activity = env->NewGlobalRef(thiz);
-    }
-    const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
-    if (cascadePath && env->ExceptionCheck()) {
-        env->ExceptionClear();
-        return JNI_FALSE;
-    }
-    const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
-    if (storagePath && env->ExceptionCheck()) {
-        if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
-        env->ExceptionClear();
-        return JNI_FALSE;
-    }
-
-    std::string cascadeStr = cascade ? cascade : "";
-    std::string storageStr = storage ? storage : "";
-
-    if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
-    if (storage) env->ReleaseStringUTFChars(storagePath, storage);
-
-    // Java 层 cameraId 已改为 String
-    //   null         → 外部帧输入（camIdInt = -1）
-    //   纯数字        → 相机索引（camIdInt = 数值）
-    //   文件路径      → 调用 initialize(string filePath) 重载
-    //   其他非法格式 → 返回 false
-    bool useFilePathInit = false;
-    std::string camIdStr;
-    int camIdInt = -1;
-    if (cameraId) {
-        const char* camStr = env->GetStringUTFChars(cameraId, nullptr);
-        if (env->ExceptionCheck()) {
-            env->ExceptionClear();
-            return JNI_FALSE;
-        }
-        if (camStr) {
-            camIdStr = camStr;
-            env->ReleaseStringUTFChars(cameraId, camStr);
-        }
-        if (!camIdStr.empty()) {
-            // 判断是否为文件路径：包含 . / \ 视为文件路径
-            bool isFilePath = camIdStr.find('.') != std::string::npos ||
-                              camIdStr.find('/') != std::string::npos ||
-                              camIdStr.find('\\') != std::string::npos;
-            if (isFilePath) {
-                useFilePathInit = true;
-            } else {
-                // 尝试解析为整数
-                char* end = nullptr;
-                long val = std::strtol(camIdStr.c_str(), &end, 10);
-                if (end == camIdStr.c_str() || *end != '\0' || val < 0) {
-                    LOGE("Invalid cameraId format: %s", camIdStr.c_str());
-                    return JNI_FALSE;
-                }
-                camIdInt = static_cast<int>(val);
-            }
-        }
-    }
-
-    if (!g_engine) {
-        g_engine = std::make_unique<Engine>();
-    }
-
-    g_cancelInit.store(false);
-    g_engine->clearCancelInit();
-    g_engine->setOnResultCallback(sendRecognitionResult);
-
-    if (useFilePathInit) {
-        LOGI("Initializing Engine with file path: %s...", camIdStr.c_str());
-        try {
-            return g_engine->initialize(camIdStr, cascadeStr, storageStr);
-        } catch (const std::exception& e) {
-            LOGE("Engine::initialize(filePath) threw: %s", e.what());
-            return JNI_FALSE;
-        }
-    }
-
-    LOGI("Initializing Engine with Camera ID: %d...", camIdInt);
-    try {
-        return g_engine->initialize(camIdInt, cascadeStr, storageStr);
-    } catch (const std::exception& e) {
-        LOGE("Engine::initialize(cameraId) threw: %s", e.what());
-        return JNI_FALSE;
-    } catch (...) {
-        LOGE("Engine::initialize threw unknown exception");
-        return JNI_FALSE;
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeStart(
-        JNIEnv* env,
-        jobject /* this */) {
-    RKLOG_ENTER(TAG);
-    LOGI("Starting Engine...");
-    if (!g_engine) return;
-    std::lock_guard<std::mutex> lock(g_engineThreadMutex);
-    if (g_engineThread.joinable()) {
-        LOGI("Engine thread already running, ignore nativeStart");
-        return;
-    }
-    g_engineThread = std::thread([]() { g_engine->run(); });
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeStop(
-        JNIEnv* env,
-        jobject /* this */) {
-    RKLOG_ENTER(TAG);
-    LOGI("Stopping Engine...");
-    stopAndJoinEngineThreadIfRunning();
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeRequestCancelInit(
-        JNIEnv*,
-        jobject) {
-    g_cancelInit.store(true);
-    if (g_engine) {
-        g_engine->requestCancelInit();
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeSetMode(
-        JNIEnv* env,
-        jobject /* this */,
-        jint mode) {
-    RKLOG_ENTER(TAG);
-    if (g_engine) {
-        g_engine->setMode(static_cast<MonitoringMode>(mode));
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeSetFlip(
-        JNIEnv*,
-        jobject,
-        jboolean flipX,
-        jboolean flipY) {
-    if (!g_engine) return;
-    g_engine->setFlip(flipX == JNI_TRUE, flipY == JNI_TRUE);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeConfigureExternalInput(
-        JNIEnv* env,
-        jobject /* this */,
-        jboolean enabled,
-        jint backpressureMode,
-        jint queueCapacity) {
-    RKLOG_ENTER(TAG);
-    if (!g_engine) return;
-    g_engine->configureExternalInput(static_cast<FrameBackpressureMode>(backpressureMode),
-                                    queueCapacity > 0 ? static_cast<std::size_t>(queueCapacity) : 1);
-    g_engine->setExternalInputEnabled(enabled == JNI_TRUE);
-    rklog::logInfo(TAG, __func__,
-                   std::string("nativeConfigureExternalInput enabled=") + (enabled == JNI_TRUE ? "1" : "0") +
-                   " mode=" + std::to_string(backpressureMode) +
-                   " cap=" + std::to_string(queueCapacity));
-}
-
-namespace {
-bool copyDirectBytes(JNIEnv* env, jobject byteBuffer, std::size_t needBytes, std::vector<uint8_t>& out) {
-    if (!byteBuffer) return false;
-    void* addr = env->GetDirectBufferAddress(byteBuffer);
-    const jlong cap = env->GetDirectBufferCapacity(byteBuffer);
-    if (!addr || cap <= 0) return false;
-    if (static_cast<std::size_t>(cap) < needBytes) return false;
-    out.resize(needBytes);
-    std::memcpy(out.data(), addr, needBytes);
-    return true;
-}
-}  // namespace
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(
-        JNIEnv* env,
-        jobject /* this */,
-        jobject yBuffer,
-        jint yRowStride,
-        jobject uBuffer,
-        jint uRowStride,
-        jint uPixelStride,
-        jobject vBuffer,
-        jint vRowStride,
-        jint vPixelStride,
-        jint width,
-        jint height,
-        jlong timestampNs,
-        jint rotationDegrees,
-        jboolean mirrored) {
-    if (!g_engine) return JNI_FALSE;
-
-    ExternalFrame f;
-    f.format = ExternalFrameFormat::YUV_420_888;
-    f.width = width;
-    f.height = height;
-    f.meta.timestampNs = static_cast<int64_t>(timestampNs);
-    f.meta.rotationDegrees = rotationDegrees;
-    f.meta.mirrored = (mirrored == JNI_TRUE);
-
-    f.y.rowStride = yRowStride > 0 ? yRowStride : width;
-    f.y.pixelStride = 1;
-    f.u.rowStride = uRowStride;
-    f.u.pixelStride = uPixelStride;
-    f.v.rowStride = vRowStride;
-    f.v.pixelStride = vPixelStride;
-
-    if (width <= 0 || height <= 0 || f.y.rowStride < width) {
-        rklog::logWarn(TAG, __func__, "nativePushFrameYuv420888 参数非法");
-        return JNI_FALSE;
-    }
-
-    const int chromaW = (width + 1) / 2;
-    const int chromaH = (height + 1) / 2;
-    const std::size_t yNeed = static_cast<std::size_t>(f.y.rowStride) * static_cast<std::size_t>(height - 1)
-                              + static_cast<std::size_t>(width);
-    const std::size_t uNeed = (uRowStride > 0 && uPixelStride > 0)
-                                  ? (static_cast<std::size_t>(uRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(uPixelStride)
-                                     + 1U)
-                                  : 0U;
-    const std::size_t vNeed = (vRowStride > 0 && vPixelStride > 0)
-                                  ? (static_cast<std::size_t>(vRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(vPixelStride)
-                                     + 1U)
-                                  : 0U;
-
-    // 重要：GetDirectBufferAddress 指向 ByteBuffer 底层起始地址，不会自动应用 position/limit。
-    // 最小可用骨架阶段：约定 Java 侧传入前先 rewind()/position(0)，避免拷贝到错误偏移。
-    if (!copyDirectBytes(env, yBuffer, yNeed, f.y.bytes)) {
-        rklog::logWarn(TAG, __func__, "Y 平面需要 DirectByteBuffer 且容量足够");
-        return JNI_FALSE;
-    }
-    if (uNeed > 0 && !copyDirectBytes(env, uBuffer, uNeed, f.u.bytes)) {
-        rklog::logWarn(TAG, __func__, "U 平面需要 DirectByteBuffer 且容量足够");
-        return JNI_FALSE;
-    }
-    if (vNeed > 0 && !copyDirectBytes(env, vBuffer, vNeed, f.v.bytes)) {
-        rklog::logWarn(TAG, __func__, "V 平面需要 DirectByteBuffer 且容量足够");
-        return JNI_FALSE;
-    }
-
-    const bool ok = g_engine->pushExternalFrame(std::move(f));
-    if (!ok) {
-        return JNI_FALSE;
-    }
-    return JNI_TRUE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888Bytes(
-        JNIEnv* env,
-        jobject /* this */,
-        jbyteArray yBytes,
-        jint yRowStride,
-        jbyteArray uBytes,
-        jint uRowStride,
-        jint uPixelStride,
-        jbyteArray vBytes,
-        jint vRowStride,
-        jint vPixelStride,
-        jint width,
-        jint height,
-        jlong timestampNs,
-        jint rotationDegrees,
-        jboolean mirrored) {
-    if (!g_engine) return JNI_FALSE;
-    if (!yBytes) return JNI_FALSE;
-
-    ExternalFrame f;
-    f.format = ExternalFrameFormat::YUV_420_888;
-    f.width = width;
-    f.height = height;
-    f.meta.timestampNs = static_cast<int64_t>(timestampNs);
-    f.meta.rotationDegrees = rotationDegrees;
-    f.meta.mirrored = (mirrored == JNI_TRUE);
-
-    f.y.rowStride = yRowStride > 0 ? yRowStride : width;
-    f.y.pixelStride = 1;
-    f.u.rowStride = uRowStride;
-    f.u.pixelStride = uPixelStride;
-    f.v.rowStride = vRowStride;
-    f.v.pixelStride = vPixelStride;
-
-    if (width <= 0 || height <= 0 || f.y.rowStride < width) {
-        rklog::logWarn(TAG, __func__, "nativePushFrameYuv420888Bytes 参数非法");
-        return JNI_FALSE;
-    }
-
-    const int chromaW = (width + 1) / 2;
-    const int chromaH = (height + 1) / 2;
-    const std::size_t yNeed = static_cast<std::size_t>(f.y.rowStride) * static_cast<std::size_t>(height - 1)
-                              + static_cast<std::size_t>(width);
-    const std::size_t uNeed = (uRowStride > 0 && uPixelStride > 0)
-                                  ? (static_cast<std::size_t>(uRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(uPixelStride)
-                                     + 1U)
-                                  : 0U;
-    const std::size_t vNeed = (vRowStride > 0 && vPixelStride > 0)
-                                  ? (static_cast<std::size_t>(vRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(vPixelStride)
-                                     + 1U)
-                                  : 0U;
-
-    if (static_cast<std::size_t>(env->GetArrayLength(yBytes)) < yNeed) return JNI_FALSE;
-    f.y.bytes.resize(yNeed);
-    env->GetByteArrayRegion(yBytes, 0, static_cast<jsize>(yNeed),
-                            reinterpret_cast<jbyte*>(f.y.bytes.data()));
-
-    if (uNeed > 0) {
-        if (!uBytes) return JNI_FALSE;
-        if (static_cast<std::size_t>(env->GetArrayLength(uBytes)) < uNeed) return JNI_FALSE;
-        f.u.bytes.resize(uNeed);
-        env->GetByteArrayRegion(uBytes, 0, static_cast<jsize>(uNeed),
-                                reinterpret_cast<jbyte*>(f.u.bytes.data()));
-    }
-
-    if (vNeed > 0) {
-        if (!vBytes) return JNI_FALSE;
-        if (static_cast<std::size_t>(env->GetArrayLength(vBytes)) < vNeed) return JNI_FALSE;
-        f.v.bytes.resize(vNeed);
-        env->GetByteArrayRegion(vBytes, 0, static_cast<jsize>(vNeed),
-                                reinterpret_cast<jbyte*>(f.v.bytes.data()));
-    }
-
-    return g_engine->pushExternalFrame(std::move(f)) ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(
-        JNIEnv* env,
-        jobject /* this */,
-        jobject bitmap) {
-    if (!g_engine) return false;
-
-    cv::Mat frame;
-    uint64_t seq = 0;
-    if (!g_engine->getRenderFrame(frame, seq)) {
-        return false;
-    }
-    {
-        static std::mutex seqMu;
-        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
-        std::lock_guard<std::mutex> lock(seqMu);
-        if (seq == lastSeqGlob) {
-            return false;
-        }
-        lastSeqGlob = seq;
-    }
-
-    // Lock Bitmap pixels
-    AndroidBitmapInfo info;
-
-    if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) return false;
-    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return false;
-
-    ScopedBitmapLock lockedBitmap(env, bitmap);
-    if (!lockedBitmap.isLocked()) return false;
-    void* pixels = lockedBitmap.data();
-
-    // Convert OpenCV BGR to RGBA for Bitmap
-    // Ensure frame size matches bitmap
-    cv::Mat tmp;
-    if (frame.cols != info.width || frame.rows != info.height) {
-        cv::resize(frame, tmp, cv::Size(info.width, info.height));
-    } else {
-        tmp = frame;
-    }
-
-    cv::Mat rgbaFrame(info.height, info.width, CV_8UC4, pixels);
-    cv::cvtColor(tmp, rgbaFrame, cv::COLOR_BGR2RGBA);
-
-    // ScopedBitmapLock 析构自动 unlockPixels
-    return true;
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeSetPreviewSurface(
-        JNIEnv* env,
-        jobject /* this */,
-        jobject surface) {
     std::lock_guard<std::mutex> lock(g_previewMutex);
     if (g_previewWindow) {
         ANativeWindow_release(g_previewWindow);
         g_previewWindow = nullptr;
     }
-    g_previewGeneration.fetch_add(1, std::memory_order_relaxed);
-    if (!surface) return;
-    g_previewWindow = ANativeWindow_fromSurface(env, surface);
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
-        JNIEnv* /* env */,
-        jobject /* this */) {
-    if (!g_engine) return JNI_FALSE;
-
-    ANativeWindow* win = nullptr;
-    uint64_t gen = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_previewMutex);
-        win = g_previewWindow;
-        if (win) {
-            ANativeWindow_acquire(win);
-        }
-        gen = g_previewGeneration.load(std::memory_order_relaxed);
-    }
-    if (!win) return JNI_FALSE;
-
-    struct WindowReleaser {
-        ANativeWindow* w;
-        ~WindowReleaser() { if (w) ANativeWindow_release(w); }
-    } releaser{win};
-
-// ========== RAII 资源封装（契约 #1）==========
-// ScopedWindowLock — 自动 ANativeWindow_lock/unlockAndPost
-class ScopedWindowLock {
-    ANativeWindow* win_;
-    ANativeWindow_Buffer buf_;
-public:
-    explicit ScopedWindowLock(ANativeWindow* win) : win_(win) {
-        if (ANativeWindow_lock(win_, &buf_, nullptr) != 0) {
-            win_ = nullptr;
-        }
-    }
-    ANativeWindow_Buffer* buffer() { return win_ ? &buf_ : nullptr; }
-    bool isLocked() const { return win_ != nullptr; }
-    ~ScopedWindowLock() {
-        if (win_) ANativeWindow_unlockAndPost(win_);
-    }
-    ScopedWindowLock(const ScopedWindowLock&) = delete;
-    ScopedWindowLock& operator=(const ScopedWindowLock&) = delete;
-    ScopedWindowLock(ScopedWindowLock&&) = delete;
-    ScopedWindowLock& operator=(ScopedWindowLock&&) = delete;
-};
-
-// ScopedBitmapLock — 自动 AndroidBitmap_lockPixels/unlockPixels
-class ScopedBitmapLock {
-    JNIEnv* env_;
-    jobject bitmap_;
-    void* pixels_;
-public:
-    explicit ScopedBitmapLock(JNIEnv* env, jobject bitmap)
-        : env_(env), bitmap_(bitmap), pixels_(nullptr) {
-        if (AndroidBitmap_lockPixels(env_, bitmap_, &pixels_) != 0) {
-            pixels_ = nullptr;
-        }
-    }
-    void* data() const { return pixels_; }
-    bool isLocked() const { return pixels_ != nullptr; }
-    ~ScopedBitmapLock() {
-        if (pixels_) AndroidBitmap_unlockPixels(env_, bitmap_);
-    }
-    ScopedBitmapLock(const ScopedBitmapLock&) = delete;
-    ScopedBitmapLock& operator=(const ScopedBitmapLock&) = delete;
-    ScopedBitmapLock(ScopedBitmapLock&&) = delete;
-    ScopedBitmapLock& operator=(ScopedBitmapLock&&) = delete;
-};
-
-    cv::Mat frame;
-    uint64_t seq = 0;
-    if (!g_engine->getRenderFrame(frame, seq)) {
-        return JNI_FALSE;
-    }
-    if (frame.empty()) return JNI_FALSE;
-
-    {
-        static std::mutex seqMu;
-        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
-        static int lastGenGlob = -1;
-        static int lastWGlob = 0;
-        static int lastHGlob = 0;
-        static int lastFormatGlob = 0;
-        std::lock_guard<std::mutex> lock(seqMu);
-        if (gen != lastGenGlob) {
-            lastGenGlob = gen;
-            lastSeqGlob = static_cast<uint64_t>(-1);
-            lastWGlob = 0;
-            lastHGlob = 0;
-            lastFormatGlob = 0;
-        }
-        if (seq == lastSeqGlob) {
-            return JNI_TRUE;
-        }
-        lastSeqGlob = seq;
-    }
-
-    const int w = frame.cols;
-    const int h = frame.rows;
-    if (w <= 0 || h <= 0) return JNI_FALSE;
-
-    if (w != lastW || h != lastH || lastFormat != WINDOW_FORMAT_RGBA_8888) {
-        if (ANativeWindow_setBuffersGeometry(win, w, h, WINDOW_FORMAT_RGBA_8888) != 0) {
-            return JNI_FALSE;
-        }
-        lastW = w;
-        lastH = h;
-        lastFormat = WINDOW_FORMAT_RGBA_8888;
-    }
-
-    ScopedWindowLock lockedWin(win);
-    if (!lockedWin.isLocked()) {
-        lastW = 0;
-        lastH = 0;
-        lastFormat = 0;
-        return JNI_FALSE;
-    }
-    ANativeWindow_Buffer* buffer = lockedWin.buffer();
-
-    const int dstStridePixels = buffer->stride;
-    if (dstStridePixels < w || buffer->bits == nullptr || buffer->format != WINDOW_FORMAT_RGBA_8888) {
-        const int dstStrideBytes = dstStridePixels * 4;
-        if (buffer->bits != nullptr && dstStrideBytes > 0) {
-            for (int row = 0; row < h; row++) {
-                std::memset(reinterpret_cast<uint8_t*>(buffer->bits) + row * dstStrideBytes, 0, static_cast<std::size_t>(w) * 4U);
-            }
-        }
-        lastW = 0;
-        lastH = 0;
-        lastFormat = 0;
-        return JNI_FALSE;
-    }
-
-    cv::Mat dst(h, dstStridePixels, CV_8UC4, buffer->bits);
-    cv::Mat dstRoi = dst(cv::Rect(0, 0, w, h));
-    cv::cvtColor(frame, dstRoi, cv::COLOR_BGR2RGBA);
-
-    // ScopedWindowLock 析构自动 ANativeWindow_unlockAndPost
-    return JNI_TRUE;
 }

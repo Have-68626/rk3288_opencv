@@ -10,6 +10,12 @@ if(NOT RK_SKIP_OPENCV)
     add_library(native-lib SHARED
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         "src/cpp/native-lib.cpp"
+        "src/cpp/src/JniMethodRegistry.cpp"
+        "src/cpp/jni/camera.cpp"
+        "src/cpp/jni/engine.cpp"
+        "src/cpp/jni/preview.cpp"
+        "src/cpp/jni/config.cpp"
+        "src/cpp/jni/registry.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/DnnSsdFaceDetector.cpp"
