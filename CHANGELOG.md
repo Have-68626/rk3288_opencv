@@ -11,7 +11,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **架构契约**: ARCHITECTURE.md — 5 条跨子系统规则 (RAII/纯函数管线/原子提交/错误通道/接口隔离) (#444)
+- **RAII 封装**: ScopedWindowLock / ScopedBitmapLock — 消除 native-lib.cpp 裸 lock/unlock (#444)
+- **JNI 回调节流器**: JniCallbackThrottle — 4 事件独立节流 (#444)
+- **JNI 方法注册表**: JniMethodRegistry — 基于 EndpointRegistry 模式 (#444)
+- **JNI 函数拆分**: native-lib.cpp 851→118 行，按领域拆分至 jni/ 目录 (#444)
+- **Web 单元测试**: Vitest 基础设施（API 边界测试 + 状态迁移测试，3 tests）(#444)
+- **CMake 模块化**: 5 模块文件（opencv/core/face_infer/android/windows），主文件 1000→333 行 (#444)
+- **C++ 编译器契约**: -fno-exceptions -fno-rtti -fvisibility=hidden (rk_core target) (#444)
+- **GitHub 扫描审计**: GITHUB_SCAN_AUDIT.md (#446)
+- **治理验证报告**: GOVERNANCE_VERIFICATION.md (#446)
+- **README 全面修订**: 反映三层重构 + Batch 1-5 + 架构治理 (#447)
+
+### Changed
+- **native-lib.cpp**: 精简重构（851→118 行），JNI 函数拆分至 jni/ 目录 (#444)
+- **CMakeLists.txt**: 模块化拆分（1000→333 行），5 模块文件 (#444)
+- **MainActivity.java**: 移除 INI 读写代码（-230 行），SharedPreferences 单源 (#444)
+- **FlipSwitch.tsx**: 使用语义化 `<label>` + `React.useId()` 提升可访问性 (#441)
+- **README.md**: 全面更新（235→130 行，-45%），新增架构契约章节 (#447)
+
 ### Fixed
+- **JniCallbackThrottle**: time_point::min() → time_point{}（避免 signed overflow UB）(#445)
+- **cmake/core.cmake**: rk_core INTERFACE 库移除无效 PRIVATE compile_options (#445)
+- **windows.cmake**: 移除 test_endpoint_registry.cpp 重复源文件 (#445)
+- **SettingsPage.tsx**: 修复 smart quotes 语法错误 (#441)
+- **activity_log_detail.xml**: 修复 android:padding 复合值兼容性 (#441)
+
+### Security
+- **架构契约 #1**: RAII 资源封装消除裸 lock/unlock 资源泄漏风险
+- **架构契约 #5**: 接口隔离 + -fvisibility=hidden 减少符号攻击面
 - **Docs**: 修复 INT8 量化文档中 Google Test 引用错误（项目使用自定义 bool 函数，非 Google Test），更新校准图片说明为实际使用的 `deps/WIDER_train/`（`5dd5cbf`）
 - **HttpFacesServer**: SseSession::writeFrame 缺 pipe 空指针检查，修复空转泄漏（`454a7e0`）
 - **HttpFacesServer**: buildJpegWithOverlay 直接修改 rs.bgr → 多线程数据竞争，改用 clone() 隔离副本（`7c4a04b`）
