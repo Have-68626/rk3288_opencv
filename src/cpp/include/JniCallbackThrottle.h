@@ -14,8 +14,9 @@ public:
     };
 
     JniCallbackThrottle() {
-        const auto epoch = std::chrono::steady_clock::time_point::min();
-        lastCall_.fill(epoch);
+        // 使用 time_point{}（epoch）而非 time_point::min()，
+        // 避免 signed integer overflow UB（now - min() 溢出）。
+        lastCall_.fill(std::chrono::steady_clock::time_point{});
     }
 
     bool tryAcquire(Event e) noexcept {

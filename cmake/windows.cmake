@@ -238,7 +238,6 @@ add_executable(win_unit_tests
     "tests/win/test_runtime_bootstrap.cpp"
     "tests/win/test_endpoint_registry.cpp"
     "src/win/src/RuntimeBootstrap.cpp"
-    "tests/win/test_endpoint_registry.cpp"
     "src/win/src/EndpointRegistry.cpp"
     "src/cpp/src/FileHash.cpp"
     "src/win/src/HttpFacesServerPath.cpp"
