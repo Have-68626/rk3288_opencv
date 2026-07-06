@@ -1,4 +1,5 @@
-import { Switch, Space, Typography } from 'antd';
+import React from 'react';
+import { Switch, Typography } from 'antd';
 
 const { Text } = Typography;
 
@@ -10,25 +11,26 @@ interface FlipSwitchProps {
 }
 
 const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onChange }) => {
-  const toggle = () => {
-    if (!disabled) {
-      onChange(!checked);
-    }
-  };
+  const id = React.useId();
 
   return (
-    <Space
-      onClick={toggle}
-      style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
+    <label
+      htmlFor={id}
+      style={{
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+      }}
     >
       <Text disabled={disabled}>{label}</Text>
       <Switch
+        id={id}
         checked={checked}
         disabled={disabled}
-        onClick={(_, e) => e.stopPropagation()}
         onChange={onChange}
       />
-    </Space>
+    </label>
   );
 };
 
