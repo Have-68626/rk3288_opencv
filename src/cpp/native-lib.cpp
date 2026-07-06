@@ -670,11 +670,13 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(
 
     // Lock Bitmap pixels
     AndroidBitmapInfo info;
-    void* pixels;
-    
+
     if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) return false;
     if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return false;
-    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) < 0) return false;
+
+    ScopedBitmapLock lockedBitmap(env, bitmap);
+    if (!lockedBitmap.isLocked()) return false;
+    void* pixels = lockedBitmap.data();
 
     // Convert OpenCV BGR to RGBA for Bitmap
     // Ensure frame size matches bitmap
@@ -688,7 +690,7 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(
     cv::Mat rgbaFrame(info.height, info.width, CV_8UC4, pixels);
     cv::cvtColor(tmp, rgbaFrame, cv::COLOR_BGR2RGBA);
 
-    AndroidBitmap_unlockPixels(env, bitmap);
+    // ScopedBitmapLock 析构自动 unlockPixels
     return true;
 }
 
@@ -729,6 +731,51 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
         ANativeWindow* w;
         ~WindowReleaser() { if (w) ANativeWindow_release(w); }
     } releaser{win};
+
+// ========== RAII 资源封装（契约 #1）==========
+// ScopedWindowLock — 自动 ANativeWindow_lock/unlockAndPost
+class ScopedWindowLock {
+    ANativeWindow* win_;
+    ANativeWindow_Buffer buf_;
+public:
+    explicit ScopedWindowLock(ANativeWindow* win) : win_(win) {
+        if (ANativeWindow_lock(win_, &buf_, nullptr) != 0) {
+            win_ = nullptr;
+        }
+    }
+    ANativeWindow_Buffer* buffer() { return win_ ? &buf_ : nullptr; }
+    bool isLocked() const { return win_ != nullptr; }
+    ~ScopedWindowLock() {
+        if (win_) ANativeWindow_unlockAndPost(win_);
+    }
+    ScopedWindowLock(const ScopedWindowLock&) = delete;
+    ScopedWindowLock& operator=(const ScopedWindowLock&) = delete;
+    ScopedWindowLock(ScopedWindowLock&&) = delete;
+    ScopedWindowLock& operator=(ScopedWindowLock&&) = delete;
+};
+
+// ScopedBitmapLock — 自动 AndroidBitmap_lockPixels/unlockPixels
+class ScopedBitmapLock {
+    JNIEnv* env_;
+    jobject bitmap_;
+    void* pixels_;
+public:
+    explicit ScopedBitmapLock(JNIEnv* env, jobject bitmap)
+        : env_(env), bitmap_(bitmap), pixels_(nullptr) {
+        if (AndroidBitmap_lockPixels(env_, bitmap_, &pixels_) != 0) {
+            pixels_ = nullptr;
+        }
+    }
+    void* data() const { return pixels_; }
+    bool isLocked() const { return pixels_ != nullptr; }
+    ~ScopedBitmapLock() {
+        if (pixels_) AndroidBitmap_unlockPixels(env_, bitmap_);
+    }
+    ScopedBitmapLock(const ScopedBitmapLock&) = delete;
+    ScopedBitmapLock& operator=(const ScopedBitmapLock&) = delete;
+    ScopedBitmapLock(ScopedBitmapLock&&) = delete;
+    ScopedBitmapLock& operator=(ScopedBitmapLock&&) = delete;
+};
 
     cv::Mat frame;
     uint64_t seq = 0;
@@ -771,30 +818,33 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeRenderFrameToSurface(
         lastFormat = WINDOW_FORMAT_RGBA_8888;
     }
 
-    ANativeWindow_Buffer buffer;
-    if (ANativeWindow_lock(win, &buffer, nullptr) != 0) {
+    ScopedWindowLock lockedWin(win);
+    if (!lockedWin.isLocked()) {
+        lastW = 0;
+        lastH = 0;
+        lastFormat = 0;
         return JNI_FALSE;
     }
+    ANativeWindow_Buffer* buffer = lockedWin.buffer();
 
-    const int dstStridePixels = buffer.stride;
-    if (dstStridePixels < w || buffer.bits == nullptr || buffer.format != WINDOW_FORMAT_RGBA_8888) {
+    const int dstStridePixels = buffer->stride;
+    if (dstStridePixels < w || buffer->bits == nullptr || buffer->format != WINDOW_FORMAT_RGBA_8888) {
         const int dstStrideBytes = dstStridePixels * 4;
-        if (buffer.bits != nullptr && dstStrideBytes > 0) {
+        if (buffer->bits != nullptr && dstStrideBytes > 0) {
             for (int row = 0; row < h; row++) {
-                std::memset(reinterpret_cast<uint8_t*>(buffer.bits) + row * dstStrideBytes, 0, static_cast<std::size_t>(w) * 4U);
+                std::memset(reinterpret_cast<uint8_t*>(buffer->bits) + row * dstStrideBytes, 0, static_cast<std::size_t>(w) * 4U);
             }
         }
-        ANativeWindow_unlockAndPost(win);
         lastW = 0;
         lastH = 0;
         lastFormat = 0;
         return JNI_FALSE;
     }
 
-    cv::Mat dst(h, dstStridePixels, CV_8UC4, buffer.bits);
+    cv::Mat dst(h, dstStridePixels, CV_8UC4, buffer->bits);
     cv::Mat dstRoi = dst(cv::Rect(0, 0, w, h));
     cv::cvtColor(frame, dstRoi, cv::COLOR_BGR2RGBA);
 
-    ANativeWindow_unlockAndPost(win);
+    // ScopedWindowLock 析构自动 ANativeWindow_unlockAndPost
     return JNI_TRUE;
 }
