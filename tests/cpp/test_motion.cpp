@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
 #include "MotionDetector.h"
 
-TEST(MotionDetectorTest, CreateInstance) {
+TEST(MotionDetectorTest, DetectEmptyFrameReturnsFalse) {
     MotionDetector detector;
-    SUCCEED();
+    // 空帧不应检测到运动
+    EXPECT_FALSE(detector.detect(cv::Mat()));
 }

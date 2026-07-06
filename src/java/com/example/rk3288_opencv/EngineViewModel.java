@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 
 import androidx.annotation.NonNull;
 import androidx.lifecycle.AndroidViewModel;
+import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 
 import java.io.File;
@@ -18,13 +19,17 @@ import java.io.InputStream;
  */
 public class EngineViewModel extends AndroidViewModel {
 
-    public final MutableLiveData<Boolean> engineInitialized = new MutableLiveData<>(false);
-    public final MutableLiveData<Boolean> isRunning = new MutableLiveData<>(false);
-    public final MutableLiveData<Boolean> firstFrameReceived = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> engineInitialized = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> isRunning = new MutableLiveData<>(false);
+    private final MutableLiveData<Boolean> firstFrameReceived = new MutableLiveData<>(false);
     public volatile boolean cancelInitMock = false;
     public boolean lastReadyVisible = false;
 
     public static final String PREFS_NAME = "RK3288_Prefs";
+
+    public LiveData<Boolean> getEngineInitialized() { return engineInitialized; }
+    public LiveData<Boolean> getIsRunning() { return isRunning; }
+    public LiveData<Boolean> getFirstFrameReceived() { return firstFrameReceived; }
 
     public EngineViewModel(@NonNull Application application) {
         super(application);
