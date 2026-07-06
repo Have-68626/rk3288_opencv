@@ -354,41 +354,6 @@ if(RK_ENABLE_LIBYUV)
     endif()
 endif()
 
-# Collect Core Source Files (excluding entry points)
-set(CORE_SOURCES
-    "src/cpp/src/ArcFaceEmbedder.cpp"
-    "src/cpp/src/BioAuth.cpp"
-    "src/cpp/src/Engine.cpp"
-    "src/cpp/src/EventManager.cpp"
-    "src/cpp/src/FaceAlign.cpp"
-    "src/cpp/src/FaceInferencePipeline.cpp"
-    "src/cpp/src/FaceInferStages.cpp"
-    "src/cpp/src/FaceSearch.cpp"
-    "src/cpp/src/FaceTemplate.cpp"
-    "src/cpp/src/FileHash.cpp"
-    "src/cpp/src/FrameInputChannel.cpp"
-    "src/cpp/src/ModelRegistry.cpp"
-    "src/cpp/src/MotionDetector.cpp"
-    "src/cpp/src/MppDecoder.cpp"
-    "src/cpp/src/NativeLog.cpp"
-    "src/cpp/src/Storage.cpp"
-    "src/cpp/src/ThresholdPolicy.cpp"
-    "src/cpp/src/VideoManager.cpp"
-    "src/cpp/src/YoloFaceDetector.cpp"
-    "src/cpp/src/pipeline/TrackCoordinator.cpp"
-    "src/cpp/src/pipeline/ResultPublisher.cpp"
-    "src/cpp/src/pipeline/PerfReporter.cpp"
-    "src/cpp/src/adapters/ArcFaceAdapter.cpp"
-    "src/cpp/src/adapters/CascadeAdapter.cpp"
-    "src/cpp/src/adapters/DnnSsdAdapter.cpp"
-    "src/cpp/src/adapters/LbphAdapter.cpp"
-    "src/cpp/src/adapters/MobileFaceNetAdapter.cpp"
-    "src/cpp/src/adapters/RetinaFaceAdapter.cpp"
-    "src/cpp/src/adapters/SFaceAdapter.cpp"
-    "src/cpp/src/adapters/YoloFaceAdapter.cpp"
-    "src/cpp/src/adapters/YuNetAdapter.cpp"
-)
-
 # ── CORE_SOURCES 分组变量 ──────────────────────────
 set(RK_CORE_LITE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/EventManager.cpp
@@ -398,6 +363,7 @@ set(RK_CORE_LITE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceSearch.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceTemplate.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/NativeLog.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/MppDecoder.cpp
 )
 
 set(RK_FACE_INFER_CORE_SOURCES
@@ -434,7 +400,6 @@ set(RK_PIPELINE_SOURCES
 )
 
 # ── OpenCV 模块分组变量 ──────────────────────────────
-set(RK_OPENCV_CORE_LIBS opencv_core opencv_imgproc)
 set(RK_OPENCV_FULL_LIBS
   opencv_core opencv_imgproc opencv_video opencv_objdetect
   opencv_face opencv_imgcodecs opencv_calib3d opencv_features2d

@@ -20,6 +20,30 @@ using namespace rk_core;
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// JSON 字符串转义：防止异常消息含 " 或 \ 破坏 JSON 结构
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    // 控制字符不可见于 JSON，替换为空格
+                    out += ' ';
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
 // Global Engine Instance
 static std::unique_ptr<Engine> g_engine;
 static std::thread g_engineThread;
@@ -221,7 +245,7 @@ Java_com_example_rk3288_1opencv_NativeBridge_nativeInferFaceFromImage(
     } catch (const std::exception& e) {
         return env->NewStringUTF((
             "{\"ok\":false,\"error\":{\"code\":\"JNI_INFER_FAILED\",\"message\":\""
-            + std::string(e.what()) + "\"}}").c_str());
+            + jsonEscape(e.what()) + "\"}}").c_str());
     } catch (...) {
         return env->NewStringUTF("{\"ok\":false,\"error\":{\"code\":\"JNI_UNKNOWN\",\"message\":\"Unknown JNI error\"}}");
     }

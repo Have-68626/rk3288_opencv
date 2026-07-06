@@ -27,8 +27,6 @@ HttpFacesServer::HttpResponse handleEnroll(
     const HttpFacesServer::HttpRequest& req, EndpointContext& ctx);
 HttpFacesServer::HttpResponse handleClearDb(
     const HttpFacesServer::HttpRequest& req, EndpointContext& ctx);
-HttpFacesServer::HttpResponse handleGetModelsStatus(
-    const HttpFacesServer::HttpRequest& req, EndpointContext& ctx);
 HttpFacesServer::HttpResponse handleCryptoRotate(
     const HttpFacesServer::HttpRequest& req, EndpointContext& ctx);
 HttpFacesServer::HttpResponse handlePrivacyOpen(

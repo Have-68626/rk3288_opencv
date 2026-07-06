@@ -663,11 +663,6 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
     currentTracks_ = trackCoordinator_->update(faces, nowMs());
 }
 
-bool Engine::evaluateThrottle() {
-    // 当前未实现实时节流评估，预留扩展点
-    return true;
-}
-
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;

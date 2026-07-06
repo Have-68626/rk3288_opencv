@@ -1,12 +1,13 @@
 #include <gtest/gtest.h>
 #include "BioAuth.h"
 
-TEST(BioAuthTest, CreateInstance) {
+TEST(BioAuthTest, InitializeWithBadPathReturnsFalse) {
     BioAuth auth;
-    SUCCEED();
+    // 空路径无法加载 cascade 文件 → 应返回 false
+    EXPECT_FALSE(auth.initialize("", ""));
 }
 
-TEST(BioAuthTest, SetFaceSelectMode) {
+TEST(BioAuthTest, SetFaceSelectModeDoesNotCrash) {
     BioAuth auth;
     // 验证 setFaceSelectMode 可正常调用且不崩溃
     auth.setFaceSelectMode(BioAuth::FaceSelectMode::MAIN_FACE);
