@@ -68,19 +68,12 @@ import android.util.Size;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.io.File;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 
 import androidx.lifecycle.ViewModelProvider;
 
@@ -121,7 +114,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final int INFERENCE_INTERVAL_DEFAULT_MS = 650;
     private static final int INFERENCE_INTERVAL_MIN_MS = 80;
     private static final int INFERENCE_INTERVAL_MAX_MS = 2000;
-    private static final String INFERENCE_INI_FILENAME = "rk3288_opencv.ini";
 
     private ImageView monitorView;
     private SurfaceView previewSurface;
@@ -771,7 +763,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         ed.putString(PREF_INFERENCE_THROTTLE_MODE, normalizeInferenceThrottleMode(inferenceThrottleMode));
         ed.putInt(PREF_INFERENCE_INTERVAL_MS, clampInferenceIntervalMs(inferenceIntervalMs));
         ed.apply();
-        persistInferenceThrottleIni();
         performHotRestart();
     }
 
@@ -788,20 +779,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             recMode = prefs.getString(PREF_INFERENCE_THROTTLE_MODE, null);
             if (prefs.contains(PREF_INFERENCE_INTERVAL_MS)) {
                 recInterval = prefs.getInt(PREF_INFERENCE_INTERVAL_MS, INFERENCE_INTERVAL_DEFAULT_MS);
-            }
-        }
-
-        if (detMode == null || detInterval == null || recMode == null || recInterval == null) {
-            InferenceIni ini = readInferenceIniIfExists();
-            if (detMode == null && ini.detMode != null) detMode = ini.detMode;
-            if (detInterval == null && ini.detIntervalMs != null) detInterval = ini.detIntervalMs;
-            if (recMode == null) {
-                if (ini.recMode != null) recMode = ini.recMode;
-                else if (ini.legacyMode != null) recMode = ini.legacyMode;
-            }
-            if (recInterval == null) {
-                if (ini.recIntervalMs != null) recInterval = ini.recIntervalMs;
-                else if (ini.legacyIntervalMs != null) recInterval = ini.legacyIntervalMs;
             }
         }
 
@@ -941,7 +918,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             ed.putString(PREF_INFERENCE_THROTTLE_MODE, recMode);
             ed.putInt(PREF_INFERENCE_INTERVAL_MS, recBase);
             ed.apply();
-            persistInferenceThrottleIni();
         }
 
         applyInferenceThrottleToNative();
@@ -1051,212 +1027,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         handler.removeCallbacks(inferenceAutoUpdater);
         lastInferenceAutoHeartbeatMs = SystemClock.elapsedRealtime();
         handler.postDelayed(inferenceAutoUpdater, 800);
-    }
-
-    private void persistInferenceThrottleIni() {
-        String baseDir = engineViewModel.getAppStoragePath();
-        if (baseDir == null || baseDir.trim().isEmpty()) return;
-        File ini = new File(baseDir, INFERENCE_INI_FILENAME);
-
-        String detMode = normalizeInferenceThrottleMode(detectionThrottleMode);
-        int detInterval = clampDetectionIntervalMs(detectionIntervalMs);
-        String recMode = normalizeInferenceThrottleMode(inferenceThrottleMode);
-        int recInterval = clampInferenceIntervalMs(inferenceIntervalMs);
-
-        List<String> lines = new ArrayList<>();
-        if (ini.exists()) {
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(ini), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    lines.add(line);
-                }
-            } catch (Exception e) {
-                AppLog.e("MainActivity", "persistInferenceThrottleIni", "读取 ini 失败: " + ini.getAbsolutePath(), e);
-                lines.clear();
-            }
-        }
-
-        List<String> out = new ArrayList<>();
-        boolean hasSection = false;
-        boolean inSection = false;
-        boolean wroteLegacyMode = false;
-        boolean wroteLegacyInterval = false;
-        boolean wroteDetMode = false;
-        boolean wroteDetInterval = false;
-        boolean wroteRecMode = false;
-        boolean wroteRecInterval = false;
-
-        for (String line : lines) {
-            String t = line == null ? "" : line.trim();
-            if (t.startsWith("[") && t.endsWith("]")) {
-                if (inSection) {
-                    if (!wroteLegacyMode) out.add("throttle_mode=" + recMode);
-                    if (!wroteLegacyInterval) out.add("interval_ms=" + recInterval);
-                    if (!wroteDetMode) out.add("det_throttle_mode=" + detMode);
-                    if (!wroteDetInterval) out.add("det_interval_ms=" + detInterval);
-                    if (!wroteRecMode) out.add("rec_throttle_mode=" + recMode);
-                    if (!wroteRecInterval) out.add("rec_interval_ms=" + recInterval);
-                }
-                inSection = "[inference]".equalsIgnoreCase(t);
-                if (inSection) {
-                    hasSection = true;
-                    wroteLegacyMode = false;
-                    wroteLegacyInterval = false;
-                    wroteDetMode = false;
-                    wroteDetInterval = false;
-                    wroteRecMode = false;
-                    wroteRecInterval = false;
-                }
-                out.add(line);
-                continue;
-            }
-
-            if (inSection) {
-                String lower = t.toLowerCase(Locale.US);
-                if (lower.startsWith("throttle_mode=")) {
-                    out.add("throttle_mode=" + recMode);
-                    wroteLegacyMode = true;
-                    continue;
-                }
-                if (lower.startsWith("interval_ms=")) {
-                    out.add("interval_ms=" + recInterval);
-                    wroteLegacyInterval = true;
-                    continue;
-                }
-                if (lower.startsWith("det_throttle_mode=")) {
-                    out.add("det_throttle_mode=" + detMode);
-                    wroteDetMode = true;
-                    continue;
-                }
-                if (lower.startsWith("det_interval_ms=")) {
-                    out.add("det_interval_ms=" + detInterval);
-                    wroteDetInterval = true;
-                    continue;
-                }
-                if (lower.startsWith("rec_throttle_mode=")) {
-                    out.add("rec_throttle_mode=" + recMode);
-                    wroteRecMode = true;
-                    continue;
-                }
-                if (lower.startsWith("rec_interval_ms=")) {
-                    out.add("rec_interval_ms=" + recInterval);
-                    wroteRecInterval = true;
-                    continue;
-                }
-            }
-            out.add(line);
-        }
-
-        if (inSection) {
-            if (!wroteLegacyMode) out.add("throttle_mode=" + recMode);
-            if (!wroteLegacyInterval) out.add("interval_ms=" + recInterval);
-            if (!wroteDetMode) out.add("det_throttle_mode=" + detMode);
-            if (!wroteDetInterval) out.add("det_interval_ms=" + detInterval);
-            if (!wroteRecMode) out.add("rec_throttle_mode=" + recMode);
-            if (!wroteRecInterval) out.add("rec_interval_ms=" + recInterval);
-        }
-
-        if (!hasSection) {
-            if (!out.isEmpty() && !out.get(out.size() - 1).trim().isEmpty()) out.add("");
-            out.add("[inference]");
-            out.add("throttle_mode=" + recMode);
-            out.add("interval_ms=" + recInterval);
-            out.add("det_throttle_mode=" + detMode);
-            out.add("det_interval_ms=" + detInterval);
-            out.add("rec_throttle_mode=" + recMode);
-            out.add("rec_interval_ms=" + recInterval);
-        }
-
-        try (BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(ini, false), StandardCharsets.UTF_8))) {
-            for (int i = 0; i < out.size(); i++) {
-                bw.write(out.get(i) == null ? "" : out.get(i));
-                bw.newLine();
-            }
-        } catch (Exception e) {
-            AppLog.e("MainActivity", "persistInferenceThrottleIni", "写入 ini 失败: " + ini.getAbsolutePath(), e);
-        }
-    }
-
-    private static final class InferenceIni {
-        final String detMode;
-        final Integer detIntervalMs;
-        final String recMode;
-        final Integer recIntervalMs;
-        final String legacyMode;
-        final Integer legacyIntervalMs;
-
-        InferenceIni(String detMode,
-                     Integer detIntervalMs,
-                     String recMode,
-                     Integer recIntervalMs,
-                     String legacyMode,
-                     Integer legacyIntervalMs) {
-            this.detMode = detMode;
-            this.detIntervalMs = detIntervalMs;
-            this.recMode = recMode;
-            this.recIntervalMs = recIntervalMs;
-            this.legacyMode = legacyMode;
-            this.legacyIntervalMs = legacyIntervalMs;
-        }
-    }
-
-    private InferenceIni readInferenceIniIfExists() {
-        String baseDir = engineViewModel.getAppStoragePath();
-        if (baseDir == null || baseDir.trim().isEmpty()) return new InferenceIni(null, null, null, null, null, null);
-        File ini = new File(baseDir, INFERENCE_INI_FILENAME);
-        if (!ini.exists()) return new InferenceIni(null, null, null, null, null, null);
-
-        String detMode = null;
-        Integer detInterval = null;
-        String recMode = null;
-        Integer recInterval = null;
-        String legacyMode = null;
-        Integer legacyInterval = null;
-        boolean inSection = false;
-
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(ini), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                String t = line.trim();
-                if (t.isEmpty() || t.startsWith(";") || t.startsWith("#")) continue;
-                if (t.startsWith("[") && t.endsWith("]")) {
-                    inSection = "[inference]".equalsIgnoreCase(t);
-                    continue;
-                }
-                if (!inSection) continue;
-                int eq = t.indexOf('=');
-                if (eq <= 0) continue;
-                String k = t.substring(0, eq).trim().toLowerCase(Locale.US);
-                String v = t.substring(eq + 1).trim();
-                if ("throttle_mode".equals(k)) {
-                    legacyMode = v;
-                } else if ("interval_ms".equals(k)) {
-                    try {
-                        legacyInterval = Integer.parseInt(v);
-                    } catch (Exception ignored) {
-                    }
-                } else if ("det_throttle_mode".equals(k)) {
-                    detMode = v;
-                } else if ("det_interval_ms".equals(k)) {
-                    try {
-                        detInterval = Integer.parseInt(v);
-                    } catch (Exception ignored) {
-                    }
-                } else if ("rec_throttle_mode".equals(k)) {
-                    recMode = v;
-                } else if ("rec_interval_ms".equals(k)) {
-                    try {
-                        recInterval = Integer.parseInt(v);
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        } catch (Exception e) {
-            AppLog.e("MainActivity", "readInferenceIniIfExists", "读取 ini 失败: " + ini.getAbsolutePath(), e);
-            return new InferenceIni(null, null, null, null, null, null);
-        }
-
-        return new InferenceIni(detMode, detInterval, recMode, recInterval, legacyMode, legacyInterval);
     }
 
     private static String normalizeInferenceThrottleMode(String raw) {
