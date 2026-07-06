@@ -111,7 +111,11 @@ ArcFaceEmbedder::embedAlignedFaceBgr(
 | 位置 | 当前模式 | 目标模式 |
 |------|----------|----------|
 | `BioAuth::verifyMulti()` | `bool` + 输出参数 | `Result<AuthOutcome>` |
-| `Config` 构造函数 | `throw` 在路径不存在时 | `Config::load()` 返回 `std::optional<Config>` |
+
+### 已合规（无需修改）
+
+- `Config.h` — header-only 编译期常量，无运行时加载，无异常抛出
+- `ArcFaceEmbedder::embedAlignedFaceBgr()` — 返回 `std::optional`，符合规范
 
 ---
 
