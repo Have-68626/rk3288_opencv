@@ -81,7 +81,26 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 
 ## Architecture notes
 
-- **Acceleration contract**: every accelerator (MPP, ncnn, libyuv, Qualcomm, OpenCL) uses `requested`/`effective`/`evidence`/`reason` pattern in `Engine::performAccelSelfCheck()` or `inference_bench_cli`. Fixed reason codes: `ok`, `build_disabled`, `unsupported_platform`, `missing_dependency`, `missing_model`, `runtime_init_failed`, `unsupported_input`.
+### Architecture contract
+5 条跨子系统架构契约定义在 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md):
+- #1 RAII 资源封装 — 所有 lock/unlock 必须 RAII (check: `scripts/check-raii-violations.sh`)
+- #2 纯函数管线 — 业务逻辑为纯函数，副作用在边界处理
+- #3 原子状态提交 — 共享状态使用 transactional copy
+- #4 错误通道 — 帧路径禁止 throw，使用 `std::optional`
+- #5 接口隔离 — 公共 API 必须为纯抽象接口
+
+### JNI 实现
+JNI 函数已按领域拆分到 `src/cpp/jni/` (`camera.cpp`/`engine.cpp`/`preview.cpp`/`config.cpp`)，通过 `JniMethodRegistry` 统一注册。`native-lib.cpp` 仅保留全局变量 + JNI_OnLoad。
+
+### CMake 模块化
+`CMakeLists.txt` 已拆分为 5 模块 (`.claude/skills/claude/claude` → `cmake/`):
+- `opencv.cmake` — OpenCV 查找 + BUILD_LIST 裁剪
+- `core.cmake` — rk_core INTERFACE 库 + core_unit_tests
+- `face_infer.cmake` — 推理管线源文件变量
+- `android.cmake` — native-lib target + JNI 配置
+- `windows.cmake` — Win32 服务 + CLI 工具
+
+### Acceleration contract**: every accelerator (MPP, ncnn, libyuv, Qualcomm, OpenCL) uses `requested`/`effective`/`evidence`/`reason` pattern in `Engine::performAccelSelfCheck()` or `inference_bench_cli`. Fixed reason codes: `ok`, `build_disabled`, `unsupported_platform`, `missing_dependency`, `missing_model`, `runtime_init_failed`, `unsupported_input`.
 - **Windows config**: `%APPDATA%\rk_wcfr\config.json` (source of truth, JSON Schema at `docs/windows-web-spa/config.schema.json`). Legacy `config/windows_camera_face_recognition.ini` for migration only.
 - **Logging**: Android — `adb logcat | grep rk3288_opencv`. Windows — `%APPDATA%\rk_wcfr\logs\`.
 - **RK3288 target**: `armeabi-v7a`, Cortex-A17, NEON required (`-mcpu=cortex-a17 -mfpu=neon-vfpv4`). No hardware acceleration available in practice (CPU-only fallback).

@@ -1,7 +1,7 @@
 ﻿# RK3288 AI Engine - 开发指南 (Development Guide)
 
 **版本**: v0.1beta1
-**更新日期**: 2026-06-23
+**更新日期**: 2026-07-06
 
 ---
 
@@ -16,6 +16,8 @@
 ---
 
 ## 2. 系统架构 (System Architecture)
+
+> **架构契约**：项目遵循 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。
 
 ### 2.1 分层架构 (Layered Architecture)
 系统采用分层设计，确保底层加速库与上层业务逻辑解耦。
@@ -77,13 +79,20 @@ graph LR
 ```text
 rk3288_opencv/
 ├── app/                  # Android APK 源码 (Java/Kotlin + C++)
+├── cmake/                # 模块化 CMake（5 模块文件）
 ├── src/                  # 核心源码目录
 │   ├── java/             # Android Java 源码
-│   ├── cpp/              # Native 核心实现 (JNI/引擎/算法)
+│   ├── cpp/              # Native 核心实现
+│   │   ├── include/      # 头文件
+│   │   ├── src/          # 核心引擎 + pipeline/
+│   │   ├── jni/          # JNI 函数（按领域拆分）
+│   │   └── tools/        # CLI 工具
 │   └── win/              # Windows 本地服务实现
 ├── web/                  # Web SPA 前端源码 (React/Vite)
 ├── config/               # 配置文件与 Schema
 ├── docs/                 # 项目文档与设计文档
+│   ├── architecture/     # 架构文档（ARCHITECTURE.md）
+│   └── superpowers/      # 设计规格与实施计划
 ├── scripts/              # 构建、验证与自动化脚本
 ├── tests/                # 单元测试与集成测试
 ├── CMakeLists.txt        # 跨平台构建脚本
@@ -154,14 +163,19 @@ ctest --test-dir build_win -C Release --output-on-failure
 
 ### 4.3 测试框架
 
-项目使用**自定义 `bool` 函数**（非 Google Test）。每个测试文件声明 `bool test_xxx()` 函数并注册到对应 `*_main.cpp` 的 `TestCase` 表中：
+项目使用 **GTest**（自 Batch 5 起）。测试分布在 `tests/cpp/`（Core）和 `tests/win/`（Windows）。
 
-```cpp
-using TestFn = bool (*)();
-struct TestCase { const char* name; TestFn fn; };
-```
+| 测试套件 | 框架 | 位置 | 依赖 |
+|----------|------|------|------|
+| `core_unit_tests` | GTest | `tests/cpp/` | 无（使用 OpenCV mock stubs） |
+| `face_infer_unit_tests` | GTest | `tests/cpp/` | 需要 OpenCV |
+| `win_unit_tests` | GTest | `tests/win/` | 需要 OpenCV |
+| `core_gtest_tests` | GTest | `tests/cpp/` | 需要 OpenCV |
+| `ncnn_precision_test` | GTest | `tests/cpp/` | ncnn + OpenCV |
+| Web 单元测试 | Vitest | `web/src/` | 无 |
+| Web E2E | Cypress | `web/cypress/` | 需要后端 |
 
-输出格式：`TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`。
+> 早期使用自定义 `bool TestCase` 的测试仍存在但不再新增。新测试统一使用 `TEST(Group, Name)` 宏。
 
 ### 4.4 构建要点
 
@@ -169,6 +183,7 @@ struct TestCase { const char* name; TestFn fn; };
 - **`OPENCV_CONTRIB_ROOT`** 提供 `opencv_face` 模块，完整构建必须设置
 - **`RK_SKIP_OPENCV=ON`** 跳过 OpenCV 构建（仅用于 `core_unit_tests`）
 - **`RK_ENABLE_NCNN=ON`** 启用 ncnn 后端（Android 默认开启，Windows 需手动指定）
+- **CMake 模块化**：`CMakeLists.txt` 已拆分为 `cmake/opencv.cmake` / `core.cmake` / `face_infer.cmake` / `android.cmake` / `windows.cmake`
 - **MSVC** 必须使用 `-G "Visual Studio 17 2022" -A x64`
 - **Gradle** 始终使用 `--no-daemon`（Gradle 9.0-milestone-1 预发布版稳定性问题）
 - **`JAVA_HOME`** 建议设到 JDK 17+，否则 Gradle 会使用 PATH 中的 java
@@ -180,7 +195,14 @@ struct TestCase { const char* name; TestFn fn; };
 
 ## 5. 深度研究与专项文档 (Research & Deep Dive)
 
-本节包含针对核心技术难点的深度研究报告及落地建议。以下内容已内嵌到本文件的附录中：
+本节包含针对核心技术难点的深度研究报告及落地建议。此外，项目治理相关文档见：
+
+- **架构契约**：[docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) — 5 条跨子系统规则
+- **架构治理设计**：[docs/superpowers/specs/2026-07-06-architecture-governance-design.md](docs/superpowers/specs/2026-07-06-architecture-governance-design.md)
+- **架构治理实施计划**：[docs/superpowers/plans/2026-07-06-architecture-governance-plan.md](docs/superpowers/plans/2026-07-06-architecture-governance-plan.md)
+- **全项目审计报告**：[AUDIT_REPORT.md](AUDIT_REPORT.md)
+
+以下内容已内嵌到本文件的附录中：
 
 - **附录 B**：[加速方案可行性分析与实现状态](#附录-b-加速方案可行性分析与实现状态)
 - **附录 C**：[Android 摄像头调用机制研究](#附录-c-android-摄像头调用机制研究)
