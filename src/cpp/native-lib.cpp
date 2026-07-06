@@ -1,62 +1,36 @@
+/**
+ * @file native-lib.cpp
+ * @brief JNI 入口（精简版）
+ *
+ * 仅保留全局变量定义、共享辅助函数、JNI_OnLoad/JNI_OnUnload。
+ * JNI 函数实现已按领域拆分到 src/cpp/jni/ 目录。
+ */
+
 #include <jni.h>
-#include <cstdint>
-#include <cstdlib>
-#include <atomic>
-#include <string>
-#include <thread>
+#include <memory>
 #include <mutex>
-#include <cstring>
-#include <android/log.h>
-#include <android/bitmap.h>
-#include <android/native_window_jni.h>
-#include <opencv2/imgproc.hpp>
+#include <atomic>
+#include <thread>
+#include <string>
+#include <android/native_window.h>
+
 #include "Engine.h"
-#include "FaceInferencePipeline.h"
-#include "NativeLog.h"
 
-using namespace rk_core;
+// ========== 共享全局变量（外部链接，供 jni/*.cpp 引用） ==========
+std::unique_ptr<rk_core::Engine> g_engine;
+std::thread g_engineThread;
+std::mutex g_engineThreadMutex;
+JavaVM* g_vm = nullptr;
+jobject g_activity = nullptr;
+std::mutex g_activityMutex;
+std::mutex g_previewMutex;
+ANativeWindow* g_previewWindow = nullptr;
+std::atomic<uint64_t> g_previewGeneration{0};
+std::atomic<bool> g_cancelInit{false};
 
-#define TAG "RK3288_JNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+// ========== 共享辅助函数 ==========
 
-// JSON 字符串转义：防止异常消息含 " 或 \ 破坏 JSON 结构
-static std::string jsonEscape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    // 控制字符不可见于 JSON，替换为空格
-                    out += ' ';
-                } else {
-                    out += c;
-                }
-                break;
-        }
-    }
-    return out;
-}
-
-// Global Engine Instance
-static std::unique_ptr<Engine> g_engine;
-static std::thread g_engineThread;
-static std::mutex g_engineThreadMutex;
-static JavaVM* g_vm = nullptr;
-static jobject g_activity = nullptr;
-static std::mutex g_activityMutex;
-static std::mutex g_previewMutex;
-static ANativeWindow* g_previewWindow = nullptr;
-static std::atomic<uint64_t> g_previewGeneration{0};
-static std::atomic<bool> g_cancelInit{false};
-
-static void stopAndJoinEngineThreadIfRunning() {
+void stopAndJoinEngineThreadIfRunning() {
     std::thread t;
     {
         std::lock_guard<std::mutex> lock(g_engineThreadMutex);
@@ -80,20 +54,6 @@ static void stopAndJoinEngineThreadIfRunning() {
     }
 }
 
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    g_vm = vm;
-    return JNI_VERSION_1_6;
-}
-
-JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
-    stopAndJoinEngineThreadIfRunning();
-    std::lock_guard<std::mutex> lock(g_previewMutex);
-    if (g_previewWindow) {
-        ANativeWindow_release(g_previewWindow);
-        g_previewWindow = nullptr;
-    }
-}
-
 void sendRecognitionResult(const std::string& result) {
     jobject activityLocal;
     {
@@ -103,7 +63,7 @@ void sendRecognitionResult(const std::string& result) {
     if (!g_vm || !activityLocal) return;
 
     JNIEnv* env;
-    int getEnvStat = g_vm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    int getEnvStat = g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     bool attached = false;
 
     if (getEnvStat == JNI_EDETACHED) {
@@ -123,8 +83,6 @@ void sendRecognitionResult(const std::string& result) {
         }
         env->DeleteLocalRef(jStr);
     }
-
-    // Clean up local ref to class not strictly needed but good practice
     env->DeleteLocalRef(cls);
 
     if (attached) {
@@ -132,16 +90,27 @@ void sendRecognitionResult(const std::string& result) {
     }
 }
 
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeInitFile(
-        JNIEnv* env,
-        jobject thiz,
-        jstring filePath,
-        jstring cascadePath,
-        jstring storagePath) {
-    RKLOG_ENTER(TAG);
+// ========== JNI 入口/出口 ==========
 
+// registerAllNativeMethods 由 jni/registry.cpp 实现
+jint registerAllNativeMethods(JNIEnv* env);
+
+extern "C" JNIEXPORT jint JNICALL
+JNI_OnLoad(JavaVM* vm, void* /* reserved */) {
+    g_vm = vm;
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    const jint registered = registerAllNativeMethods(env);
+    if (registered < 0) return JNI_ERR;
+    return JNI_VERSION_1_6;
+}
+
+extern "C" JNIEXPORT void JNICALL
+JNI_OnUnload(JavaVM* /* vm */, void* /* reserved */) {
     stopAndJoinEngineThreadIfRunning();
+<<<<<<< HEAD
 
     // Update global activity ref (受 g_activityMutex 保护)
     {
@@ -699,11 +668,14 @@ Java_com_example_rk3288_1opencv_MainActivity_nativeSetPreviewSurface(
         JNIEnv* env,
         jobject /* this */,
         jobject surface) {
+=======
+>>>>>>> origin/master
     std::lock_guard<std::mutex> lock(g_previewMutex);
     if (g_previewWindow) {
         ANativeWindow_release(g_previewWindow);
         g_previewWindow = nullptr;
     }
+<<<<<<< HEAD
     g_previewGeneration.fetch_add(1, std::memory_order_relaxed);
     if (!surface) return;
     g_previewWindow = ANativeWindow_fromSurface(env, surface);
@@ -847,4 +819,6 @@ public:
 
     // ScopedWindowLock 析构自动 ANativeWindow_unlockAndPost
     return JNI_TRUE;
+=======
+>>>>>>> origin/master
 }

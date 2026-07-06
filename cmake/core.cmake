@@ -33,9 +33,9 @@ target_include_directories(rk_core INTERFACE
 target_compile_definitions(rk_core INTERFACE RK_CORE_LIBRARY)
 
 # ── C++ 编译器契约（T9）：仅 Clang/GNU ──
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(rk_core PRIVATE -fno-exceptions -fno-rtti -fvisibility=hidden)
-endif()
+# 注意: rk_core 是 INTERFACE 库，不能在此设置 compile_options。
+# -fno-exceptions -fno-rtti -fvisibility=hidden 需要逐 target 应用
+# （见 CMakeLists.txt 中各 executable target）
 
 # ── core_unit_tests（无 OpenCV 依赖）──
 if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
