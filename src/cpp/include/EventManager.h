@@ -10,7 +10,11 @@
 #include "Types.h"
 #include <string>
 
+#ifndef RK_SKIP_OPENCV
 #include <gtest/gtest_prod.h>
+#else
+#define FRIEND_TEST(test_case_name, test_name) friend class test_case_name##_##test_name##_Test
+#endif
 
 namespace rk_core {
 

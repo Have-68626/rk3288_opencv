@@ -6,7 +6,15 @@
 #include <string>
 #include <vector>
 
+#ifndef RK_SKIP_OPENCV
+#ifndef RK_SKIP_OPENCV
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
+#else
+namespace cv { class Mat; }
+#endif
 
 struct MppDecoderConfig {
     int inputW = 0;
@@ -32,7 +40,7 @@ private:
     bool opened_ = false;
     bool hasFrame_ = false;
     bool reachedEos_ = false;
-    cv::Mat latestBgr_;
+    cv::Mat* latestBgr_ = nullptr;
     std::list<std::shared_ptr<std::vector<uint8_t>>> pendingBufs_;
     int64_t fileReadOffset_ = 0;
     int64_t fileSize_ = 0;
