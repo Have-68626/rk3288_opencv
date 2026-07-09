@@ -96,3 +96,8 @@ to measurable performance gains.
 ## 2026-06-30 - Maintain exact float formatting parity when optimizing string concatenation
 **Learning:** When replacing `std::ostringstream` with pre-allocated `std::string` concatenation in hot paths, using `std::to_string(double)` introduces a formatting regression (fixed 6 decimal places, e.g. "1.000000") which breaks backwards compatibility with previous JSON outputs.
 **Action:** Use `snprintf` with a properly-sized stack buffer (e.g., `char buf[512]`) and the `%g` format specifier to accurately replicate the original `ostringstream` floating-point formatting, avoiding both the formatting regression and dynamic allocations.
+## 2026-07-09 - Avoid redundant clone before ResultPublisher publish
+**Learning:** In the `Engine::processFrame` pipeline and idle wait loop, `cv::Mat::clone()` is called to create `outcome.renderFrame`. However, `ResultPublisher::publish()` inherently uses `cv::Mat::copyTo()` to safely duplicate the image into its internal locked buffer. The upstream deep copy is therefore redundant, allocating unnecessary multi-megabyte heap buffers per frame.
+**Action:** Remove the `clone()` calls in `Engine.cpp` when setting `outcome.renderFrame` before calling `publisher_->publish()` where the frame is NOT modified. Use shallow copies to safely pass the `cv::Mat` to the publisher, which correctly handles internal data duplication.
+
+**Learning:** In the `Engine::processFrame` idle wait loop, `clone()` must be preserved because `cv::putText` modifies the `renderFrame` before publishing. Shallow copying here would modify the underlying source frame buffer, corrupting stream state or motion detector history.
