@@ -61,3 +61,7 @@ NOT emit generic toasts from the store to prevent double notifications.
 ## 2025-02-23 - Switch Label Accessibility
 **Learning:** Native `<label>` elements bound to Ant Design `Switch` components only focus the component instead of toggling it because the `Switch` renders as a `<button>` instead of an `<input type="checkbox">`.
 **Action:** Always add an explicit `onClick` handler to labels bound to Ant Design `Switch` components to manually trigger the click event on the target button, and manually mirror any `disabled` states visually (e.g. using `cursor: 'not-allowed'` and `disabled={true}`).
+
+## 2024-07-10 - Ant Design Switch Label Clicks
+**Learning:** Ant Design's `<Switch>` component renders as a `<button>`. Native `<label>` wrappers surrounding it will only focus the button on click, not toggle it. However, wrapping the `<Switch>` in another interactive element (like `<span role="button" tabIndex={0}>`) creates nested interactive controls and a double tab-stop, which is a severe accessibility violation.
+**Action:** When creating clickable wrappers for `<Switch>`, use a semantic `<label>` but intercept the click with `e.preventDefault()` to stop the native focus-only behavior, then manually trigger the `onChange` toggle. Prevent double-toggling by adding `e.stopPropagation()` to the inner `<Switch>`.
