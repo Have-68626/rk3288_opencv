@@ -151,6 +151,8 @@ jobs:
   android:
     name: android-build-test
     runs-on: ubuntu-latest
+    env:
+      RK_SKIP_OPENCV: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -276,7 +278,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           cmake --version
-          cmake -S . -B $env:BUILD_DIR -G "$env:CMAKE_GENERATOR" -A $env:CMAKE_PLATFORM `
+          cmake -S . -B $env:BUILD_DIR -G "Visual Studio 17 2022" -A $env:CMAKE_PLATFORM `
             -DOPENCV_ROOT="$env:OPENCV_ROOT" `
             -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT"
 

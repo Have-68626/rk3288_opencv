@@ -10,7 +10,7 @@
 #include "Types.h"
 #include <string>
 
-#if defined(RK_UNIT_TEST)
+#if defined(RK_SKIP_OPENCV)
 #include <gtest/gtest_prod.h>
 #endif
 
@@ -36,7 +36,7 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
-#if defined(RK_UNIT_TEST)
+#if defined(RK_SKIP_OPENCV)
     FRIEND_TEST(EventManager, UniqueId);
 #endif
     std::string generateUniqueId();
