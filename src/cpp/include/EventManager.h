@@ -10,7 +10,9 @@
 #include "Types.h"
 #include <string>
 
+#if defined(RK_UNIT_TEST)
 #include <gtest/gtest_prod.h>
+#endif
 
 namespace rk_core {
 
@@ -34,7 +36,9 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
+#if defined(RK_UNIT_TEST)
     FRIEND_TEST(EventManager, UniqueId);
+#endif
     std::string generateUniqueId();
 };
 

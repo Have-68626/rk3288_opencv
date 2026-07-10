@@ -26,7 +26,7 @@ if(NOT RK_SKIP_OPENCV)
         ${RK_OPENCV_FULL_LIBS}
     )
 else()
-    add_library(native-lib SHARED ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} "src/cpp/native-lib-stub.cpp")
+    add_library(native-lib SHARED "src/cpp/native-lib-stub.cpp")
 endif()
 
 target_link_libraries(
