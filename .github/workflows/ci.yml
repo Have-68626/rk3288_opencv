@@ -159,7 +159,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -211,8 +211,10 @@ jobs:
 
       - name: Configure ccache
         run: |
-          ccache --max-size=500M
-          echo "CCACHE_DIR=~/.ccache" >> $GITHUB_ENV
+          if (Get-Command "ccache" -ErrorAction SilentlyContinue) {
+            ccache --max-size=500M
+            echo "CCACHE_DIR=~/.ccache" >> $env:GITHUB_ENV
+          }
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
