@@ -41,7 +41,7 @@ public:
     FrameProcessor(DnnSsdFaceDetector* dnn, IRecognizer* recognizer);
 
     // 核心方法：对输入帧 bgr 执行清库/注册/检测/识别，返回 FrameResult
-    FrameResult run(const cv::Mat& bgr, ControlCommand& cmd);
+    FrameResult run(cv::Mat bgr, ControlCommand& cmd);
 
     // 最近一次推理耗时（供调用方 stride 自适应参考）
     double lastInferMs() const { return lastInferMs_; }

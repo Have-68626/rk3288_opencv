@@ -44,9 +44,9 @@ FrameProcessor::FrameProcessor(DnnSsdFaceDetector* dnn, IRecognizer* recognizer)
 // 3. 注册指令消费
 // 4. DNN 检测（可选，跳过时复用缓存）
 // 5. 识别器 identify（总是执行，覆盖 DNN 输出）
-// 6. 复制帧副本 → 组装 FrameResult 返回
+// 6. 移动帧 → 组装 FrameResult 返回
 // ──────────────────────────────────────────────
-FrameResult FrameProcessor::run(const cv::Mat& bgr, ControlCommand& cmd) {
+FrameResult FrameProcessor::run(cv::Mat bgr, ControlCommand& cmd) {
     FrameResult result;
 
     // ── 1. 帧计数器 + 背压跳过判断 ──
@@ -102,8 +102,8 @@ FrameResult FrameProcessor::run(const cv::Mat& bgr, ControlCommand& cmd) {
         matches.push_back(fromFaceMatch(fm));
     }
 
-    // ── 6. 复制帧副本 + 组装结果 ──
-    bgr.copyTo(result.drawFrame);
+    // ── 6. 移动帧 + 组装结果 ──
+    result.drawFrame = std::move(bgr);
     result.matches = std::move(matches);
     result.consumedCommand = cmd;
     result.hasMatch = !result.matches.empty();
