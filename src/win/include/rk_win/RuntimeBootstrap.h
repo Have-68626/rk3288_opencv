@@ -25,6 +25,7 @@ struct ModelSnapshot {
 };
 
 struct BootstrapResult {
+    ~BootstrapResult();  // 自定义析构：unique_ptr<DnnSsdFaceDetector> 需要完整类型来生成析构代码
     std::unique_ptr<IRecognizer> recognizer;
     std::unique_ptr<DnnSsdFaceDetector> detector;
     std::vector<ModelSnapshot> models;

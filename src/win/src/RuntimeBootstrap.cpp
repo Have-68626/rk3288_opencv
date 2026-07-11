@@ -10,6 +10,8 @@
 
 namespace rk_win {
 
+BootstrapResult::~BootstrapResult() = default;
+
 BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
     BootstrapResult result;
 
