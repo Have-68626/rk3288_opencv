@@ -11,7 +11,6 @@ import {
   Popconfirm,
   Space,
   Spin,
-  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -19,6 +18,7 @@ import {
 } from 'antd'
 import { useEffect, useState } from 'react'
 
+import FlipSwitch from '../components/FlipSwitch'
 import { rotateCryptoKey } from '../api/actions'
 import { getModels, reloadModel } from '../api/models'
 import type { ActiveModelInfo, ModelsResponse, ServerSettingsDoc } from '../api/types'
@@ -184,14 +184,14 @@ export function ServerSettingsTab() {
                 label: '硬件加速 (Acceleration)',
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                    <Form.Item label="OpenCL 加速" name={['acceleration', 'enableOpenCL']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    <Form.Item name={['acceleration', 'enableOpenCL']} valuePropName="checked">
+                      <FlipSwitch label="OpenCL 加速" checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
-                    <Form.Item label="RK MPP 硬件解码" name={['acceleration', 'enableMpp']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    <Form.Item name={['acceleration', 'enableMpp']} valuePropName="checked">
+                      <FlipSwitch label="RK MPP 硬件解码" checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
-                    <Form.Item label="Qualcomm SNPE 推理加速" name={['acceleration', 'enableQualcomm']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    <Form.Item name={['acceleration', 'enableQualcomm']} valuePropName="checked">
+                      <FlipSwitch label="Qualcomm SNPE 推理加速" checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                   </Space>
                 ),
@@ -300,8 +300,8 @@ export function ServerSettingsTab() {
                 label: 'HTTP 服务',
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                    <Form.Item label="启用" name={['http', 'enable']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    <Form.Item name={['http', 'enable']} valuePropName="checked">
+                      <FlipSwitch label="启用" checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                     <Form.Item label="端口" name={['http', 'port']}>
                       <InputNumber min={1} max={65535} style={{ width: '100%' }} />
@@ -314,8 +314,8 @@ export function ServerSettingsTab() {
                 label: '上报（Poster）',
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                    <Form.Item label="启用" name={['poster', 'enable']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                    <Form.Item name={['poster', 'enable']} valuePropName="checked">
+                      <FlipSwitch label="启用" checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                     <Form.Item
                       label="POST URL"

@@ -5,17 +5,32 @@ const { Text } = Typography;
 
 interface FlipSwitchProps {
   label: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
+  checked?: boolean;
+  disabled?: boolean;
+  onChange?: (checked: boolean) => void;
+  checkedChildren?: React.ReactNode;
+  unCheckedChildren?: React.ReactNode;
 }
 
-const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onChange }) => {
+const FlipSwitch: React.FC<FlipSwitchProps> = ({
+  label,
+  checked = false,
+  disabled = false,
+  onChange,
+  checkedChildren,
+  unCheckedChildren
+}) => {
   const id = React.useId();
 
   return (
     <label
       htmlFor={id}
+      onClick={(e) => {
+        e.preventDefault();
+        if (!disabled) {
+          onChange?.(!checked);
+        }
+      }}
       style={{
         cursor: disabled ? 'not-allowed' : 'pointer',
         display: 'inline-flex',
@@ -29,6 +44,9 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onCha
         checked={checked}
         disabled={disabled}
         onChange={onChange}
+        onClick={(_, e) => e.stopPropagation()}
+        checkedChildren={checkedChildren}
+        unCheckedChildren={unCheckedChildren}
       />
     </label>
   );
