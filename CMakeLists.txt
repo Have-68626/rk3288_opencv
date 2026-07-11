@@ -295,6 +295,11 @@ if(NOT ANDROID)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
     endif()
     add_test(NAME core_gtest_tests COMMAND core_gtest_tests)
+
+    # win_unit_tests contains GTest files (test_http_faces_server.cpp), need GTest::gtest (no _main to avoid main() conflict)
+    if(WIN32 AND TARGET win_unit_tests AND TARGET GTest::gtest)
+        target_link_libraries(win_unit_tests PRIVATE GTest::gtest)
+    endif()
 endif()
 
 # inference_bench_cli
