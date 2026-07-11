@@ -298,7 +298,7 @@ if(NOT ANDROID)
 
     # win_unit_tests contains GTest files (test_http_faces_server.cpp), need GTest::gtest (no _main to avoid main() conflict)
     if(WIN32 AND TARGET win_unit_tests AND TARGET GTest::gtest)
-        target_link_libraries(win_unit_tests PRIVATE GTest::gtest)
+        target_link_libraries(win_unit_tests GTest::gtest)
     endif()
 endif()
 
