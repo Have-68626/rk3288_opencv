@@ -2,7 +2,6 @@
 
 #include "Compat.h"
 #include "ConnectionQuota.h"
-#include "EndpointRegistry.h"
 #include "JsonLite.h"
 #include "StreamSessionRunner.h"
 
@@ -18,6 +17,7 @@
 
 namespace rk_win {
 
+class EndpointRegistry;
 class EventLogger;
 class FramePipeline;
 class WinJsonConfigStore;
