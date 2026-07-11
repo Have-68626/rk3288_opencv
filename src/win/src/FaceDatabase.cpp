@@ -66,7 +66,7 @@ bool FaceDatabase::save(const std::filesystem::path& path) const {
         std::copy(e.mean.begin(), e.mean.end(), meanMat.ptr<float>());
         fs << "{";
         fs << "id" << e.id;
-        fs << "count" << e.count;
+        fs << "count" << static_cast<int>(e.count);
         fs << "mean" << meanMat;
         fs << "}";
     }
