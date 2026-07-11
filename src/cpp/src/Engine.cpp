@@ -668,7 +668,6 @@ void Engine::renderResults() {
     outcome.tracks = currentTracks_;
     // Performance optimization: Avoid redundant clone() before publish().
     // The publisher inherently uses copyTo() to duplicate the data into its internal buffer.
-    // Rollback: Revert to `outcome.renderFrame = processedFrame_.clone();` if rendering glitches occur.
     outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(outcome);
