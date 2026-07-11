@@ -187,7 +187,7 @@ jobs:
     name: windows-build-test
     if: >
       github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 120
     env:
       OPENCV_VERSION: "4.10.0"
