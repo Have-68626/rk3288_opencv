@@ -10,8 +10,6 @@
 #include "Types.h"
 #include <string>
 
-#include <gtest/gtest_prod.h>
-
 namespace rk_core {
 
 class EventManager {
@@ -34,7 +32,10 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
-    FRIEND_TEST(EventManager, UniqueId);
+#ifdef RK_CORE_LIBRARY
+    // Ensure testability without dragging in gtest headers into the production build unnecessarily
+    friend class EventManager_UniqueId_Test;
+#endif
     std::string generateUniqueId();
 };
 
