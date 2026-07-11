@@ -20,18 +20,21 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({
   checkedChildren,
   unCheckedChildren
 }) => {
-  const id = React.useId();
+  const switchRef = React.useRef<HTMLButtonElement>(null);
 
   const handleToggle = (e: React.MouseEvent) => {
-    e.preventDefault(); // Prevent native label click from focusing but not toggling
-    if (!disabled && onChange) {
-      onChange(!checked);
+    // Delegate to Ant Design Switch's native click handler via ref.
+    // This avoids manually calling onChange(!checked), which bypasses
+    // Ant Design's state management and can cause double-call issues
+    // when the browser also forwards the label click to the associated element.
+    e.preventDefault();
+    if (!disabled) {
+      switchRef.current?.click();
     }
   };
 
   return (
     <label
-      htmlFor={id}
       onClick={handleToggle}
       style={{
         cursor: disabled ? 'not-allowed' : 'pointer',
@@ -42,11 +45,10 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({
     >
       {label && <Text disabled={disabled}>{label}</Text>}
       <Switch
-        id={id}
+        ref={switchRef}
         checked={checked}
         disabled={disabled}
         onChange={onChange}
-        onClick={(_, e) => e.stopPropagation()}
         checkedChildren={checkedChildren}
         unCheckedChildren={unCheckedChildren}
         aria-label={typeof label === 'string' ? label : undefined}
