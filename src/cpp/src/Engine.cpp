@@ -666,7 +666,14 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;
-    outcome.renderFrame = processedFrame_.clone();
+    /*
+     * [Performance Optimization - cv::Mat]
+     * Why: ResultPublisher::publish() already inherently performs a deep copy using copyTo()
+     *      into its internal renderFrame_ buffer.
+     * Impact: Eliminates a redundant deep copy of the processed frame per pipeline cycle.
+     * Rollback: Revert back to `outcome.renderFrame = processedFrame_.clone();`
+     */
+    outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(outcome);
 }

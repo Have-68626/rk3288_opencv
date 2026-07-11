@@ -96,3 +96,6 @@ to measurable performance gains.
 ## 2026-06-30 - Maintain exact float formatting parity when optimizing string concatenation
 **Learning:** When replacing `std::ostringstream` with pre-allocated `std::string` concatenation in hot paths, using `std::to_string(double)` introduces a formatting regression (fixed 6 decimal places, e.g. "1.000000") which breaks backwards compatibility with previous JSON outputs.
 **Action:** Use `snprintf` with a properly-sized stack buffer (e.g., `char buf[512]`) and the `%g` format specifier to accurately replicate the original `ostringstream` floating-point formatting, avoiding both the formatting regression and dynamic allocations.
+## 2026-06-30 - Avoid redundant cv::Mat clone() before passing to ResultPublisher
+**Learning:** `ResultPublisher::publish()` internally uses `copyTo()` to safely copy frame data into its own buffer, meaning any `clone()` calls in the upstream rendering pipeline (like `Engine::renderResults()`) are completely redundant. This causes unnecessary deep copies and heap allocations in the main inference loop.
+**Action:** Use shallow copy (`outcome.renderFrame = processedFrame_`) when passing frames to publisher components that already manage their own deep copies, assuming no further modifications are made to the buffer before publishing.
