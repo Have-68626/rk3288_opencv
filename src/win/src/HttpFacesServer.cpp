@@ -2,6 +2,8 @@
 #include "rk_win/HttpFacesServerPath.h"
 #include "rk_win/StreamSession.h"
 
+#include "rk_win/EndpointRegistry.h"
+
 #include "rk_win/EventLogger.h"
 #include "rk_win/FramePipeline.h"
 #include "rk_win/JsonLite.h"
