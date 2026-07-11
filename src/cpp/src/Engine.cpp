@@ -600,11 +600,11 @@ void Engine::run() {
         }
 
         // 2. Motion gate：MOTION_TRIGGERED 模式下仅在有运动时执行管线
-        // 注意：no-clone 安全 — frame 在下一轮循环中被 getLatestFrame 覆盖
+        // 注意：clone 保护 cv::putText 不会修改共享帧数据
         if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
             !motionDetector_->detect(frame)) {
             pipeline::FrameOutcome outcome;
-            outcome.renderFrame = frame;
+            outcome.renderFrame = frame.clone();
             cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
                 cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
             publisher_->publish(std::move(outcome));
