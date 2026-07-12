@@ -6,7 +6,7 @@
 
 #include "NativeLog.h"
 
-#if __has_include(<opencv2/core.hpp>) && __has_include(<opencv2/imgcodecs.hpp>)
+#if __has_include(<opencv2/core.hpp>) && __has_include(<opencv2/imgcodecs.hpp>) && !defined(RK_SKIP_OPENCV)
 #define RK_CPP_HAS_OPENCV 1
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
