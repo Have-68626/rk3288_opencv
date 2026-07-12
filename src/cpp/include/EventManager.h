@@ -10,7 +10,11 @@
 #include "Types.h"
 #include <string>
 
+#if __has_include(<gtest/gtest_prod.h>)
 #include <gtest/gtest_prod.h>
+#else
+#define FRIEND_TEST(test_case_name, test_name)
+#endif
 
 namespace rk_core {
 
