@@ -666,7 +666,9 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;
-    outcome.renderFrame = processedFrame_.clone();
+    // optimization: ResultPublisher::publish inherently uses copyTo() to safely duplicate
+    // the data into its internal buffer, making upstream deep copies redundant.
+    outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(outcome);
 }
