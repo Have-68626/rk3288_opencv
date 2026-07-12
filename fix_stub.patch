@@ -1,0 +1,56 @@
+--- src/cpp/native-lib-stub.cpp
++++ src/cpp/native-lib-stub.cpp
+@@ -17,29 +17,14 @@
+     return JNI_FALSE;
+ }
+
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+ extern "C" JNIEXPORT jstring JNICALL
+ Java_com_example_rk3288_1opencv_MainActivity_stringFromJNI(JNIEnv* env, jobject /* this */) {
+     return env->NewStringUTF("Hello from C++ (RK_SKIP_OPENCV=ON)");
+ }
+
+-extern "C" JNIEXPORT jstring JNICALL
+-
+-
+-extern "C" JNIEXPORT jboolean JNICALL
+-
+-
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+ extern "C" JNIEXPORT void JNICALL
+ Java_com_example_rk3288_1opencv_MainActivity_nativeSetFlip(JNIEnv*, jobject, jboolean, jboolean) {
+ }
+
+-extern "C" JNIEXPORT void JNICALL
+-
+-
+-extern "C" JNIEXPORT jboolean JNICALL
+-
+-
+ extern "C" JNIEXPORT jboolean JNICALL
+ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(JNIEnv* env, jobject /* this */, jobject, jint, jobject, jint, jint, jobject, jint, jint, jint, jint, jlong, jint, jboolean) {
+     return JNI_FALSE;
+ }
+
+-extern "C" JNIEXPORT jboolean JNICALL
+-
+-
+ extern "C" JNIEXPORT jboolean JNICALL
+ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888Bytes(JNIEnv* env, jobject /* this */, jbyteArray, jint, jbyteArray, jint, jint, jbyteArray, jint, jint, jint, jint, jlong, jint, jboolean) {
+     return JNI_FALSE;

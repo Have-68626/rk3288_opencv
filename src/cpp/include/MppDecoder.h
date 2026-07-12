@@ -6,7 +6,11 @@
 #include <string>
 #include <vector>
 
+#if __has_include(<opencv2/core.hpp>)
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
 
 struct MppDecoderConfig {
     int inputW = 0;
