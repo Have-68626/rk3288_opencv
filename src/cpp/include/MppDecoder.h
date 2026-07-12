@@ -6,7 +6,18 @@
 #include <string>
 #include <vector>
 
+#if __has_include(<opencv2/core.hpp>) && !defined(RK_SKIP_OPENCV)
 #include <opencv2/core.hpp>
+#else
+namespace cv {
+class Mat {
+public:
+    Mat() = default;
+    bool empty() const { return true; }
+    void copyTo(Mat&) const {}
+};
+}
+#endif
 
 struct MppDecoderConfig {
     int inputW = 0;

@@ -7,7 +7,9 @@
 #include <mpp_err.h>
 #endif
 
+#if __has_include(<opencv2/imgproc.hpp>) && !defined(RK_SKIP_OPENCV)
 #include <opencv2/imgproc.hpp>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -269,7 +271,9 @@ void MppDecoder::close() {
     fileReadOffset_ = 0;
     fileSize_ = 0;
     pendingBufs_.clear();
+#if __has_include(<opencv2/core.hpp>) && !defined(RK_SKIP_OPENCV)
     latestBgr_ = cv::Mat();
+#endif
     rklog::logInfo("MppDecoder", "close", "MPP decoder closed");
 }
 

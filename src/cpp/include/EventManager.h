@@ -10,7 +10,12 @@
 #include "Types.h"
 #include <string>
 
+// Fallback for FRIEND_TEST when gtest is not available (e.g. Android build)
+#if __has_include(<gtest/gtest_prod.h>)
 #include <gtest/gtest_prod.h>
+#else
+#define FRIEND_TEST(test_case_name, test_name) friend class test_case_name##_##test_name##_Test
+#endif
 
 namespace rk_core {
 

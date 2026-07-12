@@ -10,7 +10,11 @@
 #include <android/bitmap.h>
 #include <android/native_window_jni.h>
 #include <opencv2/imgproc.hpp>
+#if __has_include(<opencv2/core.hpp>) && !defined(RK_SKIP_OPENCV)
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
 #include <mutex>
 #include <cstring>
 

@@ -4,7 +4,11 @@
 #include "FaceInferencePipeline.h"
 #include "ThresholdPolicy.h"
 
+#if __has_include(<opencv2/core.hpp>) && !defined(RK_SKIP_OPENCV)
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
 
 #include <string>
 #include <vector>

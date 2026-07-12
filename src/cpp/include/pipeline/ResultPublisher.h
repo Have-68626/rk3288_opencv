@@ -3,7 +3,11 @@
 #include <string>
 #include <mutex>
 #include <vector>
+#if __has_include(<opencv2/core.hpp>) && !defined(RK_SKIP_OPENCV)
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
 #include "pipeline/TrackCoordinator.h"  // TrackView
 
 namespace pipeline {
