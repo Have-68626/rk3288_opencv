@@ -4,13 +4,22 @@ import { Switch, Typography } from 'antd';
 const { Text } = Typography;
 
 interface FlipSwitchProps {
-  label: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
+  label?: React.ReactNode;
+  checked?: boolean;
+  disabled?: boolean;
+  onChange?: (checked: boolean) => void;
+  checkedChildren?: React.ReactNode;
+  unCheckedChildren?: React.ReactNode;
 }
 
-const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onChange }) => {
+const FlipSwitch: React.FC<FlipSwitchProps> = ({
+  label,
+  checked,
+  disabled,
+  onChange,
+  checkedChildren,
+  unCheckedChildren,
+}) => {
   const id = React.useId();
 
   return (
@@ -22,13 +31,22 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onCha
         alignItems: 'center',
         gap: 8,
       }}
+      onClick={(e) => {
+        e.preventDefault();
+        if (!disabled && onChange) {
+          onChange(!checked);
+        }
+      }}
     >
-      <Text disabled={disabled}>{label}</Text>
+      {label && <Text disabled={disabled}>{label}</Text>}
       <Switch
         id={id}
         checked={checked}
         disabled={disabled}
         onChange={onChange}
+        checkedChildren={checkedChildren}
+        unCheckedChildren={unCheckedChildren}
+        onClick={(_, e) => e.stopPropagation()}
       />
     </label>
   );
