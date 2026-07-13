@@ -1,0 +1,28 @@
+--- .github/workflows/ci.yml
++++ .github/workflows/ci.yml
+@@ -21,7 +21,7 @@
+   repo-hygiene:
+     name: repo-hygiene
+     runs-on: ubuntu-latest
+     steps:
+-      - name: Checkout
+-        uses: actions/checkout@v4
+-      - name: Setup Node
+-        uses: actions/setup-node@v4
++      - name: Checkout
++        uses: actions/checkout@v4
++      - name: Setup Node
++        uses: actions/setup-node@v4
+         with:
+           node-version: "22"
+       - name: Scan workspace junk (dry-run)
+@@ -190,7 +190,7 @@
+   windows:
+     name: windows-build-test
+     if: >
+       github.event_name == 'pull_request' || github.event_name == 'push'
+-    runs-on: windows-latest
++    runs-on: windows-2022
+     timeout-minutes: 120
+     env:
+       OPENCV_VERSION: "4.10.0"
