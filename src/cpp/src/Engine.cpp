@@ -603,7 +603,7 @@ void Engine::run() {
         if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
             !motionDetector_->detect(frame)) {
             pipeline::FrameOutcome outcome;
-            outcome.renderFrame = frame.clone();
+            outcome.renderFrame = frame.clone(); // PRESERVED: PutText alters buffer
             cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
                 cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
             publisher_->publish(outcome);
@@ -666,7 +666,9 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;
-    outcome.renderFrame = processedFrame_.clone();
+    // Performance Optimization: Avoid redundant clone() since Publisher uses copyTo() internally.
+    // Why: Saves dynamic memory allocation and deep copy overhead per frame.
+    outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(outcome);
 }

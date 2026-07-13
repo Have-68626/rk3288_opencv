@@ -96,3 +96,6 @@ to measurable performance gains.
 ## 2026-06-30 - Maintain exact float formatting parity when optimizing string concatenation
 **Learning:** When replacing `std::ostringstream` with pre-allocated `std::string` concatenation in hot paths, using `std::to_string(double)` introduces a formatting regression (fixed 6 decimal places, e.g. "1.000000") which breaks backwards compatibility with previous JSON outputs.
 **Action:** Use `snprintf` with a properly-sized stack buffer (e.g., `char buf[512]`) and the `%g` format specifier to accurately replicate the original `ostringstream` floating-point formatting, avoiding both the formatting regression and dynamic allocations.
+## 2026-06-30 - Replace `std::ostringstream` with pre-allocated `std::string` concatenation in hot paths
+**Learning:** `std::ostringstream` introduces significant overhead (virtual functions, locale initializations, memory allocations). Pre-sizing `std::string` buffers combined with `operator+=` concatenation and `snprintf` for floating-point formatting yields a noticeable performance improvement per log.
+**Action:** Identify serialization sequences lacking complex structural formatting requirements and eliminate `std::ostringstream` to reduce allocations and execution time. Ensure `snprintf` accurately matches legacy formats.

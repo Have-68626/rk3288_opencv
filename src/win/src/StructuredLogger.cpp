@@ -176,25 +176,42 @@ void StructuredLogger::append(const FrameLogEntry& e) {
     }
     facesJson += "]";
 
+    char numBuf[64];
+    std::snprintf(numBuf, sizeof(numBuf), "%g", e.fps);
+
     csv_ << escapeCsv(e.tsIso8601) << "," << escapeCsv(e.cameraName) << "," << escapeCsv(e.cameraId) << ","
-         << e.frameIndex << "," << e.frameWidth << "," << e.frameHeight << "," << e.fps << ","
+         << e.frameIndex << "," << e.frameWidth << "," << e.frameHeight << "," << numBuf << ","
          << static_cast<int>(e.faces.size()) << "," << escapeCsv(facesJson) << ","
          << escapeCsv(toString(e.errorCategory)) << "," << escapeCsv(e.errorCode) << "," << escapeCsv(e.errorMessage) << "\n";
 
-    jsonl_ << "{"
-           << "\"ts\":\"" << escapeJson(e.tsIso8601) << "\","
-           << "\"camera_name\":\"" << escapeJson(e.cameraName) << "\","
-           << "\"camera_id\":\"" << escapeJson(e.cameraId) << "\","
-           << "\"frame_index\":" << e.frameIndex << ","
-           << "\"frame_w\":" << e.frameWidth << ","
-           << "\"frame_h\":" << e.frameHeight << ","
-           << "\"fps\":" << e.fps << ","
-           << "\"face_count\":" << static_cast<int>(e.faces.size()) << ","
-           << "\"faces\":" << facesJson << ","
-           << "\"error_category\":\"" << escapeJson(toString(e.errorCategory)) << "\","
-           << "\"error_code\":\"" << escapeJson(e.errorCode) << "\","
-           << "\"error_message\":\"" << escapeJson(e.errorMessage) << "\""
-            << "}\n";
+    std::string jsonlLine;
+    jsonlLine.reserve(512 + facesJson.size());
+    jsonlLine += "{\"ts\":\"";
+    jsonlLine += escapeJson(e.tsIso8601);
+    jsonlLine += "\",\"camera_name\":\"";
+    jsonlLine += escapeJson(e.cameraName);
+    jsonlLine += "\",\"camera_id\":\"";
+    jsonlLine += escapeJson(e.cameraId);
+    jsonlLine += "\",\"frame_index\":";
+    jsonlLine += std::to_string(e.frameIndex);
+    jsonlLine += ",\"frame_w\":";
+    jsonlLine += std::to_string(e.frameWidth);
+    jsonlLine += ",\"frame_h\":";
+    jsonlLine += std::to_string(e.frameHeight);
+    jsonlLine += ",\"fps\":";
+    jsonlLine += numBuf;
+    jsonlLine += ",\"face_count\":";
+    jsonlLine += std::to_string(e.faces.size());
+    jsonlLine += ",\"faces\":";
+    jsonlLine += facesJson;
+    jsonlLine += ",\"error_category\":\"";
+    jsonlLine += escapeJson(toString(e.errorCategory));
+    jsonlLine += "\",\"error_code\":\"";
+    jsonlLine += escapeJson(e.errorCode);
+    jsonlLine += "\",\"error_message\":\"";
+    jsonlLine += escapeJson(e.errorMessage);
+    jsonlLine += "\"}\n";
+    jsonl_ << jsonlLine;
     csv_.flush();
     jsonl_.flush();
 }
