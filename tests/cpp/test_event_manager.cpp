@@ -12,7 +12,9 @@ namespace rk_core {
 bool Storage::ensureDirectory(const std::string& path) { return true; }
 bool Storage::appendLog(const std::string& filename, const std::string& content) { return true; }
 void Storage::cleanupOldData(const std::string& directoryPath, int daysToKeep) {}
+#ifndef RK_SKIP_OPENCV
 bool Storage::saveImage(const std::string& filename, const cv::Mat& frame) { return true; }
+#endif
 bool Storage::hasEnoughSpace(const std::string& path, size_t minBytes) { return true; }
 
 TEST(EventManager, FormatJson) {

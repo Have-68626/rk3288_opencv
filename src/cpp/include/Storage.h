@@ -40,7 +40,9 @@ public:
      * @param frame The OpenCV matrix to save.
      * @return true if successful.
      */
+#ifndef RK_SKIP_OPENCV
     static bool saveImage(const std::string& filename, const cv::Mat& frame);
+#endif
 
     /**
      * @brief Appends text to a log file.
