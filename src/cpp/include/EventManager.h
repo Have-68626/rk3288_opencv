@@ -10,7 +10,13 @@
 #include "Types.h"
 #include <string>
 
+// Android/CMake may not have gtest_prod in include path when compiling normal libs.
+// Just define a fallback FRIEND_TEST macro.
+#if __has_include(<gtest/gtest_prod.h>)
 #include <gtest/gtest_prod.h>
+#elif !defined(FRIEND_TEST)
+#define FRIEND_TEST(test_case_name, test_name) friend class test_case_name##_##test_name##_Test
+#endif
 
 namespace rk_core {
 
