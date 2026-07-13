@@ -10,11 +10,13 @@
 #include <string>
 #include <vector>
 
-#ifndef RK_SKIP_OPENCV
-#include <opencv2/core.hpp>
-#else
-namespace cv { class Mat; }
+#if __has_include(<opencv2/core.hpp>)
+    #ifndef RK_SKIP_OPENCV
+    #include <opencv2/core.hpp>
+    #endif
 #endif
+
+namespace cv { class Mat; }
 
 namespace rk_core {
 

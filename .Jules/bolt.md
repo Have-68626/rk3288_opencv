@@ -99,3 +99,7 @@ to measurable performance gains.
 ## 2026-06-30 - Replace `std::ostringstream` with pre-allocated `std::string` concatenation in hot paths
 **Learning:** `std::ostringstream` introduces significant overhead (virtual functions, locale initializations, memory allocations). Pre-sizing `std::string` buffers combined with `operator+=` concatenation and `snprintf` for floating-point formatting yields a noticeable performance improvement per log.
 **Action:** Identify serialization sequences lacking complex structural formatting requirements and eliminate `std::ostringstream` to reduce allocations and execution time. Ensure `snprintf` accurately matches legacy formats.
+
+## 2026-07-13 - OpenCV Header Include Conditionally
+**Learning:** `opencv2/core.hpp` conditionally included. If `-DRK_SKIP_OPENCV=ON` is used, the include will fail.
+**Action:** Use `__has_include(<opencv2/core.hpp>)` in conjunction with `ifndef RK_SKIP_OPENCV` to conditionally include opencv headers safely across platforms.
