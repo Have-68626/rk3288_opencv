@@ -1,8 +1,8 @@
 /**
  * @file Storage.h
  * @brief Handles file I/O and cache management.
- * 
- * Provides static utility methods for file operations, including 
+ *
+ * Provides static utility methods for file operations, including
  * directory creation, file saving, and automatic cleanup of old data.
  */
 #pragma once
@@ -10,12 +10,8 @@
 #include <string>
 #include <vector>
 
-#if !defined(RK_SKIP_OPENCV) || !RK_SKIP_OPENCV
-#if __has_include(<opencv2/core.hpp>)
+#if !defined(RK_SKIP_OPENCV) && __has_include(<opencv2/core.hpp>)
 #include <opencv2/core.hpp>
-#else
-namespace cv { class Mat; }
-#endif
 #else
 namespace cv { class Mat; }
 #endif
