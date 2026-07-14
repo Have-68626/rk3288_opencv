@@ -1,0 +1,18 @@
+--- src/cpp/src/EventManager.cpp
++++ src/cpp/src/EventManager.cpp
+@@ -2,7 +2,6 @@
+  * @file EventManager.cpp
+  * @brief Implementation of EventManager class.
+  */
+-#include "EventManager.h"
+ #include "Storage.h"
+ #include "Config.h"
+ #include <cstdio>
+@@ -12,6 +11,7 @@
+ #include <ctime>
+ #include <random>
+
++#include "EventManager.h"
+ using namespace rk_core;
+
+ EventManager::EventManager() {}

@@ -1,0 +1,11 @@
+--- src/cpp/include/Storage.h
++++ src/cpp/include/Storage.h
+@@ -10,7 +10,7 @@
+ #include <string>
+ #include <vector>
+
+-#ifndef RK_SKIP_OPENCV
++#if !defined(RK_SKIP_OPENCV) && __has_include(<opencv2/core.hpp>)
+ #include <opencv2/core.hpp>
+ #else
+ namespace cv { class Mat; }
