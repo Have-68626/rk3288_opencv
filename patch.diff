@@ -1,0 +1,24 @@
+--- web/src/app/components/FlipSwitch.tsx
++++ web/src/app/components/FlipSwitch.tsx
+@@ -17,14 +17,21 @@
+         alignItems: 'center',
+         gap: 8,
+       }}
++      onClick={(e) => {
++        e.preventDefault();
++        if (!disabled) {
++          onChange(!checked);
++        }
++      }}
+     >
+       <Text disabled={disabled}>{label}</Text>
+       <Switch
+         id={id}
+         checked={checked}
+         disabled={disabled}
+         onChange={onChange}
++        onClick={(_, e) => e.stopPropagation()}
+       />
+     </label>
+   );
+ };

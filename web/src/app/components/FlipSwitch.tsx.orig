@@ -22,12 +22,6 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onCha
         alignItems: 'center',
         gap: 8,
       }}
-      onClick={(e) => {
-        e.preventDefault();
-        if (!disabled) {
-          onChange(!checked);
-        }
-      }}
     >
       <Text disabled={disabled}>{label}</Text>
       <Switch
@@ -35,7 +29,6 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onCha
         checked={checked}
         disabled={disabled}
         onChange={onChange}
-        onClick={(_, e) => e.stopPropagation()}
       />
     </label>
   );
