@@ -1,0 +1,21 @@
+--- src/cpp/include/EventManager.h
++++ src/cpp/include/EventManager.h
+@@ -10,7 +10,6 @@
+ #include "Types.h"
+ #include <string>
+
+-#include <gtest/gtest_prod.h>
+
+ namespace rk_core {
+
+@@ -34,7 +33,9 @@
+
+     std::string generateEventId();
+
+-    FRIEND_TEST(EventManager, UniqueId);
++#ifdef GTEST_LANG_CXX11
++    friend class EventManagerTest_UniqueId_Test;
++#endif
+ };
+
+ } // namespace rk_core

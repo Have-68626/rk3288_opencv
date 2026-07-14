@@ -1,7 +1,7 @@
 /**
  * @file EventManager.h
  * @brief Manages system events and reporting.
- * 
+ *
  * Handles the creation of structured reports for abnormal events
  * and interfaces with the Storage module for persistence.
  */
@@ -10,13 +10,14 @@
 #include "Types.h"
 #include <string>
 
+#include <gtest/gtest_prod.h>
 
 namespace rk_core {
 
 class EventManager {
 public:
     EventManager();
-    
+
     /**
      * @brief Logs an event to the system.
      * @param type Event category (e.g. "AUTH_FAIL").
@@ -33,7 +34,7 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
-    friend class EventManager_UniqueId_Test;
+    FRIEND_TEST(EventManager, UniqueId);
     std::string generateUniqueId();
 };
 
