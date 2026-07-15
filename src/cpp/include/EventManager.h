@@ -36,7 +36,9 @@ public:
     std::string formatEventJson(const AppEvent& event);
 
 private:
+#if __has_include(<gtest/gtest_prod.h>)
     FRIEND_TEST(EventManager, UniqueId);
+#endif
     std::string generateUniqueId();
 };
 

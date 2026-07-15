@@ -31,6 +31,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+        with:
+          node-version: "20"
       - name: Scan workspace junk (dry-run)
         run: node scripts/clean-repo-junk.js scan --ci
       - name: Upload cleanup reports
@@ -88,6 +90,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+        with:
+          node-version: "20"
 
       - name: Run Docs Sync Audit
         run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
@@ -112,6 +116,8 @@ jobs:
 
       - name: Setup Node
         uses: actions/setup-node@v4
+        with:
+          node-version: "20"
         with:
           node-version: "20"
           cache: "pnpm"
@@ -209,10 +215,6 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
-      - name: Install ccache
-        run: |
-          choco install ccache
-
       - name: Configure ccache
         run: |
           ccache --max-size=500M
@@ -220,6 +222,8 @@ jobs:
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
+        with:
+          node-version: "20"
         with:
           node-version: "20"
 
