@@ -30,7 +30,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
       - name: Scan workspace junk (dry-run)
         run: node scripts/clean-repo-junk.js scan --ci
       - name: Upload cleanup reports
@@ -87,7 +87,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
 
       - name: Run Docs Sync Audit
         run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
@@ -113,7 +113,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
           cache: "pnpm"
           cache-dependency-path: "web/pnpm-lock.yaml"
 
@@ -187,7 +187,7 @@ jobs:
     name: windows-build-test
     if: >
       github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 120
     env:
       OPENCV_VERSION: "4.10.0"
@@ -217,7 +217,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
 
       - name: clean-repo-junk dry-run scan (CI)
         shell: pwsh
