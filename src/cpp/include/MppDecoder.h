@@ -6,7 +6,11 @@
 #include <string>
 #include <vector>
 
+#ifndef RK_SKIP_OPENCV
 #include <opencv2/core.hpp>
+#else
+namespace cv { class Mat; }
+#endif
 
 struct MppDecoderConfig {
     int inputW = 0;

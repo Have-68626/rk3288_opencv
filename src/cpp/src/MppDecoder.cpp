@@ -7,7 +7,9 @@
 #include <mpp_err.h>
 #endif
 
+#ifndef RK_SKIP_OPENCV
 #include <opencv2/imgproc.hpp>
+#endif
 
 #include <algorithm>
 #include <cstdio>
