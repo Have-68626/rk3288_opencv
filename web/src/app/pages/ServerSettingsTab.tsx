@@ -11,7 +11,6 @@ import {
   Popconfirm,
   Space,
   Spin,
-  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -24,6 +23,7 @@ import { getModels, reloadModel } from '../api/models'
 import type { ActiveModelInfo, ModelsResponse, ServerSettingsDoc } from '../api/types'
 import { getErrorMessage } from '../api/error'
 import { useAppStore } from '../state/AppStore'
+import FlipSwitch from '../components/FlipSwitch'
 import { diffPatch } from '../utils/diffPatch'
 
 type ServerFormModel = {
@@ -185,13 +185,13 @@ export function ServerSettingsTab() {
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
                     <Form.Item label="OpenCL 加速" name={['acceleration', 'enableOpenCL']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                      <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                     <Form.Item label="RK MPP 硬件解码" name={['acceleration', 'enableMpp']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                      <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                     <Form.Item label="Qualcomm SNPE 推理加速" name={['acceleration', 'enableQualcomm']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                      <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                   </Space>
                 ),
@@ -301,7 +301,7 @@ export function ServerSettingsTab() {
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
                     <Form.Item label="启用" name={['http', 'enable']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                      <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                     <Form.Item label="端口" name={['http', 'port']}>
                       <InputNumber min={1} max={65535} style={{ width: '100%' }} />
@@ -315,7 +315,7 @@ export function ServerSettingsTab() {
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
                     <Form.Item label="启用" name={['poster', 'enable']} valuePropName="checked">
-                      <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+                      <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
                     <Form.Item
                       label="POST URL"
