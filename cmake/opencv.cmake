@@ -47,7 +47,7 @@ set(BUILD_opencv_python3 OFF CACHE BOOL "Build Python3")
 # If BUILD_LIST is already set (e.g. from CMakePresets or -D flag), respect it.
 set(BUILD_opencv_world OFF CACHE BOOL "Build opencv_world")
 if(NOT BUILD_LIST)
-    set(BUILD_LIST "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,video,videoio,highgui,stitching" CACHE STRING "OpenCV modules to build (empty = all)" FORCE)
+    set(BUILD_LIST "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching" CACHE STRING "OpenCV modules to build (empty = all)" FORCE)
 endif()
 
 # Add OpenCV source subdirectory

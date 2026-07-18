@@ -197,7 +197,7 @@ jobs:
       CMAKE_GENERATOR: Visual Studio 17 2022
       CMAKE_PLATFORM: x64
       CMAKE_BUILD_CONFIG: Release
-      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,video,videoio,highgui,stitching"
+      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
