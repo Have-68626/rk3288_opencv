@@ -29,8 +29,14 @@ TEST(HttpFacesServer, PathValidation) {
         std::filesystem::path out;
         bool ok = rk_win::isSafeRelativePath(docRoot, urlPath, out);
         ASSERT_TRUE(ok) << "urlPath=" << urlPath;
-        const std::filesystem::path expectedPath = docRoot / expectedSuffix;
-        EXPECT_EQ(out.lexically_normal(), expectedPath.lexically_normal()) << "urlPath=" << urlPath;
+        // isSafeRelativePath 内部用 weakly_canonical 把 8.3 短名（如 RUNNER~1）
+        // 解析为长名（runneradmin）。期望值也必须先 canonical 再比较，否则在
+        // 使用 8.3 短名 profile 路径的 CI runner上会不相等。
+        std::error_code ec;
+        const std::filesystem::path docRootCanon = std::filesystem::weakly_canonical(docRoot, ec);
+        ASSERT_FALSE(ec) << "weakly_canonical(docRoot) failed: " << ec.message();
+        const std::filesystem::path expectedPath = (docRootCanon / expectedSuffix).lexically_normal();
+        EXPECT_EQ(out.lexically_normal(), expectedPath) << "urlPath=" << urlPath;
     };
 
     // Safe paths

@@ -252,6 +252,11 @@ add_executable(win_unit_tests
     "src/win/src/JsonSchemaValidator.cpp"
     "src/win/src/FrameProcessor.cpp"
     "src/win/src/SideEffectSink.cpp"
+    "src/win/src/ArcFaceWinRecognizer.cpp"
+    "src/cpp/src/ArcFaceEmbedder.cpp"
+    "src/cpp/src/NativeLog.cpp"
+    "src/win/src/DnnSsdFaceDetector.cpp"
+    "src/win/src/StructuredLogger.cpp"
 )
 target_include_directories(win_unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include

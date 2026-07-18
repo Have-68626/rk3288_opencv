@@ -545,6 +545,11 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
     if (!initCommon(cascadePath, storagePath)) return false;
     if (initCancelRequested_.load()) return false;
+    if (filePath.empty()) {
+        std::cerr << "Failed to open mock file: empty path" << std::endl;
+        rklog::logError("Engine", __func__, "Failed to open mock file: empty path");
+        return false;
+    }
     if (!videoManager_->open(filePath)) {
         std::cerr << "Failed to open mock file: " << filePath << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager_->getLastMockRejectReason());
@@ -666,7 +671,9 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;
-    outcome.renderFrame = processedFrame_.clone();
+    // Performance optimization: Avoid redundant clone() before publish().
+    // The publisher inherently uses copyTo() to duplicate the data into its internal buffer.
+    outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(outcome);
 }

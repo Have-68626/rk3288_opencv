@@ -25,6 +25,7 @@ struct ModelSnapshot {
 };
 
 struct BootstrapResult {
+    BootstrapResult() = default;
     ~BootstrapResult();  // 自定义析构：unique_ptr<DnnSsdFaceDetector> 需要完整类型来生成析构代码
     BootstrapResult(BootstrapResult&&) noexcept = default;
     BootstrapResult& operator=(BootstrapResult&&) noexcept = default;

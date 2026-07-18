@@ -28,6 +28,11 @@ bool BioAuth::initialize(const std::string& cascadePath, const std::string& mode
     cascadeMinNeighbors_ = minNeighbors;
     cascadeMinFaceSize_ = minFaceSize;
     equalizeHistEnabled_ = enableEqualizeHist;
+    // 空路径无法加载级联分类器，直接返回 false 而非让 OpenCV 抛异常
+    if (cascadePath.empty()) {
+        std::cerr << "Error loading face cascade: empty path" << std::endl;
+        return false;
+    }
     if (!faceCascade.load(cascadePath)) {
         std::cerr << "Error loading face cascade: " << cascadePath << std::endl;
         return false;

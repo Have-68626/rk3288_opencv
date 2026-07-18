@@ -1,0 +1,28 @@
+# 强制二进制文件不做 CRLF / 文本转换，避免 Windows CI（core.autocrlf=true）
+# 把短文件（如 2 字节的 incomplete.jpg 预检 fixture）大小/内容改坏导致测试失败。
+* text=auto eol=lf
+
+# 测试 fixture：始终按二进制处理，禁止行尾转换
+tests/fixtures/** binary
+tests/test_set01/** binary
+tests/win_eval_sample/** binary
+deps/WIDER_train/** binary
+
+# 图片 / 模型等二进制资产
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.bmp binary
+*.gif binary
+*.webp binary
+*.param binary
+*.bin binary
+*.ncnnmodel binary
+*.onnx binary
+*.pt binary
+
+# 脚本与源码保持 LF
+*.sh text eol=lf
+*.py text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf

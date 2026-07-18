@@ -26,7 +26,12 @@ if(NOT RK_SKIP_OPENCV)
         ${RK_OPENCV_FULL_LIBS}
     )
 else()
-    add_library(native-lib SHARED ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} "src/cpp/native-lib-stub.cpp")
+    add_library(native-lib SHARED "src/cpp/native-lib-stub.cpp")
+    # 模拟 OpenCV 头文件以便在 RK_SKIP_OPENCV=ON 且不编译源文件的情况下提供依赖
+    target_include_directories(native-lib PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/opencv/include
+    )
+    target_compile_definitions(native-lib PRIVATE RK_SKIP_OPENCV=1)
 endif()
 
 target_link_libraries(
