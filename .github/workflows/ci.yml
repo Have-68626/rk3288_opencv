@@ -277,13 +277,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests -- /m
+          # 只构建并运行单元测试套件。win_face_database_perf 是性能基准
+          # （约 80s 且依赖 OpenCV FileStorage 往返，环境敏感），不参与 PR 门禁。
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests -- /m
 
       - name: Run ctest
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG --output-on-failure
+          # 仅运行单元测试套件，排除性能基准 win_face_database_perf
+          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests" --output-on-failure
 
       - name: Check for model/quantize changes
         id: changed-int8

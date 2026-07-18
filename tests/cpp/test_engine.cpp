@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "Engine.h"
 
+using namespace rk_core;
+
 TEST(EngineTest, CreateAndDestroy) {
     Engine engine;
     // 验证 engine 可正常构造和析构

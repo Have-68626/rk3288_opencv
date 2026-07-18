@@ -213,3 +213,66 @@ endif()
 ### 5.4 考虑 OpenCV prebuilt 替代 add_subdirectory
 
 长期可选方案：用预编译的 OpenCV binary（从 GitHub Releases 下载）替代 `add_subdirectory` 源码构建。可节省 3-4 分钟，但需要维护 OpenCV 版本与预编译包的同步。
+
+---
+
+## 6. 第二轮审计：ctest 步骤失败（run 29643616200）
+
+**提交：** `e24b8dc`（编译/链接修复已全部合入，构建阶段已通过）
+
+**结论：** 最新失败**不再是构建失败**，而是 `ctest` 步骤报 `4 tests failed out of 5`。拆开看是 **2 个真实测试失败 + 2 个 Not Run 假失败**：
+
+| # | 测试 | 结果 | 根因 |
+|---|------|------|------|
+| 1 | `core_unit_tests` | **FAIL** | `HttpFacesServer.PathValidation` — Windows 8.3 短名（`RUNNER~1` vs `runneradmin`）路径不一致 |
+| 2 | `win_unit_tests` | PASS | — |
+| 3 | `win_face_database_perf` | **Not Run** | CI `--target` 构建列表未包含该可执行文件 |
+| 4 | `face_infer_unit_tests` | **FAIL** | `mock_preflight_rejects_incomplete_file` — fixture 被 CRLF 改坏 |
+| 5 | `core_gtest_tests` | **Not Run** | CI `--target` 构建列表未包含该可执行文件 |
+
+### 6.1 `HttpFacesServer.PathValidation`（真实失败，已修）
+
+- CI runner 临时目录是 8.3 短名 `C:\Users\RUNNER~1\AppData\Local\Temp`。
+- `isSafeRelativePath`（`HttpFacesServerPath.cpp:98`）内部用 `weakly_canonical(docRoot)` 把 `RUNNER~1` **解析为长名 `runneradmin`** 返回。
+- 测试断言用原始 `docRoot`（保留短名）拼期望值再 `lexically_normal()`；`lexically_normal()` **不做 8.3 解析** → 长名 ≠ 短名 → 断言失败。
+- **修复**（`tests/win/test_http_faces_server.cpp`）：`checkResolved` 中对期望值同样先 `weakly_canonical(docRoot)` 再 `lexically_normal()`，与实现侧一致。这是测试断言脆弱性，非产品 bug。
+
+### 6.2 `mock_preflight_rejects_incomplete_file`（真实失败，已修）
+
+- fixture `tests/fixtures/mock/incomplete.jpg` 是 **2 字节**（`78 0a` = `x\n`）。
+- Windows CI runner 默认 `core.autocrlf=true`，git checkout 时把该文本型文件转成 `x\r\n`（**3 字节**）。
+- `preflightMockInput`（`VideoManager.cpp:165`）对 `fileSize < 3` 返回 `MOCK_FILE_INCOMPLETE`；但 3 字节时 `fileSize < 3` 为 false，继续读 magic → 非 JPEG 头 → 返回 `MOCK_MAGIC_INVALID`，与测试期望的 `MOCK_FILE_INCOMPLETE` 不符 → **FAIL**。
+- 本地（autocrlf 未改）复现：该测试 PASS；确认是 CRLF 改坏导致。
+- **修复**（新增 `.gitattributes`）：`tests/fixtures/** binary` + `*.jpg binary` 等，禁止对 fixture/二进制资产做行尾转换。已 `git add --renormalize` 校验，blob 内容不变（2 字节）。
+
+### 6.3 `win_face_database_perf` / `core_gtest_tests` Not Run（CI 配置缺口，已修）
+
+- CI 构建命令（`ci.yml:280`）仅构建 `core_unit_tests win_unit_tests face_infer_unit_tests`，但 CTest 注册了 5 个测试。未被构建的两个可执行文件找不到 → "Not Run"，被计入失败（**假阳性**）。
+- 把 `core_gtest_tests` 加入构建列表后，暴露出该目标**自身从未成功编译**的潜伏错误（见 6.4）。
+- **修复**（`ci.yml`）：构建列表改为 4 个单元测试套件；`ctest` 增加 `-R "unit_tests|core_gtest_tests"` 过滤，**排除性能基准 `win_face_database_perf`**（约 80s 且依赖 OpenCV FileStorage 往返，环境敏感，不参与 PR 门禁）。
+
+### 6.4 `core_gtest_tests` 潜伏编译/运行错误（已修）
+
+加入 CI 构建列表后暴露，共三类：
+
+1. **缺命名空间**：`test_engine.cpp`/`test_bioauth.cpp`/`test_motion.cpp`/`test_adapters.cpp` 直接用了 `rk_core` 命名空间下的 `Engine`/`BioAuth`/`MotionDetector`/`ModelRegistry`，未 `using namespace rk_core;` → C2065 未声明。已补。
+2. **重复符号 LNK2005**：`core_gtest_tests` 同时链接了 `RK_CORE_LITE_SOURCES`（含 `MppDecoder.cpp`）和显式添加的 `mpp_decoder_stub.cpp` → `MppDecoder` 符号重复定义。与之前 `face_infer_unit_tests` 的修复同因。已删除 `mpp_decoder_stub.cpp`。
+3. **空路径抛异常**：`Engine::initialize("","","")` 与 `BioAuth::initialize("","")` 对空路径未做前置守卫，直接调用 OpenCV `cv::FileStorage`/`CascadeClassifier::load("")` → 抛 `cv::Exception`，测试期望干净返回 `false`。按架构契约 #4（帧路径禁止 throw，返回 bool），在 `Engine.cpp:545` 与 `BioAuth.cpp:31` 增加空路径守卫，直接 `return false`。
+
+### 6.5 修复后本地验证
+
+```
+ctest --test-dir build_ci_win -C Release -R "unit_tests|core_gtest_tests"
+1/4 Test #1: core_unit_tests ..................   Passed
+2/4 Test #2: win_unit_tests ...................   Passed
+3/4 Test #4: face_infer_unit_tests ............   Passed
+4/4 Test #5: core_gtest_tests .................   Passed
+100% tests passed, 0 tests failed out of 4
+```
+
+### 6.6 经验教训
+
+- **CI 只构建部分 CTest 注册目标时，Not Run 会被计入失败** —— 要么构建全部注册目标，要么用 `-R` 精确过滤。
+- **`core_gtest_tests` / `win_face_database_perf` 此前在 CI 中从未真正运行**，潜伏了若干真实 bug。把"应该跑的测试"加进 CI 是正确的，但需同步修复其自身错误。
+- **Windows `core.autocrlf=true` 会破坏短二进制 fixture**，必须用 `.gitattributes` 显式声明 `binary`。
+- **8.3 短名路径**在 CI runner 上真实存在，任何用 `weakly_canonical` 的路径比较测试都需两侧同时规范化。

@@ -277,7 +277,7 @@ if(NOT ANDROID)
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
         "tests/cpp/test_motion.cpp" "tests/cpp/test_adapters.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
-        ${RK_PIPELINE_SOURCES} "tests/cpp/mpp_decoder_stub.cpp"
+        ${RK_PIPELINE_SOURCES}
         "src/win/src/DnnSsdFaceDetector.cpp" "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp")
     target_include_directories(core_gtest_tests PRIVATE
