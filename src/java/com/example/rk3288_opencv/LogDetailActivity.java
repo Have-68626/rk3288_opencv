@@ -17,6 +17,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.TextView;
+import android.widget.ToggleButton;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -59,6 +60,8 @@ public class LogDetailActivity extends AppCompatActivity {
     private Button btnViewMore;
     private Button btnViewAll;
     private EditText etFilter;
+    private ToggleButton btnToggleRegex;
+    private boolean filterUseRegex = false;
     private Button btnFilterMain;
     private Button btnFilterService;
     private Button btnFilterJni;
@@ -295,7 +298,11 @@ public class LogDetailActivity extends AppCompatActivity {
 
         final Pattern pattern;
         try {
-            pattern = Pattern.compile(Pattern.quote(p));
+            if (filterUseRegex) {
+                pattern = Pattern.compile(p);
+            } else {
+                pattern = Pattern.compile(Pattern.quote(p));
+            }
         } catch (PatternSyntaxException e) {
             Toast.makeText(this, "正则错误: " + e.getDescription(), Toast.LENGTH_SHORT).show();
             tvLogContent.setText(src);
@@ -367,6 +374,15 @@ public class LogDetailActivity extends AppCompatActivity {
             }
             return false;
         });
+
+        btnToggleRegex = findViewById(R.id.btn_toggle_regex);
+        if (btnToggleRegex != null) {
+            btnToggleRegex.setOnCheckedChangeListener((button, isChecked) -> {
+                filterUseRegex = isChecked;
+                etFilter.setHint(isChecked ? "筛选（.* 正则模式）" : "筛选（Aa 模式）");
+                scheduleApplyFilter(true);
+            });
+        }
     }
 
     private void scheduleApplyFilter(boolean immediate) {

@@ -139,16 +139,37 @@
             android:textSize="12sp"
             android:layout_marginBottom="8dp" />
 
-        <EditText
-            android:id="@+id/et_filter"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="筛选（支持正则）"
-            android:inputType="text"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#666666"
-            android:background="#333333"
-            android:padding="10dp" />
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/et_filter"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="筛选（Aa 模式）"
+                android:inputType="text"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#666666"
+                android:background="#333333"
+                android:padding="10dp" />
+
+            <ToggleButton
+                android:id="@+id/btn_toggle_regex"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textOff="Aa"
+                android:textOn=".*"
+                android:checked="false"
+                android:backgroundTint="#333333"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:layout_gravity="center_vertical"
+                android:layout_marginStart="8dp" />
+
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
