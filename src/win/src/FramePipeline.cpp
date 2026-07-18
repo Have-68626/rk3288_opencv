@@ -628,7 +628,7 @@ void FramePipeline::processLoop() {
             frameCv_.wait_for(lock, std::chrono::milliseconds(1000),
                               [this] { return hasFrame_ || !running_; });
             if (!hasFrame_ || !running_) continue;
-            latestFrame_.copyTo(frameBuffer);
+            frameBuffer = std::move(latestFrame_);
             ts = latestFrameTs_;
             hasFrame_ = false;
         }
@@ -663,7 +663,7 @@ void FramePipeline::processLoop() {
         cmd.frameCounter = frameIndex_;
 
         // ── 纯计算（检测/识别/清库/注册/背压跳过） ──
-        auto result = processor_->run(frameBuffer, cmd);
+        auto result = processor_->run(std::move(frameBuffer), cmd);
 
         // ── 同步已消费命令回成员变量 ──
         detectStride_ = result.consumedCommand.detectStride;
