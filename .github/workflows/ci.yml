@@ -213,10 +213,12 @@ jobs:
           node --version
           node scripts/clean-repo-junk.js scan --ci
 
-      - name: Cache _deps (opencv sources)
+      - name: Cache _deps (opencv sources, GTest build)
         uses: actions/cache@v4
         with:
-          path: ${{ env.DEPS_DIR }}
+          path: |
+            ${{ env.DEPS_DIR }}
+            ${{ env.BUILD_DIR }}/_deps/googletest-build
           key: deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-v1
           restore-keys: |
             deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-
