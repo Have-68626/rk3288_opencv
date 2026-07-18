@@ -197,6 +197,7 @@ jobs:
       CMAKE_GENERATOR: Visual Studio 17 2022
       CMAKE_PLATFORM: x64
       CMAKE_BUILD_CONFIG: Release
+      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,video,videoio,highgui,stitching"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -280,7 +281,8 @@ jobs:
           cmake --version
           cmake -S . -B $env:BUILD_DIR -G "$env:CMAKE_GENERATOR" -A $env:CMAKE_PLATFORM `
             -DOPENCV_ROOT="$env:OPENCV_ROOT" `
-            -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT"
+            -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT" `
+            -DBUILD_LIST="$env:OPENCV_BUILD_LIST"
 
       - name: Build unit tests
         shell: pwsh
