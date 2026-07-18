@@ -197,6 +197,8 @@ jobs:
       CMAKE_GENERATOR: Visual Studio 17 2022
       CMAKE_PLATFORM: x64
       CMAKE_BUILD_CONFIG: Release
+      # Must match RK_OPENCV_FULL_LIBS in cmake/opencv.cmake (minus "opencv_" prefix).
+      # Currently: core imgproc imgcodecs objdetect features2d flann calib3d dnn ml photo face video videoio highgui stitching
       OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
     steps:
       - name: Checkout
