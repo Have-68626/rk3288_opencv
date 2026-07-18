@@ -304,7 +304,8 @@ jobs:
           $matched = ($changed | Select-String -Pattern '^models/' -Quiet) -or
                      ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) -or
                      ($changed | Select-String -Pattern '^deps/WIDER_train/' -Quiet)
-          if ($matched) { "changed=true" } else { "changed=false" } | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $int8Changed = if ($matched) { "true" } else { "false" }
+          echo "changed=${int8Changed}" >> $env:GITHUB_OUTPUT
           Write-Host "INT8 changed=$matched"
 
       - name: Quantize models (INT8)
