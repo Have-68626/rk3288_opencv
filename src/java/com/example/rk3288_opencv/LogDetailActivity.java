@@ -295,7 +295,7 @@ public class LogDetailActivity extends AppCompatActivity {
 
         final Pattern pattern;
         try {
-            pattern = Pattern.compile(p);
+            pattern = Pattern.compile(Pattern.quote(p));
         } catch (PatternSyntaxException e) {
             Toast.makeText(this, "正则错误: " + e.getDescription(), Toast.LENGTH_SHORT).show();
             tvLogContent.setText(src);
