@@ -43,9 +43,12 @@ set(BUILD_DOCS OFF CACHE BOOL "Build docs")
 set(BUILD_JAVA OFF CACHE BOOL "Build Java wrapper") # We use C++ only
 set(BUILD_opencv_python2 OFF CACHE BOOL "Build Python2")
 set(BUILD_opencv_python3 OFF CACHE BOOL "Build Python3")
-# Explicitly whitelist modules if needed, or rely on default dependencies
-# We definitely need: core, imgproc, video, objdetect, face, imgcodecs
+# Whitelist only the modules we actually link. See RK_OPENCV_FULL_LIBS below.
+# If BUILD_LIST is already set (e.g. from CMakePresets or -D flag), respect it.
 set(BUILD_opencv_world OFF CACHE BOOL "Build opencv_world")
+if(NOT BUILD_LIST)
+    set(BUILD_LIST "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching" CACHE STRING "OpenCV modules to build (empty = all)" FORCE)
+endif()
 
 # Add OpenCV source subdirectory
 # This will build OpenCV as part of the project

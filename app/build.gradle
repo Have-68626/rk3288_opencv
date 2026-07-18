@@ -12,7 +12,7 @@ android {
     namespace 'com.example.rk3288_opencv'
     compileSdk intProp('rk.compileSdk', 34)
 
-    def skipOpencv = (project.findProperty("RK_SKIP_OPENCV") ?: System.getenv("RK_SKIP_OPENCV"))?.toString()?.toBoolean() ?: false
+    def skipOpencv = (project.hasProperty("RK_SKIP_OPENCV") ? project.property("RK_SKIP_OPENCV") : System.getenv("RK_SKIP_OPENCV"))?.toString()?.toBoolean() ?: false
     def opencvRoot = (project.findProperty("OPENCV_ROOT") ?: System.getenv("OPENCV_ROOT"))
     def opencvContribRoot = (project.findProperty("OPENCV_CONTRIB_ROOT") ?: System.getenv("OPENCV_CONTRIB_ROOT"))
 

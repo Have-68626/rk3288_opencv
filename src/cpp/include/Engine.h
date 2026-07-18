@@ -136,6 +136,7 @@ private:
     void performAccelSelfCheck();
 
     // === processFrame 子方法（P2.1）===
+    bool processFrame(const cv::Mat& rawFrame, double decodeMs);
     bool preprocessFrame(const cv::Mat& frame);
     void trackFaces(const std::vector<pipeline::DetectedFace>& faces);
     void renderResults();

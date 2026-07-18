@@ -59,7 +59,7 @@ std::uint64_t readIniU64(const std::filesystem::path& iniPath, const wchar_t* se
     try {
         return static_cast<std::uint64_t>(std::stoull(s));
     } catch (...) {
-        std::cerr << "WinConfig: readIniU64 解析失败 value='" << s << "'" << std::endl;
+        std::wcerr << L"WinConfig: readIniU64 解析失败 value='" << s << L"'" << std::endl;
         return def;
     }
 }
@@ -70,7 +70,7 @@ double readIniDouble(const std::filesystem::path& iniPath, const wchar_t* sectio
     try {
         return std::stod(s);
     } catch (...) {
-        std::cerr << "WinConfig: readIniDouble 解析失败 value='" << s << "'" << std::endl;
+        std::wcerr << L"WinConfig: readIniDouble 解析失败 value='" << s << L"'" << std::endl;
         return def;
     }
 }
