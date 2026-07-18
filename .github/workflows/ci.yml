@@ -159,7 +159,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -187,7 +187,7 @@ jobs:
     name: windows-build-test
     if: >
       github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 120
     env:
       OPENCV_VERSION: "4.10.0"
@@ -197,22 +197,12 @@ jobs:
       CMAKE_GENERATOR: Visual Studio 17 2022
       CMAKE_PLATFORM: x64
       CMAKE_BUILD_CONFIG: Release
+      # Must match RK_OPENCV_FULL_LIBS in cmake/opencv.cmake (minus "opencv_" prefix).
+      # Currently: core imgproc imgcodecs objdetect features2d flann calib3d dnn ml photo face video videoio highgui stitching
+      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'src/cpp/**/*.cpp', 'src/cpp/**/*.h') }}
-          restore-keys: |
-            ccache-${{ runner.os }}-
-
-      - name: Configure ccache
-        run: |
-          ccache --max-size=500M
-          echo "CCACHE_DIR=~/.ccache" >> $GITHUB_ENV
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -225,10 +215,12 @@ jobs:
           node --version
           node scripts/clean-repo-junk.js scan --ci
 
-      - name: Cache _deps (opencv sources)
+      - name: Cache _deps (opencv sources, GTest build)
         uses: actions/cache@v4
         with:
-          path: ${{ env.DEPS_DIR }}
+          path: |
+            ${{ env.DEPS_DIR }}
+            ${{ env.BUILD_DIR }}/_deps/googletest-build
           key: deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-v1
           restore-keys: |
             deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-
@@ -278,21 +270,45 @@ jobs:
           cmake --version
           cmake -S . -B $env:BUILD_DIR -G "$env:CMAKE_GENERATOR" -A $env:CMAKE_PLATFORM `
             -DOPENCV_ROOT="$env:OPENCV_ROOT" `
-            -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT"
+            -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT" `
+            -DBUILD_LIST="$env:OPENCV_BUILD_LIST"
 
       - name: Build unit tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests -- /m
+          # 只构建并运行单元测试套件。win_face_database_perf 是性能基准
+          # （约 80s 且依赖 OpenCV FileStorage 往返，环境敏感），不参与 PR 门禁。
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests -- /m
 
       - name: Run ctest
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG --output-on-failure
+          # 仅运行单元测试套件，排除性能基准 win_face_database_perf
+          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests" --output-on-failure
+
+      - name: Check for model/quantize changes
+        id: changed-int8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $baseSha = "${{ github.event.pull_request.base.sha }}"
+          $headSha = "${{ github.event.pull_request.head.sha }}"
+          if ([string]::IsNullOrEmpty($baseSha)) {
+            echo "changed=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Not a PR (push/workflow_dispatch) — running INT8 steps"
+            return
+          }
+          $changed = git diff --name-only $baseSha $headSha
+          $matched = ($changed | Select-String -Pattern '^models/' -Quiet) -or
+                     ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) -or
+                     ($changed | Select-String -Pattern '^deps/WIDER_train/' -Quiet)
+          if ($matched) { "changed=true" } else { "changed=false" } | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "INT8 changed=$matched"
 
       - name: Quantize models (INT8)
+        if: steps.changed-int8.outputs.changed == 'true'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -306,6 +322,7 @@ jobs:
             --num-samples 50
 
       - name: Run INT8 precision tests
+        if: steps.changed-int8.outputs.changed == 'true'
         continue-on-error: true
         shell: pwsh
         run: |

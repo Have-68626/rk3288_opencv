@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "ModelRegistry.h"
 
+using namespace rk_core;
+
 TEST(AdapterTest, ModelRegistryInstance) {
     auto& registry = ModelRegistry::instance();
     // 单例必须始终有效
