@@ -10,7 +10,7 @@ void ResultPublisher::setCallback(TextCallback cb) {
     callback_ = std::move(cb);
 }
 
-void ResultPublisher::publish(const FrameOutcome& outcome) {
+void ResultPublisher::publish(FrameOutcome&& outcome) {
     long long now = outcome.events.empty() ? 0 : outcome.events[0].timestampMs;
     if (now == 0) {
         // 尝试从 stats 推断或使用当前时间
@@ -53,10 +53,10 @@ void ResultPublisher::publish(const FrameOutcome& outcome) {
         }
     }
 
-    // 发布渲染帧
+    // 发布渲染帧 — 使用移动语义，消除深拷贝
     if (!outcome.renderFrame.empty()) {
         std::lock_guard<std::mutex> lk(renderMu_);
-        outcome.renderFrame.copyTo(renderFrame_);
+        renderFrame_ = std::move(outcome.renderFrame);
         renderSeq_++;
     }
 }

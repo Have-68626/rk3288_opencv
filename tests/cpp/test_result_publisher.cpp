@@ -17,7 +17,7 @@ bool test_publisher_emits_no_face_on_empty_tracks() {
     outcome.events.push_back(ev);
     // outcome.tracks is empty by default
 
-    pub.publish(outcome);
+    pub.publish(std::move(outcome));
     assert(lastMsg == "NO_FACE");
     return true;
 }
@@ -36,8 +36,13 @@ bool test_publisher_throttles_repeated_calls() {
     ev.timestampMs = now;
     outcome.events.push_back(ev);
 
-    pub.publish(outcome);
-    pub.publish(outcome);  // 第二次，same timestamp → 应被节流
+    pub.publish(std::move(outcome));
+    // 第二次，重建 outcome（同时间戳）→ 应被节流
+    pipeline::FrameOutcome outcome2;
+    pipeline::DomainEvent ev2;
+    ev2.timestampMs = now;
+    outcome2.events.push_back(ev2);
+    pub.publish(std::move(outcome2));
 
     assert(count == 1);  // 只有第一次应触发回调
     return true;
