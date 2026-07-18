@@ -125,7 +125,7 @@ bool test_int8_precision_detection_iou() {
     if (!readParamLayerCount("models/yolo_face_int8_ncnn/yolo_face_int8.param", layers)) return false;
     if (layers <= 0) return false;
 
-#ifdef RK_HAVE_NCNN
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
     {
         if (skipIfNoModel("models/yolo_face_ncnn/yolo_face.param")) return true;
         // ncnn 推理比较：虚拟输入 → FP32 检测 → INT8 检测 → 输出维度一致
@@ -160,7 +160,7 @@ bool test_int8_precision_arcface_similarity() {
     if (skipIfNoModel("models/arcface_ncnn/arcface.param")) return true;
     if (skipIfNoModel("models/arcface_int8_ncnn/arcface_int8.param")) return true;
 
-#ifdef RK_HAVE_NCNN
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
     {
         if (skipIfNoModel("models/arcface_ncnn/arcface.param")) return true;
         // ncnn 推理比较：虚拟人脸 → FP32 嵌入 → INT8 嵌入 → cosine ≥ 0.90

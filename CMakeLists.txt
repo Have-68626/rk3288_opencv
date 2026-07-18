@@ -215,12 +215,12 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         "tests/cpp/test_gallery_cache.cpp"
         "tests/cpp/test_result_publisher.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
-        "tests/cpp/mpp_decoder_stub.cpp"
         "src/win/src/DnnSsdFaceDetector.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/cpp/src/pipeline/ResultPublisher.cpp"
         "src/cpp/src/pipeline/PerfReporter.cpp"
+        "src/cpp/src/pipeline/TrackCoordinator.cpp"
     )
     target_include_directories(face_infer_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
@@ -236,6 +236,9 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
             NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
     endif()
     target_link_libraries(face_infer_unit_tests ${RK_OPENCV_FULL_LIBS})
+    if(TARGET GTest::gtest)
+        target_link_libraries(face_infer_unit_tests GTest::gtest)
+    endif()
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(face_infer_unit_tests ${RK_NCNN_TARGET})
     endif()
