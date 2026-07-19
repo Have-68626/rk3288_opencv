@@ -88,3 +88,22 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     endif()
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
 endif()
+
+# ── 编译器契约辅助函数 ──
+# 调用点见 CMakeLists.txt 末尾（所有 target 定义之后）
+# 不能在 include 时内联执行：此时生产 target 尚未定义
+function(rk_apply_compiler_contract)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        set(RK_SAFETY_EXCLUDED
+            core_unit_tests core_gtest_tests
+            face_infer_unit_tests win_unit_tests ncnn_precision_test
+            win_face_database_perf
+        )
+        foreach(t ${RK_ENGINE_TARGETS})
+            if(NOT ${t} IN_LIST RK_SAFETY_EXCLUDED AND TARGET ${t})
+                target_compile_options(${t} PRIVATE
+                    -fno-exceptions -fno-rtti -fvisibility=hidden)
+            endif()
+        endforeach()
+    endif()
+endfunction()

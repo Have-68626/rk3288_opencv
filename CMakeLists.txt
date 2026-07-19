@@ -339,3 +339,6 @@ foreach(t ${RK_ENGINE_TARGETS})
         target_compile_definitions(${t} PRIVATE ${RK_COMMON_DEFS})
     endif()
 endforeach()
+
+# 编译器契约 — 在所有 target 定义之后统一应用
+rk_apply_compiler_contract()
