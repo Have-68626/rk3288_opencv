@@ -304,14 +304,15 @@ jobs:
               $changed = git diff --name-only $baseSha $headSha 2>$null
               if ($LASTEXITCODE -ne 0) { $changed = @() }
           } catch {
+              Write-Host "git diff unavailable — assuming no INT8 changes"
               $changed = @()
           }
           $matched = ($changed | Select-String -Pattern '^models/' -Quiet) -or
                      ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) -or
                      ($changed | Select-String -Pattern '^deps/WIDER_train/' -Quiet)
           $int8Changed = if ($matched) { "true" } else { "false" }
-          echo "changed=${int8Changed}" >> $env:GITHUB_OUTPUT
           Write-Host "INT8 changed=$matched"
+          if ($env:GITHUB_OUTPUT) { Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=${int8Changed}" }
 
       - name: Quantize models (INT8)
         if: steps.changed-int8.outputs.changed == 'true'
