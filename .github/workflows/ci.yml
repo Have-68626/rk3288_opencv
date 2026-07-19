@@ -304,7 +304,7 @@ jobs:
             if ($LASTEXITCODE -eq 0) {
               $changed = $diff
             } else {
-              $changed = git diff --name-only HEAD^..HEAD
+              $changed = git diff --name-only HEAD~1 HEAD
             }
             $matched = ($changed | Select-String -Pattern '^models/' -Quiet)
             if (-not $matched) { $matched = ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) }
