@@ -1477,31 +1477,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void handleMockFileSelection(Uri uri) {
         if (uri == null) return;
 
-        String direct = null;
-        try {
-            if ("file".equalsIgnoreCase(uri.getScheme())) {
-                java.io.File f = new java.io.File(uri.getPath());
-                if (f.exists() && f.isFile() && f.canRead()) {
-                    direct = f.getAbsolutePath();
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-
-        if (direct != null && !direct.isEmpty()) {
-            mockFilePath = direct;
-            selectedCameraId = null;
-            isSpinnerInitialized = true;
-            refreshFlipFromPrefs(true);
-            if (isRunning) {
-                stopMonitoring();
-                handler.postDelayed(MainActivity.this::startMonitoring, 500);
-            } else {
-                initEngine();
-            }
-            return;
-        }
-
         ProgressDialog progressDialog = new ProgressDialog(this);
         progressDialog.setTitle("加载 Mock 文件");
         progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
@@ -1807,11 +1782,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         try {
             String path = mockFilePath;
             if (path == null || path.isEmpty()) return "Mock预检失败：未选择输入";
-            if (path.startsWith("http://") || path.startsWith("https://")) {
+            Uri parsed = Uri.parse(path);
+            String scheme = parsed.getScheme();
+            if (scheme != null && !scheme.isEmpty() && !"file".equalsIgnoreCase(scheme)) {
                 return "Mock预检: URL 源（无法预读元数据，运行时将自动降档到≤1080p60，推理640x480）";
             }
 
-            File f = new File(path);
+            File f = toSafeAppFile(path);
+            if (f == null) return "Mock预检失败：文件路径不受信任";
             if (!f.exists()) return "Mock预检: 文件不存在";
 
             Integer w = null;
@@ -1869,6 +1847,31 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             return sb.toString();
         } catch (Throwable t) {
             return "Mock预检失败: " + t.getMessage();
+        }
+    }
+
+    private File toSafeAppFile(String path) {
+        try {
+            File f = new File(path);
+            File canonical = f.getCanonicalFile();
+            File cacheDir = getCacheDir() == null ? null : getCacheDir().getCanonicalFile();
+            File filesDir = getFilesDir() == null ? null : getFilesDir().getCanonicalFile();
+            if (isUnderDir(canonical, cacheDir) || isUnderDir(canonical, filesDir)) {
+                return canonical;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private boolean isUnderDir(File target, File base) {
+        if (target == null || base == null) return false;
+        try {
+            String basePath = base.getCanonicalPath();
+            String targetPath = target.getCanonicalPath();
+            return targetPath.equals(basePath) || targetPath.startsWith(basePath + File.separator);
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -2669,6 +2672,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         String url = etMockUrl.getText() == null ? "" : etMockUrl.getText().toString().trim();
         if (url.isEmpty()) {
             Toast.makeText(this, "请输入 Mock URL", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Uri parsed = Uri.parse(url);
+        String scheme = parsed.getScheme();
+        if (scheme == null
+                || (!"http".equalsIgnoreCase(scheme)
+                    && !"https".equalsIgnoreCase(scheme)
+                    && !"rtsp".equalsIgnoreCase(scheme)
+                    && !"rtmp".equalsIgnoreCase(scheme))) {
+            Toast.makeText(this, "仅支持 http/https/rtsp/rtmp URL", Toast.LENGTH_SHORT).show();
             return;
         }
         mockFilePath = url;
