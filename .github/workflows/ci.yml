@@ -292,27 +292,31 @@ jobs:
         id: changed-int8
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $baseSha = "${{ github.event.pull_request.base.sha }}"
-          $headSha = "${{ github.event.pull_request.head.sha }}"
-          if ([string]::IsNullOrEmpty($baseSha)) {
-            echo "changed=true" >> $env:GITHUB_OUTPUT
-            Write-Host "Not a PR (push/workflow_dispatch) — running INT8 steps"
-            return
-          }
           try {
-              $changed = git diff --name-only $baseSha $headSha 2>$null
-              if ($LASTEXITCODE -ne 0) { $changed = @() }
+            $ErrorActionPreference = "Stop"
+            $baseSha = "${{ github.event.pull_request.base.sha }}"
+            $headSha = "${{ github.event.pull_request.head.sha }}"
+            if ([string]::IsNullOrEmpty($baseSha)) {
+              "changed=true" >> $env:GITHUB_OUTPUT
+              Write-Host "Not a PR — running INT8 steps"
+              return
+            }
+            $diff = git diff --name-only $baseSha $headSha
+            if ($LASTEXITCODE -eq 0) {
+              $changed = $diff
+            } else {
+              $changed = git diff --name-only HEAD^..HEAD
+            }
+            $matched = ($changed | Select-String -Pattern '^models/' -Quiet)
+            if (-not $matched) { $matched = ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) }
+            if (-not $matched) { $matched = ($changed | Select-String -Pattern '^deps/WIDER_train/' -Quiet) }
+            $int8Changed = if ($matched) { "true" } else { "false" }
+            Write-Host "INT8 changed=$matched"
+            if ($env:GITHUB_OUTPUT) { "changed=${int8Changed}" >> $env:GITHUB_OUTPUT }
           } catch {
-              Write-Host "git diff unavailable — assuming no INT8 changes"
-              $changed = @()
+            Write-Host "INT8 detection failed: $_"
+            if ($env:GITHUB_OUTPUT) { "changed=true" >> $env:GITHUB_OUTPUT }
           }
-          $matched = ($changed | Select-String -Pattern '^models/' -Quiet) -or
-                     ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) -or
-                     ($changed | Select-String -Pattern '^deps/WIDER_train/' -Quiet)
-          $int8Changed = if ($matched) { "true" } else { "false" }
-          Write-Host "INT8 changed=$matched"
-          if ($env:GITHUB_OUTPUT) { Add-Content -Path $env:GITHUB_OUTPUT -Value "changed=${int8Changed}" }
 
       - name: Quantize models (INT8)
         if: steps.changed-int8.outputs.changed == 'true'
