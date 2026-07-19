@@ -293,7 +293,6 @@ jobs:
         shell: pwsh
         run: |
           try {
-            $ErrorActionPreference = "Stop"
             $baseSha = "${{ github.event.pull_request.base.sha }}"
             $headSha = "${{ github.event.pull_request.head.sha }}"
             if ([string]::IsNullOrEmpty($baseSha)) {
