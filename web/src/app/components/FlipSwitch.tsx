@@ -13,9 +13,17 @@ interface FlipSwitchProps {
 const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onChange }) => {
   const id = React.useId();
 
+  const handleLabelClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!disabled) {
+      onChange(!checked);
+    }
+  };
+
   return (
     <label
       htmlFor={id}
+      onClick={handleLabelClick}
       style={{
         cursor: disabled ? 'not-allowed' : 'pointer',
         display: 'inline-flex',
@@ -29,6 +37,7 @@ const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onCha
         checked={checked}
         disabled={disabled}
         onChange={onChange}
+        onClick={(_, e) => e.stopPropagation()}
       />
     </label>
   );
