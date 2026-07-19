@@ -88,3 +88,20 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     endif()
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
 endif()
+
+# ── C++ 编译器契约（契约 #5 符号隐藏 + 契约 #4 异常禁止）──
+# 仅对非测试的生产 target 应用 -fno-exceptions -fno-rtti -fvisibility=hidden
+# 测试 target 需链接 GTest（依赖 RTTI），排除在应用范围外
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    set(RK_SAFETY_EXCLUDED
+        core_unit_tests core_gtest_tests
+        face_infer_unit_tests win_unit_tests ncnn_precision_test
+        win_face_database_perf
+    )
+    foreach(t ${RK_ENGINE_TARGETS})
+        if(NOT ${t} IN_LIST RK_SAFETY_EXCLUDED AND TARGET ${t})
+            target_compile_options(${t} PRIVATE
+                -fno-exceptions -fno-rtti -fvisibility=hidden)
+        endif()
+    endforeach()
+endif()
