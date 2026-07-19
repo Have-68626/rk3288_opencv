@@ -300,8 +300,12 @@ jobs:
             Write-Host "Not a PR (push/workflow_dispatch) — running INT8 steps"
             return
           }
-          $changed = git diff --name-only $baseSha $headSha 2>$null
-          if (-not $?) { $changed = @() }
+          try {
+              $changed = git diff --name-only $baseSha $headSha 2>$null
+              if ($LASTEXITCODE -ne 0) { $changed = @() }
+          } catch {
+              $changed = @()
+          }
           $matched = ($changed | Select-String -Pattern '^models/' -Quiet) -or
                      ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) -or
                      ($changed | Select-String -Pattern '^deps/WIDER_train/' -Quiet)
