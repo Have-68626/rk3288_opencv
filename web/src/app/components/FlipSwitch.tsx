@@ -1,46 +1,59 @@
-import React from 'react';
+import React, { forwardRef } from 'react';
 import { Switch, Typography } from 'antd';
+import type { SwitchProps } from 'antd';
 
 const { Text } = Typography;
 
-interface FlipSwitchProps {
-  label: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
+export interface FlipSwitchProps extends SwitchProps {
+  label?: React.ReactNode;
 }
 
-const FlipSwitch: React.FC<FlipSwitchProps> = ({ label, checked, disabled, onChange }) => {
-  const id = React.useId();
+const FlipSwitch = forwardRef<HTMLButtonElement, FlipSwitchProps>(({ label, ...props }, ref) => {
+  const generatedId = React.useId();
+  const id = props.id || generatedId;
 
   const handleLabelClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (!disabled) {
-      onChange(!checked);
+    if (!props.disabled && !props.loading && props.onChange) {
+      props.onChange(!props.checked, e as unknown as React.MouseEvent<HTMLButtonElement>);
     }
   };
+
+  const innerSwitch = (
+    <Switch
+      {...props}
+      id={id}
+      ref={ref}
+      onClick={(checked, e) => {
+        e.stopPropagation();
+        if (props.onClick) {
+          props.onClick(checked, e);
+        }
+      }}
+    />
+  );
+
+  if (!label) {
+    return innerSwitch;
+  }
 
   return (
     <label
       htmlFor={id}
       onClick={handleLabelClick}
       style={{
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        cursor: (props.disabled || props.loading) ? 'not-allowed' : 'pointer',
         display: 'inline-flex',
         alignItems: 'center',
         gap: 8,
       }}
     >
-      <Text disabled={disabled}>{label}</Text>
-      <Switch
-        id={id}
-        checked={checked}
-        disabled={disabled}
-        onChange={onChange}
-        onClick={(_, e) => e.stopPropagation()}
-      />
+      <Text disabled={props.disabled || props.loading}>{label}</Text>
+      {innerSwitch}
     </label>
   );
-};
+});
+
+FlipSwitch.displayName = 'FlipSwitch';
 
 export default FlipSwitch;
