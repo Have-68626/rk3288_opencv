@@ -40,7 +40,9 @@ public:
     void setCallback(TextCallback cb);
 
     // 发布一帧的副作用：回调节流 + 渲染帧持久化 + 异常事件生产
-    void publish(const FrameOutcome& outcome);
+    // 接受右值引用，使用移动语义消除内部深拷贝。
+    // 发布完成后 outcome 内的 renderFrame 变为空。
+    void publish(FrameOutcome&& outcome);
 
     // 获取最新渲染帧（线程安全）
     bool getRenderFrame(cv::Mat& out, uint64_t& seq);

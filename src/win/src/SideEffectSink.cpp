@@ -66,9 +66,13 @@ void SideEffectSink::publish(FrameResult& result, FrameLogEntry& logEntry) {
     // ── 1. Overlay 绘制 ──
     drawFacesOverlay(result.drawFrame, result.matches);
 
-    // ── 2. 更新渲染态 ──
+    // 在 move 之前保存帧尺寸（供日志使用）
+    const int frameCols = result.drawFrame.cols;
+    const int frameRows = result.drawFrame.rows;
+
+    // ── 2. 更新渲染态（move 替代 copy） ──
     if (render_) {
-        result.drawFrame.copyTo(render_->bgr);
+        render_->bgr = std::move(result.drawFrame);
         render_->faces.clear();
         render_->faces.reserve(result.matches.size());
         for (const auto& dm : result.matches) {
@@ -85,9 +89,9 @@ void SideEffectSink::publish(FrameResult& result, FrameLogEntry& logEntry) {
             logEntry.faces.push_back(toFaceLogEntry(dm));
         }
 
-        // 补充帧尺寸（从 drawFrame 获取）
-        logEntry.frameWidth = result.drawFrame.cols;
-        logEntry.frameHeight = result.drawFrame.rows;
+        // 补充帧尺寸（move 前已保存）
+        logEntry.frameWidth = frameCols;
+        logEntry.frameHeight = frameRows;
 
         logger_->append(logEntry);
     }
