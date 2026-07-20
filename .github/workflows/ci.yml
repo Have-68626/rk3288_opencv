@@ -203,6 +203,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -304,7 +306,7 @@ jobs:
             if ($LASTEXITCODE -eq 0) {
               $changed = $diff
             } else {
-              $changed = git log -m -1 --name-only --pretty="format:"
+              $changed = git diff --name-only HEAD~1..HEAD
             }
             $matched = ($changed | Select-String -Pattern '^models/' -Quiet)
             if (-not $matched) { $matched = ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) }

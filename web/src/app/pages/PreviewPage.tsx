@@ -304,6 +304,7 @@ export function PreviewPage() {
               label="翻转 X"
               checked={flipX}
               disabled={isFlippingY}
+              loading={isFlippingX}
               onChange={async (v) => {
                 const original = flipX
                 setFlipX(v)
@@ -323,6 +324,7 @@ export function PreviewPage() {
               label="翻转 Y"
               checked={flipY}
               disabled={isFlippingX}
+              loading={isFlippingY}
               onChange={async (v) => {
                 const original = flipY
                 setFlipY(v)
