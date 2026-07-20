@@ -93,6 +93,17 @@ Makefile
 .vs/
 .Jules/
 
+# AI Agent work directories
+.agents/
+.codegraph/
+.codex/
+
+# AI agent artifacts
+graphify-out/
+
+# Claude Code config (local only, not tracked)
+.claude/
+
 # Temp
 *.tmp
 *.log
