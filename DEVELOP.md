@@ -66,7 +66,7 @@ Windows 端采用现代化的“本地服务 + Web UI”架构。
 ```mermaid
 graph LR
     subgraph "Windows Terminal"
-        Service[C++ Service (CivetWeb)]
+        Service[C++ Service (HttpFacesServer / Winsock)]
         SPA[Web SPA (React)]
         Service <->|REST API / SSE| SPA
     end
@@ -208,7 +208,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 - **附录 C**：[Android 摄像头调用机制研究](#附录-c-android-摄像头调用机制研究)
 - **附录 D**：[人脸识别技术实现方案研究](#附录-d-人脸识别技术实现方案研究)
 - **附录 E**：[性能优化与故障排障研究](#附录-e-性能优化与故障排障研究)
-- **附录 F**：[证据日志分析报告](#附录-f-日志分析报告evidence_20170115_035627)
+- **附录 F**：[证据日志分析报告](#附录-f-日志分析报告evidence20170115035627)
 - **附录 G**：[稳定性治理审计修复计划](#附录-g-稳定性治理审计修复计划)
 - **附录 H**：[稳定性治理分阶段执行报告](#附录-h-稳定性治理分阶段执行报告)
 

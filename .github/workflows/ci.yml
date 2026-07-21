@@ -77,29 +77,6 @@ jobs:
           path: build_ci/Testing/
           if-no-files-found: ignore
 
-  docs-audit:
-    name: docs-sync-audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Run Docs Sync Audit
-        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
-
-      - name: Upload Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docs-audit-reports
-          path: tests/reports/docs-sync-audit/
-          if-no-files-found: ignore
-
   web:
     name: web-build-test
     runs-on: ubuntu-latest

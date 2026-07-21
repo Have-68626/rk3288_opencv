@@ -203,10 +203,10 @@
 
 ### 9.1 图索引
 - **图 3-1** 系统分层架构
-- [图 5-1 CameraX 生命周期与资源边界](#fig-5-1)
-- [图 5-2 CameraX 打开-预览-分析-释放](#fig-5-2)
-- [图 5-3 CameraX 拍照（ImageCapture）完整时序](#fig-5-3)
-- [图 5-4 CameraX 录像（VideoCapture + Recorder）完整时序](#fig-5-4)
+- [图 5-1 CameraX 生命周期与资源边界](appendix-c.md#fig-5-1)
+- [图 5-2 CameraX 打开-预览-分析-释放](appendix-c.md#fig-5-2)
+- [图 5-3 CameraX 拍照（ImageCapture）完整时序](appendix-c.md#fig-5-3)
+- [图 5-4 CameraX 录像（VideoCapture + Recorder）完整时序](appendix-c.md#fig-5-4)
 
 ### 9.2 表索引
 - **表 1-1** 术语对照表
@@ -216,24 +216,24 @@
 - **表 4-3** ncnn / OpenCV DNN 推理闭环
 - **表 4-4** DRM/KMS 双缓冲显示流程
 - **表 4-5** CameraX + Native 分析流程
-- [表 5-1 摄像头 API/库对比表](#tbl-5-1)
-- [表 5-2 常见第三方封装库对比](#tbl-5-2)
-- [表 5-3 Fotoapparat 与 CAMKit 对比（工程审计口径）](#tbl-5-3)
-- [表 5-4 Android 13+ 权限与后台限制对照](#tbl-5-4)
-- [表 5-5 常见拍照/录像输出格式](#tbl-5-5)
-- [表 5-6 广角/长焦/TOF/红外：枚举方法与启发式判定（工程口径）](#tbl-5-6)
-- [表 5-7 常用“能力查询”字段速查（闪光/对焦/曝光补偿等）](#tbl-5-7)
-- [表 6-1 离线端侧与云端方案对比表](#tbl-6-1)
-- [表 6-2 基准结果记录格式（CSV 字段定义）](#tbl-6-2)
-- [表 6-3 活体检测路线对比](#tbl-6-3)
-- [表 6-4 集成清单与交付物](#tbl-6-4)
-- [表 6-5 PAD 指标字段与解释](#tbl-6-5)
-- [表 6-6 人脸方案对比（ML Kit / MediaPipe / ArcFace / Dlib / 百度 / 优图）](#tbl-6-6)
-- [表 6-7 云厂商对比（阿里 / AWS / Azure）](#tbl-6-7)
-- [表 6-8 特征维度/模板大小/阈值/延迟对比表（统一口径模板，需以实测填充）](#tbl-6-8)
-- [表 6-9 特征加密文件格式（建议固定，便于兼容与迁移）](#tbl-6-9)
-- [表 6-10 特征加密存储异常映射与处理策略（建议直接照表实现）](#tbl-6-10)
-- [表 6-11 CI 门禁阈值（建议默认值，可按产品定义调整）](#tbl-6-11)
+- [表 5-1 摄像头 API/库对比表](appendix-c.md#tbl-5-1)
+- [表 5-2 常见第三方封装库对比](appendix-c.md#tbl-5-2)
+- [表 5-3 Fotoapparat 与 CAMKit 对比（工程审计口径）](appendix-c.md#tbl-5-3)
+- [表 5-4 Android 13+ 权限与后台限制对照](appendix-c.md#tbl-5-4)
+- [表 5-5 常见拍照/录像输出格式](appendix-c.md#tbl-5-5)
+- [表 5-6 广角/长焦/TOF/红外：枚举方法与启发式判定（工程口径）](appendix-c.md#tbl-5-6)
+- [表 5-7 常用“能力查询”字段速查（闪光/对焦/曝光补偿等）](appendix-c.md#tbl-5-7)
+- [表 6-1 离线端侧与云端方案对比表](appendix-d.md#tbl-6-1)
+- [表 6-2 基准结果记录格式（CSV 字段定义）](appendix-d.md#tbl-6-2)
+- [表 6-3 活体检测路线对比](appendix-d.md#tbl-6-3)
+- [表 6-4 集成清单与交付物](appendix-d.md#tbl-6-4)
+- [表 6-5 PAD 指标字段与解释](appendix-d.md#tbl-6-5)
+- [表 6-6 人脸方案对比（ML Kit / MediaPipe / ArcFace / Dlib / 百度 / 优图）](appendix-d.md#tbl-6-6)
+- [表 6-7 云厂商对比（阿里 / AWS / Azure）](appendix-d.md#tbl-6-7)
+- [表 6-8 特征维度/模板大小/阈值/延迟对比表（统一口径模板，需以实测填充）](appendix-d.md#tbl-6-8)
+- [表 6-9 特征加密文件格式（建议固定，便于兼容与迁移）](appendix-d.md#tbl-6-9)
+- [表 6-10 特征加密存储异常映射与处理策略（建议直接照表实现）](appendix-d.md#tbl-6-10)
+- [表 6-11 CI 门禁阈值（建议默认值，可按产品定义调整）](appendix-d.md#tbl-6-11)
 
 ---
 

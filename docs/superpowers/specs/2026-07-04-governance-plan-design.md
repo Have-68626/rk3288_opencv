@@ -231,7 +231,7 @@ cmake --build build
 | 3.2 | **注册 4 个 404 端点** — crypto/rotate + privacy/open + preview.jpg + acceleration → EndpointRegistry | JsonEndpointHandlers.cpp | 1 天 | 中 |
 | 3.3 | **清理 kRoutes 死代码** — 删除 kRoutes[16] 数组 + 7 个内联处理函数 | HttpFacesServer.cpp:274-600 | 1 天 | 中 |
 | 3.4 | **acceptLoop 线程模型** — .detach() → 线程池或 shared_ptr 控制标志 | HttpFacesServer.cpp:375-449 | 1 天 | 中 |
-| 3.5 | **civetweb SSL 验证** — SSL_VERIFY_NONE → SSL_VERIFY_PEER | third_party/civetweb/civetweb.c:18341 | 2 天 | 高 |
+| 3.5 | **CivetWeb SSL 验证** — 历史审计项，现已废弃：CivetWeb 未编入目标；若未来接入，再按 `SSL_VERIFY_NONE → SSL_VERIFY_PEER` 与证书验证测试执行 | third_party/civetweb/civetweb.c:18341 | 不适用 | — |
 | 3.6 | **拆分 WinJsonConfig** — JsonSchemaValidator + ConfigSerializer 提取 | WinJsonConfig.cpp (1474行) | 2 天 | 中 |
 | 3.7 | **拆分 HttpFacesServer** — HttpParser + StreamSessionManager 提取 | HttpFacesServer.cpp (1013行) | 2 天 | 中 |
 | 3.8 | **工具库提取** — escapeJson/utf8FromWide/jsonOk 统一到公共文件 | 跨约 6 个文件 | 1 天 | 中 |
