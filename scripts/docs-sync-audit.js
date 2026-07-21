@@ -83,7 +83,7 @@ function parseAgentGuideFacts(md) {
   const facts = {};
   const body = md.slice(start + AGENT_GUIDE_FACTS_START.length, end);
   for (const line of body.split(/\r?\n/)) {
-    const match = line.trim().match(/^([a-z0-9_]+)=(.+)$/i);
+    const match = line.trim().match(/^([a-z0-9_]+)\s*=\s*(.+)$/i);
     if (match) facts[match[1]] = match[2].trim();
   }
   return facts;
@@ -109,7 +109,10 @@ function extractWorkflowJobBlock(yaml, jobName) {
 }
 
 function detectAgentGuideFacts(repoRoot) {
-  const read = (relativePath) => fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  const read = (relativePath) => {
+    const fullPath = path.join(repoRoot, relativePath);
+    return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, "utf8") : "";
+  };
   const wrapper = read("gradle/wrapper/gradle-wrapper.properties");
   const workflow = read(".github/workflows/ci.yml");
   const androidJob = extractWorkflowJobBlock(workflow, "android");
@@ -130,7 +133,8 @@ function detectAgentGuideFacts(repoRoot) {
   return {
     gradle_wrapper: gradleMatch ? gradleMatch[1] : "unknown",
     android_ci_java: javaMatch ? javaMatch[1] : "unknown",
-    windows_ci_events: windowsJob.includes("github.event_name == 'pull_request'") && windowsJob.includes("github.event_name == 'push'")
+    windows_ci_events: /github\.event_name\s*==\s*['"]pull_request['"]/.test(windowsJob) &&
+      /github\.event_name\s*==\s*['"]push['"]/.test(windowsJob)
       ? "pull_request,push"
       : "unknown",
     windows_ci_workflow_dispatch: windowsJob.includes("workflow_dispatch") ? "true" : "false",
