@@ -1,14 +1,24 @@
 # RK3288 目标设备画像与约束清单
 
-**版本**: v0.1beta1
-**更新日期**: 2026-06-23
+**版本**: v0.2
+**更新日期**: 2026-07-21
 
 本文用于把“目标设备画像（可复现）”与“工程硬约束（不可突破）”固化为统一口径，供选型、实现与验收使用。
 
 ## 0. 目标设备画像（Target Device Profile）
-以下画像基于已知目标设备信息（RK3288 工控机、Android 7.1.2、2GB RAM、8GB 存储、仅 CPU+GPU、前置摄像头 1 路）整理；其余字段可在设备上用第 2 节命令补齐。
 
-### 0.1 硬件（已知）
+以下画像是当前工程采用的目标输入（RK3288 工控机、Android 7.1.2、2GB RAM、8GB 存储、前置摄像头 1 路），尚未由可追溯的设备采集记录完整证明。仓库内 `kernel.config` 可证明一组 Linux 4.4.143 配置值，但缺少设备序列脱敏标识、构建指纹、采集时间和采集命令记录，不能单独证明它来自当前目标机。
+
+### 0.0 证据状态
+
+| 输入 | 当前状态 | 使用边界 |
+|---|---|---|
+| `docs/bsp/kernel-config/kernel.config` | 有内容，显示 Linux/arm 4.4.143；来源元数据缺失 | 可用于配置项静态比对，不可作为目标设备身份凭据 |
+| `docs/bsp/defconfig/rk3288_defconfig` | 临时基准，由运行态快照摘录 | 不等同于厂商 BSP 原始 defconfig |
+| `docs/bsp/BSP_RELEASE_NOTES.md` | 占位，版本、交付编号与补丁摘要未填写 | 不得据此断言 BSP 版本或驱动修复状态 |
+| 真机画像（Android、内存、存储、相机、GPU） | 尚未在仓库固化完整采集结果 | 下列数值均按目标输入管理，最终以第 2 节采集结果为准 |
+
+### 0.1 硬件（目标输入，待真机溯源）
 - **SoC**：Rockchip RK3288
 - **CPU**：四核 ARM Cortex-A17，最高主频约 1.8GHz
   - 架构：ARMv7-A（32 位）
@@ -20,7 +30,7 @@
 - **存储**：8GB（以 `/data` 可用空间为准）
 - **摄像头**：前置摄像头 1 路（以实时预览 + 分析为主）
 
-### 0.2 软件（已知/基线）
+### 0.2 软件（目标基线，待真机溯源）
 - **系统**：Android 7.1.2（常见 API Level 25；以 `getprop ro.build.version.sdk` 为准）
 - **ABI 基线**：`armeabi-v7a`（32 位）
 - **计算前提**：仅 CPU + GPU；**不依赖 NPU/NNAPI 硬件加速**
@@ -34,7 +44,7 @@
 ## 1. 工程约束清单（Constraints）
 
 ### 1.1 ABI / 指令集 / 打包
-- **只支持 `armeabi-v7a`**：所有 native `.so` 必须提供 32 位版本；不得假设 `arm64-v8a` 存在。
+- **RK3288 目标 ABI 为 `armeabi-v7a`**：面向目标机的所有 native `.so` 必须提供 32 位版本，不得假设目标机存在 `arm64-v8a`。标准 Gradle 构建当前同时打包 `armeabi-v7a` 与 `arm64-v8a`，可选参数还可加入 `x86_64`；这不改变 RK3288 的目标 ABI。
 - **强制 NEON**：所有关键路径（预处理/后处理/矩阵运算）需要确保编译与运行时能走 NEON 优化。
 - **避免依赖“需要较新系统”的特性**：Android 7.1.2 为基线，不能引入仅在高版本可用的 API 作为强依赖。
 
@@ -185,6 +195,8 @@ grep -E "^CONFIG_" docs/bsp/kernel-config/kernel.config | head -n 20
 - BSP Release Note: `docs/bsp/BSP_RELEASE_NOTES.md`
 - defconfig（对齐基准）: `docs/bsp/defconfig/rk3288_defconfig`
 - Kernel Config Snapshot（运行态快照）: `docs/bsp/kernel-config/kernel.config`
+
+当前仅 Kernel Config Snapshot 含完整配置内容；BSP Release Note 仍是占位，defconfig 仍是临时摘录。因此审计结果只能说明“快照与本文策略是否一致”，不能说明“目标机与厂商 BSP 已完成同步”。补齐证据时必须记录脱敏设备标识、构建指纹、采集时间、原始命令和文件 SHA-256。
 
 ### 3.1 内核配置（Kernel config）最小关注清单（CONFIG_）
 以下清单用于“最低必要能力”核对。实际以 `kernel.config` 与 `rk3288_defconfig` 为准；若任一项缺失/冲突，需要在 BSP Release Note 中给出解释或替代方案。

@@ -13,7 +13,7 @@
 |:-:|:-----|:-----|:------:|:-----|:-----|
 | 4-7 | Uncontrolled data in path expression | MainActivity.java | 🔴 high | 路径遍历 | 用户提供的路径直接用于文件操作，需输入校验 |
 | 3 | Regular expression injection | LogDetailActivity.java | 🟡 high | 注入 | 用户输入构造正则，可被利用做 ReDoS |
-| 1-2 | TOCTOU race condition | civetweb.c (third_party) | 🟡 high | 竞态 | 第三方库代码，风险受控 |
+| 1-2 | TOCTOU race condition | civetweb.c（第三方归档快照） | 🟡 high | 历史扫描 | 未编入构建目标，非当前运行风险；未来接入前须重新评估 |
 
 ### 与质量审计的对应关系
 

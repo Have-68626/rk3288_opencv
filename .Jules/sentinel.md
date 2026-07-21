@@ -1,5 +1,14 @@
 # Sentinel Security Memory
 
+**最后更新**: 2026-07-21
+
+## 当前复核状态
+
+- 本文后半部分按发生时间保留历史缺陷与经验，不代表对应缺陷仍存在。
+- `FfmpegRtmpPusher` 当前通过 `executeAsync(String[])` 传递参数，不再拼接单字符串命令。
+- `HttpFacesServer` 当前仅绑定 `127.0.0.1`，并设置 5 秒收发超时、64 KiB 请求头上限和 1 MiB 请求体上限；连接生命周期由当前实现统一管理。
+- `AppLog` 在写盘前调用 `SensitiveDataUtil.maskSensitiveData`；低级别日志使用预检查决定是否执行完整掩码。安全复核仍需同时覆盖预检查与掩码规则，不能只检查导出层。
+
 ## Data Protection
 - Redact sensitive credentials before they are written to disk, not only when logs are exported or displayed.
 - Keep redaction rules centralized in `SensitiveDataUtil.maskSensitiveData` so ingestion, UI display, and export follow the same masking policy.
@@ -19,6 +28,8 @@
 - Prefer small, reviewable fixes that remove leak paths, path traversal, unsafe parser behavior, and denial-of-service edges.
 - Do not weaken validation or logging safeguards just to make a test or local smoke check pass.
 ## 2025-02-14 - FFmpegKit Command Injection via Reflection Call
+
+> 历史记录：当前实现已改用 `executeAsync(String[])`；以下内容用于说明旧版单字符串接口的风险。
 
 **Vulnerability:** Command injection due to unescaped string concatenation when building an FFmpeg command that is
 passed to a dynamically loaded FFmpegKit module via reflection (`kit.getMethod("executeAsync", String.class)`).

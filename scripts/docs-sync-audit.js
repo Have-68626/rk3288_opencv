@@ -71,6 +71,121 @@ function parseArgs(argv) {
   return args;
 }
 
+const AGENT_GUIDE_FACTS_START = "<!-- DOCSYNC_AGENT_GUIDE_FACTS";
+const AGENT_GUIDE_SHARED_START = "<!-- DOCSYNC_SHARED_GUIDE_START -->";
+const AGENT_GUIDE_SHARED_END = "<!-- DOCSYNC_SHARED_GUIDE_END -->";
+
+function parseAgentGuideFacts(md) {
+  const start = md.indexOf(AGENT_GUIDE_FACTS_START);
+  if (start < 0) return null;
+  const end = md.indexOf("-->", start);
+  if (end < 0) return null;
+  const facts = {};
+  const body = md.slice(start + AGENT_GUIDE_FACTS_START.length, end);
+  for (const line of body.split(/\r?\n/)) {
+    const match = line.trim().match(/^([a-z0-9_]+)\s*=\s*(.+)$/i);
+    if (match) facts[match[1]] = match[2].trim();
+  }
+  return facts;
+}
+
+function extractSharedGuide(md) {
+  const start = md.indexOf(AGENT_GUIDE_SHARED_START);
+  const end = md.indexOf(AGENT_GUIDE_SHARED_END);
+  if (start < 0 || end < 0 || end < start) return null;
+  return md.slice(start + AGENT_GUIDE_SHARED_START.length, end).trim();
+}
+
+function extractWorkflowJobBlock(yaml, jobName) {
+  const lines = yaml.split(/\r?\n/);
+  const start = lines.findIndex((line) => new RegExp(`^  ${jobName}:\\s*$`).test(line));
+  if (start < 0) return "";
+  const block = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^  [A-Za-z0-9_-]+:\s*$/.test(lines[i])) break;
+    block.push(lines[i]);
+  }
+  return block.join("\n");
+}
+
+function detectAgentGuideFacts(repoRoot) {
+  const read = (relativePath) => {
+    const fullPath = path.join(repoRoot, relativePath);
+    return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, "utf8") : "";
+  };
+  const wrapper = read("gradle/wrapper/gradle-wrapper.properties");
+  const workflow = read(".github/workflows/ci.yml");
+  const androidJob = extractWorkflowJobBlock(workflow, "android");
+  const windowsJob = extractWorkflowJobBlock(workflow, "windows");
+  const gradleMatch = wrapper.match(/distributions\/(gradle-[0-9][A-Za-z0-9.-]*)-bin\.zip/);
+  const javaMatch = androidJob.match(/java-version:\s*['\"]?([0-9]+)['\"]?/);
+  const customRunners = [
+    "tests/cpp/face_infer_unit_tests_main.cpp",
+    "tests/win/win_unit_tests_main.cpp",
+    "tests/cpp/ncnn_precision_test.cpp",
+  ];
+  const hasCustomBool = customRunners.every((file) => /TestCase/.test(read(file)));
+  const coreUnitMain = read("tests/cpp/core_unit_tests_main.cpp");
+  const hasGoogleTest = /#include\s*<gtest\/gtest\.h>/.test(coreUnitMain) &&
+    /RUN_ALL_TESTS\s*\(/.test(coreUnitMain) &&
+    /add_executable\(core_gtest_tests/.test(read("CMakeLists.txt"));
+
+  return {
+    gradle_wrapper: gradleMatch ? gradleMatch[1] : "unknown",
+    android_ci_java: javaMatch ? javaMatch[1] : "unknown",
+    windows_ci_events: /github\.event_name\s*==\s*['"]pull_request['"]/.test(windowsJob) &&
+      /github\.event_name\s*==\s*['"]push['"]/.test(windowsJob)
+      ? "pull_request,push"
+      : "unknown",
+    windows_ci_workflow_dispatch: windowsJob.includes("workflow_dispatch") ? "true" : "false",
+    test_frameworks: hasCustomBool && hasGoogleTest ? "custom_bool,googletest" : "unknown",
+    merge_strategy: "squash_and_merge",
+  };
+}
+
+function guideDefect(file, rule, message) {
+  return { type: "agent-guide", severity: "high", file, rule, message };
+}
+
+function auditAgentGuides(repoRoot) {
+  const expectedFacts = detectAgentGuideFacts(repoRoot);
+  const guides = ["AGENTS.md", "CLAUDE.md"];
+  const defects = [];
+  const parsed = {};
+  const shared = {};
+
+  for (const file of guides) {
+    const fullPath = path.join(repoRoot, file);
+    if (!fs.existsSync(fullPath)) {
+      defects.push(guideDefect(file, "agent_guide_missing", "缺少助手指南文件"));
+      continue;
+    }
+    const md = fs.readFileSync(fullPath, "utf8");
+    parsed[file] = parseAgentGuideFacts(md);
+    shared[file] = extractSharedGuide(md);
+    if (!parsed[file]) {
+      defects.push(guideDefect(file, "agent_guide_facts_missing", "缺少 DOCSYNC_AGENT_GUIDE_FACTS 事实块"));
+      continue;
+    }
+    for (const [key, expected] of Object.entries(expectedFacts)) {
+      if (parsed[file][key] !== expected) {
+        defects.push(guideDefect(file, "agent_guide_fact_drift", `事实 ${key} 应为 ${expected}，当前为 ${parsed[file][key] || "缺失"}`));
+      }
+    }
+    if (shared[file] === null) {
+      defects.push(guideDefect(file, "agent_guide_shared_missing", "缺少 DOCSYNC_SHARED_GUIDE_START/END 共享区间"));
+    }
+  }
+
+  if (shared["AGENTS.md"] !== undefined && shared["CLAUDE.md"] !== undefined &&
+      shared["AGENTS.md"] !== null && shared["CLAUDE.md"] !== null &&
+      sha256Hex(shared["AGENTS.md"]) !== sha256Hex(shared["CLAUDE.md"])) {
+    defects.push(guideDefect("CLAUDE.md", "agent_guide_mirror_drift", "共享指南正文与 AGENTS.md 不一致"));
+  }
+
+  return { expectedFacts, defects };
+}
+
 function toPosix(p) {
   return p.replace(/\\/g, "/");
 }
@@ -512,6 +627,14 @@ async function saveLinkCache(cachePath, cache) {
   await fsp.writeFile(cachePath, JSON.stringify(cache, null, 2) + "\n", "utf8");
 }
 
+function resolveCrossRefPath(fromFile, rawPath) {
+  const rootFiles = new Set(["README.md", "DEVELOP.md", "AGENTS.md", "CREDITS.md", "CHANGELOG.md"]);
+  const raw = toPosix(rawPath);
+  if (rootFiles.has(raw) || raw.startsWith("docs/")) return path.posix.normalize(raw);
+  if (raw === "RK3288_CONSTRAINTS.md") return "docs/RK3288_CONSTRAINTS.md";
+  return path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), raw));
+}
+
 function parseCrossRefs(md, fromFile) {
   const links = collectMdLinks(md);
   const refs = [];
@@ -704,6 +827,10 @@ async function main() {
     }
   }
 
+  const agentGuideAudit = auditAgentGuides(repoRoot);
+  report.agentGuideAudit = agentGuideAudit;
+  report.defects.push(...agentGuideAudit.defects);
+
   const readme = await fsp.readFile(rootFiles[0], "utf8");
   const develop = await fsp.readFile(rootFiles[1], "utf8");
   const constraints = await fsp.readFile(rootFiles[2], "utf8");
@@ -756,16 +883,8 @@ async function main() {
     crossRefs.push(...parseCrossRefs(md, rel));
     anchorMap[rel] = collectAnchors(md);
   }
-  function normalizeRefPath(raw) {
-    let p = raw.replace(/^\.\//, "").replace(/^\.\.\//, "");
-    const rootFiles = ["README.md", "DEVELOP.md", "AGENTS.md", "CREDITS.md", "CHANGELOG.md"];
-    if (rootFiles.includes(p)) return p;
-    if (p === "RK3288_CONSTRAINTS.md") return "docs/RK3288_CONSTRAINTS.md";
-    if (p.startsWith("docs/")) return p;
-    return p;
-  }
   for (const r of crossRefs) {
-    const normalizedTo = normalizeRefPath(r.toFile);
+    const normalizedTo = resolveCrossRefPath(r.fromFile, r.toFile);
     if (!anchorMap[normalizedTo]) continue;
     if (r.anchor && !anchorMap[normalizedTo].has(r.anchor)) {
       report.defects.push({
@@ -1113,18 +1232,27 @@ async function main() {
     await fsp.writeFile(mdPath, lines.join("\n") + "\n", "utf8");
   }
 
+  const gatePassed = isGatePassed(report.summary.severity);
   const printed = {
-    ok: report.summary.severity.high === 0,
+    ok: gatePassed,
     outDir: toPosix(path.relative(repoRoot, outDirAbs)),
     json: args.json ? toPosix(path.relative(repoRoot, jsonPath)) : null,
     md: args.md ? toPosix(path.relative(repoRoot, mdPath)) : null,
     defects: report.summary,
   };
   process.stdout.write(JSON.stringify(printed, null, 2) + "\n");
-  process.exit(report.summary.severity.high === 0 ? 0 : 2);
+  process.exit(gatePassed ? 0 : 2);
 }
 
-main().catch((e) => {
-  process.stderr.write(String(e && e.stack ? e.stack : e) + "\n");
-  process.exit(1);
-});
+function isGatePassed(severity) {
+  return severity.high === 0 && severity.medium === 0;
+}
+
+if (require.main === module) {
+  main().catch((e) => {
+    process.stderr.write(String(e && e.stack ? e.stack : e) + "\n");
+    process.exit(1);
+  });
+}
+
+module.exports = { auditAgentGuides, isGatePassed, resolveCrossRefPath };

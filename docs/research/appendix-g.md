@@ -226,4 +226,4 @@ node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit
   - `win_unit_tests` 链接失败
   - `face_infer_unit_tests` 链接失败
 
-[← 返回目录](#5-深度研究与专项文档-research-deep-dive)
+[← 返回目录](../../DEVELOP.md#5-深度研究与专项文档-research-deep-dive)

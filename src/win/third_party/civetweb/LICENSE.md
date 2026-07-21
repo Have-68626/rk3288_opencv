@@ -1,3 +1,8 @@
+PROJECT INTEGRATION NOTE
+=====
+
+本仓库在 `src/win/third_party/civetweb/` 保留 CivetWeb 第三方源码快照及其许可证。`include/civetweb.h` 声明快照版本为 1.16；上游来源记录见仓库 `CREDITS.md`。当前 CMake 与 Windows 服务源码未引用此目录，服务使用项目自有的 `HttpFacesServer` 实现，因此保留本文件仅用于归档源码的许可证合规，不能视为 CivetWeb 已编入当前产品。以下第三方许可证正文保持原样。
+
 ALL LICENSES
 =====
 
