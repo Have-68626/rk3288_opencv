@@ -5,6 +5,7 @@ import {
   Card,
   Collapse,
   Descriptions,
+  Empty,
   Form,
   Input,
   InputNumber,
@@ -289,7 +290,10 @@ export function ServerSettingsTab() {
                         ))}
 
                         {modelsData.activeModels.length === 0 && (
-                          <Typography.Text type="secondary">暂无活跃模型（管线未启动或无配置）</Typography.Text>
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description="暂无活跃模型（管线未启动或无配置）"
+                          />
                         )}
                       </>
                     ) : null}

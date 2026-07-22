@@ -1,5 +1,5 @@
 import { ReloadOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Descriptions, Space, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Empty, Space, Typography } from 'antd'
 
 import { useAppStore } from '../state/AppStore'
 
@@ -96,9 +96,10 @@ export function HomePage() {
             </Descriptions.Item>
           </Descriptions>
         ) : (
-          <Typography.Text type="secondary">
-            尚未加载。可点击右上角“刷新后端设置”，或检查后端服务是否已启动。
-          </Typography.Text>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="尚未加载。可点击右上角“刷新后端设置”，或检查后端服务是否已启动。"
+          />
         )}
       </Card>
     </Space>
