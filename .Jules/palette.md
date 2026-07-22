@@ -61,3 +61,6 @@ NOT emit generic toasts from the store to prevent double notifications.
 ## 2025-02-23 - Switch Label Accessibility
 **Learning:** Native `<label>` elements bound to Ant Design `Switch` components only focus the component instead of toggling it because the `Switch` renders as a `<button>` instead of an `<input type="checkbox">`.
 **Action:** Always add an explicit `onClick` handler to labels bound to Ant Design `Switch` components to manually trigger the click event on the target button, and manually mirror any `disabled` states visually (e.g. using `cursor: 'not-allowed'` and `disabled={true}`).
+## 2026-07-19 - Pass loading state down to wrapped interactive UI controls
+**Learning:** Custom UI wrappers around Ant Design components (like `Switch`) must explicitly pass through state like `loading` and mirror its disabled-like behavior on the wrapper (cursor, event suppression) to maintain the intended UX of the native component when used for asynchronous actions.
+**Action:** Always mirror native loading and disabled props in custom interactive wrappers so that async actions reflect progress to the user and prevent duplicate clicks.

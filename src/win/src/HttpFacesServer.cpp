@@ -337,16 +337,53 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
     }
 
     const std::string head = buf.substr(0, headerEnd);
-    std::istringstream hs(head);
+
+    std::size_t pos = 0;
+    auto getLine = [&](std::string& lineOut) -> bool {
+        if (pos >= head.size()) return false;
+        std::size_t end = head.find('\n', pos);
+        if (end == std::string::npos) {
+            lineOut = head.substr(pos);
+            pos = head.size();
+        } else {
+            lineOut = head.substr(pos, end - pos);
+            pos = end + 1;
+        }
+        if (!lineOut.empty() && lineOut.back() == '\r') lineOut.pop_back();
+        return true;
+    };
+
     std::string requestLine;
-    if (!std::getline(hs, requestLine)) {
+    if (!getLine(requestLine)) {
         err = "bad_request_line";
         return false;
     }
-    if (!requestLine.empty() && requestLine.back() == '\r') requestLine.pop_back();
-    std::istringstream rl(requestLine);
-    std::string target;
-    rl >> out.method >> target >> out.httpVersion;
+
+    std::size_t methodEnd = requestLine.find_first_of(" \t");
+    if (methodEnd == std::string::npos) {
+        err = "bad_request_line";
+        return false;
+    }
+    std::size_t targetStart = requestLine.find_first_not_of(" \t", methodEnd);
+    if (targetStart == std::string::npos) {
+        err = "bad_request_line";
+        return false;
+    }
+    std::size_t targetEnd = requestLine.find_first_of(" \t", targetStart);
+    if (targetEnd == std::string::npos) {
+        err = "bad_request_line";
+        return false;
+    }
+    std::size_t versionStart = requestLine.find_first_not_of(" \t", targetEnd);
+    if (versionStart == std::string::npos) {
+        err = "bad_request_line";
+        return false;
+    }
+
+    out.method = requestLine.substr(0, methodEnd);
+    std::string target = requestLine.substr(targetStart, targetEnd - targetStart);
+    out.httpVersion = requestLine.substr(versionStart);
+
     if (out.method.empty() || target.empty()) {
         err = "bad_request_line";
         return false;
@@ -357,8 +394,8 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
     out.query = (qpos == std::string::npos) ? "" : target.substr(qpos + 1);
 
     std::string line;
-    while (std::getline(hs, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
+    while (getLine(line)) {
+        if (line.empty()) continue;
         const auto p = line.find(':');
         if (p == std::string::npos) continue;
         std::string k = toLower(trim(line.substr(0, p)));

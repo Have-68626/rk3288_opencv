@@ -1,141 +1,75 @@
 # INT8 量化工具链设计文档
 
 **日期**: 2026-06-21
+
+**最后复核**: 2026-07-21
+
 **优先级**: P0（加速方案落地）
-**方案**: 集成流水线（方案 B）
-**实现状态**: ✅ 已实现（`scripts/quantize_ncnn_int8.py` + 8 项精度测试通过）
 
----
+**实现状态**: 部分落地；量化脚本主线已迁移到 SCRFD，C++ 运行时和测试仍保留 `yolo_face` 历史路径
 
-## [S1] 架构总览
+## 1. 当前结论
 
-INT8 量化流水线由 5 个组件组成：
+- `scripts/quantize_ncnn_int8.py` 实现 `ncnn2table` → `ncnn2int8` 两步流程，支持 `scrfd`、`arcface`、`mobilefacenet`。
+- 量化脚本与 Windows CI 的检测模型主线是 SCRFD；CI 输入为 `models/scrfd_ncnn`，输出为 `models/scrfd_int8_ncnn`。
+- `ModelRegistry`、`FaceInferStages`、`test_int8_quantization.cpp` 与 `ncnn_precision_test.cpp` 仍使用 `yolo_face_int8` 和 `models/yolo_face*_ncnn`。这属于尚未完成的历史兼容路径，不能表述为已与 SCRFD 统一。
+- `model.int8Enabled` 已进入 Windows 配置序列化和运行时选择逻辑；模型缺失时仍走既有回退路径。
+- 测试在模型文件缺失时返回跳过；“测试通过”不等于完成 FP32/INT8 精度验证。独立精度测试的 ArcFace 余弦相似度阈值为 0.90。
+- 当前 Windows CI 的量化命令包含脚本未定义的 `--size` 参数，且量化与精度步骤均为非阻断。因此当前 CI 不能证明量化成功或精度达标。
 
-``` bash
-tests/test_set01/          scripts/quantize_ncnn_int8.py     models/
-  (校准图片)  ──────►  (ncnn2int8 量化)  ──────►  yolo_face_int8.param/.bin
-                                                       arcface_int8.param/.bin
-                                                       mobilefacenet_int8.param/.bin
+## 2. 实际流水线
 
-ModelRegistry             FaceInferStages              face_infer_unit_tests
-  (INT8 模型注册)  ──────►  (运行时选择)  ──────►  (精度验证 FP32 vs INT8)
+```text
+deps/WIDER_train/WIDER_train/images
+                |
+                v
+scripts/quantize_ncnn_int8.py
+  |- ncnn2table: 生成 <model>.table
+  `- ncnn2int8: 生成 <model>_int8.param/.bin
+                |
+                v
+models/scrfd_int8_ncnn（脚本/CI 主线）
+
+models/yolo_face_int8_ncnn（C++ 注册与测试的历史路径）
 ```
 
-**数据流**：
-1. `scripts/quantize_ncnn_int8.py` 读取 FP32 模型 + 校准图片 → 输出 INT8 `.param`/`.bin`
-2. `ModelRegistry` 内建注册 `yolo_face_int8` / `arcface_int8` / `mobilefacenet_int8`
-3. 配置文件 `model.int8Enabled=true` 时，`FaceInferStages` 自动选择 INT8 模型
-4. `face_infer_unit_tests` 新增 INT8 精度对比测试
+量化报告 `quantize_report.json` 当前只记录 FP32/INT8 `.bin` 字节数与压缩比，不包含逐层参数范围或精度结论。
 
----
+## 3. 量化脚本接口
 
-## [S2] 量化脚本 `scripts/quantize_ncnn_int8.py`
-
-**功能**：将 FP32 ncnn 模型转换为 INT8 量化模型
-
-**命令行接口**：
-```bash
-python scripts/quantize_ncnn_int8.py \
-  --model yolo_face \                    # 模型名（yolo_face / arcface / mobilefacenet）
-  --fp32-dir models/yolo_face_ncnn \     # FP32 模型目录（含 .param + .bin）
-  --calib-dir tests/test_set01 \         # 校准图片目录（需自行下载 WIDER Face 数据集，gitignored）
-  --output-dir models/yolo_face_int8_ncnn \  # INT8 输出目录
-  --size 640 \                           # 输入尺寸（YOLO=640, ArcFace/MobileFaceNet=112）
-  --num-samples 100                      # 校准图片采样数
+```powershell
+python scripts/quantize_ncnn_int8.py `
+  --model scrfd `
+  --fp32-dir models/scrfd_ncnn `
+  --calib-dir deps/WIDER_train/WIDER_train/images `
+  --output-dir models/scrfd_int8_ncnn `
+  --num-samples 50
 ```
 
-**实现要点**：
-- 使用 ncnn Python 绑定或 subprocess 调用 ncnn2int8 CLI
-- 校准图片自动 resize 到目标尺寸，转 RGB，归一化到 [0,1]
-- 输出 INT8 `.param`（层名含 `quant` 标记）+ `.bin`（权重已量化）
-- 生成 `quantize_report.json`：记录每层量化前后参数范围、压缩比
+关键约束：
 
-**依赖**：Python 3.8+、ncnn Python 绑定（或 ncnn2int8 CLI）
+- `--model` 仅接受 `scrfd`、`arcface`、`mobilefacenet`。
+- 完整流程和 `--table-only` 需要 `--calib-dir`；`--quant-only` 可用 `--table-path` 指定已有校准表。
+- ncnn 工具从 `PATH`、`RK_NCNN_ROOT` 或 `NCNN_ROOT` 查找。
+- 脚本自动选择目录中的第一对 `.param`/`.bin`，输出名固定为 `<model>_int8.param/.bin`。
+- 脚本当前没有 `--size` 参数；输入尺寸来自内置模型预设。
 
----
+## 4. 运行时与配置
 
-## [S3] ModelRegistry INT8 模型注册
+- `WinConfig::ModelConfig::int8Enabled` 默认 `false`，并映射到 JSON 的 `model.int8Enabled`。
+- 检测阶段启用 INT8 时，当前尝试创建 `yolo_face_int8`；识别阶段依次尝试 `arcface_int8`、`mobilefacenet_int8`。
+- `ModelRegistry` 仅在对应历史路径模型文件存在时注册这些 ID。
+- 在完成 SCRFD C++ 适配器、注册 ID、配置路径和测试路径迁移前，不得把 `scrfd_int8_ncnn` 直接视为运行时已消费的检测模型。
 
-**新增内建注册**（`ModelRegistry.cpp`）：
+## 5. 测试与验收边界
 
-```cpp
-// INT8 模型注册 — 需要 INT8 模型文件存在才注册
-if (fileExists("models/yolo_face_int8_ncnn/yolo_face_int8.param")) {
-    registerDetector("yolo_face_int8", []{ return CreateNcnnYoloFaceDetector("yolo_face_int8_ncnn"); });
-}
-if (fileExists("models/arcface_int8_ncnn/arcface_int8.param")) {
-    registerEmbedder("arcface_int8", []{ return CreateNcnnArcFaceEmbedder("arcface_int8_ncnn"); });
-}
-if (fileExists("models/mobilefacenet_int8_ncnn/mobilefacenet_int8.param")) {
-    registerEmbedder("mobilefacenet_int8", []{ return CreateMobileFaceNetEmbedder("mobilefacenet_int8_ncnn"); });
-}
-```
+`face_infer_unit_tests` 注册 8 个 INT8 相关自定义 `bool` 用例，覆盖模型注册/创建以及检测、ArcFace 精度入口。模型缺失时这些用例会跳过。`ncnn_precision_test` 是独立运行器，但检测模型仍读取历史 `yolo_face` 路径。
 
-**配置开关**（`WinConfig.h`）：
-```cpp
-struct ModelConfig {
-    bool int8Enabled = false;  // 新增：启用 INT8 推理
-    // ... 已有字段
-};
-```
+有效的“已验收”至少需要同时满足：
 
-**JSON 持久化**（`WinJsonConfig.cpp`）：
-- `model.int8Enabled` → JSON 读写 + schema 校验
+1. 量化命令无未知参数并成功生成模型与报告。
+2. C++ 运行时、注册表和测试使用同一 SCRFD 路径与模型命名。
+3. 测试输出明确显示实际执行而非模型缺失跳过。
+4. 检测精度指标和 ArcFace 余弦相似度阈值均有真实模型、校准集和输出报告支撑。
 
-**运行时逻辑**（`FaceInferStages.cpp`）：
-```cpp
-if (req.int8Enabled && ModelRegistry::instance().getEntry("yolo_face_int8").has_value()) {
-    detector = ModelRegistry::instance().createDetector("yolo_face_int8");
-} else {
-    detector = ModelRegistry::instance().createDetector("yolo_face");
-}
-```
-
----
-
-## [S4] 精度验证集成
-
-**新增测试**（`tests/cpp/test_int8_quantization.cpp`）：
-
-```cpp
-TEST(Int8Quantization, LoadsYoloFaceInt8) {
-    auto detector = ModelRegistry::instance().createDetector("yolo_face_int8");
-    ASSERT_NE(detector, nullptr);
-}
-
-TEST(Int8Quantization, YoloFaceDetectionIou) {
-    // FP32 vs INT8 检测框 IoU >= 0.7
-}
-
-TEST(Int8Quantization, ArcFaceEmbeddingSimilarity) {
-    // FP32 vs INT8 特征余弦相似度 >= 0.9
-}
-```
-
-**CMake 集成**：
-- 加入 `face_infer_unit_tests` 目标
-- 仅当 INT8 模型文件存在时运行（`RK_HAVE_INT8_MODELS` 宏控制）
-
-**CI 集成**（`ci.yml` 新增 step）：
-```yaml
-- name: Quantize models
-  run: python scripts/quantize_ncnn_int8.py --model yolo_face --calib-dir tests/test_set01
-- name: Run INT8 precision tests
-  run: cmake --build build_win --config Release --target face_infer_unit_tests && ctest -R int8
-```
-
----
-
-## [S5] 文件变更清单
-
-| 文件 | 变更类型 | 说明 |
-|------|----------|------|
-| `scripts/quantize_ncnn_int8.py` | 新增 | INT8 量化脚本 |
-| `src/cpp/include/ModelRegistry.h` | 修改 | 新增 INT8 模型查询接口 |
-| `src/cpp/src/ModelRegistry.cpp` | 修改 | 内建注册 INT8 模型 |
-| `src/win/include/WinConfig.h` | 修改 | ModelConfig 增加 int8Enabled |
-| `src/win/src/WinJsonConfig.cpp` | 修改 | int8Enabled JSON 读写 |
-| `src/cpp/src/FaceInferStages.cpp` | 修改 | 运行时 INT8 模型选择 |
-| `tests/cpp/test_int8_quantization.cpp` | 新增 | INT8 精度验证测试 |
-| `CMakeLists.txt` | 修改 | 新增 test_int8_quantization 目标 |
-| `.github/workflows/ci.yml` | 修改 | 新增量化 + INT8 测试 step |
+在上述条件完成前，本工具链状态保持为“部分落地”。

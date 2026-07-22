@@ -1,11 +1,11 @@
 ﻿# 配置说明（config.json）
 
-**更新日期**: 2026-06-23
+**更新日期**: 2026-07-21
 
 
 ## 文件位置
 - 配置文件：`%APPDATA%\rk_wcfr\config.json` （可通过 `RK_WCFR_CONFIG` 环境变量覆盖）
-- 备份文件：`%APPDATA%\rk_wcfr\config.json.bak` （若覆盖配置路径，则备份文件在其同级目录）
+- 备份文件：`%APPDATA%\rk_wcfr\config.json.bak`，并轮转保留 `.bak.1` 至 `.bak.5`（若覆盖配置路径，则备份文件在其同级目录）
 - 密钥文件（DPAPI 保护）：`%APPDATA%\rk_wcfr\config.key.dpapi` （同上，伴随配置路径生成）
 
 ### 其它支持的环境变量覆盖
@@ -20,6 +20,8 @@
 - 服务端会在启动与每次写入/热重载时对配置进行校验；校验失败会拒绝写入，并在热重载场景回滚到上一次有效配置。
 
 ## 敏感字段加密
+
+当前实现纳入加密与轮换的配置字段是 `poster.postUrl`。下述格式不是对任意字符串字段自动生效；新增敏感字段必须显式接入 Schema 与 `WinJsonConfigStore`。
 ### 加密算法
 - AES-256-GCM（随机 nonce；包含完整性校验 tag）
 - AES 主密钥通过 Windows DPAPI（Current User）保护后落盘到 `config.key.dpapi`

@@ -357,4 +357,4 @@ logcat_20170115_035423.log 在 03:54:23 导出（与第三次 loadLogs 时间吻
 
 *分析结束。本文档基于 ErrorLog/evidence_20170115_035627/ 目录下的全部 6 个文件生成。*
 
-[← 返回目录](#5-深度研究与专项文档-research-deep-dive)
+[← 返回目录](../../DEVELOP.md#5-深度研究与专项文档-research-deep-dive)

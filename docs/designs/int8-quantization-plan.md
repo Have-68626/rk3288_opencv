@@ -1,9 +1,21 @@
 # INT8 量化工具链 Implementation Plan
 
-> **状态**: ✅ 全部任务已完成。本文档保留为历史跟踪记录，行号以完成时为准。: Use compose:subagent (recommended) or compose:execute to implement this
-plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **最后复核**: 2026-07-21
+>
+> **状态**: 历史任务记录。原任务曾按 `yolo_face` 路径完成；当前量化脚本和 CI 已转向 SCRFD，但 C++ 运行时与测试尚未完成同名迁移，不能再视为端到端全部完成。
 
-**Goal:** 建立 ncnn INT8 量化工具链，支持 YOLO Face / ArcFace / MobileFaceNet 三个模型的 FP32→INT8 转换、运行时切换和精度验证。
+## 当前实现校准
+
+| 范围 | 当前事实 | 后续完成条件 |
+|---|---|---|
+| Python 量化 | 支持 `scrfd`、`arcface`、`mobilefacenet`，使用 `ncnn2table` + `ncnn2int8` | 保持脚本参数与 CI 命令一致 |
+| CI 检测主线 | 使用 `models/scrfd_ncnn` → `models/scrfd_int8_ncnn` | 删除当前未支持的 `--size` 参数，并让有效量化结果可验证 |
+| C++ 检测 INT8 | 仍注册/读取 `yolo_face_int8` 历史路径 | 迁移到 SCRFD 适配器、ID、模型路径与加载参数 |
+| 精度测试 | 模型缺失时跳过；独立检测测试仍读 `yolo_face` | 使用真实 SCRFD 模型执行并保存精度报告 |
+
+以下勾选项只表示历史任务当时完成，不代表上述迁移项已完成。
+
+**Goal（历史）:** 建立 ncnn INT8 量化工具链，支持 YOLO Face / ArcFace / MobileFaceNet 三个模型的 FP32→INT8 转换、运行时切换和精度验证。
 
 **Architecture:** Python 量化脚本调用 ncnn2int8 工具，ModelRegistry 内建注册 INT8 模型变体，WinConfig 增加 int8Enabled 开关，FaceInferStages
 根据配置自动选择 INT8/FP32 模型，face_infer_unit_tests 新增精度对比测试。
@@ -109,6 +121,8 @@ plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 - [x] **Step 1: 在 Windows job 中添加量化和 INT8 测试步骤**
 - [x] **Step 2: 验证 CI 语法**
 - [x] **Step 3: Commit**
+
+> 复核备注：该任务只表示步骤已加入 CI。当前步骤为非阻断，且命令包含脚本未支持的 `--size`，不能作为量化成功或精度达标证据。
 
 ---
 

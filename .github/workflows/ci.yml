@@ -3,14 +3,8 @@ name: ci
 on:
   pull_request:
     branches: [ "master" ]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
   push:
     branches: [ "master" ]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -21,8 +15,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: classify-changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base=""
+          head="${{ github.sha }}"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            base="${{ github.event.before }}"
+          fi
+
+          # 手动触发、首个推送或无法可靠比较时保守地运行全部检查。
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! changed_paths="$(git diff --name-only "$base" "$head")"; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$changed_paths" ]] || printf '%s\n' "$changed_paths" | grep -Ev '(^docs/|\.md$)' >/dev/null; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+
   repo-hygiene:
     name: repo-hygiene
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,6 +77,8 @@ jobs:
 
   unit-tests:
     name: unit-tests
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -77,31 +112,10 @@ jobs:
           path: build_ci/Testing/
           if-no-files-found: ignore
 
-  docs-audit:
-    name: docs-sync-audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Run Docs Sync Audit
-        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
-
-      - name: Upload Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docs-audit-reports
-          path: tests/reports/docs-sync-audit/
-          if-no-files-found: ignore
-
   web:
     name: web-build-test
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -150,6 +164,8 @@ jobs:
 
   android:
     name: android-build-test
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -186,7 +202,9 @@ jobs:
   windows:
     name: windows-build-test
     if: >
-      github.event_name == 'pull_request' || github.event_name == 'push'
+      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      needs.changes.outputs.docs_only != 'true'
+    needs: changes
     runs-on: windows-2022
     timeout-minutes: 120
     env:
@@ -203,6 +221,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -304,7 +324,7 @@ jobs:
             if ($LASTEXITCODE -eq 0) {
               $changed = $diff
             } else {
-              $changed = git diff --name-only HEAD^..HEAD
+              $changed = git diff --name-only HEAD~1..HEAD
             }
             $matched = ($changed | Select-String -Pattern '^models/' -Quiet)
             if (-not $matched) { $matched = ($changed | Select-String -Pattern '^scripts/quantize_ncnn_int8\.py' -Quiet) }

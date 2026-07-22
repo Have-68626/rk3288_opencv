@@ -1,6 +1,6 @@
 ﻿# Web SPA 前端
 
-**更新日期**: 2026-06-23
+**更新日期**: 2026-07-21
 
 
 Windows 本地服务的浏览器 UI，基于 **React 18 + TypeScript 5 + Vite 8 + Ant Design 5**。
@@ -20,6 +20,9 @@ pnpm build
 # 代码检查
 pnpm lint
 
+# 前端单元测试（Vitest）
+pnpm test
+
 # E2E 测试
 pnpm e2e:run
 pnpm e2e:run:coverage   # 带覆盖率
@@ -37,4 +40,5 @@ pnpm e2e:run:coverage   # 带覆盖率
 - React Router v6
 - Ant Design 5 + @ant-design/icons
 - Cypress 13（E2E 测试）
+- Vitest 4（单元测试）
 - ESLint 9 + typescript-eslint
