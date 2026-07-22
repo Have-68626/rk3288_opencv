@@ -1,0 +1,25 @@
+# Machine-readable pattern index
+patterns:
+  - name: daily-triage
+    cadence: 1d
+    level: L1
+    path: .claude/skills/loop-triage/SKILL.md
+    description: "Daily repository health check — CI, issues, branch state"
+
+  - name: pr-merge
+    cadence: on-demand
+    level: L2
+    path: .claude/skills/pr-merge/SKILL.md
+    description: "PR merge workflow — comment review, conflict resolution, CI wait, squash merge"
+
+  - name: repo-hygiene
+    cadence: weekly
+    level: L1
+    path: scripts/clean-repo-junk.js
+    description: "Repository health — temp files, stale branches, disk cleanup"
+
+  - name: ci-monitor
+    cadence: per-push
+    level: L1
+    path: .github/workflows/ci.yml
+    description: "6-job CI pipeline — unit tests, web, android, windows, hygiene, docs-audit"
