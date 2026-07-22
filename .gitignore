@@ -104,6 +104,9 @@ graphify-out/
 # Claude Code config (local only, not tracked)
 .claude/
 
+# Gradle local distribution cache
+.gradle-local/
+
 # Temp
 *.tmp
 *.log
