@@ -72,11 +72,13 @@ static std::string toLower(std::string s) {
     return s;
 }
 
-static std::string trim(std::string s) {
+static std::string trim(const std::string& s) {
     auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
-    while (!s.empty() && isSpace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
-    while (!s.empty() && isSpace(static_cast<unsigned char>(s.back()))) s.pop_back();
-    return s;
+    size_t start = 0;
+    while (start < s.length() && isSpace(static_cast<unsigned char>(s[start]))) start++;
+    size_t end = s.length();
+    while (end > start && isSpace(static_cast<unsigned char>(s[end - 1]))) end--;
+    return s.substr(start, end - start);
 }
 
 static std::string statusReason(int code) {
