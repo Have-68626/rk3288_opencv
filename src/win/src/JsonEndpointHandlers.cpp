@@ -67,11 +67,13 @@ static HttpResp errJson(int httpStatus, const std::string& code, const std::stri
     return r;
 }
 
-static std::string trim(std::string s) {
+static std::string trim(const std::string& s) {
     auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
-    while (!s.empty() && isSpace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
-    while (!s.empty() && isSpace(static_cast<unsigned char>(s.back()))) s.pop_back();
-    return s;
+    std::size_t start = 0;
+    while (start < s.size() && isSpace(static_cast<unsigned char>(s[start]))) start++;
+    std::size_t end = s.size();
+    while (end > start && isSpace(static_cast<unsigned char>(s[end - 1]))) end--;
+    return s.substr(start, end - start);
 }
 
 }  // anonymous namespace
