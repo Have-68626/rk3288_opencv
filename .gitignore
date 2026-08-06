@@ -102,7 +102,14 @@ Makefile
 graphify-out/
 
 # Claude Code config (local only, not tracked)
-.claude/
+# 例外：agents/ 与 workflows/ 入库，使 worktree/分支可用同样的 teammate 与工作流
+.claude/*
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/*.md
+!.claude/workflows/
+.claude/workflows/*
+!.claude/workflows/*.ts
 
 # Gradle local distribution cache
 .gradle-local/
