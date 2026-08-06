@@ -87,6 +87,14 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
+
+    # Q-CQ-B06-003 编译器契约测试：带异常语法目标在 -fno-exceptions 下必须失败
+    # （仅 Clang/GNU；MSVC 无 -fno-exceptions 语义）
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        add_test(NAME compiler_contract_exceptions
+            COMMAND ${CMAKE_COMMAND} "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/contract_test.cmake)
+    endif()
 endif()
 
 # ── 编译器契约辅助函数 ──
@@ -99,10 +107,20 @@ function(rk_apply_compiler_contract)
             face_infer_unit_tests win_unit_tests ncnn_precision_test
             win_face_database_perf
         )
+        # 需异常/RTTI 的目标：自身用 try/catch，或依赖 OpenCV 头（flann throw/typeid）
+        set(RK_EXCEPTIONS_REQUIRED
+            native-lib rk3288_cli opencv_verify_cli inference_bench_cli
+        )
         foreach(t ${RK_ENGINE_TARGETS})
             if(NOT ${t} IN_LIST RK_SAFETY_EXCLUDED AND TARGET ${t})
-                target_compile_options(${t} PRIVATE
-                    -fno-exceptions -fno-rtti -fvisibility=hidden)
+                if(${t} IN_LIST RK_EXCEPTIONS_REQUIRED)
+                    # 使用异常语法（try/catch）或依赖 OpenCV 头（flann 用 throw/typeid）：
+                    # 保留异常与 RTTI，仅隐藏符号
+                    target_compile_options(${t} PRIVATE -fvisibility=hidden)
+                else()
+                    target_compile_options(${t} PRIVATE
+                        -fno-exceptions -fno-rtti -fvisibility=hidden)
+                endif()
             endif()
         endforeach()
     endif()
