@@ -300,7 +300,6 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
     impl_->reader = reader;
     impl_->source = source;
     impl_->open = true;
-    impl_->stride = stride;
     impl_->device.deviceId = deviceId;
     impl_->device.name = L"";
     impl_->format.width = aw;

@@ -21,6 +21,20 @@
 
 namespace rk_win {
 
+// 不可变运行时快照：recognizer/dnn/processor 共享所有权。
+// processLoop 与 applyCameraSettings 通过快照持有当前 runtime 整个调用期间，
+// reloadRuntime 原子替换快照，已持快照者不受影响（并发 reload/enroll 无 UAF）。
+struct RuntimeSnapshot {
+    std::shared_ptr<IRecognizer> recognizer;
+    std::shared_ptr<DnnSsdFaceDetector> dnn;
+    std::shared_ptr<FrameProcessor> processor;
+};
+
+std::shared_ptr<RuntimeSnapshot> FramePipeline::runtimeSnapshot() const {
+    std::lock_guard<std::mutex> lock(runtimeMu_);
+    return runtime_;
+}
+
 void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     if (bgr.empty()) return;
     if (!flipX && !flipY) return;
@@ -52,8 +66,14 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         std::lock_guard<std::mutex> lock(modelsMu_);
         activeModels_ = std::move(bootstrap.models);
     }
-    recognizer_ = std::move(bootstrap.recognizer);
-    dnn_ = std::move(bootstrap.detector);
+    auto snap = std::make_shared<RuntimeSnapshot>();
+    snap->recognizer = std::move(bootstrap.recognizer);
+    snap->dnn = std::move(bootstrap.detector);
+    snap->processor = std::make_shared<FrameProcessor>(snap->dnn.get(), snap->recognizer.get());
+    {
+        std::lock_guard<std::mutex> lock(runtimeMu_);
+        runtime_ = std::move(snap);
+    }
 
     if (!bootstrap.ok) {
         render_.status = bootstrap.warning;
@@ -73,8 +93,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         }
     }
 
-    // 装配 FrameProcessor + SideEffectSink（纯计算 + 副作用收口）
-    processor_ = std::make_unique<FrameProcessor>(dnn_.get(), recognizer_.get());
+    // 装配 SideEffectSink（纯计算 + 副作用收口）；FrameProcessor 已在 runtime 快照内
     sink_ = std::make_unique<SideEffectSink>(&logger_, &render_);
 
     running_ = true;
@@ -262,9 +281,10 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
     }
 
     const auto td0 = clock::now();
-    if (cfg_.dnn.enable && dnn_ && dnn_->ready()) {
+    auto rt = runtimeSnapshot();
+    if (cfg_.dnn.enable && rt && rt->dnn && rt->dnn->ready()) {
         std::lock_guard<std::mutex> lock(dnnMu_);
-        dnn_->resetForStream();
+        rt->dnn->resetForStream();
     }
     const auto td1 = clock::now();
     out.detectorMs = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
@@ -322,6 +342,25 @@ void FramePipeline::stopCameraLocked() {
     cameraRunning_ = false;
     if (captureThread_.joinable()) captureThread_.join();
     camera_.close();
+}
+
+CameraOpenResult FramePipeline::openOnce() {
+    CameraDevice dev;
+    CameraFormat fmt;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (activeDeviceIndex_ < 0 || static_cast<std::size_t>(activeDeviceIndex_) >= devices_.size()) {
+            CameraOpenResult r;
+            r.ok = false;
+            r.category = ErrorCategory::BackendFailure;
+            r.code = "no_device";
+            r.message = "没有活动摄像头设备";
+            return r;
+        }
+        dev = devices_[static_cast<std::size_t>(activeDeviceIndex_)];
+        fmt = desiredFormat_;
+    }
+    return camera_.open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
 }
 
 void FramePipeline::setFlip(bool flipX, bool flipY) {
@@ -382,10 +421,16 @@ void FramePipeline::reloadRuntime(const AppConfig& cfg) {
         std::lock_guard<std::mutex> lock(modelsMu_);
         activeModels_ = std::move(bootstrap.models);
     }
-    recognizer_ = std::move(bootstrap.recognizer);
-    dnn_ = std::move(bootstrap.detector);
-    // 重建 FrameProcessor（它持有 dnn_ 和 recognizer_ 的裸指针）
-    processor_ = std::make_unique<FrameProcessor>(dnn_.get(), recognizer_.get());
+    // 构建不可变快照后原子替换：processLoop 已持有的旧快照继续存活到引用归零，
+    // 不会在 run() 执行中被销毁（并发 reload/enroll 无 UAF）
+    auto snap = std::make_shared<RuntimeSnapshot>();
+    snap->recognizer = std::move(bootstrap.recognizer);
+    snap->dnn = std::move(bootstrap.detector);
+    snap->processor = std::make_shared<FrameProcessor>(snap->dnn.get(), snap->recognizer.get());
+    {
+        std::lock_guard<std::mutex> lock(runtimeMu_);
+        runtime_ = std::move(snap);
+    }
     {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.ok ? "模型运行时已重载" : bootstrap.warning;
@@ -410,6 +455,14 @@ void FramePipeline::requestEnroll(const std::string& personId) {
 
 void FramePipeline::requestClearDb() {
     clearDbRequested_ = true;
+}
+
+void FramePipeline::injectFrameForTest(const cv::Mat& bgr) {
+    std::lock_guard<std::mutex> lock(frameMu_);
+    latestFrame_ = bgr.clone();
+    latestFrameTs_ = 0;
+    hasFrame_ = true;
+    frameCv_.notify_one();
 }
 
 bool FramePipeline::tryGetRenderState(RenderState& out) {
@@ -663,7 +716,10 @@ void FramePipeline::processLoop() {
         cmd.frameCounter = frameIndex_;
 
         // ── 纯计算（检测/识别/清库/注册/背压跳过） ──
-        auto result = processor_->run(std::move(frameBuffer), cmd);
+        // 取当前运行时快照并持有整个 run()：reloadRuntime 并发替换不影响本帧处理
+        auto rt = runtimeSnapshot();
+        if (!rt) continue;
+        auto result = rt->processor->run(std::move(frameBuffer), cmd);
 
         // ── 同步已消费命令回成员变量 ──
         detectStride_ = result.consumedCommand.detectStride;

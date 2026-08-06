@@ -52,6 +52,7 @@ namespace rk_win {
 
 class DnnSsdFaceDetector;
 class EventLogger;
+class RuntimeSnapshot;  // 运行时快照：recognizer/dnn/processor 共享所有权
 
 struct RenderState {
     cv::Mat bgr;
@@ -116,6 +117,9 @@ public:
     void requestEnroll(const std::string& personId);
     void requestClearDb();
 
+    // 测试辅助：注入一帧驱动处理循环（无相机环境验证并发 reload/enroll 路径）
+    void injectFrameForTest(const cv::Mat& bgr);
+
     bool tryGetRenderState(RenderState& out);
     bool snapshotFaces(FacesSnapshot& out);
     std::uint64_t currentFacesSeq() const;
@@ -152,8 +156,10 @@ private:
 
     MfCamera camera_;
     StructuredLogger logger_;
-    std::unique_ptr<IRecognizer> recognizer_;
-    std::unique_ptr<DnnSsdFaceDetector> dnn_;
+    // 不可变运行时快照：reloadRuntime 原子替换，processLoop 取快照持有整个 run()，
+    // 避免并发 reload/enroll 时旧 processor/recognizer/dnn 被销毁（UAF）
+    std::shared_ptr<RuntimeSnapshot> runtime_;
+    mutable std::mutex runtimeMu_;
     std::mutex dnnMu_;
 
     bool flipX_ = false;
@@ -196,7 +202,8 @@ private:
 
     std::atomic<bool> clearDbRequested_{false};
 
-    std::unique_ptr<FrameProcessor> processor_;
+    std::shared_ptr<RuntimeSnapshot> runtimeSnapshot() const;
+
     std::unique_ptr<SideEffectSink> sink_;
 
     std::atomic<bool> lastPrivacyDenied_{false};

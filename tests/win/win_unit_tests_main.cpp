@@ -37,6 +37,7 @@ bool test_bootstrap_returns_models_on_valid_config();
 bool test_bootstrap_reports_failure_on_bad_cascade();
 bool test_registry_dispatch_returns_200_for_matching_route();
 bool test_registry_returns_405_for_method_mismatch();
+bool test_pipeline_concurrent_reload_no_uaf();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
@@ -49,5 +50,7 @@ int main() {
         {"registry_returns_405_for_method_mismatch", test_registry_returns_405_for_method_mismatch},
         {"test_bootstrap_returns_models_on_valid_config", test_bootstrap_returns_models_on_valid_config},
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
+        {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
     };
+    return runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0]))) ? 0 : 1;
 }

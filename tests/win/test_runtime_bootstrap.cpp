@@ -4,7 +4,7 @@
 #include <string>
 
 // 测试：合法配置至少返回 cascade + dnn 两个 ModelSnapshot
-static bool test_bootstrap_returns_models_on_valid_config() {
+bool test_bootstrap_returns_models_on_valid_config() {
     rk_win::AppConfig cfg;
     cfg.model.recognition = "lbph";
     cfg.recognition.cascadePath = "assets/lbpcascade_frontalface.xml";
@@ -29,7 +29,7 @@ static bool test_bootstrap_returns_models_on_valid_config() {
 }
 
 // 测试：无效 cascade 路径应返回 ok=false
-static bool test_bootstrap_reports_failure_on_bad_cascade() {
+bool test_bootstrap_reports_failure_on_bad_cascade() {
     rk_win::AppConfig cfg;
     cfg.model.recognition = "lbph";
     cfg.recognition.cascadePath = "/nonexistent/path/to/cascade.xml";

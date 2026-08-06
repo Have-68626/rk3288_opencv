@@ -237,7 +237,11 @@ add_executable(win_unit_tests
     "tests/win/test_http_faces_server.cpp"
     "tests/win/test_runtime_bootstrap.cpp"
     "tests/win/test_endpoint_registry.cpp"
+    "tests/win/test_frame_pipeline_reload.cpp"
     "src/win/src/RuntimeBootstrap.cpp"
+    "src/win/src/FramePipeline.cpp"
+    "src/win/src/MfCamera.cpp"
+    "src/win/src/CameraSession.cpp"
     "src/win/src/EndpointRegistry.cpp"
     "src/cpp/src/FileHash.cpp"
     "src/win/src/HttpFacesServerPath.cpp"
@@ -268,6 +272,11 @@ if(MSVC)
 endif()
 target_link_libraries(win_unit_tests
     ${RK_OPENCV_FULL_LIBS}
+    mfplat
+    mfreadwrite
+    mfuuid
+    mf
+    ole32
     bcrypt
     crypt32
 )

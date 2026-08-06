@@ -3,8 +3,6 @@
 #include <iostream>
 #include <string>
 
-namespace {
-
 // ──── 测试：精确匹配返回 200 ────────────────────────────────
 bool test_registry_dispatch_returns_200_for_matching_route() {
     rk_win::EndpointRegistry reg;
@@ -72,5 +70,3 @@ bool test_registry_returns_405_for_method_mismatch() {
     }
     return true;
 }
-
-}  // namespace
