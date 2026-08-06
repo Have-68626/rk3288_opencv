@@ -186,10 +186,10 @@ void camera_nativeConfigureExternalInput(
 void registerCameraMethods(JniMethodRegistry& registry) {
     registry.add({
         {"nativePushFrameYuv420888",
-         "(Ljava/nio/ByteBuffer;ILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIIIIJIZ)Z",
+         "(Ljava/nio/ByteBuffer;ILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIIIJIZ)Z",
          reinterpret_cast<void*>(camera_nativePushFrameYuv420888)},
         {"nativePushFrameYuv420888Bytes",
-         "([BI[BII[BIIIIIJIZ)Z",
+         "([BI[BII[BIIIIJIZ)Z",
          reinterpret_cast<void*>(camera_nativePushFrameYuv420888Bytes)},
         {"nativeConfigureExternalInput",
          "(ZII)V",
