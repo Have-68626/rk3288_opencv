@@ -68,9 +68,18 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
     }
     // Final partial block
     {
-        std::size_t count = static_cast<std::size_t>(file.gcount());
+        // 最后一次失败的 file.read 可能读入最多 65535 字节（got），
+        // 必须先消费其中完整的 64 字节块，仅剩 0..63 字节参与 padding，
+        // 否则 memcpy/memset/data[count] 越界（HR-62 尾块消费）。
+        std::size_t got = static_cast<std::size_t>(file.gcount());
+        std::size_t j = 0;
+        for (; j + 64 <= got; j += 64) {
+            sha256_transform(state, readBuf + j);
+            bitlen += 512;
+        }
+        std::size_t count = got - j;
         bitlen += count * 8;
-        if (count > 0) std::memcpy(data, readBuf, count);
+        if (count > 0) std::memcpy(data, readBuf + j, count);
         data[count] = 0x80;
         if (count < 56) {
             std::memset(data + count + 1, 0, 56 - (count + 1));
