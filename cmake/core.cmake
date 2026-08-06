@@ -101,7 +101,19 @@ endif()
 # 调用点见 CMakeLists.txt 末尾（所有 target 定义之后）
 # 不能在 include 时内联执行：此时生产 target 尚未定义
 function(rk_apply_compiler_contract)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if(MSVC)
+        # 项目代码使用 C++ 异常（try/catch）与 OpenCV 头，target 级启用 MSVC 异常处理
+        # 避免 C4530（使用异常处理程序但未启用展开语义）；target 级不传播到 OpenCV 子目录
+        foreach(t ${RK_ENGINE_TARGETS})
+            if(TARGET ${t})
+                target_compile_options(${t} PRIVATE /EHsc)
+            endif()
+        endforeach()
+        # core_gtest_tests 不在 RK_ENGINE_TARGETS，但编译 DnnSsdFaceDetector.cpp 等 try/catch 源
+        if(TARGET core_gtest_tests)
+            target_compile_options(core_gtest_tests PRIVATE /EHsc)
+        endif()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         set(RK_SAFETY_EXCLUDED
             core_unit_tests core_gtest_tests
             face_infer_unit_tests win_unit_tests ncnn_precision_test
