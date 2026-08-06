@@ -41,14 +41,16 @@ target_compile_definitions(rk_core INTERFACE RK_CORE_LIBRARY)
 if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     enable_testing()
     include(FetchContent)
-    find_package(GTest QUIET)
-    if(NOT GTest_FOUND)
-        FetchContent_Declare(googletest
-            GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG release-1.12.1
-        )
-        FetchContent_MakeAvailable(googletest)
-    endif()
+    # 受控 GTest：禁用系统预编译 GTest（Anaconda 等用动态 CRT，与项目静态 /MT 不匹配，
+    # 链接报 LNK2038 RuntimeLibrary 不匹配 / LNK2005 重复符号），强制 FetchContent
+    # 源码构建 googletest 并继承项目 CRT（gtest_force_shared_crt OFF → 静态 /MT）
+    set(CMAKE_DISABLE_FIND_PACKAGE_GTest ON CACHE BOOL "" FORCE)
+    set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG release-1.12.1
+    )
+    FetchContent_MakeAvailable(googletest)
     add_executable(core_unit_tests
         "tests/cpp/core_unit_tests_main.cpp"
         "tests/cpp/test_frame_input_channel.cpp"
