@@ -156,6 +156,8 @@ private:
     std::atomic<bool> externalInputEnabled_{false};
 
     // === 运行时状态（最小化）===
+    // 初始化互斥锁：并发 initialize 串行化；初始化成功后才一次性提交 initialized_
+    std::mutex initMu_;
     std::atomic<bool> isRunning_{false};
     std::atomic<bool> initialized_{false};
     std::atomic<MonitoringMode> currentMode_{MonitoringMode::CONTINUOUS};

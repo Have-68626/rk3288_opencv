@@ -500,10 +500,8 @@ int Engine::getRecognitionIntervalMs() const {
 }
 
 bool Engine::initCommon(const std::string& cascadePath, const std::string& storagePath) {
-    if (initialized_.exchange(true)) {
-        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
-        return true;
-    }
+    // 不在此提交 initialized_：由外层 initialize 成功后一次性 store(true)，
+    // 避免 storage/bioAuth/videoManager 失败污染状态导致无法重试（Q-CQ-B06-006）
     RKLOG_ENTER("Engine");
     initCancelRequested_.store(false);
     videoManager_->setCancelToken(&initCancelRequested_);
@@ -527,6 +525,11 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
 }
 
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
+    std::lock_guard<std::mutex> lock(initMu_);
+    if (initialized_.load()) {
+        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
+        return true;
+    }
     if (!initCommon(cascadePath, storagePath)) return false;
     if (cameraId >= 0) {
         if (initCancelRequested_.load()) return false;
@@ -539,10 +542,16 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
         rklog::logInfo("Engine", __func__, "cameraId<0：跳过 VideoManager 相机打开（预期用于外部帧输入）");
     }
     performAccelSelfCheck();
+    initialized_.store(true);
     return true;
 }
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
+    std::lock_guard<std::mutex> lock(initMu_);
+    if (initialized_.load()) {
+        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
+        return true;
+    }
     if (!initCommon(cascadePath, storagePath)) return false;
     if (initCancelRequested_.load()) return false;
     if (filePath.empty()) {
@@ -560,6 +569,7 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         return false;
     }
     performAccelSelfCheck();
+    initialized_.store(true);
     return true;
 }
 
