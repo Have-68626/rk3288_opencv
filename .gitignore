@@ -110,6 +110,7 @@ graphify-out/
 !.claude/workflows/
 .claude/workflows/*
 !.claude/workflows/*.ts
+!.claude/CLAUDE.md
 
 # Gradle local distribution cache
 .gradle-local/
