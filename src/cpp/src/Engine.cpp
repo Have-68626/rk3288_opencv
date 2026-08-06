@@ -159,6 +159,11 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
         err = "非法尺寸";
         return false;
     }
+    // NV21 色度子采样需偶数宽高：YUV2BGR_NV21 对奇数尺寸行为未定义/抛异常，显式拒绝
+    if ((w & 1) != 0 || (h & 1) != 0) {
+        err = "NV21 仅支持偶数宽高";
+        return false;
+    }
 
     const int stride = (f.nv21RowStrideY > 0) ? f.nv21RowStrideY : w;
     if (stride < w || stride <= 0) {
@@ -589,6 +594,7 @@ void Engine::run() {
     std::cout << "Engine started." << std::endl;
 
     while (isRunning_) {
+        try {
         // 1. 取帧：优先消费外部帧通道，其次回退到 VideoManager
         double decodeMs = 0.0;
         bool processed = false;
@@ -628,6 +634,11 @@ void Engine::run() {
 
         // 3-7. 委托 processFrame 管线
         processFrame(frame, decodeMs);
+        } catch (const std::exception& e) {
+            rklog::logError("Engine", __func__, "处理循环异常被捕获: " + std::string(e.what()));
+        } catch (...) {
+            rklog::logError("Engine", __func__, "处理循环未知异常被捕获");
+        }
     }
 }
 
