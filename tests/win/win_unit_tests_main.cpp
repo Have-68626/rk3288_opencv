@@ -1,3 +1,4 @@
+#include <gtest/gtest.h>
 #include <iostream>
 #include <string>
 
@@ -41,7 +42,9 @@ bool test_pipeline_concurrent_reload_no_uaf();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
-int main() {
+// 接通两个 runner：自定义 bool 测试（runAll）+ GoogleTest 测试（RUN_ALL_TESTS）。
+// 任一失败均返回非零退出码，使 CTest 失败；全过返回 0。
+int main(int argc, char** argv) {
     using namespace rk_win_test;
     const TestCase cases[] = {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},
@@ -52,5 +55,8 @@ int main() {
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
         {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
     };
-    return runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0]))) ? 0 : 1;
+    const bool boolOk = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
+    ::testing::InitGoogleTest(&argc, argv);
+    const int gtestOk = RUN_ALL_TESTS();
+    return (boolOk && gtestOk == 0) ? 0 : 1;
 }
