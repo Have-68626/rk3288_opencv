@@ -3,6 +3,7 @@
 using namespace rk_core;
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -33,6 +34,84 @@ std::filesystem::path makeTempDir(const std::string& suffix) {
     const auto dir = base / (suffix + "_" + std::to_string(stamp));
     std::filesystem::create_directories(dir, ec);
     return dir;
+}
+
+// 手工构造 24-bit BMP：头部声明 width×height，仅写入 dataLen 字节数据区。
+static bool writeBmp(const std::filesystem::path& p, int width, int height, int dataLen) {
+    std::ofstream out(p, std::ios::binary);
+    if (!out.is_open()) return false;
+    const std::int32_t ihdrSize = 40;
+    const std::int32_t dataOffset = 14 + ihdrSize;
+    const std::int32_t fileSize = dataOffset + dataLen;
+    auto put32 = [&out](std::int32_t v) {
+        out.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    };
+    auto put16 = [&out](std::int16_t v) {
+        out.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    };
+    out.put('B'); out.put('M');
+    put32(fileSize);
+    put32(0);          // reserved
+    put32(dataOffset); // pixel data offset
+    put32(ihdrSize);   // DIB header size
+    put32(width);      // declared width
+    put32(height);     // declared height
+    put16(1);          // planes
+    put16(24);         // bpp
+    put32(0);          // compression (BI_RGB)
+    put32(0);          // image size
+    put32(0); put32(0); put32(0); put32(0); // xppm/yppm/clrUsed/clrImportant
+    for (int i = 0; i < dataLen; i++) out.put(0);
+    return static_cast<bool>(out);
+}
+
+// 构造声明巨大尺寸的 PNG（签名 + IHDR 宽/高，无需合法 CRC），实际文件极小。
+static bool writeHugeDimPng(const std::filesystem::path& p, std::uint32_t w, std::uint32_t h) {
+    std::ofstream out(p, std::ios::binary);
+    if (!out.is_open()) return false;
+    const unsigned char sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    out.write(reinterpret_cast<const char*>(sig), 8);
+    auto put32be = [&out](std::uint32_t v) {
+        const unsigned char b[4] = {static_cast<unsigned char>((v >> 24) & 0xFF),
+                                    static_cast<unsigned char>((v >> 16) & 0xFF),
+                                    static_cast<unsigned char>((v >> 8) & 0xFF),
+                                    static_cast<unsigned char>(v & 0xFF)};
+        out.write(reinterpret_cast<const char*>(b), 4);
+    };
+    put32be(13);   // IHDR chunk length
+    out.write("IHDR", 4);
+    put32be(w);    // declared width
+    put32be(h);    // declared height
+    for (int i = 0; i < 5; i++) out.put(0);  // bit depth/color type/compression/filter/interlace
+    return static_cast<bool>(out);
+}
+
+// 构造声明巨大尺寸的有损 WebP（VP8 关键帧头），无有效压缩数据。
+static bool writeHugeDimWebp(const std::filesystem::path& p, int width, int height) {
+    std::ofstream out(p, std::ios::binary);
+    if (!out.is_open()) return false;
+    auto put32le = [&out](std::uint32_t v) {
+        const unsigned char b[4] = {static_cast<unsigned char>(v & 0xFF),
+                                    static_cast<unsigned char>((v >> 8) & 0xFF),
+                                    static_cast<unsigned char>((v >> 16) & 0xFF),
+                                    static_cast<unsigned char>((v >> 24) & 0xFF)};
+        out.write(reinterpret_cast<const char*>(b), 4);
+    };
+    const std::uint32_t chunkSize = 32;  // 帧标签(3) + 起始码(3) + 宽高(4) + 占位
+    const std::uint32_t fileSize = 20 + chunkSize;
+    out.write("RIFF", 4);
+    put32le(fileSize - 8);
+    out.write("WEBP", 4);
+    out.write("VP8 ", 4);
+    put32le(chunkSize);
+    out.put(0x10); out.put(0x00); out.put(0x00);  // 关键帧标签（bit4=show_frame）
+    out.put(0x9D); out.put(0x01); out.put(0x2A);  // 起始码
+    out.put(static_cast<char>(width & 0xFF));
+    out.put(static_cast<char>((width >> 8) & 0xFF));
+    out.put(static_cast<char>(height & 0xFF));
+    out.put(static_cast<char>((height >> 8) & 0xFF));
+    for (int i = 0; i < 16; i++) out.put(0);
+    return static_cast<bool>(out);
 }
 
 }  // namespace
@@ -74,4 +153,71 @@ bool test_mock_preflight_rejects_oversize_image() {
     if (ok) return false;
     if (reason != "MOCK_OVERSIZE") return false;
     return true;
+}
+
+bool test_mock_preflight_rejects_huge_declared_dimension() {
+    // 恶意输入：文件极小，但 BMP 头部声明 65536×65536 像素。
+    // 若未在解码前校验声明尺寸，imdecode 会按头部分配 ~12GB 矩阵。
+    const auto dir = makeTempDir("huge_dim");
+    const auto path = dir / "huge.bmp";
+    if (!writeBmp(path, 65536, 65536, 64)) return false;
+
+    std::string reason;
+    const bool ok = VideoManager::preflightMockInput(path.string(), &reason);
+    if (ok) return false;
+    if (reason != "MOCK_IMAGE_DIMENSION_OVERFLOW") return false;
+    return true;
+}
+
+bool test_mock_preflight_accepts_normal_bmp() {
+    const auto dir = makeTempDir("normal_bmp");
+    const auto path = dir / "ok.bmp";
+    if (!writeBmp(path, 64, 48, 64 * 48 * 3)) return false;
+
+    std::string reason;
+    return VideoManager::preflightMockInput(path.string(), &reason);
+}
+
+bool test_mock_preflight_rejects_huge_png_dimension() {
+    const auto dir = makeTempDir("huge_png");
+    const auto path = dir / "huge.png";
+    if (!writeHugeDimPng(path, 20000, 20000)) return false;
+
+    std::string reason;
+    const bool ok = VideoManager::preflightMockInput(path.string(), &reason);
+    if (ok) return false;
+    if (reason != "MOCK_IMAGE_DIMENSION_OVERFLOW") return false;
+    return true;
+}
+
+bool test_mock_preflight_accepts_real_png() {
+    const auto dir = makeTempDir("real_png");
+    const auto path = dir / "ok.png";
+    cv::Mat img(96, 128, CV_8UC3, cv::Scalar(40, 60, 80));
+    if (!cv::imwrite(path.string(), img)) return false;
+
+    std::string reason;
+    return VideoManager::preflightMockInput(path.string(), &reason);
+}
+
+bool test_mock_preflight_rejects_huge_webp_dimension() {
+    const auto dir = makeTempDir("huge_webp");
+    const auto path = dir / "huge.webp";
+    if (!writeHugeDimWebp(path, 5000, 5000)) return false;
+
+    std::string reason;
+    const bool ok = VideoManager::preflightMockInput(path.string(), &reason);
+    if (ok) return false;
+    if (reason != "MOCK_IMAGE_DIMENSION_OVERFLOW") return false;
+    return true;
+}
+
+bool test_mock_preflight_accepts_real_webp() {
+    const auto dir = makeTempDir("real_webp");
+    const auto path = dir / "ok.webp";
+    cv::Mat img(64, 80, CV_8UC3, cv::Scalar(30, 50, 70));
+    if (!cv::imwrite(path.string(), img)) return false;
+
+    std::string reason;
+    return VideoManager::preflightMockInput(path.string(), &reason);
 }

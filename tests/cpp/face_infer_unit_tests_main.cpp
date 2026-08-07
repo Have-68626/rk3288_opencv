@@ -36,6 +36,12 @@ bool test_face_infer_done_hit();
 bool test_mock_preflight_rejects_invalid_magic();
 bool test_mock_preflight_rejects_incomplete_file();
 bool test_mock_preflight_rejects_oversize_image();
+bool test_mock_preflight_rejects_huge_declared_dimension();
+bool test_mock_preflight_accepts_normal_bmp();
+bool test_mock_preflight_rejects_huge_png_dimension();
+bool test_mock_preflight_accepts_real_png();
+bool test_mock_preflight_rejects_huge_webp_dimension();
+bool test_mock_preflight_accepts_real_webp();
 bool test_face_infer_outcome_json_missing_ctx();
 bool test_face_infer_outcome_json_missing_decision();
 bool test_face_infer_outcome_json_missing_metrics();
@@ -82,6 +88,12 @@ int main() {
         {"mock_preflight_rejects_invalid_magic", test_mock_preflight_rejects_invalid_magic},
         {"mock_preflight_rejects_incomplete_file", test_mock_preflight_rejects_incomplete_file},
         {"mock_preflight_rejects_oversize_image", test_mock_preflight_rejects_oversize_image},
+        {"mock_preflight_rejects_huge_declared_dimension", test_mock_preflight_rejects_huge_declared_dimension},
+        {"mock_preflight_accepts_normal_bmp", test_mock_preflight_accepts_normal_bmp},
+        {"mock_preflight_rejects_huge_png_dimension", test_mock_preflight_rejects_huge_png_dimension},
+        {"mock_preflight_accepts_real_png", test_mock_preflight_accepts_real_png},
+        {"mock_preflight_rejects_huge_webp_dimension", test_mock_preflight_rejects_huge_webp_dimension},
+        {"mock_preflight_accepts_real_webp", test_mock_preflight_accepts_real_webp},
         {"face_infer_outcome_json_missing_ctx", test_face_infer_outcome_json_missing_ctx},
         {"face_infer_outcome_json_missing_decision", test_face_infer_outcome_json_missing_decision},
         {"face_infer_outcome_json_missing_metrics", test_face_infer_outcome_json_missing_metrics},

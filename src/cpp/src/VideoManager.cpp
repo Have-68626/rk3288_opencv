@@ -10,9 +10,9 @@
 #ifdef __linux__
 #include <sys/resource.h>
 #endif
-#include <array>
 #include <chrono>
 #include <algorithm>
+#include <cstring>
 #include <vector>
 #include <fstream>
 #include <filesystem>
@@ -24,11 +24,106 @@ namespace {
 
 constexpr std::uintmax_t kMockMaxImageBytes = 50ULL * 1024ULL * 1024ULL;
 
+// 解码前尺寸边界的产品上界：与 captureLoop 中帧校验一致（cols/rows <= 4096）。
+constexpr std::int64_t kMockMaxImageDimension = 4096;
+// 头部扫描窗口：JPEG 的 SOF 标记需跨过 APPn/EXIF 段，取 64KB 覆盖常见头部。
+constexpr std::size_t kMockHeaderScanBytes = 65536;
+
+struct DeclaredDims {
+    std::int64_t width = 0;
+    std::int64_t height = 0;
+    bool parsed = false;
+};
+
+// 从文件头解析声明像素尺寸，供解码前预检拒绝超界样本，
+// 防止 imdecode 依据伪造头部分配巨大矩阵导致 OOM。解析失败放行（fail-open）。
+static DeclaredDims parsePngDims(const unsigned char* d, std::size_t len) {
+    // 签名(8) + 长度(4) + "IHDR"(4) + 宽(4 BE) + 高(4 BE)
+    if (len < 24 || std::memcmp(d + 12, "IHDR", 4) != 0) return {};
+    const std::uint32_t w = (static_cast<std::uint32_t>(d[16]) << 24) | (static_cast<std::uint32_t>(d[17]) << 16) |
+                            (static_cast<std::uint32_t>(d[18]) << 8) | d[19];
+    const std::uint32_t h = (static_cast<std::uint32_t>(d[20]) << 24) | (static_cast<std::uint32_t>(d[21]) << 16) |
+                            (static_cast<std::uint32_t>(d[22]) << 8) | d[23];
+    return { static_cast<std::int64_t>(w), static_cast<std::int64_t>(h), true };
+}
+
+static DeclaredDims parseBmpDims(const unsigned char* d, std::size_t len) {
+    // "BM"(0-1) + 信息头: 宽(18-21 LE)、高(22-25 LE，负数=自顶向下存储)
+    if (len < 26 || d[0] != 'B' || d[1] != 'M') return {};
+    const std::uint32_t rawW = static_cast<std::uint32_t>(d[18]) | (static_cast<std::uint32_t>(d[19]) << 8) |
+                               (static_cast<std::uint32_t>(d[20]) << 16) | (static_cast<std::uint32_t>(d[21]) << 24);
+    const std::uint32_t rawH = static_cast<std::uint32_t>(d[22]) | (static_cast<std::uint32_t>(d[23]) << 8) |
+                               (static_cast<std::uint32_t>(d[24]) << 16) | (static_cast<std::uint32_t>(d[25]) << 24);
+    std::int64_t w = static_cast<std::int64_t>(static_cast<std::int32_t>(rawW));
+    std::int64_t h = static_cast<std::int64_t>(static_cast<std::int32_t>(rawH));
+    if (w < 0) w = -w;
+    if (h < 0) h = -h;
+    return { w, h, true };
+}
+
+static DeclaredDims parseJpegDims(const unsigned char* d, std::size_t len) {
+    // SOI(0-1) 后扫描标记段，命中 SOF0-15 读取 高(2 BE)+宽(2 BE)
+    if (len < 4 || d[0] != 0xFF || d[1] != 0xD8) return {};
+    std::size_t i = 2;
+    while (i + 4 <= len) {
+        if (d[i] != 0xFF) { i++; continue; }
+        const std::uint8_t m = d[i + 1];
+        if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }  // SOI/TEM/RSTn
+        if (m == 0xD9) break;  // EOI
+        const int segLen = (d[i + 2] << 8) | d[i + 3];
+        if (segLen < 2) break;
+        const bool isSof = m == 0xC0 || m == 0xC1 || m == 0xC2 || m == 0xC3 || m == 0xC5 ||
+                           m == 0xC6 || m == 0xC7 || m == 0xC9 || m == 0xCA || m == 0xCB ||
+                           m == 0xCD || m == 0xCE || m == 0xCF;
+        if (isSof) {
+            if (i + 9 <= len) {
+                const int h = (d[i + 5] << 8) | d[i + 6];
+                const int w = (d[i + 7] << 8) | d[i + 8];
+                return { w, h, true };
+            }
+            break;
+        }
+        i += 2 + static_cast<std::size_t>(segLen);
+    }
+    return {};
+}
+
+static DeclaredDims parseWebpDims(const unsigned char* d, std::size_t len) {
+    if (len < 30 || std::memcmp(d, "RIFF", 4) != 0 || std::memcmp(d + 8, "WEBP", 4) != 0) return {};
+    const std::string chunk(reinterpret_cast<const char*>(d + 12), 4);
+    if (chunk == "VP8X") {
+        // 扩展头：画布 宽-1/高-1 为 24 位 LE（24-26 宽-1，27-29 高-1）
+        const std::uint32_t w = static_cast<std::uint32_t>(d[24]) | (static_cast<std::uint32_t>(d[25]) << 8) |
+                                (static_cast<std::uint32_t>(d[26]) << 16);
+        const std::uint32_t h = static_cast<std::uint32_t>(d[27]) | (static_cast<std::uint32_t>(d[28]) << 8) |
+                                (static_cast<std::uint32_t>(d[29]) << 16);
+        return { static_cast<std::int64_t>(w) + 1, static_cast<std::int64_t>(h) + 1, true };
+    }
+    if (chunk == "VP8 ") {
+        // 关键帧：帧标签(20-22) + 起始码 0x9D 01 2A(23-25)；宽 14 位 LE(26-27)、高 14 位 LE(28-29)
+        if (d[23] != 0x9D || d[24] != 0x01 || d[25] != 0x2A) return {};
+        const std::uint32_t w = (static_cast<std::uint32_t>(d[26]) | (static_cast<std::uint32_t>(d[27]) << 8)) & 0x3FFF;
+        const std::uint32_t h = (static_cast<std::uint32_t>(d[28]) | (static_cast<std::uint32_t>(d[29]) << 8)) & 0x3FFF;
+        return { static_cast<std::int64_t>(w), static_cast<std::int64_t>(h), true };
+    }
+    if (chunk == "VP8L") {
+        // 无损：签名 0x2F(20)；宽-1/高-1 各 14 位 LSB-first(21-24)
+        if (d[20] != 0x2F) return {};
+        const std::uint32_t wm1 = static_cast<std::uint32_t>(d[21]) |
+                                  ((static_cast<std::uint32_t>(d[22]) & 0x3F) << 8);
+        const std::uint32_t hm1 = (static_cast<std::uint32_t>(d[22]) >> 6) |
+                                  (static_cast<std::uint32_t>(d[23]) << 2) |
+                                  ((static_cast<std::uint32_t>(d[24]) & 0x0F) << 10);
+        return { static_cast<std::int64_t>(wm1) + 1, static_cast<std::int64_t>(hm1) + 1, true };
+    }
+    return {};
+}
+
 bool isStaticImageExt(const std::string& ext) {
     return ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "bmp" || ext == "webp";
 }
 
-bool hasValidImageMagic(const std::string& ext, const std::array<unsigned char, 16>& magic, size_t len) {
+bool hasValidImageMagic(const std::string& ext, const unsigned char* magic, size_t len) {
     if ((ext == "jpg" || ext == "jpeg") && len >= 3) {
         return magic[0] == 0xFF && magic[1] == 0xD8 && magic[2] == 0xFF;
     }
@@ -178,14 +273,25 @@ bool VideoManager::preflightMockInput(const std::string& filePath, std::string* 
     if (!magicFile.is_open()) {
         return setReason("MOCK_IO_OPEN_FAILED");
     }
-    std::array<unsigned char, 16> magic{};
-    magicFile.read(reinterpret_cast<char*>(magic.data()), static_cast<std::streamsize>(magic.size()));
-    const size_t magicLen = static_cast<size_t>(std::max<std::streamsize>(0, magicFile.gcount()));
-    if (!hasValidImageMagic(ext, magic, magicLen)) {
-        if (magicLen < 3) {
+    std::vector<unsigned char> header(static_cast<size_t>(std::min<std::uintmax_t>(fileSize, kMockHeaderScanBytes)));
+    magicFile.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    const size_t headerLen = static_cast<size_t>(std::max<std::streamsize>(0, magicFile.gcount()));
+    if (!hasValidImageMagic(ext, header.data(), headerLen)) {
+        if (headerLen < 3) {
             return setReason("MOCK_FILE_INCOMPLETE");
         }
         return setReason("MOCK_MAGIC_INVALID");
+    }
+
+    // 解码前尺寸边界：解析头部声明像素尺寸，任一维度超产品上界则拒绝，
+    // 防止 imdecode 依据伪造头部分配巨大矩阵导致 OOM。解析失败放行，由解码后帧校验兜底。
+    DeclaredDims dims;
+    if (ext == "jpg" || ext == "jpeg") dims = parseJpegDims(header.data(), headerLen);
+    else if (ext == "png") dims = parsePngDims(header.data(), headerLen);
+    else if (ext == "bmp") dims = parseBmpDims(header.data(), headerLen);
+    else if (ext == "webp") dims = parseWebpDims(header.data(), headerLen);
+    if (dims.parsed && (dims.width > kMockMaxImageDimension || dims.height > kMockMaxImageDimension)) {
+        return setReason("MOCK_IMAGE_DIMENSION_OVERFLOW");
     }
 
     return true;
