@@ -35,6 +35,11 @@ public:
     // 当前生效配置（线程安全复制）
     AppConfig current() const;
 
+    // 配置变更代数：PUT（updateFromJsonBody）或外部写入（reloadFromDisk 成功）各 +1。
+    // 消费者记录已消费代数，代数变化即"恰好消费一次"（两来源无重复/遗漏）；
+    // PUT 落盘会自更新 lastWriteTime_，pollReloadOnce 无法据此感知，需 generation 判定。
+    uint64_t generation() const;
+
     // 供 API 输出：返回脱敏后的 settings JSON（不包含密钥/敏感明文）
     std::string currentRedactedJsonPretty() const;
 
@@ -79,6 +84,7 @@ private:
     mutable std::mutex mu_;
     AppConfig cfg_{};
     std::string lastGoodJsonPretty_;  // 用于回滚/调试输出（不含密钥）
+    std::atomic<std::uint64_t> generation_{0};
 };
 
 }  // namespace rk_win

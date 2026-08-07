@@ -769,6 +769,10 @@ AppConfig WinJsonConfigStore::current() const {
     return cfg_;
 }
 
+uint64_t WinJsonConfigStore::generation() const {
+    return generation_.load();
+}
+
 std::string WinJsonConfigStore::currentRedactedJsonPretty() const {
     std::lock_guard<std::mutex> lock(mu_);
     return buildSettingsJson(cfg_, true, false);
@@ -868,6 +872,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         lastGoodJsonPretty_ = prettyEnc;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
+        generation_.fetch_add(1);  // PUT 成功提交：配置代数 +1（消费方据此恰好消费一次）
     }
 
     r.ok = true;
@@ -1039,6 +1044,7 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         cfg_ = cfg;
         lastGoodJsonPretty_ = pretty;
         lastWriteTime_ = wt;
+        generation_.fetch_add(1);  // 外部写入成功 reload：配置代数 +1
     }
     outApplied = true;
     return true;
