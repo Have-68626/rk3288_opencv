@@ -9,9 +9,11 @@ using namespace rk_core;
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -89,6 +91,34 @@ bool test_face_infer_yolo_load_failure() {
     if (!contains(out.json, "yolo_load_failure")) return false;
     if (!contains(out.json, "img.jpg")) return false;
     return true;
+}
+
+bool test_face_infer_concurrent_model_key_switch() {
+    // 并发切换模型 key：修复后缓存为 shared_ptr 且调用期局部持有，无悬空访问。
+    // 无有效模型（opencv backend 无 .onnx）时 load 失败不缓存，UAF 真实复现
+    // 需可加载模型（本地 ncnn 模型需 ncnn 支持）；本测试验证并发调用不崩溃、结果确定。
+    const auto dir = makeTempDir("concurrent_key_switch");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    std::atomic<int> okCount{0};
+    const int kThreads = 8;
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; i++) {
+        threads.emplace_back([&, i] {
+            FaceInferRequest req;
+            req.imagePath = imgPath.string();
+            req.fakeDetect = false;
+            req.fakeEmbedding = true;
+            req.yoloBackend = "opencv";
+            req.yoloModelPath = "/nonexistent/yolo_" + std::to_string(i) + ".onnx";
+            const auto out = runFaceInferOnce(req);
+            if (out.ok) okCount.fetch_add(1);
+        });
+    }
+    for (auto& t : threads) t.join();
+    // 全部应 yolo_load 失败（模型不存在），okCount==0；并发调用不崩溃
+    return okCount.load() == 0;
 }
 
 bool test_face_infer_done_no_face() {

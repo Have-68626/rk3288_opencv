@@ -30,6 +30,7 @@ static bool runAll(const TestCase* cases, int n) {
 
 bool test_face_infer_image_load_failure();
 bool test_face_infer_yolo_load_failure();
+bool test_face_infer_concurrent_model_key_switch();
 bool test_face_infer_done_no_face();
 bool test_face_infer_done_hit();
 bool test_mock_preflight_rejects_invalid_magic();
@@ -75,6 +76,7 @@ int main() {
     const TestCase cases[] = {
         {"face_infer_image_load_failure", test_face_infer_image_load_failure},
         {"face_infer_yolo_load_failure", test_face_infer_yolo_load_failure},
+        {"face_infer_concurrent_model_key_switch", test_face_infer_concurrent_model_key_switch},
         {"face_infer_done_no_face", test_face_infer_done_no_face},
         {"face_infer_done_hit", test_face_infer_done_hit},
         {"mock_preflight_rejects_invalid_magic", test_mock_preflight_rejects_invalid_magic},

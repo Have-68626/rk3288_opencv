@@ -121,16 +121,18 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         if (!req.fakeDetect) {
             static std::mutex s_detMu;
             static std::string s_detCacheKey;
-            static std::unique_ptr<FaceDetector> s_cachedDet;
+            static std::shared_ptr<FaceDetector> s_cachedDet;
+            // 调用期局部共享所有权：即使并发切换缓存 key，本帧持有的 detector 不被销毁
+            std::shared_ptr<FaceDetector> localDet;
 
             const std::string detKey = req.yoloBackend + ":" + req.yoloModelPath;
             {
                 std::lock_guard<std::mutex> lock(s_detMu);
                 if (detKey == s_detCacheKey && s_cachedDet) {
-                    ctx.detector = s_cachedDet.get();
+                    localDet = s_cachedDet;
                 }
             }
-            if (!ctx.detector) {
+            if (!localDet) {
                 ModelRegistry::ensureBuiltinRegistered();
                 auto det = ModelRegistry::instance().createDetector(req.yoloBackend);
                 if (det) {
@@ -138,27 +140,30 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
                     if (det->load(req.yoloModelPath, loadErr)) {
                         std::lock_guard<std::mutex> lock(s_detMu);
                         s_detCacheKey = detKey;
-                        s_cachedDet = std::move(det);
-                        ctx.detector = s_cachedDet.get();
+                        localDet = std::shared_ptr<FaceDetector>(std::move(det));
+                        s_cachedDet = localDet;
                     }
                 }
             }
+            ctx.detector = localDet.get();
         }
 
         // 缓存嵌入器实例以避免每帧重新加载模型文件（调用方管理生命周期）
         if (!req.fakeEmbedding) {
             static std::mutex s_embMu;
             static std::string s_embCacheKey;
-            static std::unique_ptr<ArcFaceEmbedder> s_cachedEmb;
+            static std::shared_ptr<ArcFaceEmbedder> s_cachedEmb;
+            // 调用期局部共享所有权：并发切换缓存 key 时本帧持有的 embedder 不被销毁
+            std::shared_ptr<ArcFaceEmbedder> localEmb;
 
             const std::string embKey = req.arcBackend + ":" + req.arcModelPath;
             {
                 std::lock_guard<std::mutex> lock(s_embMu);
                 if (embKey == s_embCacheKey && s_cachedEmb && s_cachedEmb->isInitialized()) {
-                    ctx.embedder = s_cachedEmb.get();
+                    localEmb = s_cachedEmb;
                 }
             }
-            if (!ctx.embedder) {
+            if (!localEmb) {
                 ArcFaceEmbedderConfig cfg;
                 cfg.inputW = req.arcInputW;
                 cfg.inputH = req.arcInputH;
@@ -190,10 +195,11 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
                 if (emb->initialize(cfg, &initErr)) {
                     std::lock_guard<std::mutex> lock(s_embMu);
                     s_embCacheKey = embKey;
-                    s_cachedEmb = std::move(emb);
-                    ctx.embedder = s_cachedEmb.get();
+                    localEmb = std::shared_ptr<ArcFaceEmbedder>(std::move(emb));
+                    s_cachedEmb = localEmb;
                 }
             }
+            ctx.embedder = localEmb.get();
         }
 
         static std::atomic<std::uint64_t> s_auditSeq{0};
