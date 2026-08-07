@@ -246,7 +246,10 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/yolo_face_int8_ncnn/yolo_face_int8.param")
         target_compile_definitions(face_infer_unit_tests PRIVATE RK_HAVE_INT8_MODELS=1)
     endif()
-    add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
+    # 源码根作为 WORKING_DIRECTORY：test_mock_preflight_guards.cpp 的 findFixture 依赖
+    # 相对路径 tests/fixtures/mock/，ctest 默认 cwd 为 build 目录会解析失败（fixture 测试假失败）。
+    add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # 独立 ncnn 精度测试：仅链接 ncnn + OpenCV，不含适配器代码
