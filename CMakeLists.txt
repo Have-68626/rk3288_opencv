@@ -210,6 +210,7 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         "tests/cpp/test_mock_preflight_guards.cpp"
         "tests/cpp/test_video_manager.cpp"
         "tests/cpp/test_int8_quantization.cpp"
+        "tests/cpp/test_model_registry.cpp"
         "tests/cpp/test_face_align.cpp"
         "tests/cpp/test_resource_cleanup.cpp"
         "tests/cpp/test_gallery_cache.cpp"

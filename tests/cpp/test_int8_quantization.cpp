@@ -68,22 +68,22 @@ static double computeIou(int x1, int y1, int w1, int h1,
 bool test_int8_yolo_face_registered() {
     ModelRegistry::ensureBuiltinRegistered();
     if (skipIfNoModel("models/yolo_face_int8_ncnn/yolo_face_int8.param")) return true;
-    auto* entry = ModelRegistry::instance().getEntry("yolo_face_int8");
-    return entry != nullptr && entry->taskType == "detect";
+    auto entry = ModelRegistry::instance().getEntry("yolo_face_int8");
+    return entry.has_value() && entry->taskType == "detect";
 }
 
 bool test_int8_arcface_registered() {
     ModelRegistry::ensureBuiltinRegistered();
     if (skipIfNoModel("models/arcface_int8_ncnn/arcface_int8.param")) return true;
-    auto* entry = ModelRegistry::instance().getEntry("arcface_int8");
-    return entry != nullptr && entry->taskType == "recognize";
+    auto entry = ModelRegistry::instance().getEntry("arcface_int8");
+    return entry.has_value() && entry->taskType == "recognize";
 }
 
 bool test_int8_mobilefacenet_registered() {
     ModelRegistry::ensureBuiltinRegistered();
     if (skipIfNoModel("models/mobilefacenet_int8_ncnn/mobilefacenet_int8.param")) return true;
-    auto* entry = ModelRegistry::instance().getEntry("mobilefacenet_int8");
-    return entry != nullptr && entry->taskType == "recognize";
+    auto entry = ModelRegistry::instance().getEntry("mobilefacenet_int8");
+    return entry.has_value() && entry->taskType == "recognize";
 }
 
 bool test_int8_yolo_face_creates_detector() {

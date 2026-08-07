@@ -147,17 +147,17 @@ std::unique_ptr<Embedder> ModelRegistry::createEmbedder(const std::string& id, s
     return it->second.factory();
 }
 
-const ModelEntry* ModelRegistry::getEntry(const std::string& id) const {
+std::optional<ModelEntry> ModelRegistry::getEntry(const std::string& id) const {
     std::shared_lock lock(mu_);
     {
         auto it = detectors_.find(id);
-        if (it != detectors_.end()) return &it->second.entry;
+        if (it != detectors_.end()) return it->second.entry;
     }
     {
         auto it = embedders_.find(id);
-        if (it != embedders_.end()) return &it->second.entry;
+        if (it != embedders_.end()) return it->second.entry;
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 std::vector<ModelEntry> ModelRegistry::listAll() const {
