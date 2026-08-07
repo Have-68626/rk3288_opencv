@@ -58,6 +58,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
 
     // 日志初始化（保留）
     if (!logger_.open(cfg_.log.logDir, cfg_.log.maxFileBytes, cfg_.log.maxRollFiles)) {
+        std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = "日志打开失败（将继续运行但不会落盘日志）";
     }
 
@@ -77,6 +78,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
     }
 
     if (!bootstrap.ok) {
+        std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.warning;
     }
 
@@ -582,12 +584,16 @@ void FramePipeline::captureLoop() {
         le.errorCode = openRes.code;
         le.errorMessage = openRes.message;
         logger_.append(le);
-        render_.status = "摄像头打开失败: " + openRes.code + " " + openRes.message;
+        {
+            std::lock_guard<std::mutex> lock(renderMu_);
+            render_.status = "摄像头打开失败: " + openRes.code + " " + openRes.message;
+        }
         cameraRunning_ = false;
         return;
     }
 
     {
+        std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = "摄像头已打开";
     }
     {
@@ -604,7 +610,10 @@ void FramePipeline::captureLoop() {
         const auto rr = camera_->readFrameBgr(bgr, ts);
         if (!rr.ok) {
             lastPrivacyDenied_ = (rr.category == ErrorCategory::PrivacyDenied);
-            render_.status = "采集失败: " + rr.code + " " + rr.message;
+            {
+                std::lock_guard<std::mutex> lock(renderMu_);
+                render_.status = "采集失败: " + rr.code + " " + rr.message;
+            }
             consecutiveFail++;
             if (consecutiveFail == 1) {
                 FrameLogEntry le;
@@ -757,7 +766,7 @@ void FramePipeline::processLoop() {
             le.cameraId = activeCameraIdUtf8_;
         }
 
-        // ── 副作用收口（Overlay 绘制 + 渲染态发布 + 结构化日志） ──
+        // ── 副作用收口 + 渲染态状态文本（bgr/status 同临界区，读侧见原子一致快照） ──
         {
             std::lock_guard<std::mutex> lock(renderMu_);
             sink_->publish(result, le);
@@ -766,18 +775,17 @@ void FramePipeline::processLoop() {
             render_.dropRate = lastDropRate;
             render_.stride = detectStride_;
             render_.timestamp100ns = ts;
-        }
 
-        // ── 渲染态状态文本（publish 不处理） ──
-        if (result.consumedCommand.clearDb) {
-            render_.status = "已清空人脸库";
-        }
-        if (cmd.enrollRequested) {
-            if (result.consumedCommand.enrollRequested) {
-                render_.status = "注册中: " + cmd.enrollPersonId
-                    + " 还需样本=" + std::to_string(enrollRemaining_);
-            } else {
-                render_.status = "注册完成: " + cmd.enrollPersonId;
+            if (result.consumedCommand.clearDb) {
+                render_.status = "已清空人脸库";
+            }
+            if (cmd.enrollRequested) {
+                if (result.consumedCommand.enrollRequested) {
+                    render_.status = "注册中: " + cmd.enrollPersonId
+                        + " 还需样本=" + std::to_string(enrollRemaining_);
+                } else {
+                    render_.status = "注册完成: " + cmd.enrollPersonId;
+                }
             }
         }
 

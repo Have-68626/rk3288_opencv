@@ -209,3 +209,64 @@ bool test_pipeline_switch_camera_failure_keeps_old() {
     fp.shutdown();
     return keptOld;
 }
+
+// 并发读写 RenderState：injectFrameForTest 驱动 processLoop 写 render_（含 status），
+// requestEnroll 使 processLoop 写变化状态文本，并发线程 tryGetRenderState 锁内读。
+// 修复前：processLoop（773/777/780）与 captureLoop（585/591/607）在 renderMu_ 外无锁写
+//   render_.status（std::string），与读线程锁内读并发 → data race（撕裂/崩溃）。
+bool test_pipeline_render_state_concurrent_access() {
+    rk_win::AppConfig cfg;
+    cfg.model.recognition = "lbph";
+    cfg.recognition.cascadePath = "assets/lbpcascade_frontalface.xml";
+    cfg.recognition.databasePath = ".";
+    cfg.dnn.enable = false;
+
+    rk_win::FramePipeline fp;
+    if (!fp.initialize(cfg)) return false;
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> badReads{0};
+    std::atomic<int> totalReads{0};
+
+    // 帧生产者：驱动 processLoop 持续执行 processor->run()（sink publish 写 render_.bgr）
+    std::thread producer([&fp, &stop] {
+        cv::Mat frame(360, 640, CV_8UC3, cv::Scalar(64, 128, 192));
+        while (!stop.load(std::memory_order_relaxed)) {
+            fp.injectFrameForTest(frame);
+        }
+    });
+
+    // 注册请求：长 personId 使 processLoop 写超长状态文本（超 SSO → 堆分配，撕裂可观察）
+    const std::string longId(512, 'E');
+    std::thread enroller([&fp, &stop, &longId] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            fp.requestEnroll(longId);
+        }
+    });
+
+    // 读线程：锁内拷贝 render_ 快照，断言 status 是完整合法值
+    std::thread reader([&fp, &stop, &badReads, &totalReads] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            rk_win::RenderState st;
+            if (fp.tryGetRenderState(st)) {
+                totalReads.fetch_add(1, std::memory_order_relaxed);
+                const std::string& s = st.status;
+                const bool valid = s == "摄像头已打开" || s == "已清空人脸库" ||
+                                   s.rfind("注册中: ", 0) == 0 || s.rfind("注册完成: ", 0) == 0;
+                if (!valid) badReads.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    stop.store(true, std::memory_order_relaxed);
+    producer.join();
+    enroller.join();
+    reader.join();
+    fp.shutdown();
+
+    return totalReads.load(std::memory_order_relaxed) > 0 && badReads.load(std::memory_order_relaxed) == 0;
+}
