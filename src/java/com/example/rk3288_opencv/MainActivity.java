@@ -552,7 +552,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             if (effect instanceof MonitoringCoordinator.ScheduleInitEngine) {
                 MonitoringCoordinator.ScheduleInitEngine se = (MonitoringCoordinator.ScheduleInitEngine) effect;
+                final int scheduledGen = se.generation;
                 handler.postDelayed(() -> {
+                    // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
+                    if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
                     if (isFinishing()) return;
                     initEngine();
                     if (!se.wantMock) {
@@ -575,7 +578,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             if (effect instanceof MonitoringCoordinator.ScheduleStart) {
                 MonitoringCoordinator.ScheduleStart ss = (MonitoringCoordinator.ScheduleStart) effect;
-                handler.postDelayed(() -> dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null)), Math.max(0L, ss.delayMs));
+                final int scheduledGen = ss.generation;
+                handler.postDelayed(() -> {
+                    // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
+                    if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+                    dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
+                }, Math.max(0L, ss.delayMs));
                 continue;
             }
         }
@@ -2945,6 +2953,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        monitoringCoordinator.onActivityDestroyed(snapshotMonitoringInputs());  // 递增代次使排程任务失效
         stopMonitoring();
         if (statsUpdater != null) {
             handler.removeCallbacks(statsUpdater);

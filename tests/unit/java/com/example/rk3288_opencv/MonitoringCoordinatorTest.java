@@ -147,5 +147,84 @@ public class MonitoringCoordinatorTest {
 
         assertTrue(d.uiState.overlayVisible);
     }
+
+    // ── 代次/取消门：生命周期后陈旧排程任务被取消（可控调度器场景） ──
+
+    private static int findScheduleStartGeneration(MonitoringCoordinator.Decision d) {
+        for (MonitoringCoordinator.Effect e : d.effects) {
+            if (e instanceof MonitoringCoordinator.ScheduleStart) {
+                return ((MonitoringCoordinator.ScheduleStart) e).generation;
+            }
+        }
+        return -1;
+    }
+
+    private static int findScheduleInitGeneration(MonitoringCoordinator.Decision d) {
+        for (MonitoringCoordinator.Effect e : d.effects) {
+            if (e instanceof MonitoringCoordinator.ScheduleInitEngine) {
+                return ((MonitoringCoordinator.ScheduleInitEngine) e).generation;
+            }
+        }
+        return -1;
+    }
+
+    @Test
+    public void staleScheduleStartAfterStopIsCancelled() {
+        MonitoringCoordinator c = new MonitoringCoordinator();
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
+
+        c.onEngineInitResult(in, true, false);
+        c.onMonitoringStarted(in, true, "Camera2", CaptureScheme.CAMERA2);
+        MonitoringCoordinator.Decision d = c.onCaptureFailure(in, "首帧超时");  // 排程 ScheduleStart
+        int scheduledGen = findScheduleStartGeneration(d);
+        assertTrue(scheduledGen >= 0);
+        assertTrue(c.isCurrentGeneration(scheduledGen));  // 排程时代次有效
+
+        c.onStopRequested(in, "用户停止");  // stop → 陈旧任务取消
+        assertFalse(c.isCurrentGeneration(scheduledGen));
+    }
+
+    @Test
+    public void staleScheduleInitAfterPermissionRevokeIsCancelled() {
+        MonitoringCoordinator c = new MonitoringCoordinator();
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
+        MonitoringCoordinator.Inputs noPerm = new MonitoringCoordinator.Inputs("0", null, false);
+
+        MonitoringCoordinator.Decision d = c.onPermissionStateChanged(in, true, null, "GRANTED");  // 排程 ScheduleInitEngine
+        int scheduledGen = findScheduleInitGeneration(d);
+        assertTrue(scheduledGen >= 0);
+        assertTrue(c.isCurrentGeneration(scheduledGen));
+
+        c.onPermissionStateChanged(noPerm, false, List.of(Manifest.permission.CAMERA), "DENIED");  // 撤权 → 陈旧任务取消
+        assertFalse(c.isCurrentGeneration(scheduledGen));
+    }
+
+    @Test
+    public void staleScheduleAfterDestroyIsCancelled() {
+        MonitoringCoordinator c = new MonitoringCoordinator();
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
+
+        c.onEngineInitResult(in, true, false);
+        c.onMonitoringStarted(in, true, "Camera2", CaptureScheme.CAMERA2);
+        MonitoringCoordinator.Decision d = c.onCaptureFailure(in, "首帧超时");
+        int scheduledGen = findScheduleStartGeneration(d);
+        assertTrue(c.isCurrentGeneration(scheduledGen));
+
+        c.onActivityDestroyed(in);  // 销毁 → 陈旧任务取消
+        assertFalse(c.isCurrentGeneration(scheduledGen));
+    }
+
+    @Test
+    public void currentGenerationScheduleStillRuns() {
+        MonitoringCoordinator c = new MonitoringCoordinator();
+        MonitoringCoordinator.Inputs in = new MonitoringCoordinator.Inputs("0", null, true);
+
+        c.onEngineInitResult(in, true, false);
+        c.onMonitoringStarted(in, true, "Camera2", CaptureScheme.CAMERA2);
+        MonitoringCoordinator.Decision d = c.onCaptureFailure(in, "首帧超时");
+        int scheduledGen = findScheduleStartGeneration(d);
+        // 无生命周期事件 → 排程代次仍当前 → 任务可执行
+        assertTrue(c.isCurrentGeneration(scheduledGen));
+    }
 }
 

@@ -75,10 +75,12 @@ final class MonitoringCoordinator {
     static final class ScheduleInitEngine implements Effect {
         final long delayMs;
         final boolean wantMock;
+        final int generation;  // 排程时代次：调度执行时陈旧代次被取消门拦截
 
-        ScheduleInitEngine(long delayMs, boolean wantMock) {
+        ScheduleInitEngine(long delayMs, boolean wantMock, int generation) {
             this.delayMs = delayMs;
             this.wantMock = wantMock;
+            this.generation = generation;
         }
     }
 
@@ -107,9 +109,11 @@ final class MonitoringCoordinator {
     static final class StopMonitoringFlow implements Effect {}
     static final class ScheduleStart implements Effect {
         final long delayMs;
+        final int generation;  // 排程时代次：调度执行时陈旧代次被取消门拦截
 
-        ScheduleStart(long delayMs) {
+        ScheduleStart(long delayMs, int generation) {
             this.delayMs = delayMs;
+            this.generation = generation;
         }
     }
 
@@ -154,6 +158,10 @@ final class MonitoringCoordinator {
     private EngineState engineState = EngineState.NOT_READY;
     private boolean firstFrameReceived = false;
 
+    // 代次：生命周期事件（stop/撤权/restart/destroy）递增。排程 Effect 携带排程时代次，
+    // 调度器执行时用 isCurrentGeneration 取消门拦截陈旧任务（Activity 已停止/销毁后不再执行）。
+    private int generation = 0;
+
     private boolean captureAutoEnabled = true;
     private CaptureScheme preferredCaptureScheme = CaptureScheme.CAMERA2;
     private CaptureScheme activeCaptureScheme = CaptureScheme.CAMERA2;
@@ -168,6 +176,22 @@ final class MonitoringCoordinator {
     private String lastRestartReasonOrNull = null;
 
     MonitoringCoordinator() {}
+
+    synchronized int currentGeneration() {
+        return generation;
+    }
+
+    synchronized boolean isCurrentGeneration(int scheduledGeneration) {
+        return scheduledGeneration == generation;
+    }
+
+    // Activity 销毁：递增代次使所有排程任务失效（陈旧任务被取消门拦截）。
+    synchronized Decision onActivityDestroyed(Inputs in) {
+        generation++;  // 使陈旧排程失效
+        runState = RunState.STOPPED;
+        firstFrameReceived = false;
+        return snapshot(in);
+    }
 
     synchronized Decision syncFromActivity(
             Inputs in,
@@ -226,11 +250,12 @@ final class MonitoringCoordinator {
         if (reasonOrNull != null && !reasonOrNull.isEmpty()) {
             fx.add(new ShowToast(false, reasonOrNull));
         }
+        generation++;  // 重启：使旧排程失效（新排程携带新代次）
         runState = RunState.RESTARTING;
         firstFrameReceived = false;
         lastStoppedReasonOrNull = null;
         fx.add(new StopMonitoringFlow());
-        fx.add(new ScheduleStart(Math.max(0L, delayMs)));
+        fx.add(new ScheduleStart(Math.max(0L, delayMs), currentGeneration()));
         return new Decision(buildUiState(in), fx);
     }
 
@@ -279,6 +304,7 @@ final class MonitoringCoordinator {
         boolean allowMock = in.allowMockEvenWithoutPermission();
         if (!runtimeGranted) {
             if (in.selectedCameraId != null) {
+                generation++;  // 撤权：使已排程任务失效（陈旧任务被取消门拦截）
                 engineState = EngineState.NOT_READY;
                 firstFrameReceived = false;
             }
@@ -297,7 +323,7 @@ final class MonitoringCoordinator {
 
         List<Effect> fx = new ArrayList<>();
         engineState = EngineState.INITIALIZING;
-        fx.add(new ScheduleInitEngine(500L, in.wantMock()));
+        fx.add(new ScheduleInitEngine(500L, in.wantMock(), currentGeneration()));
         return new Decision(buildUiState(in), fx);
     }
 
@@ -397,6 +423,7 @@ final class MonitoringCoordinator {
     }
 
     private Decision stopInternal(Inputs in, String reasonOrNull) {
+        generation++;  // 停止：使已排程任务失效（陈旧任务被取消门拦截）
         runState = RunState.STOPPED;
         firstFrameReceived = false;
         lastStoppedReasonOrNull = reasonOrNull;
