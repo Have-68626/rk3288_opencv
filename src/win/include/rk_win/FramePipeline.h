@@ -120,6 +120,10 @@ public:
     // 测试辅助：注入一帧驱动处理循环（无相机环境验证并发 reload/enroll 路径）
     void injectFrameForTest(const cv::Mat& bgr);
 
+    // 测试辅助：注入假相机与设备列表（验证相机切换后采集源确实改变）
+    void setCameraForTest(std::unique_ptr<ICameraSource> cam);
+    void setDevicesForTest(std::vector<CameraDevice> devs);
+
     bool tryGetRenderState(RenderState& out);
     bool snapshotFaces(FacesSnapshot& out);
     std::uint64_t currentFacesSeq() const;
@@ -154,7 +158,8 @@ private:
     std::thread captureThread_;
     std::thread processThread_;
 
-    MfCamera camera_;
+    // 相机采集源：可注入接口（测试用假相机验证切换），initialize 默认注入 MfCamera
+    std::unique_ptr<ICameraSource> camera_;
     StructuredLogger logger_;
     // 不可变运行时快照：reloadRuntime 原子替换，processLoop 取快照持有整个 run()，
     // 避免并发 reload/enroll 时旧 processor/recognizer/dnn 被销毁（UAF）

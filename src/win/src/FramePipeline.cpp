@@ -53,6 +53,7 @@ FramePipeline::~FramePipeline() {
 
 bool FramePipeline::initialize(const AppConfig& cfg) {
     cfg_ = cfg;
+    camera_ = std::make_unique<MfCamera>();
     devices_ = MfCamera::enumerateDevices();
 
     // 日志初始化（保留）
@@ -141,7 +142,7 @@ bool FramePipeline::startCameraByIndex(int deviceIndex, int formatIndex) {
 
     requestStopCamera();
     if (captureThread_.joinable()) captureThread_.join();
-    camera_.close();
+    camera_->close();
 
     {
         std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -218,7 +219,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
     requestStopCamera();
     if (captureThread_.joinable()) captureThread_.join();
-    camera_.close();
+    camera_->close();
 
     {
         std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -232,7 +233,11 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
     bool openFailed = false;
     CameraOpenResult lastOpen{};
     {
+        // 真正等待首帧（captureLoop 异步 open+采集 → cameraSignal_==4 成功 / ==3 打开失败），
+        // 超时 maxTotalMs 视为切换失败。此前仅检查一次（cameraSignal_ 刚重置为 0）恒判失败。
         std::unique_lock<std::mutex> lock(cameraSignalMu_);
+        cameraSignalCv_.wait_for(lock, std::chrono::milliseconds(maxTotalMs),
+                                 [&] { return cameraSignal_ == 4 || cameraSignal_ == 3; });
         if (cameraSignal_ == 4) gotFirstFrame = true;
         else if (cameraSignal_ == 3) openFailed = true;
         lastOpen = lastCameraOpenResult_;
@@ -264,7 +269,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
             requestStopCamera();
             if (captureThread_.joinable()) captureThread_.join();
-            camera_.close();
+            camera_->close();
 
             {
                 std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -308,7 +313,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
             requestStopCamera();
             if (captureThread_.joinable()) captureThread_.join();
-            camera_.close();
+            camera_->close();
 
             {
                 std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -341,7 +346,7 @@ void FramePipeline::requestStopCamera() {
 void FramePipeline::stopCameraLocked() {
     cameraRunning_ = false;
     if (captureThread_.joinable()) captureThread_.join();
-    camera_.close();
+    camera_->close();
 }
 
 CameraOpenResult FramePipeline::openOnce() {
@@ -360,7 +365,7 @@ CameraOpenResult FramePipeline::openOnce() {
         dev = devices_[static_cast<std::size_t>(activeDeviceIndex_)];
         fmt = desiredFormat_;
     }
-    return camera_.open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
+    return camera_->open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
 }
 
 void FramePipeline::setFlip(bool flipX, bool flipY) {
@@ -384,15 +389,10 @@ void FramePipeline::setPreviewLayout(int previewW, int previewH, int previewScal
 // ── ReloadPolicy 热更新方法 ──
 
 void FramePipeline::switchCamera(const AppConfig& cfg) {
-    CameraOpenParams params;
-    params.width = cfg.camera.width;
-    params.height = cfg.camera.height;
-    params.fps = cfg.camera.fps;
-
-    // 从 preferredDeviceId 查找设备索引（与 ensureCameraRunning 逻辑一致）
+    // 从 preferredDeviceId 解析设备索引（与 ensureCameraRunning 逻辑一致）
+    int idx = 0;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        int idx = 0;
         if (!cfg.camera.preferredDeviceId.empty()) {
             for (int i = 0; i < static_cast<int>(devices_.size()); i++) {
                 if (devices_[static_cast<size_t>(i)].deviceId == cfg.camera.preferredDeviceId) {
@@ -401,17 +401,35 @@ void FramePipeline::switchCamera(const AppConfig& cfg) {
                 }
             }
         }
-        params.deviceIndex = idx;
     }
 
-    auto result = CameraSession::switchWithRollback(params, currentDevice_);
+    CameraFormat desired;
+    desired.width = cfg.camera.width;
+    desired.height = cfg.camera.height;
+    desired.fps = cfg.camera.fps;
+
+    // 真正原子替换活动采集源（重启 captureLoop + 失败回滚），
+    // 替代此前仅用 CameraSession::switchWithRollback 探测却未切换管线的问题
+    const auto result = startCameraWithRollbackLocked(idx, desired, 300);
     if (result.ok) {
-        currentDevice_ = result.device;
+        std::lock_guard<std::mutex> lock(mu_);
+        currentDevice_.index = idx;
+        currentDevice_.name = utf8FromWide(devices_[static_cast<size_t>(idx)].name);
+        currentDevice_.devicePath = utf8FromWide(devices_[static_cast<size_t>(idx)].deviceId);
     }
     {
         std::lock_guard<std::mutex> lock(renderMu_);
-        render_.status = result.code == "ok" ? "摄像头已切换" : result.message;
+        render_.status = result.rolledBack ? "切换失败已回滚" : (result.ok ? "摄像头已切换" : result.reason);
     }
+}
+
+void FramePipeline::setCameraForTest(std::unique_ptr<ICameraSource> cam) {
+    camera_ = std::move(cam);
+}
+
+void FramePipeline::setDevicesForTest(std::vector<CameraDevice> devs) {
+    std::lock_guard<std::mutex> lock(mu_);
+    devices_ = std::move(devs);
 }
 
 void FramePipeline::reloadRuntime(const AppConfig& cfg) {
@@ -583,7 +601,7 @@ void FramePipeline::captureLoop() {
     while (running_ && cameraRunning_) {
         cv::Mat bgr;
         std::uint64_t ts = 0;
-        const auto rr = camera_.readFrameBgr(bgr, ts);
+        const auto rr = camera_->readFrameBgr(bgr, ts);
         if (!rr.ok) {
             lastPrivacyDenied_ = (rr.category == ErrorCategory::PrivacyDenied);
             render_.status = "采集失败: " + rr.code + " " + rr.message;
@@ -602,7 +620,7 @@ void FramePipeline::captureLoop() {
                 logger_.append(le);
             }
             if (consecutiveFail >= 10 && rr.category == ErrorCategory::BackendFailure) {
-                camera_.close();
+                camera_->close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 CameraDevice dev;
                 CameraFormat fmt;
@@ -613,7 +631,7 @@ void FramePipeline::captureLoop() {
                     }
                     fmt = desiredFormat_;
                 }
-                const auto re = camera_.open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
+                const auto re = camera_->open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
                 if (!re.ok) {
                     FrameLogEntry le;
                     le.tsIso8601 = nowIso8601Local();
@@ -659,7 +677,7 @@ void FramePipeline::captureLoop() {
         frameCv_.notify_one();
     }
 
-    camera_.close();
+    camera_->close();
 }
 
 void FramePipeline::processLoop() {
