@@ -68,13 +68,17 @@ bool test_pipeline_concurrent_reload_no_uaf() {
 namespace {
 
 // 假相机：记录每次 open 的 deviceId，readFrameBgr 返回假帧（模拟成功采集）。
-// failOn 非空时，open 该 deviceId 返回失败（模拟目标设备打开失败，验证失败保持旧管线）。
+// 可配置场景：failOn/failOpen（打开失败）、delayFrames（前 N 帧失败延迟首帧）、neverFrame（首帧永不到）。
 class FakeCamera : public rk_win::ICameraSource {
 public:
     std::mutex m;
     std::wstring lastOpenedId;
     std::wstring failOn;
     std::atomic<int> openCount{0};
+    int delayFrames = 0;      // readFrameBgr 前 N 次失败，之后成功（延迟首帧）
+    bool failOpen = false;    // open 返回失败
+    bool neverFrame = false;  // readFrameBgr 永远失败
+    std::atomic<int> readCount{0};
 
     rk_win::CameraOpenResult open(const std::wstring& id, int w, int h, int fps) override {
         {
@@ -87,17 +91,23 @@ public:
         r.code = "ok";
         {
             std::lock_guard<std::mutex> lk(m);
-            if (id == failOn) r.ok = false;
+            if (id == failOn || failOpen) r.ok = false;
         }
         return r;
     }
     void close() override {}
     rk_win::CameraOpenResult readFrameBgr(cv::Mat& out, std::uint64_t& ts) override {
-        out = cv::Mat(360, 640, CV_8UC3, cv::Scalar(10, 20, 30));
-        ts = 1;
+        const int n = readCount.fetch_add(1);
         rk_win::CameraOpenResult r;
         r.ok = true;
         r.code = "ok";
+        if (neverFrame || n < delayFrames) {
+            r.ok = false;
+            r.code = "no_frame";
+            return r;
+        }
+        out = cv::Mat(360, 640, CV_8UC3, cv::Scalar(10, 20, 30));
+        ts = 1;
         return r;
     }
     bool isOpen() const override { return true; }
@@ -269,4 +279,58 @@ bool test_pipeline_render_state_concurrent_access() {
     fp.shutdown();
 
     return totalReads.load(std::memory_order_relaxed) > 0 && badReads.load(std::memory_order_relaxed) == 0;
+}
+
+namespace {
+
+// 相机等待谓词三用例：用 applyCameraSettings 返回验证 wait_for 谓词（cameraSignal_==4/3）与超时正确。
+// 测试不 sleep 固定时长等结果，断言基于 startCameraWithRollbackLocked 的返回（wait_for 等待/超时）。
+
+rk_win::CameraSwitchResult runCameraOpen(int deviceIndex, int maxTotalMs, FakeCamera* fake, rk_win::FramePipeline& fp) {
+    rk_win::AppConfig cfg;
+    cfg.model.recognition = "lbph";
+    cfg.recognition.cascadePath = "assets/lbpcascade_frontalface.xml";
+    cfg.recognition.databasePath = ".";
+    cfg.dnn.enable = false;
+    fp.initialize(cfg);  // 启动 captureLoop 读帧循环（running_=true），否则首帧永不达
+    rk_win::CameraFormat f0;
+    f0.width = 640;
+    f0.height = 480;
+    f0.fps = 30;
+    fp.setDevicesForTest(makeFakeDevices(f0));
+    fp.setCameraForTest(std::unique_ptr<FakeCamera>(fake));
+    return fp.applyCameraSettings(deviceIndex, 640, 480, 30, maxTotalMs);
+}
+
+}  // namespace
+
+// 延迟首帧：FakeCamera 前 5 帧失败（captureLoop 读失败各 sleep 100ms → 首帧延迟 ~500ms），
+// wait_for 在 maxTotalMs(3000) 内等到首帧 → ok=true（首帧延迟但成功）。
+bool test_pipeline_first_frame_delayed() {
+    rk_win::FramePipeline fp;
+    auto* fake = new FakeCamera();
+    fake->delayFrames = 5;
+    const auto res = runCameraOpen(0, 3000, fake, fp);
+    fp.shutdown();
+    return res.ok;
+}
+
+// 超时：readFrameBgr 永远失败 → wait_for(500) 超时 → ok=false 且原因含"超时"。
+bool test_pipeline_first_frame_timeout() {
+    rk_win::FramePipeline fp;
+    auto* fake = new FakeCamera();
+    fake->neverFrame = true;
+    const auto res = runCameraOpen(0, 500, fake, fp);
+    fp.shutdown();
+    return !res.ok && res.reason.find("超时") != std::string::npos;
+}
+
+// 打开失败：open 返回失败 → cameraSignal_==3 谓词满足 → wait_for 立即返回 → ok=false 且原因含"打开失败"。
+bool test_pipeline_open_failure() {
+    rk_win::FramePipeline fp;
+    auto* fake = new FakeCamera();
+    fake->failOpen = true;
+    const auto res = runCameraOpen(0, 500, fake, fp);
+    fp.shutdown();
+    return !res.ok && res.reason.find("打开失败") != std::string::npos;
 }
