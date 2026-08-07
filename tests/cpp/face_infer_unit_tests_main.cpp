@@ -77,6 +77,7 @@ bool test_gallery_cache_repeated_call();
 
 bool test_publisher_emits_no_face_on_empty_tracks();
 bool test_publisher_throttles_repeated_calls();
+bool test_publisher_concurrent_set_and_publish();
 
 int main() {
     using namespace rk_face_infer_test;
@@ -120,6 +121,7 @@ int main() {
         {"gallery_cache_repeated_call", test_gallery_cache_repeated_call},
         {"publisher_emits_no_face_on_empty_tracks", test_publisher_emits_no_face_on_empty_tracks},
         {"publisher_throttles_repeated_calls", test_publisher_throttles_repeated_calls},
+        {"publisher_concurrent_set_and_publish", test_publisher_concurrent_set_and_publish},
         {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
         {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
         {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},

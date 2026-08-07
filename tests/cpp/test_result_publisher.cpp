@@ -1,6 +1,9 @@
+#include <atomic>
 #include <cassert>
-#include <string>
 #include <chrono>
+#include <memory>
+#include <string>
+#include <thread>
 #include "pipeline/ResultPublisher.h"
 
 bool test_publisher_emits_no_face_on_empty_tracks() {
@@ -46,4 +49,59 @@ bool test_publisher_throttles_repeated_calls() {
 
     assert(count == 1);  // 只有第一次应触发回调
     return true;
+}
+
+bool test_publisher_concurrent_set_and_publish() {
+    // 并发换回调与发布：writer 高频 setCallback 替换回调，reader 高频 publish 触发回调。
+    // 修复前 callback_ 无锁，setCallback 的 move 赋值与 publish 读+调用并发 →
+    // data race：读到半写回调而丢失（判空 false）或调用到已析构回调（UAF）。
+    // 修复后 publish 锁内复制回调快照、锁外调用，每次触发发布必然调用一次完整回调。
+    pipeline::ResultPublisher pub;
+    auto calls = std::make_shared<std::atomic<long long>>(0);
+    auto badMsgs = std::make_shared<std::atomic<long long>>(0);
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> callbackReady{false};
+    std::atomic<long long> published{0};
+
+    std::thread writer([&] {
+        auto c = calls;
+        auto b = badMsgs;
+        pub.setCallback([c, b](const std::string& msg) {
+            c->fetch_add(1);
+            if (msg != "NO_FACE") b->fetch_add(1);
+        });
+        callbackReady.store(true);  // 首次回调就绪后再启动 reader，排除开头空回调窗口
+        while (!stop.load()) {
+            pub.setCallback([c, b](const std::string& msg) {
+                c->fetch_add(1);
+                if (msg != "NO_FACE") b->fetch_add(1);
+            });
+        }
+    });
+
+    std::thread reader([&] {
+        while (!callbackReady.load()) std::this_thread::yield();
+        long long ts = 100000;
+        while (!stop.load()) {
+            pipeline::FrameOutcome outcome;
+            pipeline::DomainEvent ev;
+            ev.type = "NO_FACE";
+            ev.timestampMs = ts += 3000;  // 递增 3s 绕过 2s 节流窗口，确保每次触发回调
+            outcome.events.push_back(ev);
+            pub.publish(std::move(outcome));
+            published.fetch_add(1);
+        }
+    });
+
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(600)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    stop = true;
+    writer.join();
+    reader.join();
+
+    // 修复后：每次触发发布恰好调用一次完整回调（锁内快照，无丢失/撕裂）
+    return published.load() > 0 && calls->load() == published.load() && badMsgs->load() == 0;
 }
