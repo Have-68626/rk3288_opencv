@@ -1,4 +1,6 @@
 #include "rk_win/WinJsonConfig.h"
+#include "rk_win/JsonLite.h"
+#include "rk_win/JsonSchemaValidator.h"
 
 #include <windows.h>
 
@@ -114,5 +116,55 @@ bool test_config_put_and_external_each_consumed_once() {
     if (store.generation() != lastApplied) { lastApplied = store.generation(); consumed++; }
     if (consumed != 2) return false;
 
+    return true;
+}
+
+// 默认序列化（initialize 生成的配置 JSON）应通过自身 schema。
+// 修复前：buildSettingsJson 输出的任何字段若 schema 不允许（如 model.int8Enabled 曾被遗漏）
+//   → 校验失败；B06-015 已修 int8Enabled，本测试系统化验证无其他不一致。
+bool test_config_default_serialization_passes_schema() {
+    const auto dir = makeTempDir("default_schema");
+    ConfigEnvGuard env(dir / "config.json");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const std::string json = store.currentRedactedJsonPretty();
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(json, doc, perr)) return false;
+    std::string schemaErr;
+    return rk_win::JsonSchemaValidator::validate(
+        rk_win::JsonSchemaValidator::buildSettingsDocSchema(), doc, &schemaErr);
+}
+
+// 每个单字段 PUT（各对象一个代表性字段）应通过自身 schema（updateFromJsonBody 内校验）。
+// 若生成配置（baseDoc）含 schema 不允许的字段，任一 PUT 都会失败。
+bool test_config_each_single_field_put_passes_schema() {
+    const auto dir = makeTempDir("single_field_schema");
+    ConfigEnvGuard env(dir / "config.json");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const char* patches[] = {
+        "{\"camera\":{\"width\":800}}",
+        "{\"recognition\":{\"minFaceSizePx\":80}}",
+        "{\"inference\":{\"intervalMs\":300}}",
+        "{\"dnn\":{\"inputWidth\":320}}",
+        "{\"model\":{\"recognition\":\"arcface\"}}",
+        "{\"http\":{\"port\":8081}}",
+        "{\"poster\":{\"enable\":true}}",
+        "{\"log\":{\"maxRollFiles\":3}}",
+        "{\"ui\":{\"windowWidth\":1024}}",
+        "{\"display\":{\"width\":1920}}",
+        "{\"acceleration\":{\"enableOpenCL\":false}}",
+    };
+    for (const char* p : patches) {
+        const auto res = store.updateFromJsonBody(p);
+        if (!res.ok) return false;  // 单字段 PUT 未通过 schema（生成配置含 schema 不允许字段）
+    }
     return true;
 }

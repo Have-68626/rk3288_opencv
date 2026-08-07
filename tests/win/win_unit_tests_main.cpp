@@ -48,6 +48,8 @@ bool test_pipeline_open_failure();
 bool test_config_put_bumps_generation();
 bool test_config_external_write_bumps_generation_once();
 bool test_config_put_and_external_each_consumed_once();
+bool test_config_default_serialization_passes_schema();
+bool test_config_each_single_field_put_passes_schema();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
@@ -72,6 +74,8 @@ int main(int argc, char** argv) {
         {"config_put_bumps_generation", test_config_put_bumps_generation},
         {"config_external_write_bumps_generation_once", test_config_external_write_bumps_generation_once},
         {"config_put_and_external_each_consumed_once", test_config_put_and_external_each_consumed_once},
+        {"config_default_serialization_passes_schema", test_config_default_serialization_passes_schema},
+        {"config_each_single_field_put_passes_schema", test_config_each_single_field_put_passes_schema},
     };
     const bool boolOk = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     ::testing::InitGoogleTest(&argc, argv);
