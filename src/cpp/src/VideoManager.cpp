@@ -48,8 +48,19 @@ static DeclaredDims parsePngDims(const unsigned char* d, std::size_t len) {
 }
 
 static DeclaredDims parseBmpDims(const unsigned char* d, std::size_t len) {
-    // "BM"(0-1) + 信息头: 宽(18-21 LE)、高(22-25 LE，负数=自顶向下存储)
+    // "BM"(0-1) + 信息头。biSize(14-17 LE)：40=标准 32 位宽/高(18-25)；12=OS/2 core-header，
+    // 宽/高为 16 位字段(18-21)。不识别 biSize 时 fail-open（由解码后帧校验兜底），
+    // 避免把合法 OS/2 BMP 的 planes|bpp 误读为巨大宽/高而误拒。
     if (len < 26 || d[0] != 'B' || d[1] != 'M') return {};
+    const std::uint32_t biSize = static_cast<std::uint32_t>(d[14]) | (static_cast<std::uint32_t>(d[15]) << 8) |
+                                 (static_cast<std::uint32_t>(d[16]) << 16) | (static_cast<std::uint32_t>(d[17]) << 24);
+    if (biSize == 12) {
+        // OS/2 core-header：16 位无符号宽/高（上限 65535，仍受 4096 上界防护）
+        const std::int64_t w = static_cast<std::uint32_t>(d[18]) | (static_cast<std::uint32_t>(d[19]) << 8);
+        const std::int64_t h = static_cast<std::uint32_t>(d[20]) | (static_cast<std::uint32_t>(d[21]) << 8);
+        return { w, h, true };
+    }
+    if (biSize < 40) return {};  // 不识别 header 变体，fail-open
     const std::uint32_t rawW = static_cast<std::uint32_t>(d[18]) | (static_cast<std::uint32_t>(d[19]) << 8) |
                                (static_cast<std::uint32_t>(d[20]) << 16) | (static_cast<std::uint32_t>(d[21]) << 24);
     const std::uint32_t rawH = static_cast<std::uint32_t>(d[22]) | (static_cast<std::uint32_t>(d[23]) << 8) |

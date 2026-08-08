@@ -37,10 +37,10 @@ std::filesystem::path makeTempDir(const std::string& suffix) {
 }
 
 // 手工构造 24-bit BMP：头部声明 width×height，仅写入 dataLen 字节数据区。
-static bool writeBmp(const std::filesystem::path& p, int width, int height, int dataLen) {
+// ihdrSize=40（BITMAPINFOHEADER，32 位宽高）；ihdrSize=12（OS/2 core-header，16 位宽高）。
+static bool writeBmp(const std::filesystem::path& p, int width, int height, int dataLen, int ihdrSize = 40) {
     std::ofstream out(p, std::ios::binary);
     if (!out.is_open()) return false;
-    const std::int32_t ihdrSize = 40;
     const std::int32_t dataOffset = 14 + ihdrSize;
     const std::int32_t fileSize = dataOffset + dataLen;
     auto put32 = [&out](std::int32_t v) {
@@ -54,13 +54,21 @@ static bool writeBmp(const std::filesystem::path& p, int width, int height, int 
     put32(0);          // reserved
     put32(dataOffset); // pixel data offset
     put32(ihdrSize);   // DIB header size
-    put32(width);      // declared width
-    put32(height);     // declared height
-    put16(1);          // planes
-    put16(24);         // bpp
-    put32(0);          // compression (BI_RGB)
-    put32(0);          // image size
-    put32(0); put32(0); put32(0); put32(0); // xppm/yppm/clrUsed/clrImportant
+    if (ihdrSize == 12) {
+        // OS/2 core-header：biWidth/biHeight 为 16 位
+        put16(static_cast<std::int16_t>(width));
+        put16(static_cast<std::int16_t>(height));
+        put16(1);          // planes
+        put16(24);         // bpp
+    } else {
+        put32(width);      // declared width
+        put32(height);     // declared height
+        put16(1);          // planes
+        put16(24);         // bpp
+        put32(0);          // compression (BI_RGB)
+        put32(0);          // image size
+        put32(0); put32(0); put32(0); put32(0); // xppm/yppm/clrUsed/clrImportant
+    }
     for (int i = 0; i < dataLen; i++) out.put(0);
     return static_cast<bool>(out);
 }
@@ -176,6 +184,31 @@ bool test_mock_preflight_accepts_normal_bmp() {
 
     std::string reason;
     return VideoManager::preflightMockInput(path.string(), &reason);
+}
+
+bool test_mock_preflight_accepts_normal_os2_bmp() {
+    // OS/2 core-header（biSize=12）合法 BMP：宽/高为 16 位字段。
+    // 若按 32 位布局误读（planes|bpp<<16 落在宽高字段），正常小图会被误拒
+    // MOCK_IMAGE_DIMENSION_OVERFLOW；此处验证正常 OS/2 BMP 不被误拒。
+    const auto dir = makeTempDir("normal_os2_bmp");
+    const auto path = dir / "ok_os2.bmp";
+    if (!writeBmp(path, 64, 48, 64 * 48 * 3, 12)) return false;
+
+    std::string reason;
+    return VideoManager::preflightMockInput(path.string(), &reason);
+}
+
+bool test_mock_preflight_rejects_huge_os2_bmp_dimension() {
+    // OS/2 core-header（biSize=12）的 16 位宽/高路径仍需防 OOM：65535 声明仍 >4096 上界。
+    const auto dir = makeTempDir("huge_os2_bmp");
+    const auto path = dir / "huge_os2.bmp";
+    if (!writeBmp(path, 65535, 65535, 64, 12)) return false;
+
+    std::string reason;
+    const bool ok = VideoManager::preflightMockInput(path.string(), &reason);
+    if (ok) return false;
+    if (reason != "MOCK_IMAGE_DIMENSION_OVERFLOW") return false;
+    return true;
 }
 
 bool test_mock_preflight_rejects_huge_png_dimension() {
