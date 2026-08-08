@@ -45,6 +45,8 @@ bool test_mock_preflight_rejects_huge_png_dimension();
 bool test_mock_preflight_accepts_real_png();
 bool test_mock_preflight_rejects_huge_webp_dimension();
 bool test_mock_preflight_accepts_real_webp();
+bool test_mock_preflight_rejects_huge_jpeg_dimension();
+bool test_mock_preflight_accepts_real_jpeg();
 bool test_face_infer_outcome_json_missing_ctx();
 bool test_face_infer_outcome_json_missing_decision();
 bool test_face_infer_outcome_json_missing_metrics();
@@ -102,6 +104,8 @@ int main() {
         {"mock_preflight_accepts_real_png", test_mock_preflight_accepts_real_png},
         {"mock_preflight_rejects_huge_webp_dimension", test_mock_preflight_rejects_huge_webp_dimension},
         {"mock_preflight_accepts_real_webp", test_mock_preflight_accepts_real_webp},
+        {"mock_preflight_rejects_huge_jpeg_dimension", test_mock_preflight_rejects_huge_jpeg_dimension},
+        {"mock_preflight_accepts_real_jpeg", test_mock_preflight_accepts_real_jpeg},
         {"face_infer_outcome_json_missing_ctx", test_face_infer_outcome_json_missing_ctx},
         {"face_infer_outcome_json_missing_decision", test_face_infer_outcome_json_missing_decision},
         {"face_infer_outcome_json_missing_metrics", test_face_infer_outcome_json_missing_metrics},

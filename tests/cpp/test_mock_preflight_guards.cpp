@@ -122,6 +122,29 @@ static bool writeHugeDimWebp(const std::filesystem::path& p, int width, int heig
     return static_cast<bool>(out);
 }
 
+// 构造声明巨大尺寸的 JPEG：SOI(FF D8) + SOF0 段声明 height×width（均 2 字节大端），
+// 后续 component 字节用占位填充，实际文件极小。SOF0 布局（i 为标记起点）：
+// FF C0 <segLen BE=17> 08 <height 2B BE> <width 2B BE> 03 <3×component>，
+// 与 parseJpegDims 读取偏移一致（height 在 i+5..i+6、width 在 i+7..i+8）。
+static bool writeHugeDimJpeg(const std::filesystem::path& p, int width, int height) {
+    std::ofstream out(p, std::ios::binary);
+    if (!out.is_open()) return false;
+    auto put16be = [&out](int v) {
+        const unsigned char b[2] = {static_cast<unsigned char>((v >> 8) & 0xFF),
+                                    static_cast<unsigned char>(v & 0xFF)};
+        out.write(reinterpret_cast<const char*>(b), 2);
+    };
+    out.put(0xFF); out.put(0xD8);  // SOI
+    out.put(0xFF); out.put(0xC0);  // SOF0 标记
+    put16be(17);                   // 段长（含 2 长度字节 + 15 载荷字节）
+    out.put(8);                    // precision（每分量 8 bit）
+    put16be(height);               // 声明高度
+    put16be(width);                // 声明宽度
+    out.put(3);                    // component 数（YCbCr）
+    for (int i = 0; i < 9; i++) out.put(0);  // 3×component 描述符占位
+    return static_cast<bool>(out);
+}
+
 }  // namespace
 
 bool test_mock_preflight_rejects_invalid_magic() {
@@ -249,6 +272,30 @@ bool test_mock_preflight_accepts_real_webp() {
     const auto dir = makeTempDir("real_webp");
     const auto path = dir / "ok.webp";
     cv::Mat img(64, 80, CV_8UC3, cv::Scalar(30, 50, 70));
+    if (!cv::imwrite(path.string(), img)) return false;
+
+    std::string reason;
+    return VideoManager::preflightMockInput(path.string(), &reason);
+}
+
+bool test_mock_preflight_rejects_huge_jpeg_dimension() {
+    // 恶意输入：文件极小，但 JPEG SOF0 段声明 50000×50000 像素。
+    // 若未在解码前校验 SOF 声明尺寸，imdecode 会按头部分配 ~7.5GB 矩阵。
+    const auto dir = makeTempDir("huge_jpeg");
+    const auto path = dir / "huge.jpg";
+    if (!writeHugeDimJpeg(path, 50000, 50000)) return false;
+
+    std::string reason;
+    const bool ok = VideoManager::preflightMockInput(path.string(), &reason);
+    if (ok) return false;
+    if (reason != "MOCK_IMAGE_DIMENSION_OVERFLOW") return false;
+    return true;
+}
+
+bool test_mock_preflight_accepts_real_jpeg() {
+    const auto dir = makeTempDir("real_jpeg");
+    const auto path = dir / "ok.jpg";
+    cv::Mat img(64, 48, CV_8UC3, cv::Scalar(50, 70, 90));
     if (!cv::imwrite(path.string(), img)) return false;
 
     std::string reason;
