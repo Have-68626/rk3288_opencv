@@ -55,11 +55,10 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         m.configuredPath = cascadeUtf8;
         m.resolvedPath = cascadeUtf8;
         m.backend = cfg.model.recognition == "arcface" ? "opencv_dnn_arcface" : "opencv_cascade";
-        if (cfg.model.recognition == "arcface") {
-            m.hash = modelSha256OrUnavailable(cfg.recognition.arcFaceModelPath);
-        } else {
-            m.hash = modelSha256OrUnavailable(cfg.recognition.cascadePath);
-        }
+        // 快照语义本就是 cascade 文件（id/path 均指向 cascadePath），
+        // 因此 hash 也必须取 cascadePath，与 id/path 保持一致，否则
+        // FramePipeline 的 cascade 快照 hash 断言会误报 mismatch。
+        m.hash = modelSha256OrUnavailable(cfg.recognition.cascadePath);
         m.status = cascadeOk ? "loaded" : "failed";
         m.isInUse = !cfg.dnn.enable;
         if (!cascadeOk) {
