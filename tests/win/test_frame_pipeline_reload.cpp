@@ -91,7 +91,11 @@ public:
         r.code = "ok";
         {
             std::lock_guard<std::mutex> lk(m);
-            if (id == failOn || failOpen) r.ok = false;
+            // 打开失败分支需同步置 code：仅置 ok=false 会让 reason 呈现"摄像头打开失败: ok"（误导观感）
+            if (id == failOn || failOpen) {
+                r.ok = false;
+                r.code = "fail";
+            }
         }
         return r;
     }
@@ -292,7 +296,9 @@ rk_win::CameraSwitchResult runCameraOpen(int deviceIndex, int maxTotalMs, FakeCa
     cfg.recognition.cascadePath = "assets/lbpcascade_frontalface.xml";
     cfg.recognition.databasePath = ".";
     cfg.dnn.enable = false;
-    fp.initialize(cfg);  // 启动 captureLoop 读帧循环（running_=true），否则首帧永不达
+    // initialize 只启动 processLoop（running_=true，FramePipeline.cpp:103）；
+    // captureLoop 读帧循环由下方 applyCameraSettings → startCameraWithRollbackLocked 异步启动，否则首帧永不达
+    fp.initialize(cfg);
     rk_win::CameraFormat f0;
     f0.width = 640;
     f0.height = 480;
