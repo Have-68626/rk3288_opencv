@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -31,12 +32,21 @@ std::filesystem::path makeTempDir(const std::string& suffix) {
     return dir;
 }
 
-// 外部写入：追加空白到 config.json 触发 mtime 变化（JSON 尾随空白合法，语义不变）
+// 外部写入：追加空白到 config.json 触发 mtime 变化（JSON 尾随空白合法，语义不变）。
+// 追加写后显式设置 mtime +2s：reloadFromDisk 做 lastWriteTime_ == wt 精确比较，
+// 粗粒度文件系统（FAT 2s 粒度）或两次写入落同一 tick 时追加写不会刷新 mtime，
+// 导致 applied=false 的 flaky（B06-015 遗留）。必须先 close 落盘再设 mtime：
+// 若流仍打开，析构 flush 会把 mtime 覆盖回写入时刻，+2s 被抹掉（首版修复教训）；
+// 且以写入后的实际 mtime 为基准（而非 now）加 2s，保证与 store 初始化记录必然不同。
 bool touchConfigFile(const std::filesystem::path& cfgPath) {
     std::ofstream f(cfgPath, std::ios::app | std::ios::binary);
     if (!f.is_open()) return false;
     f << " \n";
-    return static_cast<bool>(f);
+    if (!f) { f.close(); return false; }
+    f.close();
+    const auto base = std::filesystem::last_write_time(cfgPath);
+    std::filesystem::last_write_time(cfgPath, base + std::chrono::seconds(2));
+    return true;
 }
 
 }  // namespace
