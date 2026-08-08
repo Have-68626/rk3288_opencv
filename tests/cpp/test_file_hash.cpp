@@ -1,10 +1,18 @@
 #include "FileHash.h"
 #include <gtest/gtest.h>
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <string>
 
 namespace {
+
+// 生成跨进程唯一后缀：并发运行同一测试二进制时，固定临时文件名会互相覆盖。
+// steady_clock 单调时间计数在并发进程间几乎必然不同，用作临时名去碰撞后缀。
+std::string uniqueFileSuffix() {
+    return "_" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+}
 
 // RAII wrapper to ensure temporary files are deleted.
 class TempFileCleaner {
@@ -22,7 +30,8 @@ private:
 } // namespace
 
 TEST(FileHash, KnownContent) {
-    std::filesystem::path tempPath = std::filesystem::temp_directory_path() / "test_hash_hello.txt";
+    std::filesystem::path tempPath = std::filesystem::temp_directory_path() /
+        ("test_hash_hello" + uniqueFileSuffix() + ".txt");
     TempFileCleaner cleaner(tempPath);
 
     {
@@ -39,7 +48,8 @@ TEST(FileHash, KnownContent) {
 }
 
 TEST(FileHash, EmptyFile) {
-    std::filesystem::path tempPath = std::filesystem::temp_directory_path() / "test_hash_empty.txt";
+    std::filesystem::path tempPath = std::filesystem::temp_directory_path() /
+        ("test_hash_empty" + uniqueFileSuffix() + ".txt");
     TempFileCleaner cleaner(tempPath);
 
     {
@@ -86,7 +96,7 @@ TEST(FileHash, BoundaryLengths) {
     };
     for (const auto& c : cases) {
         std::filesystem::path tempPath = std::filesystem::temp_directory_path() /
-            ("test_hash_boundary_" + std::to_string(c.size) + ".bin");
+            ("test_hash_boundary_" + std::to_string(c.size) + uniqueFileSuffix() + ".bin");
         TempFileCleaner cleaner(tempPath);
 
         {

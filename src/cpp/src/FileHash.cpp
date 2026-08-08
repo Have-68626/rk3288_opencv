@@ -9,6 +9,10 @@
 namespace rk_wcfr {
 
 namespace {
+
+    // 文件读取缓冲大小：64KB 栈缓冲（HR-62），提为具名常量便于维护。
+    static constexpr std::size_t kReadBufferBytes = 64 * 1024;
+
     const uint32_t k[64] = {
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
         0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -58,7 +62,7 @@ std::string calculateSHA256(const std::filesystem::path& filePath) {
     uint64_t bitlen = 0;
     uint8_t data[64];
     // Read in 64KB chunks, process 64-byte blocks (HR-62)
-    uint8_t readBuf[65536];
+    uint8_t readBuf[kReadBufferBytes];
     while (file.read(reinterpret_cast<char*>(readBuf), sizeof(readBuf))) {
         std::size_t got = static_cast<std::size_t>(file.gcount());
         for (std::size_t j = 0; j + 64 <= got; j += 64) {
