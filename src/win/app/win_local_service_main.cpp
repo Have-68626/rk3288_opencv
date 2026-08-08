@@ -13,6 +13,15 @@
 #include <windows.h>
 #endif
 
+// OpenCL 守卫：仅当构建期实际启用 OpenCL（HAVE_OPENCL 宏，由 opencv config 定义）
+// 且 ocl.hpp 头存在时才 include 并调用 setUseOpenCL；否则编译期跳过，
+// 规避 build_win 下 cv::ocl 未编译导致 C2039 的问题。
+#if defined(HAVE_OPENCL) && defined(__has_include)
+#  if __has_include(<opencv2/core/ocl.hpp>)
+#    include <opencv2/core/ocl.hpp>
+#  endif
+#endif
+
 namespace rk_win {
 namespace {
 
@@ -121,7 +130,11 @@ int main() {
 
     rk_win::FramePipeline pipe;
     pipe.setEventLogger(&events);
+#if defined(HAVE_OPENCL) && defined(__has_include)
+#  if __has_include(<opencv2/core/ocl.hpp>)
     cv::ocl::setUseOpenCL(cfg.acceleration.enableOpenCL);
+#  endif
+#endif
     pipe.initialize(cfg);
     pipe.setPreviewLayout(1280, 720, cfg.ui.previewScaleMode);
     rk_win::ensureCameraRunning(pipe, cfg, events);
@@ -180,7 +193,11 @@ int main() {
                     std::to_string(next.ui.previewScaleMode));
                 break;
             case rk_win::ChangeKind::FullRestart:
+#if defined(HAVE_OPENCL) && defined(__has_include)
+#  if __has_include(<opencv2/core/ocl.hpp>)
                 cv::ocl::setUseOpenCL(next.acceleration.enableOpenCL);
+#  endif
+#endif
                 pipe.shutdown();
                 pipe.initialize(next);
                 pipe.setPreviewLayout(1280, 720, next.ui.previewScaleMode);
