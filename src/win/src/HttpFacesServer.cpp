@@ -7,6 +7,7 @@
 #include "rk_win/EventLogger.h"
 #include "rk_win/FramePipeline.h"
 #include "rk_win/JsonLite.h"
+#include "rk_win/JsonEndpointHandlers.h"
 #include "rk_win/WinConfig.h"
 #include "rk_win/WinJsonConfig.h"
 
@@ -131,9 +132,7 @@ static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
 }
 
 
-}  // namespace
-
-}  // namespace
+}  // namespace (匿名)
 
 // ──── 构造函数 / 生命周期 ────────────────────────────────────
 
