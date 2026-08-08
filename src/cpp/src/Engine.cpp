@@ -508,6 +508,10 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
     // 不在此提交 initialized_：由外层 initialize 成功后一次性 store(true)，
     // 避免 storage/bioAuth/videoManager 失败污染状态导致无法重试（Q-CQ-B06-006）
     RKLOG_ENTER("Engine");
+    // 有意重置（Q-CQ-B06-006/007，仅记录未改行为）：initCommon 每次重新初始化清除
+    // 既有取消意图，使取消后重试可正常执行。若调用方在 initialize() 之前
+    // requestCancelInit()，此处会静默清除该意图——既有语义；JNI 入口也总是先
+    // clearCancelInit() 再 initialize（src/cpp/jni/engine.cpp），改动取消语义有回归风险。
     initCancelRequested_.store(false);
     videoManager_->setCancelToken(&initCancelRequested_);
     std::string base = storagePath;
@@ -590,54 +594,75 @@ void Engine::run() {
     RKLOG_ENTER("Engine");
     isRunning_ = true;
     cv::Mat frame;
+    // 连续异常退避（本 run() 生命周期）：超过阈值后短睡抑制错误日志风暴（Q-CQ-B06-007）
+    int consecutiveErrors = 0;
+    constexpr int kErrorBackoffThreshold = 50;
+    constexpr int kErrorBackoffSleepMs = 100;
+    // 仅在 catch 中调用；首次越过阈值打一次提示日志，之后每次异常短睡退避。
+    // 计数器在 try 体正常走完后清零（见下方 consecutiveErrors = 0），异常恢复即退出退避。
+    // MSVC 对 constexpr 局部变量在 lambda 内隐式捕获较严格，用 [&] 引用捕获全部所需变量
+    auto backoffOnError = [&]() {
+        if (++consecutiveErrors >= kErrorBackoffThreshold) {
+            if (consecutiveErrors == kErrorBackoffThreshold) {
+                rklog::logWarn("Engine", "run",
+                    "连续异常退避: 连续 " + std::to_string(kErrorBackoffThreshold) +
+                    " 次异常，此后每次异常间 sleep " + std::to_string(kErrorBackoffSleepMs) + "ms");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kErrorBackoffSleepMs));
+        }
+    };
 
     std::cout << "Engine started." << std::endl;
 
     while (isRunning_) {
         try {
-        // 1. 取帧：优先消费外部帧通道，其次回退到 VideoManager
-        double decodeMs = 0.0;
-        bool processed = false;
+            // 1. 取帧：优先消费外部帧通道，其次回退到 VideoManager
+            double decodeMs = 0.0;
+            bool processed = false;
 
-        if (externalInputEnabled_.load() && externalInput_) {
-            ExternalFrame ef;
-            if (externalInput_->waitPop(ef, 30)) {
-                std::string err;
-                if (toBgrFromExternalFrame(ef, frame, err)) {
-                    decodeMs = 0.0;  // 外部帧不计解码耗时
-                    processed = true;
-                } else {
-                    rklog::logWarn("Engine", __func__, "外部帧转换失败: " + err + " / " + ef.brief());
+            if (externalInputEnabled_.load() && externalInput_) {
+                ExternalFrame ef;
+                if (externalInput_->waitPop(ef, 30)) {
+                    std::string err;
+                    if (toBgrFromExternalFrame(ef, frame, err)) {
+                        decodeMs = 0.0;  // 外部帧不计解码耗时
+                        processed = true;
+                    } else {
+                        rklog::logWarn("Engine", __func__, "外部帧转换失败: " + err + " / " + ef.brief());
+                    }
                 }
             }
-        }
-        if (!processed && videoManager_->getLatestFrame(frame)) {
-            processed = true;
-        }
+            if (!processed && videoManager_->getLatestFrame(frame)) {
+                processed = true;
+            }
 
-        if (!processed) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
-        }
+            if (!processed) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
 
-        // 2. Motion gate：MOTION_TRIGGERED 模式下仅在有运动时执行管线
-        // 注意：clone 保护 cv::putText 不会修改共享帧数据
-        if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
-            !motionDetector_->detect(frame)) {
-            pipeline::FrameOutcome outcome;
-            outcome.renderFrame = frame.clone();
-            cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
-                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
-            publisher_->publish(std::move(outcome));
-            continue;
-        }
+            // 2. Motion gate：MOTION_TRIGGERED 模式下仅在有运动时执行管线
+            // 注意：clone 保护 cv::putText 不会修改共享帧数据
+            if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
+                !motionDetector_->detect(frame)) {
+                pipeline::FrameOutcome outcome;
+                outcome.renderFrame = frame.clone();
+                cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
+                publisher_->publish(std::move(outcome));
+                continue;
+            }
 
-        // 3-7. 委托 processFrame 管线
-        processFrame(frame, decodeMs);
+            // 3-7. 委托 processFrame 管线
+            processFrame(frame, decodeMs);
+            // 正常走完一轮视为异常已恢复，清零连续异常计数（continue 路径不计数也不清零，无影响）
+            consecutiveErrors = 0;
         } catch (const std::exception& e) {
             rklog::logError("Engine", __func__, "处理循环异常被捕获: " + std::string(e.what()));
+            backoffOnError();
         } catch (...) {
             rklog::logError("Engine", __func__, "处理循环未知异常被捕获");
+            backoffOnError();
         }
     }
 }
