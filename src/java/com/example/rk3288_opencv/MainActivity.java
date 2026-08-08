@@ -169,6 +169,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private boolean lastReadyVisible = false;
     private volatile boolean restartMonitoringOnStart = false;
     private volatile boolean pendingResumeStart = false;
+    // 生命周期停止门：onStop 置位、onStart 复位。
+    // 消除"后台未销毁 + isRunning==false 时 onStart 轮询到期误启动监控"窗口（RW5 遗留；
+    // 代次门拦不住因为轮询续排发生在代次递增之后）。
+    private volatile boolean isStopped = false;
     private int surfaceCreatedCount = 0;
     private PermissionStateMachine permissionStateMachine;
     private final MonitoringCoordinator monitoringCoordinator = new MonitoringCoordinator();
@@ -556,6 +560,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 handler.postDelayed(() -> {
                     // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
                     if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+                    // isStopped 门补充：重启/恢复排程在 onStop 后到期不得后台启动（R2-6 双审 P2）
+                    if (isStopped) return;
                     if (isFinishing()) return;
                     initEngine();
                     if (!se.wantMock) {
@@ -582,6 +588,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 handler.postDelayed(() -> {
                     // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
                     if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+                    // isStopped 门补充：重启/恢复排程在 onStop 后到期不得后台启动（R2-6 双审 P2）
+                    if (isStopped) return;
                     if (isFinishing()) return;
                     dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
                 }, Math.max(0L, ss.delayMs));
@@ -1758,12 +1766,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     // 调度前先拦截 Activity 已销毁/正在结束的无效调度；回调内取消门：
     // 代次已变（用户 STOP/撤权/Activity 停止/销毁）则陈旧触发不执行。
     private void scheduleStartMonitoring(long delayMs) {
-        if (isFinishing() || isDestroyed()) return;
+        if (isFinishing() || isDestroyed() || isStopped) return;
         final int scheduledGen = monitoringCoordinator.currentGeneration();
         handler.postDelayed(() -> {
             // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
             if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
-            if (isFinishing() || isDestroyed()) return;
+            if (isFinishing() || isDestroyed() || isStopped) return;
             startMonitoring();
         }, Math.max(0L, delayMs));
     }
@@ -2913,6 +2921,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onStart() {
         super.onStart();
+        // 复位停止门：回到前台后允许轮询与排程重新生效
+        isStopped = false;
         try {
             Intent i = new Intent(this, StatusService.class);
             i.setAction(StatusService.ACTION_SET_FOREGROUND);
@@ -2932,6 +2942,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
+                        // 停止门：onStop 后终止轮询，不再自我重排（堵住误启动窗口的关键）
+                        if (isStopped) return;
                         long waited = SystemClock.elapsedRealtime() - startWaitMs;
                         if (previewSurfaceReady || waited >= maxWaitMs) {
                             AppLog.i("MainActivity", "onStart",
@@ -2950,6 +2962,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     @Override
     protected void onStop() {
+        // 置位停止门：后台后终止 surface 轮询续排与排程回调，闭合误启动窗口
+        isStopped = true;
         if (isRunning) {
             restartMonitoringOnStart = true;
             stopMonitoring();
