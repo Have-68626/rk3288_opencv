@@ -129,7 +129,7 @@ After the triple refactor (2026-07, PR #427), the three monolithic classes are n
 
 **FramePipeline** (`src/win/src/FramePipeline.cpp: ~350 lines, was 747`)
 - `RuntimeBootstrap::build()` — recognizer/DNN/ModelSnapshot assembly
-- `CameraSession::switchWithRollback()` — camera open/fallback/first-frame timeout
+- `FramePipeline::startCameraWithRollbackLocked()` — camera open/fallback/first-frame timeout
 - `FrameProcessor::run()` — pure computation (detect → recognize → result)
 - `SideEffectSink::publish()` — overlay drawing + structured log + render state
 
