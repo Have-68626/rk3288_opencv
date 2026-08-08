@@ -282,6 +282,8 @@ target_link_libraries(win_unit_tests
     crypt32
 )
 add_test(NAME win_unit_tests COMMAND win_unit_tests)
+# 并发死锁保护：win_unit_tests 多线程用例死锁会无限挂起 ctest（B06-014），设 120s 超时
+set_tests_properties(win_unit_tests PROPERTIES TIMEOUT 120)
 
 add_executable(win_face_database_perf
     "tests/win/test_face_database_perf.cpp"

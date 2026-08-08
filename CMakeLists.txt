@@ -247,9 +247,13 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         target_compile_definitions(face_infer_unit_tests PRIVATE RK_HAVE_INT8_MODELS=1)
     endif()
     # 源码根作为 WORKING_DIRECTORY：test_mock_preflight_guards.cpp 的 findFixture 依赖
-    # 相对路径 tests/fixtures/mock/，ctest 默认 cwd 为 build 目录会解析失败（fixture 测试假失败）。
+    # 相对路径 tests/fixtures/mock/，其候选路径仅两级（cwd 与 cwd.parent_path()）——
+    # build 为源码根直接子目录时 parent_path() 兜底本可命中；仅两级以上的 out-of-tree
+    # build 才会解析失败。设源码根使 fixture 契约独立于 build 位置（B15-001）。
     add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # 并发死锁保护：与 win_unit_tests 同策略，超时防卡死挂起整个 ctest（B06-014）
+    set_tests_properties(face_infer_unit_tests PROPERTIES TIMEOUT 120)
 endif()
 
 # 独立 ncnn 精度测试：仅链接 ncnn + OpenCV，不含适配器代码
@@ -270,12 +274,18 @@ endif()
 
 # ── GTest 基础测试（Engine / BioAuth / MotionDetector / ModelRegistry）─────
 if(NOT ANDROID)
-    include(FetchContent)
-    FetchContent_Declare(googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG release-1.12.1)
-    set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    # B06-005：googletest 已由 cmake/core.cmake:49-53 在 RK_BUILD_CORE_UNIT_TESTS 分支下
+    # FetchContent 构建（GTest::gtest 已存在）。此处仅在 core.cmake 未提供时兜底声明，
+    # 避免同一 configure 内对已填充依赖重复 Declare/MakeAvailable。
+    # ⚠️ 兜底声明的 GIT_REPOSITORY/GIT_TAG 必须与 cmake/core.cmake:49-53 保持一致（release-1.12.1）。
+    if(NOT TARGET GTest::gtest)
+        include(FetchContent)
+        FetchContent_Declare(googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG release-1.12.1)
+        set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    endif()
 
     add_executable(core_gtest_tests
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
