@@ -90,4 +90,147 @@ describe('fetchJson（导入真实 http.ts 实现）', () => {
     const p = fetchJson('/api/x', { timeoutMs: 100, logLevel: 'silent', cacheStrategy: 'no-cache' })
     await expect(p).rejects.toMatchObject({ code: 'invalid_response' })
   })
+
+  describe('local-5m 缓存（localStorage 分支）', () => {
+    // 为什么放 describe 内：localStorage stub 只对 local-5m 用例有意义，
+    // 声明在局部可避免其他用例/其他测试文件意外读到这个全局。
+    let backingStore: Record<string, string> = {}
+    let localStorageMock: ReturnType<typeof installLocalStorageStub>
+
+    function installLocalStorageStub(store: Record<string, string>) {
+      return {
+        getItem: vi.fn((k: string) => store[k] ?? null),
+        setItem: vi.fn((k: string, v: string) => {
+          store[k] = v
+        }),
+        removeItem: vi.fn((k: string) => {
+          delete store[k]
+        }),
+      }
+    }
+
+    beforeEach(() => {
+      // 每例重建 stub：node 环境无 localStorage，且重置 store 与调用记录
+      backingStore = {}
+      localStorageMock = installLocalStorageStub(backingStore)
+      ;(globalThis as unknown as { localStorage: unknown }).localStorage = localStorageMock
+    })
+    afterEach(() => {
+      // 清理全局，避免污染其他测试文件
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    })
+
+    // 存储 key 前缀须与 http.ts 内硬编码保持一致（rk_wcfr_cache: + cacheKey），
+    // 这里集中定义，改前缀时测试断言会同步报错以便发现。
+    const storageKey = (cacheKey: string) => `rk_wcfr_cache:${cacheKey}`
+
+    it('缓存命中：两次 GET 只发一次 fetch，第二次读 localStorage', async () => {
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 1 }))
+      const opts = {
+        method: 'GET',
+        timeoutMs: 100,
+        logLevel: 'silent' as const,
+        cacheStrategy: 'local-5m' as const,
+        cacheKey: 'local-hit-test',
+      }
+      const a = await fetchJson('/api/x', opts)
+      const b = await fetchJson('/api/x', opts)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(a).toEqual(b)
+      // 首次请求成功后已写入 localStorage，第二次才能直接命中
+      expect(localStorageMock.getItem(storageKey('local-hit-test'))).not.toBeNull()
+    })
+
+    it('过期条目：重新 fetch 且 removeItem 清除后写入新缓存', async () => {
+      // 预置 expiresAt 已过去的条目，模拟“距上次写入超过 5 分钟”
+      const key = storageKey('local-expired-test')
+      backingStore[key] = JSON.stringify({
+        expiresAt: Date.now() - 1_000,
+        json: { ok: true, v: 'stale' },
+      })
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 'fresh' }))
+      const data = await fetchJson('/api/x', {
+        method: 'GET',
+        timeoutMs: 100,
+        logLevel: 'silent',
+        cacheStrategy: 'local-5m',
+        cacheKey: 'local-expired-test',
+      })
+      // 过期缓存被判定失效：removeItem 被调用、重新走 fetch、返回新数据
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith(key)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(data).toEqual({ ok: true, v: 'fresh' })
+      // fetch 成功后写入新条目，expiresAt 更新为未来时间
+      const refreshed = JSON.parse(backingStore[key]) as { expiresAt: number }
+      expect(refreshed.expiresAt).toBeGreaterThan(Date.now())
+    })
+
+    it('损坏 JSON：忽略缓存并重新 fetch', async () => {
+      // 覆盖 getFromCache 的 JSON.parse try/catch 回退分支
+      backingStore[storageKey('local-corrupt-test')] = '{broken json'
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 'live' }))
+      const data = await fetchJson('/api/x', {
+        method: 'GET',
+        timeoutMs: 100,
+        logLevel: 'silent',
+        cacheStrategy: 'local-5m',
+        cacheKey: 'local-corrupt-test',
+      })
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(data).toEqual({ ok: true, v: 'live' })
+    })
+
+    it('expiresAt 类型非法：视为无效缓存重新 fetch（不 removeItem）', async () => {
+      // 覆盖 typeof expiresAt !== 'number' 守卫（区别于损坏 JSON 分支：此分支不删除条目）
+      backingStore[storageKey('local-badtype-test')] = JSON.stringify({
+        expiresAt: 'tomorrow',
+        json: { ok: true, v: 'bad' },
+      })
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 'live' }))
+      const data = await fetchJson('/api/x', {
+        method: 'GET',
+        timeoutMs: 100,
+        logLevel: 'silent',
+        cacheStrategy: 'local-5m',
+        cacheKey: 'local-badtype-test',
+      })
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(data).toEqual({ ok: true, v: 'live' })
+      expect(localStorageMock.removeItem).not.toHaveBeenCalled()
+    })
+
+    it('localStorage.setItem 抛异常（配额满/禁用）：降级为直接 fetch', async () => {
+      // putToCache 的 try/catch 应吞掉写入失败，不影响本次请求返回
+      localStorageMock.setItem.mockImplementation(() => {
+        throw new Error('QuotaExceededError')
+      })
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 1 }))
+      const data = await fetchJson('/api/x', {
+        method: 'GET',
+        timeoutMs: 100,
+        logLevel: 'silent',
+        cacheStrategy: 'local-5m',
+        cacheKey: 'local-quota-test',
+      })
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(data).toEqual({ ok: true, v: 1 })
+    })
+
+    it('localStorage.getItem 抛异常（禁用）：降级为直接 fetch', async () => {
+      // getFromCache 的 try/catch 应吞掉读取失败，回退到网络请求
+      localStorageMock.getItem.mockImplementation(() => {
+        throw new Error('SecurityError')
+      })
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 1 }))
+      const data = await fetchJson('/api/x', {
+        method: 'GET',
+        timeoutMs: 100,
+        logLevel: 'silent',
+        cacheStrategy: 'local-5m',
+        cacheKey: 'local-denied-test',
+      })
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(data).toEqual({ ok: true, v: 1 })
+    })
+  })
 })
