@@ -43,9 +43,12 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     include(FetchContent)
     # 受控 GTest：禁用系统预编译 GTest（Anaconda 等用动态 CRT，与项目静态 /MT 不匹配，
     # 链接报 LNK2038 RuntimeLibrary 不匹配 / LNK2005 重复符号），强制 FetchContent
-    # 源码构建 googletest 并继承项目 CRT（gtest_force_shared_crt OFF → 静态 /MT）
+    # 源码构建 googletest 并继承项目 CRT（MSVC 下 gtest_force_shared_crt OFF → 静态 /MT）
     set(CMAKE_DISABLE_FIND_PACKAGE_GTest ON CACHE BOOL "" FORCE)
-    set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+    if(MSVC)
+        # gtest_force_shared_crt 仅影响 MSVC CRT（OFF → 静态 /MT）；Linux 下属噪音（B06-005），不设 FORCE
+        set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+    endif()
     FetchContent_Declare(googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG release-1.12.1
@@ -90,18 +93,24 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     endif()
     add_test(NAME core_unit_tests COMMAND core_unit_tests)
 
-    # Q-CQ-B06-003 编译器契约测试：带异常语法目标在 -fno-exceptions 下必须失败
-    # （仅 Clang/GNU；MSVC 无 -fno-exceptions 语义）
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Q-CQ-B06-003 编译器契约测试：异常禁用 flag 与语法一致性回归保护
+    # （Clang/GNU -fno-exceptions 下必须编译失败；MSVC /EH- 下必须触发 C4530）
+    # WORK_DIR 传入构建树目录，避免写死源码树 build/（B06-003）
+    if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         add_test(NAME compiler_contract_exceptions
-            COMMAND ${CMAKE_COMMAND} "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            COMMAND ${CMAKE_COMMAND}
+            "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            "-DRK_CONTRACT_MSVC=${MSVC}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/contract_test_build"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/contract_test.cmake)
     endif()
 endif()
 
 # ── 编译器契约辅助函数 ──
-# 调用点见 CMakeLists.txt 末尾（所有 target 定义之后）
-# 不能在 include 时内联执行：此时生产 target 尚未定义
+# 调用点见 CMakeLists.txt 末尾（所有 target 定义之后）——函数已接线，非"未接线"。
+# 不能在 include 时内联执行：此时生产 target 尚未定义。
+# B06-003 补充配置期断言：函数内读回 COMPILE_OPTIONS 验证契约 flag 已落到 target，
+# 防止 target 定义顺序或重构破坏契约。
 function(rk_apply_compiler_contract)
     if(MSVC)
         # 项目代码使用 C++ 异常（try/catch）与 OpenCV 头，target 级启用 MSVC 异常处理
@@ -109,6 +118,11 @@ function(rk_apply_compiler_contract)
         foreach(t ${RK_ENGINE_TARGETS})
             if(TARGET ${t})
                 target_compile_options(${t} PRIVATE /EHsc)
+                # 配置期断言（B06-003）：读回 COMPILE_OPTIONS 验证契约已落到 target
+                get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
+                if(NOT _rk_opts MATCHES "/EHsc")
+                    message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 /EHsc")
+                endif()
             endif()
         endforeach()
         # core_gtest_tests 不在 RK_ENGINE_TARGETS，但编译 DnnSsdFaceDetector.cpp 等 try/catch 源
@@ -134,6 +148,12 @@ function(rk_apply_compiler_contract)
                 else()
                     target_compile_options(${t} PRIVATE
                         -fno-exceptions -fno-rtti -fvisibility=hidden)
+                endif()
+                # 配置期断言（B06-003）：读回 COMPILE_OPTIONS 验证契约已落到 target
+                # （两种契约分支都含 -fvisibility=hidden，作为"已应用"的共同锚点）
+                get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
+                if(NOT _rk_opts MATCHES "-fvisibility=hidden")
+                    message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fvisibility=hidden")
                 endif()
             endif()
         endforeach()
