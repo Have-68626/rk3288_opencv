@@ -198,7 +198,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     pendingResumeStart = false;
                     AppLog.i("MainActivity", "surfaceCreated",
                         "Surface ready, resuming monitoring (delay 100ms)");
-                    handler.postDelayed(MainActivity.this::startMonitoring, 100);
+                    scheduleStartMonitoring(100);
                 }
             } catch (Throwable ignored) {
             }
@@ -582,6 +582,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 handler.postDelayed(() -> {
                     // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
                     if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+                    if (isFinishing()) return;
                     dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
                 }, Math.max(0L, ss.delayMs));
                 continue;
@@ -685,7 +686,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         refreshFlipFromPrefs(true);
         if (isRunning) {
             stopMonitoring();
-            handler.postDelayed(this::startMonitoring, 500);
+            scheduleStartMonitoring(500);
         } else {
             initEngine();
         }
@@ -751,7 +752,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
             if (isRunning) {
                 stopMonitoring();
-                handler.postDelayed(() -> startMonitoring(), 500);
+                scheduleStartMonitoring(500);
             } else {
                 initEngine();
                 dispatchMonitoringDecision(monitoringCoordinator.onEngineInitResult(snapshotMonitoringInputs(), engineInitialized, false));
@@ -1171,7 +1172,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 refreshFlipFromPrefs(true);
                 if (isRunning) {
                     stopMonitoring();
-                    handler.postDelayed(() -> startMonitoring(), 500);
+                    scheduleStartMonitoring(500);
                 } else {
                     initEngine();
                 }
@@ -1182,7 +1183,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             public void onStopMonitoring() { stopMonitoring(); }
             @Override
             public void onStartMonitoring(long delayMs) {
-                handler.postDelayed(() -> startMonitoring(), delayMs);
+                scheduleStartMonitoring(delayMs);
             }
             @Override
             public void onCameraSpinnerInitialized(boolean initialized) {
@@ -1476,7 +1477,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         
         if (isRunning) {
             stopMonitoring();
-            handler.postDelayed(MainActivity.this::startMonitoring, 500);
+            scheduleStartMonitoring(500);
         } else {
             initEngine();
         }
@@ -1681,7 +1682,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
                     if (isRunning) {
                         stopMonitoring();
-                        handler.postDelayed(MainActivity.this::startMonitoring, 500);
+                        scheduleStartMonitoring(500);
                     } else {
                         initEngine();
                     }
@@ -1751,6 +1752,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void startMonitoring() {
         AppLog.enter("MainActivity", "startMonitoring");
         dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
+    }
+
+    // 统一入口：延迟启动监控（stop 后重启 / Surface 恢复 / 相机切换 / Mock 切换等），携代次排程。
+    // 调度前先拦截 Activity 已销毁/正在结束的无效调度；回调内取消门：
+    // 代次已变（用户 STOP/撤权/Activity 停止/销毁）则陈旧触发不执行。
+    private void scheduleStartMonitoring(long delayMs) {
+        if (isFinishing() || isDestroyed()) return;
+        final int scheduledGen = monitoringCoordinator.currentGeneration();
+        handler.postDelayed(() -> {
+            // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
+            if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+            if (isFinishing() || isDestroyed()) return;
+            startMonitoring();
+        }, Math.max(0L, delayMs));
     }
 
     private String runInputPreflight(boolean wantCamera, boolean wantMock) {
