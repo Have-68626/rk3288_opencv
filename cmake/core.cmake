@@ -100,12 +100,14 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     # Q-CQ-B06-003 编译器契约测试：异常禁用 flag 与语法一致性回归保护
     # （Clang/GNU -fno-exceptions 下必须编译失败；MSVC /EH- 下必须触发 C4530）
     # WORK_DIR 传入构建树目录，避免写死源码树 build/（B06-003）
-    if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # 探针注册条件显式化：真实 MSVC / Clang / GNU / IntelLLVM 都注册契约探针；
+    # IntelLLVM 注册但走 Clang 分支（不传 RK_CONTRACT_MSVC，规避其 /EHs- 硬错误）
+    if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC|Clang|GNU|IntelLLVM")
         # clang-cl 检测（RW8 ③）：clang-cl 下 MSVC=TRUE 但 CMAKE_CXX_COMPILER_ID=Clang。
         # 其 /EH- 对 throw 是硬错误（非 MSVC 的 C4530 警告），契约探针应走 Clang/GNU
-        # 分支（-fno-exceptions）；故仅对真实 MSVC 传 RK_CONTRACT_MSVC=1。
+        # 分支（-fno-exceptions）；故仅对真实 MSVC（ID=MSVC）传 RK_CONTRACT_MSVC=1
         set(_rk_contract_msvc_args)
-        if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
             set(_rk_contract_msvc_args "-DRK_CONTRACT_MSVC=1")
         endif()
         add_test(NAME compiler_contract_exceptions
@@ -134,7 +136,10 @@ set(RK_EXCEPTIONS_REQUIRED
 )
 
 function(rk_apply_compiler_contract)
-    if(MSVC)
+    # 门控用 CMAKE_CXX_COMPILER_ID 替代裸 MSVC 变量：IntelLLVM/clang-cl 下 MSVC=TRUE
+    # 但 ID≠MSVC，会误走 /EHsc 分支（IntelLLVM 的 /EHs- 是硬错误）；此类编译器归 Clang
+    # 分支处理（RW8 低危遗留）
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         # 项目代码使用 C++ 异常（try/catch）与 OpenCV 头，target 级启用 MSVC 异常处理
         # 避免 C4530（使用异常处理程序但未启用展开语义）；target 级不传播到 OpenCV 子目录
         foreach(t ${RK_ENGINE_TARGETS})
@@ -166,7 +171,8 @@ endfunction()
 # 执行，读回 COMPILE_OPTIONS 验证契约 flag 已落到 target。从契约函数中抽出，避免与
 # target_compile_options 同函数紧邻形成"自证式"断言，并防 target 定义顺序漂移。
 function(rk_assert_contract_flags)
-    if(MSVC)
+    # 与 rk_apply_compiler_contract 同源门控：仅真实 MSVC（ID=MSVC）断言 /EHsc
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         foreach(t ${RK_ENGINE_TARGETS})
             if(TARGET ${t})
                 get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
@@ -175,14 +181,33 @@ function(rk_assert_contract_flags)
                 endif()
             endif()
         endforeach()
+        # core_gtest_tests 不在 RK_ENGINE_TARGETS，但 rk_apply_compiler_contract 对其单独
+        # 应用 /EHsc；断言一并覆盖，防止该 flag 后续被移除而漏报（RW8 ③）
+        if(TARGET core_gtest_tests)
+            get_target_property(_rk_opts core_gtest_tests COMPILE_OPTIONS)
+            if(NOT _rk_opts MATCHES "/EHsc")
+                message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: core_gtest_tests 未应用 /EHsc")
+            endif()
+        endif()
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         foreach(t ${RK_ENGINE_TARGETS})
             if(NOT ${t} IN_LIST RK_SAFETY_EXCLUDED AND TARGET ${t})
-                # 两种契约分支都含 -fvisibility=hidden，作为"已应用"的共同锚点；
-                # -fno-exceptions 在 RK_EXCEPTIONS_REQUIRED 分支缺失，不能作锚（RW8 ①）
-                get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
-                if(NOT _rk_opts MATCHES "-fvisibility=hidden")
-                    message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fvisibility=hidden")
+                if(${t} IN_LIST RK_EXCEPTIONS_REQUIRED)
+                    # 需异常分支不含 -fno-exceptions，以 -fvisibility=hidden 为单锚
+                    get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
+                    if(NOT _rk_opts MATCHES "-fvisibility=hidden")
+                        message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fvisibility=hidden")
+                    endif()
+                else()
+                    # 双锚：-fno-exceptions 与 -fvisibility=hidden 都必须存在，
+                    # 防止仅删 -fno-exceptions 不被单锚断言捕获（RW8 ③）
+                    get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
+                    if(NOT _rk_opts MATCHES "-fno-exceptions")
+                        message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fno-exceptions")
+                    endif()
+                    if(NOT _rk_opts MATCHES "-fvisibility=hidden")
+                        message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fvisibility=hidden")
+                    endif()
                 endif()
             endif()
         endforeach()
