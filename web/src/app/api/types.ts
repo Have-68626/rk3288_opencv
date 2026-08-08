@@ -34,7 +34,7 @@ export interface ServerSettingsDoc {
     minFaceSizePx: number
     identifyThreshold: number
     enrollSamples: number
-    arcFaceModelPath?: string
+    arcFaceModelPath: string
   }
   inference: {
     throttleMode: string

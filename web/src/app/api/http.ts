@@ -37,6 +37,8 @@ function log(
 }
 
 type CacheEntry = { expiresAt: number; json: unknown }
+// localStorage 缓存 key 的统一前缀（单一来源；http.test.ts 直接复用此常量）
+export const CACHE_KEY_PREFIX = 'rk_wcfr_cache:'
 const memoryCache = new Map<string, CacheEntry>()
 const kMaxCacheEntries = 50
 function pruneCache() {
@@ -61,12 +63,12 @@ function getFromCache(strategy: CacheStrategy, key: string): unknown | undefined
 
   if (strategy === 'local-5m') {
     try {
-      const raw = localStorage.getItem(`rk_wcfr_cache:${key}`)
+      const raw = localStorage.getItem(`${CACHE_KEY_PREFIX}${key}`)
       if (!raw) return undefined
       const parsed = JSON.parse(raw) as CacheEntry
       if (typeof parsed?.expiresAt !== 'number') return undefined
       if (parsed.expiresAt < now) {
-        localStorage.removeItem(`rk_wcfr_cache:${key}`)
+        localStorage.removeItem(`${CACHE_KEY_PREFIX}${key}`)
         return undefined
       }
       return parsed.json
@@ -86,7 +88,7 @@ function putToCache(strategy: CacheStrategy, key: string, json: unknown) {
   } else if (strategy === 'local-5m') {
     try {
       localStorage.setItem(
-        `rk_wcfr_cache:${key}`,
+        `${CACHE_KEY_PREFIX}${key}`,
         JSON.stringify({ expiresAt: now + 5 * 60_000, json } satisfies CacheEntry),
       )
     } catch {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchJson, ApiError } from '../http'
+import { fetchJson, ApiError, CACHE_KEY_PREFIX } from '../http'
 
 // fetchJson 用 window.setTimeout/clearTimeout —— node 环境无 window，指向全局
 // 避免污染其他测试，afterEach 删除。
@@ -120,9 +120,9 @@ describe('fetchJson（导入真实 http.ts 实现）', () => {
       delete (globalThis as unknown as { localStorage?: unknown }).localStorage
     })
 
-    // 存储 key 前缀须与 http.ts 内硬编码保持一致（rk_wcfr_cache: + cacheKey），
-    // 这里集中定义，改前缀时测试断言会同步报错以便发现。
-    const storageKey = (cacheKey: string) => `rk_wcfr_cache:${cacheKey}`
+    // 存储 key 前缀直接复用 http.ts 导出的 CACHE_KEY_PREFIX（单一来源），
+    // 改前缀时实现与测试同步更新，无漂移风险。
+    const storageKey = (cacheKey: string) => `${CACHE_KEY_PREFIX}${cacheKey}`
 
     it('缓存命中：两次 GET 只发一次 fetch，第二次读 localStorage', async () => {
       mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 1 }))

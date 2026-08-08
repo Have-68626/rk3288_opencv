@@ -121,7 +121,7 @@
               "required": ["v", "alg", "nonce", "ciphertext", "tag"],
               "properties": {
                 "v": { "type": "number", "minimum": 1, "maximum": 1 },
-                "alg": { "type": "string" },
+                "alg": { "type": "string", "enum": ["AES-256-GCM"] },
                 "nonce": { "type": "string" },
                 "ciphertext": { "type": "string" },
                 "tag": { "type": "string" }
