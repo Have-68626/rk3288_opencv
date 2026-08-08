@@ -88,7 +88,9 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         for (const auto& m : activeModels_) {
             const char* match = "unknown";
             if (m.id == "cascade_frontalface") {
-                match = (m.hash == "529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d")
+                // 期望值须与 app/src/main/assets/lbpcascade_frontalface.xml 同步；
+                // 更新模型文件后须更新此值（RW2/R2-3 双审 P2）。
+                match = (m.hash == "6f5f20091b0d20311c929bcd8c927074e50bd0ac6424321016c679f43cf5ebcf")
                     ? "match" : "mismatch";
             }
             std::fprintf(stderr, "MODEL_MANIFEST_CHECK [id=%s] hash=%s manifest_match=%s\n",
@@ -805,7 +807,25 @@ void FramePipeline::processLoop() {
                 render_.status = "已清空人脸库";
             }
             if (cmd.enrollRequested) {
-                if (result.consumedCommand.enrollRequested) {
+                // B06-018/RW3 遗留：epoch 失配时 status 须读当前 pending，避免显示旧注册。
+                // 回写守卫（上一节）已判定 run() 期间有新 requestEnroll 到达（enrollEpoch_ 递增），
+                // 此时 cmd/consumedCommand 仍是旧请求（personA）信息；改读当前 pending 状态
+                // （enrollRequested_/enrollPersonId_/enrollRemaining_）显示新请求。
+                // epoch 比较须在 mu_ 锁内（enrollEpoch_ 为 mu_ 保护成员），避免与 requestEnroll 竞态。
+                bool epochMismatch;
+                {
+                    std::lock_guard<std::mutex> lock(mu_);
+                    epochMismatch = (result.consumedCommand.enrollEpoch != enrollEpoch_);
+                }
+                if (epochMismatch) {
+                    std::lock_guard<std::mutex> lock(mu_);
+                    if (enrollRequested_) {
+                        render_.status = "注册中: " + enrollPersonId_
+                            + " 还需样本=" + std::to_string(enrollRemaining_);
+                    } else {
+                        render_.status = "注册完成: " + enrollPersonId_;
+                    }
+                } else if (result.consumedCommand.enrollRequested) {
                     // 读 result.consumedCommand（本线程局部值）而非成员 enrollRemaining_，
                     // 消除对 mu_ 保护成员的无锁读；无并发时两者值恒等（上一行写回同一值）
                     render_.status = "注册中: " + cmd.enrollPersonId

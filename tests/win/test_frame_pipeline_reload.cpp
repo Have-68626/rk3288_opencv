@@ -425,8 +425,11 @@ bool test_pipeline_enroll_writeback_does_not_overwrite_new_request() {
     fp.injectFrameForTest(frame);
 
     // 3. 确认 run() 已进入注册步骤且处理的是 personA（而非后到的 personB）
-    if (!gate->waitEntered(2000)) { fp.shutdown(); return false; }
-    if (gate->enteredPerson != "personA") { fp.shutdown(); return false; }
+    // 早退先放行门控再 shutdown，避免 join 卡死（RW3 遗留）：一旦门控已阻塞在
+    // enrollFromFrame（entered=true 且未放行），直接 shutdown 会 join 该门控线程而挂死；
+    // 兜底 gate->go() 确保门控不再阻塞，shutdown 才能正常 join 收尾。
+    if (!gate->waitEntered(2000)) { gate->go(); fp.shutdown(); return false; }
+    if (gate->enteredPerson != "personA") { gate->go(); fp.shutdown(); return false; }
 
     // 4. 处理中途发起新注册 personB：enrollEpoch_→2，remaining=12，pending=true
     fp.requestEnroll("personB");
@@ -435,8 +438,10 @@ bool test_pipeline_enroll_writeback_does_not_overwrite_new_request() {
     gate->go();
 
     // 6. 等待该帧处理完成（facesSeq 递增在回写之后，确保读到的计数是回写后的稳定值）
+    // 早退先放行门控再 shutdown，避免 join 卡死（RW3 遗留）：兜底 gate->go() 与步骤 5
+    // 放行幂等，确保门控不再阻塞后 shutdown 才能正常 join。
     std::uint64_t seqAfter = 0;
-    if (!fp.waitFacesSeqChanged(seqBefore, 2000, seqAfter)) { fp.shutdown(); return false; }
+    if (!fp.waitFacesSeqChanged(seqBefore, 2000, seqAfter)) { gate->go(); fp.shutdown(); return false; }
 
     // 7. 判别断言：新请求 personB 的剩余计数必须保持 12（未被旧命令的 11 覆盖）
     const bool preserved = fp.enrollRemainingForTest() == cfg.recognition.enrollSamples;
