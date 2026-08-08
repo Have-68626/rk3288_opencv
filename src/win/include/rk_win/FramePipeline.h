@@ -1,7 +1,6 @@
 #pragma once
 
 #include "rk_win/RuntimeBootstrap.h"
-#include "rk_win/CameraSession.h"
 #include "FaceRecognizer.h"  // FaceMatch
 #include "IRecognizer.h"
 #include "MfCamera.h"
@@ -151,7 +150,6 @@ private:
     CameraFormat desiredFormat_{};
     std::string activeCameraNameUtf8_;
     std::string activeCameraIdUtf8_;
-    CameraDeviceInfo currentDevice_{};
 
     std::atomic<bool> running_{false};
     std::atomic<bool> cameraRunning_{false};
@@ -165,7 +163,6 @@ private:
     // 避免并发 reload/enroll 时旧 processor/recognizer/dnn 被销毁（UAF）
     std::shared_ptr<RuntimeSnapshot> runtime_;
     mutable std::mutex runtimeMu_;
-    std::mutex dnnMu_;
 
     bool flipX_ = false;
     bool flipY_ = false;

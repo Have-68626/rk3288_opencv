@@ -28,11 +28,8 @@ struct CameraOpenParams {
 
 class CameraSession {
 public:
-    // 尝试打开新摄像头，失败自动回滚到 previousDevice
-    // previousDevice.index < 0 表示首次打开（无需回滚）
-    static CameraResult switchWithRollback(
-        const CameraOpenParams& params,
-        const CameraDeviceInfo& previousDevice);
+    // 相机会话 API 占位：switchWithRollback 已随 FramePipeline 内部切换实现退役
+    // （2026-08 低关联清理 B06-016）；CameraDeviceInfo/CameraResult/CameraOpenParams 保留作公开类型
 };
 
 }  // namespace rk_win

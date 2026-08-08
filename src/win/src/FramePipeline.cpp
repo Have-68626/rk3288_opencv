@@ -290,7 +290,8 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
     const auto td0 = clock::now();
     auto rt = runtimeSnapshot();
     if (cfg_.dnn.enable && rt && rt->dnn && rt->dnn->ready()) {
-        std::lock_guard<std::mutex> lock(dnnMu_);
+        // dnnMu_ 已确认无共享不变式可护（A3）：快照保活 dnn 共享所有权，resetForStream 仅置
+        // streamWarm 标志；删除无用锁不改变线程安全语义（B06-014）
         rt->dnn->resetForStream();
     }
     const auto td1 = clock::now();
@@ -413,12 +414,6 @@ void FramePipeline::switchCamera(const AppConfig& cfg) {
     // 真正原子替换活动采集源（重启 captureLoop + 失败回滚），
     // 替代此前仅用 CameraSession::switchWithRollback 探测却未切换管线的问题
     const auto result = startCameraWithRollbackLocked(idx, desired, 300);
-    if (result.ok) {
-        std::lock_guard<std::mutex> lock(mu_);
-        currentDevice_.index = idx;
-        currentDevice_.name = utf8FromWide(devices_[static_cast<size_t>(idx)].name);
-        currentDevice_.devicePath = utf8FromWide(devices_[static_cast<size_t>(idx)].deviceId);
-    }
     {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = result.rolledBack ? "切换失败已回滚" : (result.ok ? "摄像头已切换" : result.reason);
@@ -753,7 +748,14 @@ void FramePipeline::processLoop() {
         if (!result.consumedCommand.enrollRequested) {
             enrollRequested_ = false;
         }
-        enrollRemaining_ = result.consumedCommand.enrollRemaining;
+        {
+            // 写 enrollRemaining_ 与 requestEnroll 同锁（mu_），消除跨线程双写数据竞争（B06-018）；
+            // 残余逻辑竞态：enroll 处理中途 requestEnroll 到达时，本写仍可能覆盖新请求的样本计数
+            // （既有、低危，x86 上 4 字节对齐 int 撕裂概率≈0）。彻底修复需注册代次/epoch 计数，
+            // 记录为后续工作单元，不在本工作单元冒险改行为。
+            std::lock_guard<std::mutex> lock(mu_);
+            enrollRemaining_ = result.consumedCommand.enrollRemaining;
+        }
 
         // ── 构建日志条目元数据 ──
         FrameLogEntry le;
@@ -781,8 +783,10 @@ void FramePipeline::processLoop() {
             }
             if (cmd.enrollRequested) {
                 if (result.consumedCommand.enrollRequested) {
+                    // 读 result.consumedCommand（本线程局部值）而非成员 enrollRemaining_，
+                    // 消除对 mu_ 保护成员的无锁读；无并发时两者值恒等（上一行写回同一值）
                     render_.status = "注册中: " + cmd.enrollPersonId
-                        + " 还需样本=" + std::to_string(enrollRemaining_);
+                        + " 还需样本=" + std::to_string(result.consumedCommand.enrollRemaining);
                 } else {
                     render_.status = "注册完成: " + cmd.enrollPersonId;
                 }
