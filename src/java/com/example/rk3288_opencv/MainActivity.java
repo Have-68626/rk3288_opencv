@@ -2936,7 +2936,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         if (previewSurfaceReady || waited >= maxWaitMs) {
                             AppLog.i("MainActivity", "onStart",
                                 "Surface ready=" + previewSurfaceReady + " waitedMs=" + waited);
-                            startMonitoring();
+                            // 代次化启动：轮询到期统一走 scheduleStartMonitoring(0)，
+                            // 由取消门拦截 onStop/onDestroy 后的陈旧触发。
+                            scheduleStartMonitoring(0);
                         } else {
                             handler.postDelayed(this, 100);
                         }
