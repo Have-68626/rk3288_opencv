@@ -336,21 +336,33 @@ async function scanCpp(repoRoot, args) {
       entries.push({ name: e.name, sig: e.sig, staticSymbol: e.staticSymbol || null, file: f.rel, domain, classPath });
     }
   }
-  // 按类分组：classPath -> Map(name -> {sig, file})
+  // 按类分组：classPath -> Map(name+"\\u0000"+sig -> {name, sig, file, staticSymbol})
+  // 复合键（name+sig）避免同名不同签名被静默覆盖；同 name 不同 sig 时记重复警告（潜在重载/冲突）
   const byClass = new Map();
+  const dupWarnings = [];
   for (const e of entries) {
     const key = e.classPath; // 未映射到类时为 null
     if (!byClass.has(key)) byClass.set(key, new Map());
-    byClass.get(key).set(e.name, { sig: e.sig, file: e.file });
+    const cm = byClass.get(key);
+    const ck = `${e.name}\\u0000${e.sig}`;
+    if (cm.has(ck)) continue; // 完全重复（同 name 同 sig）仅保留首个
+    const dupKey = [...cm.keys()].find((k) => k.startsWith(e.name + "\\u0000"));
+    if (dupKey) {
+      dupWarnings.push(
+        `[CPP_DUP] class=${key} name=${e.name} 存在多个签名（${dupKey.split("\\u0000")[1]} 与 ${e.sig}），疑似重载/冲突，请人工核对`
+      );
+    }
+    cm.set(ck, { name: e.name, sig: e.sig, file: e.file, staticSymbol: e.staticSymbol });
   }
-  return { byClass, entries };
+  return { byClass, entries, warnings: dupWarnings };
 }
 
 async function scanJava(repoRoot, args) {
   const dir = path.resolve(repoRoot, args.javaDir);
   const byClass = new Map();
   const files = [];
-  if (!fs.existsSync(dir)) return { byClass, files };
+  const dupWarnings = [];
+  if (!fs.existsSync(dir)) return { byClass, files, warnings: dupWarnings };
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".java")) continue;
     const abs = path.join(dir, entry.name);
@@ -372,13 +384,35 @@ async function scanJava(repoRoot, args) {
       });
     }
     if (!byClass.has(classPath)) byClass.set(classPath, new Map());
-    for (const n of natives) byClass.get(classPath).set(n.name, n);
+    const cm = byClass.get(classPath);
+    for (const n of natives) {
+      // 复合键（name+desc）避免同名不同签名被静默覆盖；同 name 不同签名时记重复警告（潜在重载/冲突）
+      const ck = `${n.name}\\u0000${n.desc ?? ""}`;
+      if (cm.has(ck)) continue; // 完全重复（同 name 同 desc）仅保留首个
+      const dupKey = [...cm.keys()].find((k) => k.startsWith(n.name + "\\u0000"));
+      if (dupKey) {
+        dupWarnings.push(
+          `[JAVA_DUP] class=${classPath} name=${n.name} 存在多个签名（${dupKey.split("\\u0000")[1]} 与 ${n.desc ?? ""}），疑似重载/冲突，请人工核对`
+        );
+      }
+      cm.set(ck, n);
+    }
     files.push({ rel, classPath, natives });
   }
-  return { byClass, files };
+  return { byClass, files, warnings: dupWarnings };
 }
 
 // ---------- 比对 ----------
+/** 将复合键(name+sig) Map 归并为 name -> entries[]（每个 entry 保留自身 name/sig） */
+function groupByName(compositeMap) {
+  const byName = new Map();
+  for (const v of compositeMap.values()) {
+    if (!byName.has(v.name)) byName.set(v.name, []);
+    byName.get(v.name).push(v);
+  }
+  return byName;
+}
+
 function compareByClass(cppByClass, javaByClass) {
   const diffs = [];
   let cppTotal = 0;
@@ -386,31 +420,40 @@ function compareByClass(cppByClass, javaByClass) {
   const classPaths = new Set([...cppByClass.keys(), ...javaByClass.keys()].filter((k) => k !== null));
 
   for (const cp of classPaths) {
-    const cpp = cppByClass.get(cp) || new Map();
-    const java = javaByClass.get(cp) || new Map();
-    cppTotal += cpp.size;
-    javaTotal += java.size;
-    for (const [name, j] of java) {
-      const c = cpp.get(name);
-      if (!c) {
+    const cppByName = groupByName(cppByClass.get(cp) || new Map());
+    const javaByName = groupByName(javaByClass.get(cp) || new Map());
+    cppTotal += [...cppByName.values()].reduce((s, a) => s + a.length, 0);
+    javaTotal += [...javaByName.values()].reduce((s, a) => s + a.length, 0);
+    for (const [name, jList] of javaByName) {
+      const cList = cppByName.get(name);
+      if (!cList) {
         diffs.push({
           class: cp, name, kind: "JAVA_ONLY",
           message: `Java 声明了 ${name}，但 C++ 注册表缺失（需在对应 register<Domain>Methods 中补注册）`,
         });
-      } else if (j.error) {
-        diffs.push({ class: cp, name, kind: "JAVA_UNRESOLVED", message: `Java 签名无法转换：${j.error}` });
-      } else if (c.sig !== j.desc) {
-        diffs.push({
-          class: cp, name, kind: "SIG_MISMATCH",
-          message: `签名不一致：Java=${j.desc} C++=${c.sig}（${c.file}）`,
-        });
+        continue;
+      }
+      for (const j of jList) {
+        if (j.error) {
+          diffs.push({ class: cp, name, kind: "JAVA_UNRESOLVED", message: `Java 签名无法转换：${j.error}` });
+          continue;
+        }
+        // 静态链接符号仅按名核对，不参与 SIG_MISMATCH 判定（静态注册无显式签名，无法比对描述符）
+        const nonStatic = cList.filter((c) => !c.staticSymbol);
+        const sigMatch = nonStatic.some((c) => c.sig === j.desc);
+        if (nonStatic.length > 0 && !sigMatch) {
+          diffs.push({
+            class: cp, name, kind: "SIG_MISMATCH",
+            message: `签名不一致：Java=${j.desc} C++=${nonStatic.map((c) => c.sig).join(" / ")}（${nonStatic.map((c) => c.file).join(" / ")}）`,
+          });
+        }
       }
     }
-    for (const [name, c] of cpp) {
-      if (!java.has(name)) {
+    for (const [name, cList] of cppByName) {
+      if (!javaByName.has(name)) {
         diffs.push({
           class: cp, name, kind: "CPP_ONLY",
-          message: `C++ 注册了 ${name}，但 ${cp} 中无对应 native 声明（${c.file}）`,
+          message: `C++ 注册了 ${name}，但 ${cp} 中无对应 native 声明（${cList.map((c) => c.file).join(" / ")}）`,
         });
       }
     }
@@ -419,20 +462,32 @@ function compareByClass(cppByClass, javaByClass) {
   // 未映射到类的 C++ 注册（领域无对应类）：与全部 Java 方法按名称对拍，保证计数参与
   const nullMap = cppByClass.get(null);
   if (nullMap) {
-    const flatJava = new Map();
-    for (const jm of javaByClass.values()) for (const [n, v] of jm) flatJava.set(n, v);
-    for (const [name, c] of nullMap) {
-      cppTotal += 1;
-      const j = flatJava.get(name);
-      if (!j) {
+    const flatJava = new Map(); // name -> entries[]
+    for (const jm of javaByClass.values()) {
+      for (const j of jm.values()) {
+        if (!flatJava.has(j.name)) flatJava.set(j.name, []);
+        flatJava.get(j.name).push(j);
+      }
+    }
+    const nullByName = groupByName(nullMap);
+    for (const [name, cList] of nullByName) {
+      cppTotal += cList.length;
+      const jList = flatJava.get(name);
+      if (!jList) {
         diffs.push({
           class: "(未映射类)", name, kind: "CPP_ONLY",
-          message: `C++ 注册了 ${name}，但未解析到对应类/Java 声明（${c.file}）`,
+          message: `C++ 注册了 ${name}，但未解析到对应类/Java 声明（${cList.map((c) => c.file).join(" / ")}）`,
         });
-      } else if (c.sig !== j.desc && !j.error) {
+        continue;
+      }
+      const j = jList[0]; // 按名对拍；同名多签名时以首个为例
+      if (j.error) continue; // Java 签名无法转换时不判 SIG
+      const nonStatic = cList.filter((c) => !c.staticSymbol);
+      if (nonStatic.length === 0) continue; // 全部为静态链接符号：仅按名核对
+      if (!nonStatic.some((c) => c.sig === j.desc)) {
         diffs.push({
           class: "(未映射类)", name, kind: "SIG_MISMATCH",
-          message: `签名不一致：Java=${j.desc} C++=${c.sig}（${c.file}）`,
+          message: `签名不一致：Java=${j.desc} C++=${nonStatic.map((c) => c.sig).join(" / ")}（${nonStatic.map((c) => c.file).join(" / ")}）`,
         });
       }
     }
@@ -456,6 +511,7 @@ async function main() {
   const cpp = await scanCpp(repoRoot, args);
   const java = await scanJava(repoRoot, args);
   const { diffs, cppTotal, javaTotal } = compareByClass(cpp.byClass, java.byClass);
+  const warnings = [...(cpp.warnings || []), ...(java.warnings || [])];
   const allMatch = diffs.length === 0;
 
   const classSummary = [];
@@ -474,13 +530,14 @@ async function main() {
   const report = {
     runId: `${nowIsoLocal()}-${Math.random().toString(16).slice(2, 10)}`,
     ok: allMatch,
-    summary: { cpp: cppTotal, java: javaTotal, diffCount: diffs.length },
+    summary: { cpp: cppTotal, java: javaTotal, diffCount: diffs.length, warningCount: warnings.length },
     classes: classSummary,
     diffs,
+    warnings,
   };
 
   // 人可读输出
-  process.stdout.write(`JNI_SYNC: ${allMatch ? "ALL_MATCH" : "MISMATCH"} cpp=${cppTotal} java=${javaTotal} diffs=${diffs.length}\n`);
+  process.stdout.write(`JNI_SYNC: ${allMatch ? "ALL_MATCH" : "MISMATCH"} cpp=${cppTotal} java=${javaTotal} diffs=${diffs.length} warnings=${warnings.length}\n`);
   if (args.verbose) {
     for (const cs of classSummary) {
       process.stdout.write(`  class ${cs.class}: cpp=${cs.cpp} java=${cs.java} diffs=${cs.diffCount}\n`);
@@ -489,6 +546,9 @@ async function main() {
       const staticTag = e.staticSymbol ? ` (静态符号 ${e.staticSymbol})` : "";
       process.stdout.write(`  cpp ${e.name} ${e.sig} @ ${e.file}${staticTag}\n`);
     }
+  }
+  for (const w of warnings) {
+    process.stdout.write(`  [WARN] ${w}\n`);
   }
   for (const d of diffs) {
     process.stdout.write(`  [${d.kind}] ${d.class}#${d.name}: ${d.message}\n`);
