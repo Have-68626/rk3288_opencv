@@ -15,6 +15,7 @@
 #include <android/native_window.h>
 
 #include "Engine.h"
+#include "jni_shared.h" // registerAllNativeMethods 等共享声明（定义在 jni/registry.cpp）
 
 // ========== 共享全局变量（外部链接，供 jni/*.cpp 引用） ==========
 std::unique_ptr<rk_core::Engine> g_engine;
@@ -91,9 +92,6 @@ void sendRecognitionResult(const std::string& result) {
 }
 
 // ========== JNI 入口/出口 ==========
-
-// registerAllNativeMethods 由 jni/registry.cpp 实现
-jint registerAllNativeMethods(JNIEnv* env);
 
 extern "C" JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* /* reserved */) {
