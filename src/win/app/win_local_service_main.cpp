@@ -13,9 +13,8 @@
 #include <windows.h>
 #endif
 
-// OpenCL 守卫：仅当构建期实际启用 OpenCL（HAVE_OPENCL 宏，由 opencv config 定义）
-// 且 ocl.hpp 头存在时才 include 并调用 setUseOpenCL；否则编译期跳过，
-// 规避 build_win 下 cv::ocl 未编译导致 C2039 的问题。
+// OpenCL 守卫：本 TU 未无条件直接 include ocl.hpp（下方为条件 include），
+// HAVE_OPENCL 依赖 rk_win 头传递包含；守卫保证无 OpenCL 构建下不引用 cv::ocl 符号。
 #if defined(HAVE_OPENCL) && defined(__has_include)
 #  if __has_include(<opencv2/core/ocl.hpp>)
 #    include <opencv2/core/ocl.hpp>

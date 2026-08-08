@@ -33,7 +33,6 @@ if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
         "src/win/src/RuntimeBootstrap.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/win/src/EventLogger.cpp"
-        "src/win/src/EndpointRegistry.cpp"
         "src/win/src/JsonEndpointHandlers.cpp"
         "src/cpp/src/FileHash.cpp"
         "src/cpp/src/NativeLog.cpp"
@@ -122,7 +121,6 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
         "src/win/src/D3D11Renderer.cpp"
         "src/win/src/RenderMetricsLogger.cpp"
         "src/win/src/EventLogger.cpp"
-        "src/win/src/EndpointRegistry.cpp"
         "src/win/src/JsonEndpointHandlers.cpp"
     )
 
