@@ -277,13 +277,20 @@ if(NOT ANDROID)
     # B06-005：googletest 已由 cmake/core.cmake:49-53 在 RK_BUILD_CORE_UNIT_TESTS 分支下
     # FetchContent 构建（GTest::gtest 已存在）。此处仅在 core.cmake 未提供时兜底声明，
     # 避免同一 configure 内对已填充依赖重复 Declare/MakeAvailable。
-    # ⚠️ 兜底声明的 GIT_REPOSITORY/GIT_TAG 必须与 cmake/core.cmake:49-53 保持一致（release-1.12.1）。
+    # GIT_REPOSITORY/GIT_TAG 与 cmake/core.cmake 保持一致（版本统一由 RK_GTEST_GIT_TAG 控制，RW8 ⑤）。
     if(NOT TARGET GTest::gtest)
         include(FetchContent)
+        # 与 cmake/core.cmake:47 一致（RW8 ④）：禁用系统预编译 GTest（Anaconda 等用动态
+        # CRT，与项目静态 /MT 不匹配，链接报 LNK2038 RuntimeLibrary 不匹配 / LNK2005）
+        set(CMAKE_DISABLE_FIND_PACKAGE_GTest ON CACHE BOOL "" FORCE)
         FetchContent_Declare(googletest
             GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG release-1.12.1)
-        set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+            GIT_TAG ${RK_GTEST_GIT_TAG})
+        if(MSVC)
+            # 与 cmake/core.cmake:50 门控一致（RW8 ②）：gtest_force_shared_crt 仅影响
+            # MSVC CRT（OFF → 静态 /MT）；Linux 下属噪音，不 FORCE
+            set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+        endif()
         FetchContent_MakeAvailable(googletest)
     endif()
 
@@ -356,3 +363,5 @@ endforeach()
 
 # 编译器契约 — 在所有 target 定义之后统一应用
 rk_apply_compiler_contract()
+# 配置期断言（RW8 ①）— 契约应用后独立读回 COMPILE_OPTIONS，验证 flag 已落到 target
+rk_assert_contract_flags()

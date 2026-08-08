@@ -2,6 +2,10 @@
 # core.cmake — rk_core INTERFACE 库 + CORE_SOURCES 变量
 # ═══════════════════════════════════════════════════════════════════
 
+# ── googletest 版本（唯一事实源）──────────────
+# core.cmake 主分支与 CMakeLists.txt 兜底分支共用 GIT_TAG，消除双写漂移（RW8 ⑤）
+set(RK_GTEST_GIT_TAG "release-1.12.1")
+
 # ── CORE_SOURCES 分组变量 ──────────────────────────
 set(RK_CORE_LITE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/EventManager.cpp
@@ -51,7 +55,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     endif()
     FetchContent_Declare(googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG release-1.12.1
+        GIT_TAG ${RK_GTEST_GIT_TAG}
     )
     FetchContent_MakeAvailable(googletest)
     add_executable(core_unit_tests
@@ -97,10 +101,17 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     # （Clang/GNU -fno-exceptions 下必须编译失败；MSVC /EH- 下必须触发 C4530）
     # WORK_DIR 传入构建树目录，避免写死源码树 build/（B06-003）
     if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        # clang-cl 检测（RW8 ③）：clang-cl 下 MSVC=TRUE 但 CMAKE_CXX_COMPILER_ID=Clang。
+        # 其 /EH- 对 throw 是硬错误（非 MSVC 的 C4530 警告），契约探针应走 Clang/GNU
+        # 分支（-fno-exceptions）；故仅对真实 MSVC 传 RK_CONTRACT_MSVC=1。
+        set(_rk_contract_msvc_args)
+        if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            set(_rk_contract_msvc_args "-DRK_CONTRACT_MSVC=1")
+        endif()
         add_test(NAME compiler_contract_exceptions
             COMMAND ${CMAKE_COMMAND}
             "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
-            "-DRK_CONTRACT_MSVC=${MSVC}"
+            ${_rk_contract_msvc_args}
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/contract_test_build"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/contract_test.cmake)
     endif()
@@ -109,8 +120,19 @@ endif()
 # ── 编译器契约辅助函数 ──
 # 调用点见 CMakeLists.txt 末尾（所有 target 定义之后）——函数已接线，非"未接线"。
 # 不能在 include 时内联执行：此时生产 target 尚未定义。
-# B06-003 补充配置期断言：函数内读回 COMPILE_OPTIONS 验证契约 flag 已落到 target，
-# 防止 target 定义顺序或重构破坏契约。
+# 契约分组定义在文件作用域（而非函数内）：rk_apply_compiler_contract（应用 flag）与
+# rk_assert_contract_flags（配置期断言）两个函数共用同一分组，避免函数作用域变量
+# 跨函数不可见导致分组漂移（RW8 ①）。
+set(RK_SAFETY_EXCLUDED
+    core_unit_tests core_gtest_tests
+    face_infer_unit_tests win_unit_tests ncnn_precision_test
+    win_face_database_perf
+)
+# 需异常/RTTI 的目标：自身用 try/catch，或依赖 OpenCV 头（flann throw/typeid）
+set(RK_EXCEPTIONS_REQUIRED
+    native-lib rk3288_cli opencv_verify_cli inference_bench_cli
+)
+
 function(rk_apply_compiler_contract)
     if(MSVC)
         # 项目代码使用 C++ 异常（try/catch）与 OpenCV 头，target 级启用 MSVC 异常处理
@@ -118,11 +140,6 @@ function(rk_apply_compiler_contract)
         foreach(t ${RK_ENGINE_TARGETS})
             if(TARGET ${t})
                 target_compile_options(${t} PRIVATE /EHsc)
-                # 配置期断言（B06-003）：读回 COMPILE_OPTIONS 验证契约已落到 target
-                get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
-                if(NOT _rk_opts MATCHES "/EHsc")
-                    message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 /EHsc")
-                endif()
             endif()
         endforeach()
         # core_gtest_tests 不在 RK_ENGINE_TARGETS，但编译 DnnSsdFaceDetector.cpp 等 try/catch 源
@@ -130,15 +147,6 @@ function(rk_apply_compiler_contract)
             target_compile_options(core_gtest_tests PRIVATE /EHsc)
         endif()
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-        set(RK_SAFETY_EXCLUDED
-            core_unit_tests core_gtest_tests
-            face_infer_unit_tests win_unit_tests ncnn_precision_test
-            win_face_database_perf
-        )
-        # 需异常/RTTI 的目标：自身用 try/catch，或依赖 OpenCV 头（flann throw/typeid）
-        set(RK_EXCEPTIONS_REQUIRED
-            native-lib rk3288_cli opencv_verify_cli inference_bench_cli
-        )
         foreach(t ${RK_ENGINE_TARGETS})
             if(NOT ${t} IN_LIST RK_SAFETY_EXCLUDED AND TARGET ${t})
                 if(${t} IN_LIST RK_EXCEPTIONS_REQUIRED)
@@ -149,8 +157,29 @@ function(rk_apply_compiler_contract)
                     target_compile_options(${t} PRIVATE
                         -fno-exceptions -fno-rtti -fvisibility=hidden)
                 endif()
-                # 配置期断言（B06-003）：读回 COMPILE_OPTIONS 验证契约已落到 target
-                # （两种契约分支都含 -fvisibility=hidden，作为"已应用"的共同锚点）
+            endif()
+        endforeach()
+    endif()
+endfunction()
+
+# 配置期断言（B06-003 / RW8 ①）：configure 末尾、rk_apply_compiler_contract 调用后单独
+# 执行，读回 COMPILE_OPTIONS 验证契约 flag 已落到 target。从契约函数中抽出，避免与
+# target_compile_options 同函数紧邻形成"自证式"断言，并防 target 定义顺序漂移。
+function(rk_assert_contract_flags)
+    if(MSVC)
+        foreach(t ${RK_ENGINE_TARGETS})
+            if(TARGET ${t})
+                get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
+                if(NOT _rk_opts MATCHES "/EHsc")
+                    message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 /EHsc")
+                endif()
+            endif()
+        endforeach()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        foreach(t ${RK_ENGINE_TARGETS})
+            if(NOT ${t} IN_LIST RK_SAFETY_EXCLUDED AND TARGET ${t})
+                # 两种契约分支都含 -fvisibility=hidden，作为"已应用"的共同锚点；
+                # -fno-exceptions 在 RK_EXCEPTIONS_REQUIRED 分支缺失，不能作锚（RW8 ①）
                 get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
                 if(NOT _rk_opts MATCHES "-fvisibility=hidden")
                     message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fvisibility=hidden")
