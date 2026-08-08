@@ -66,6 +66,11 @@ jobs:
           node-version: "22"
       - name: Scan workspace junk (dry-run)
         run: node scripts/clean-repo-junk.js scan --ci
+      - name: Run JNI sync audit (gate)
+        # 纯 Node，无第三方依赖；脚本对 Java/C++ 侧 JNI 符号不一致返回非零退出码阻断
+        run: node scripts/jni-sync-audit.js
+      - name: Run jni-sync-audit unit tests
+        run: node --test tests/scripts/jni-sync-audit.test.js
       - name: Upload cleanup reports
         if: always()
         uses: actions/upload-artifact@v4

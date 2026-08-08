@@ -101,6 +101,25 @@ function stripComments(src) {
 
 // ---------- C++ 侧：注册条目提取 ----------
 /**
+ * 剥离 C++ mangled 重载编号后缀，还原真实方法名。
+ * 静态 Java_ 符号若来自 C++ 重载，符号表会带编号段，形如 method__2 / method__3
+ * （个别工具为单下划线 method_2）。
+ * 规则：
+ *  1. 尾随 "__<数字>" 必为编号——Java 标识符经 JNI 转义不会产生连续双下划线，直接剥离；
+ *  2. 尾随 "_<数字>" 视为编号剥离（容错：宁可多剥一个数字段，也不把 method__2/method_2
+ *     误判成不同方法）；以数字结尾的正常方法名（如 foo2）无下划线分隔，不受影响。
+ * @param {string} symbol 原始静态符号（如 Java_pkg_Class_method__2）
+ * @returns {string} 剥离编号后的符号名；无编号时原样返回
+ */
+function stripMangledOverloadSuffix(symbol) {
+  let m = symbol.match(/^(.*)__(?:\d+)$/);
+  if (m) return m[1];
+  m = symbol.match(/^(.*)_(\d+)$/);
+  if (m) return m[1];
+  return symbol;
+}
+
+/**
  * 从 C++ 源中提取 JniMethodRegistry 注册条目。
  * 匹配格式：{ "methodName", "signature", reinterpret_cast<void*>(fn) }
  * 兼容旧式静态链接符号：{ "Java_pkg_Class_method", ... }（无显式签名，仅参与计数/名称核对）。
@@ -114,9 +133,11 @@ function extractRegistryEntries(cppSrc) {
   while ((m = re.exec(src)) !== null) {
     const name = m[1];
     const sig = m[2].trim();
-    // 静态链接符号：方法名取自最后一个 '_' 段；无显式签名（由 JVM 按符号名查找）
+    // 静态链接符号：方法名取自最后一个 '_' 段；无显式签名（由 JVM 按符号名查找）。
+    // 先剥离 C++ mangled 重载编号（method__2 → method），避免编号段被误取为方法名。
     if (name.startsWith("Java_")) {
-      const parts = name.split("_");
+      const real = stripMangledOverloadSuffix(name);
+      const parts = real.split("_");
       out.push({ name: parts[parts.length - 1], sig: "(静态链接，无显式签名)", staticSymbol: name });
     } else {
       out.push({ name, sig });
@@ -326,6 +347,7 @@ async function scanCpp(repoRoot, args) {
     domainToClass = parseRegistryClassMap(await fsp.readFile(registryAbs, "utf8"));
   }
   const entries = [];
+  const unmappedByFile = new Map(); // file -> { domain, names: [] }
   for (const f of files) {
     const src = await fsp.readFile(f.abs, "utf8");
     // 领域取自定义函数名：void register<Domain>Methods(JniMethodRegistry& registry) { ... }
@@ -334,8 +356,21 @@ async function scanCpp(repoRoot, args) {
     const classPath = domain ? domainToClass.get(domain) || null : null;
     for (const e of extractRegistryEntries(src)) {
       entries.push({ name: e.name, sig: e.sig, staticSymbol: e.staticSymbol || null, file: f.rel, domain, classPath });
+      // 未映射到 Java 类的注册条目：告警而非静默丢弃（R2-7 移除 nullMap 后恢复安全网）
+      if (!classPath) {
+        let rec = unmappedByFile.get(f.rel);
+        if (!rec) {
+          rec = { domain, names: [] };
+          unmappedByFile.set(f.rel, rec);
+        }
+        rec.names.push(e.name);
+      }
     }
   }
+  const unmappedWarnings = [...unmappedByFile.entries()].map(([file, rec]) => {
+    const domainDesc = rec.domain ? `领域 ${rec.domain}` : "未声明 register<Domain>Methods";
+    return `[CPP_UNMAPPED] ${file} ${domainDesc} 未映射到 Java 类（registry.cpp 无对应映射），条目 ${rec.names.join("、")} 被跳过核对`;
+  });
   // 按类分组：classPath -> Map(name+"\\u0000"+sig -> {name, sig, file, staticSymbol})
   // 复合键（name+sig）避免同名不同签名被静默覆盖；同 name 不同 sig 时记重复警告（潜在重载/冲突）
   const byClass = new Map();
@@ -354,7 +389,7 @@ async function scanCpp(repoRoot, args) {
     }
     cm.set(ck, { name: e.name, sig: e.sig, file: e.file, staticSymbol: e.staticSymbol });
   }
-  return { byClass, entries, warnings: dupWarnings };
+  return { byClass, entries, warnings: [...dupWarnings, ...unmappedWarnings] };
 }
 
 async function scanJava(repoRoot, args) {
@@ -459,46 +494,9 @@ function compareByClass(cppByClass, javaByClass) {
     }
   }
 
-  // 未映射到类的 C++ 注册（领域无对应类）：与全部 Java 方法按名称对拍，保证计数参与
-  const nullMap = cppByClass.get(null);
-  if (nullMap) {
-    const flatJava = new Map(); // name -> entries[]
-    for (const jm of javaByClass.values()) {
-      for (const j of jm.values()) {
-        if (!flatJava.has(j.name)) flatJava.set(j.name, []);
-        flatJava.get(j.name).push(j);
-      }
-    }
-    const nullByName = groupByName(nullMap);
-    for (const [name, cList] of nullByName) {
-      cppTotal += cList.length;
-      const jList = flatJava.get(name);
-      if (!jList) {
-        diffs.push({
-          class: "(未映射类)", name, kind: "CPP_ONLY",
-          message: `C++ 注册了 ${name}，但未解析到对应类/Java 声明（${cList.map((c) => c.file).join(" / ")}）`,
-        });
-        continue;
-      }
-      const j = jList[0]; // 按名对拍；同名多签名时以首个为例
-      if (j.error) continue; // Java 签名无法转换时不判 SIG
-      const nonStatic = cList.filter((c) => !c.staticSymbol);
-      if (nonStatic.length === 0) continue; // 全部为静态链接符号：仅按名核对
-      if (!nonStatic.some((c) => c.sig === j.desc)) {
-        diffs.push({
-          class: "(未映射类)", name, kind: "SIG_MISMATCH",
-          message: `签名不一致：Java=${j.desc} C++=${nonStatic.map((c) => c.sig).join(" / ")}（${nonStatic.map((c) => c.file).join(" / ")}）`,
-        });
-      }
-    }
-  }
-
-  // Java 侧 "未解析类" 哨兵键：若 C++ 无同名类注册，native 声明将报 JAVA_ONLY
-  for (const cp of javaByClass.keys()) {
-    if (cp !== null && !cppByClass.has(cp) && javaByClass.get(cp).size > 0) {
-      // 已由上面的 classPaths 联合循环覆盖（cpp 空 Map），此处无需重复
-    }
-  }
+  // 注：classPath 为 null 的 C++ 注册（registry 未把该 domain 映射到 Java 类）不参与本处按类比对——
+  // 当前仓库所有 jni/*.cpp 均声明 register<Domain>Methods 且经 registry.cpp 映射到类，
+  // native-lib.cpp 不含注册条目；若出现未映射条目，已在 scanCpp 中收集为 [CPP_UNMAPPED] 告警而非静默丢弃。
 
   return { diffs, cppTotal, javaTotal };
 }
@@ -575,6 +573,7 @@ if (require.main === module) {
 
 module.exports = {
   stripComments,
+  stripMangledOverloadSuffix,
   extractRegistryEntries,
   parseRegistryClassMap,
   extractNativeMethods,
