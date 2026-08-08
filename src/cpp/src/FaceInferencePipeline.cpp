@@ -117,13 +117,18 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
         FaceInferMetrics m;
         ctx.arcBackendName = req.arcBackend;
 
+        // 调用期局部共享所有权：即使并发切换缓存 key，本帧持有的 detector/embedder 不被销毁。
+        // 必须与 ctx 同生命周期（覆盖 loadImage→detectFaces→computeEmbedding 全程）——不能声明在
+        // 下方 if 块内，否则块末即析构，ctx.detector/embedder 裸指针仅靠单槽缓存持有，
+        // 并发切 key 会销毁使用中的模型（UAF）。
+        std::shared_ptr<FaceDetector> localDet;
+        std::shared_ptr<ArcFaceEmbedder> localEmb;
+
         // 缓存检测器实例以避免每帧重新加载模型文件（调用方管理生命周期）
         if (!req.fakeDetect) {
             static std::mutex s_detMu;
             static std::string s_detCacheKey;
             static std::shared_ptr<FaceDetector> s_cachedDet;
-            // 调用期局部共享所有权：即使并发切换缓存 key，本帧持有的 detector 不被销毁
-            std::shared_ptr<FaceDetector> localDet;
 
             const std::string detKey = req.yoloBackend + ":" + req.yoloModelPath;
             {
@@ -153,8 +158,6 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
             static std::mutex s_embMu;
             static std::string s_embCacheKey;
             static std::shared_ptr<ArcFaceEmbedder> s_cachedEmb;
-            // 调用期局部共享所有权：并发切换缓存 key 时本帧持有的 embedder 不被销毁
-            std::shared_ptr<ArcFaceEmbedder> localEmb;
 
             const std::string embKey = req.arcBackend + ":" + req.arcModelPath;
             {

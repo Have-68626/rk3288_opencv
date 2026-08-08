@@ -2,16 +2,20 @@
 
 using namespace rk_core;
 
+#include "FaceDetector.h"
 #include "FaceInferStages.h"
-
 #include "FaceTemplate.h"
+#include "ModelRegistry.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <atomic>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -46,6 +50,31 @@ static std::filesystem::path writeTestImage(const std::filesystem::path& dir, co
 static bool contains(const std::string& s, const std::string& sub) {
     return s.find(sub) != std::string::npos;
 }
+
+// —— B06-008 可判别并发 key 切换：A 命中缓存 K1 并在 detect 中阻塞，B 切到 K2，
+//    断言使用中的 K1 实例不被销毁（调用期局部共享所有权）。——
+
+static std::mutex g_detMu;
+static std::condition_variable g_detCv;
+static std::atomic<int> g_detEntered{0};
+static std::atomic<bool> g_detRelease{false};
+static std::atomic<bool> g_k1Destroyed{false};
+
+struct FakeDetector final : public FaceDetector {
+    std::string path;
+    ~FakeDetector() override {
+        if (path == "/fake/K1.onnx") g_k1Destroyed.store(true);
+    }
+    bool load(const std::string& modelPath, std::string&) override { path = modelPath; return true; }
+    FaceDetections detect(const cv::Mat&, std::string&) override {
+        g_detEntered.fetch_add(1);
+        g_detCv.notify_all();
+        std::unique_lock<std::mutex> lk(g_detMu);
+        g_detCv.wait(lk, [] { return g_detRelease.load(); });
+        return {};
+    }
+    const char* name() const override { return "FakeDetector"; }
+};
 
 }  // namespace
 
@@ -119,6 +148,66 @@ bool test_face_infer_concurrent_model_key_switch() {
     for (auto& t : threads) t.join();
     // 全部应 yolo_load 失败（模型不存在），okCount==0；并发调用不崩溃
     return okCount.load() == 0;
+}
+
+bool test_face_infer_concurrent_key_switch_keeps_in_use_detector() {
+    // 判别性验证：线程 A 命中缓存 K1 并在 detect 中阻塞，线程 B 切换到 K2。
+    // 若调用期未持有共享所有权（修复前 localDet 于 if 块末析构），B 替换缓存会销毁
+    // 正在使用的 K1 实例（UAF 窗口）；本测试断言 K1 在使用中不被销毁。
+    const auto dir = makeTempDir("concurrent_key_switch_disc");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::instance().registerDetector(
+        "fake_det",
+        []() -> std::unique_ptr<FaceDetector> { return std::make_unique<FakeDetector>(); },
+        ModelEntry{"fake_det", "FakeDetector", "detect", "B06-008 判别测试", "balanced", 0});
+
+    g_detEntered.store(0);
+    g_detRelease.store(false);
+    g_k1Destroyed.store(false);
+
+    std::thread tA([&] {
+        FaceInferRequest req;
+        req.imagePath = imgPath.string();
+        req.fakeDetect = false;
+        req.fakeEmbedding = true;
+        req.yoloBackend = "fake_det";
+        req.yoloModelPath = "/fake/K1.onnx";
+        runFaceInferOnce(req);
+    });
+
+    // 等 A 进入 detect（K1 已建立缓存）
+    {
+        std::unique_lock<std::mutex> lk(g_detMu);
+        g_detCv.wait(lk, [] { return g_detEntered.load() >= 1; });
+    }
+
+    // B 切换缓存 key 到 K2（若 A 未持有所有权，K1 在此被销毁）
+    std::thread tB([&] {
+        FaceInferRequest req;
+        req.imagePath = imgPath.string();
+        req.fakeDetect = false;
+        req.fakeEmbedding = true;
+        req.yoloBackend = "fake_det";
+        req.yoloModelPath = "/fake/K2.onnx";
+        runFaceInferOnce(req);
+    });
+
+    // 等 B 完成缓存替换（进入 detect）
+    {
+        std::unique_lock<std::mutex> lk(g_detMu);
+        g_detCv.wait(lk, [] { return g_detEntered.load() >= 2; });
+    }
+
+    // 关键判别：使用中的 K1 实例不得被销毁（修复后 localDet 函数级持有）
+    const bool k1Alive = !g_k1Destroyed.load();
+
+    g_detRelease.store(true);
+    g_detCv.notify_all();
+    tA.join();
+    tB.join();
+
+    return k1Alive;
 }
 
 bool test_face_infer_done_no_face() {
