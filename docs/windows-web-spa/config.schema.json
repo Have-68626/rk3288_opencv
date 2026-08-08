@@ -31,13 +31,23 @@
     "recognition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cascadePath", "databasePath", "minFaceSizePx", "identifyThreshold", "enrollSamples"],
+      "required": ["cascadePath", "databasePath", "arcFaceModelPath", "minFaceSizePx", "identifyThreshold", "enrollSamples"],
       "properties": {
         "cascadePath": { "type": "string" },
         "databasePath": { "type": "string" },
+        "arcFaceModelPath": { "type": "string" },
         "minFaceSizePx": { "type": "number", "minimum": 10, "maximum": 10000 },
         "identifyThreshold": { "type": "number", "minimum": 1, "maximum": 100000 },
         "enrollSamples": { "type": "number", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["throttleMode", "intervalMs"],
+      "properties": {
+        "throttleMode": { "type": "string" },
+        "intervalMs": { "type": "number", "minimum": 80, "maximum": 500 }
       }
     },
     "dnn": {
@@ -72,6 +82,19 @@
         "confThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
         "backend": { "type": "number" },
         "target": { "type": "number" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "detection": { "type": "string" },
+        "recognition": { "type": "string" },
+        "backend": { "type": "string" },
+        "detectorBackend": { "type": "string" },
+        "recognitionBackend": { "type": "string" },
+        "autoFallback": { "type": "boolean" },
+        "int8Enabled": { "type": "boolean" }
       }
     },
     "http": {
@@ -170,9 +193,10 @@
     "acceleration": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enableOpenCL", "enableMpp", "enableQualcomm"],
+      "required": ["enableOpenCL", "enableLibyuv", "enableMpp", "enableQualcomm"],
       "properties": {
         "enableOpenCL": { "type": "boolean" },
+        "enableLibyuv": { "type": "boolean" },
         "enableMpp": { "type": "boolean" },
         "enableQualcomm": { "type": "boolean" }
       }
