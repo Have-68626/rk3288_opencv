@@ -30,13 +30,13 @@ if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
         "src/win/src/FramePipeline.cpp"
         "src/win/src/FrameProcessor.cpp"
         "src/win/src/SideEffectSink.cpp"
-        "src/win/src/CameraSession.cpp"
         "src/win/src/RuntimeBootstrap.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/win/src/EventLogger.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/win/src/JsonEndpointHandlers.cpp"
         "src/cpp/src/FileHash.cpp"
+        "src/cpp/src/NativeLog.cpp"
     )
 
     target_include_directories(win_local_service PRIVATE
@@ -116,7 +116,6 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
         "src/win/src/FramePipeline.cpp"
         "src/win/src/FrameProcessor.cpp"
         "src/win/src/SideEffectSink.cpp"
-        "src/win/src/CameraSession.cpp"
         "src/win/src/RuntimeBootstrap.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/win/src/DisplaySettings.cpp"
@@ -242,7 +241,6 @@ add_executable(win_unit_tests
     "src/win/src/RuntimeBootstrap.cpp"
     "src/win/src/FramePipeline.cpp"
     "src/win/src/MfCamera.cpp"
-    "src/win/src/CameraSession.cpp"
     "src/win/src/EndpointRegistry.cpp"
     "src/cpp/src/FileHash.cpp"
     "src/win/src/HttpFacesServerPath.cpp"

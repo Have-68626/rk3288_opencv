@@ -573,8 +573,6 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
 
 // ──── 客户端处理 ─────────────────────────────────────────────
 
-// ──── 客户端处理 ─────────────────────────────────────────────
-
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
     SocketGuard sg(static_cast<SOCKET>(sock));
     HttpRequest req;
