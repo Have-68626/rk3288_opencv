@@ -123,6 +123,15 @@ public:
     void setCameraForTest(std::unique_ptr<ICameraSource> cam);
     void setDevicesForTest(std::vector<CameraDevice> devs);
 
+    // 测试辅助：注入假识别器（确定性验证 enroll 竞态）。
+    // ⚠️ 仅可在 processLoop 空闲时调用（推荐 initialize 后、注入首帧前）：原子替换
+    //   快照内 recognizer 并重建 processor；若在 run() 执行中替换，旧 processor 持有的
+    //   recognizer 裸指针会悬空（旧对象销毁 → UAF）。
+    void setRecognizerForTest(std::shared_ptr<IRecognizer> rec);
+
+    // 测试辅助：读取 enroll 剩余样本数（epoch 守卫回写不覆盖新计数的判别断言）
+    int enrollRemainingForTest() const;
+
     bool tryGetRenderState(RenderState& out);
     bool snapshotFaces(FacesSnapshot& out);
     std::uint64_t currentFacesSeq() const;
@@ -201,6 +210,10 @@ private:
     std::atomic<bool> enrollRequested_{false};
     std::string enrollPersonId_;
     int enrollRemaining_ = 0;
+    // 注册代次（mu_ 保护）：requestEnroll 成功时 +1 并随 cmd 携带；处理回写前比较
+    // 当前值与 cmd 携带值——未变才写回（变化说明期间有新注册，保留新计数不覆盖，
+    // 修复 B06-018 注释承认的残余竞态）。
+    std::uint64_t enrollEpoch_ = 0;
 
     std::atomic<bool> clearDbRequested_{false};
 

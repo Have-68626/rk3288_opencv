@@ -290,8 +290,8 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
     const auto td0 = clock::now();
     auto rt = runtimeSnapshot();
     if (cfg_.dnn.enable && rt && rt->dnn && rt->dnn->ready()) {
-        // dnnMu_ 已确认无共享不变式可护（A3）：快照保活 dnn 共享所有权，resetForStream 仅置
-        // streamWarm 标志；删除无用锁不改变线程安全语义（B06-014）
+        // dnnMu_ 已确认无共享不变式可护（A3）：快照保活 dnn 共享所有权，resetForStream 现为空操作；
+        // 删除无用锁不改变线程安全语义（B06-014）
         rt->dnn->resetForStream();
     }
     const auto td1 = clock::now();
@@ -412,7 +412,7 @@ void FramePipeline::switchCamera(const AppConfig& cfg) {
     desired.fps = cfg.camera.fps;
 
     // 真正原子替换活动采集源（重启 captureLoop + 失败回滚），
-    // 替代此前仅用 CameraSession::switchWithRollback 探测却未切换管线的问题
+    // 避免仅探测却未真正切换采集管线的问题
     const auto result = startCameraWithRollbackLocked(idx, desired, 300);
     {
         std::lock_guard<std::mutex> lock(renderMu_);
@@ -427,6 +427,20 @@ void FramePipeline::setCameraForTest(std::unique_ptr<ICameraSource> cam) {
 void FramePipeline::setDevicesForTest(std::vector<CameraDevice> devs) {
     std::lock_guard<std::mutex> lock(mu_);
     devices_ = std::move(devs);
+}
+
+void FramePipeline::setRecognizerForTest(std::shared_ptr<IRecognizer> rec) {
+    // 原子替换快照内 recognizer 并成对重建 processor（旧 processor 持有旧 recognizer 裸指针，
+    // 必须一起换避免新旧混用）；仅测试使用，调用时机须在 processLoop 空闲时（见头文件注释）。
+    std::lock_guard<std::mutex> lock(runtimeMu_);
+    if (!runtime_) return;
+    runtime_->recognizer = std::move(rec);
+    runtime_->processor = std::make_shared<FrameProcessor>(runtime_->dnn.get(), runtime_->recognizer.get());
+}
+
+int FramePipeline::enrollRemainingForTest() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return enrollRemaining_;
 }
 
 void FramePipeline::reloadRuntime(const AppConfig& cfg) {
@@ -465,6 +479,9 @@ void FramePipeline::requestEnroll(const std::string& personId) {
     std::lock_guard<std::mutex> lock(mu_);
     enrollPersonId_ = personId;
     enrollRemaining_ = cfg_.recognition.enrollSamples;
+    // 新注册递增代次：处理中的旧命令回写时凭 epoch 差异识别"期间有新注册"，
+    // 避免旧命令的递减/完成结果覆盖新请求的计数与 pending 标志（B06-018 残余竞态修复）。
+    ++enrollEpoch_;
     enrollRequested_ = true;
 }
 
@@ -728,11 +745,15 @@ void FramePipeline::processLoop() {
         // ── 构建控制命令 ──
         ControlCommand cmd;
         cmd.clearDb = clearDbRequested_.exchange(false);
-        cmd.enrollRequested = enrollRequested_.load();
-        if (cmd.enrollRequested) {
+        // enroll 快照在 mu_ 锁内原子读取：enrollRequested_/personId/remaining/epoch 必须来自
+        // 同一注册代次；若标志在锁外读、字段在锁内读（TOCTOU），新请求可能被旧命令的
+        // 回写吃掉，epoch 守卫也会因"命令携带新 epoch + 旧标志"错配而失效。
+        {
             std::lock_guard<std::mutex> lock(mu_);
+            cmd.enrollRequested = enrollRequested_.load();
             cmd.enrollPersonId = enrollPersonId_;
             cmd.enrollRemaining = enrollRemaining_;
+            cmd.enrollEpoch = enrollEpoch_;
         }
         cmd.detectStride = detectStride_;
         cmd.frameCounter = frameIndex_;
@@ -745,16 +766,18 @@ void FramePipeline::processLoop() {
 
         // ── 同步已消费命令回成员变量 ──
         detectStride_ = result.consumedCommand.detectStride;
-        if (!result.consumedCommand.enrollRequested) {
-            enrollRequested_ = false;
-        }
         {
-            // 写 enrollRemaining_ 与 requestEnroll 同锁（mu_），消除跨线程双写数据竞争（B06-018）；
-            // 残余逻辑竞态：enroll 处理中途 requestEnroll 到达时，本写仍可能覆盖新请求的样本计数
-            // （既有、低危，x86 上 4 字节对齐 int 撕裂概率≈0）。彻底修复需注册代次/epoch 计数，
-            // 记录为后续工作单元，不在本工作单元冒险改行为。
+            // 写回 enroll 状态（与 requestEnroll 同锁 mu_，消除跨线程双写数据竞争 B06-018）。
+            // epoch 守卫：cmd 携带构建时快照的 enrollEpoch_；回写时若当前 enrollEpoch_ 已递增，
+            // 说明 run() 期间有新 requestEnroll 到达——旧命令的递减结果/完成标志不得覆盖新请求
+            // 的计数与 pending 标志（修复既有注释承认的残余竞态：旧计数 12→11 覆盖新请求的 12）。
             std::lock_guard<std::mutex> lock(mu_);
-            enrollRemaining_ = result.consumedCommand.enrollRemaining;
+            if (result.consumedCommand.enrollEpoch == enrollEpoch_) {
+                enrollRemaining_ = result.consumedCommand.enrollRemaining;
+                if (!result.consumedCommand.enrollRequested) {
+                    enrollRequested_ = false;
+                }
+            }
         }
 
         // ── 构建日志条目元数据 ──

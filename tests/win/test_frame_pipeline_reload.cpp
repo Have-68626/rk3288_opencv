@@ -1,8 +1,11 @@
 #include "rk_win/FramePipeline.h"
+#include "rk_win/IRecognizer.h"
 #include "rk_win/WinConfig.h"
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -146,6 +149,56 @@ bool waitUntil(Pred pred, int timeoutMs) {
     }
     return pred();
 }
+
+// 门控假识别器：enrollFromFrame 阻塞直到测试放行——确定性制造
+// "run() 处理旧注册期间新 requestEnroll 到达"的竞态窗口（无 sleep 固化）；
+// 每次调用恰好取 1 个样本（确定性递减 12→11，保证判别断言可观察）。仅测试使用。
+class GateRecognizer : public rk_win::IRecognizer {
+public:
+    std::mutex m;
+    std::condition_variable cv;
+    bool entered = false;    // 已进入 enrollFromFrame（等待测试放行）
+    bool release = false;    // 测试已放行
+    std::string enteredPerson;
+    std::atomic<int> enrollCalls{0};
+
+    // 测试等待进入 enrollFromFrame（确认 run() 已执行到注册步骤、回写前）
+    bool waitEntered(int timeoutMs) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&] { return entered; });
+    }
+    // 测试放行：使阻塞中的 enrollFromFrame 返回（此后再次调用也立即通过）
+    void go() {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            release = true;
+        }
+        cv.notify_all();
+    }
+
+    std::vector<rk_win::FaceMatch> identify(const cv::Mat&) override { return {}; }
+
+    bool enrollFromFrame(const std::string& personId, const cv::Mat&, int, int& samplesTakenOut) override {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            enteredPerson = personId;
+            entered = true;
+        }
+        cv.notify_all();
+        {
+            std::unique_lock<std::mutex> lk(m);
+            cv.wait(lk, [&] { return release; });
+        }
+        samplesTakenOut = 1;  // 恰好取 1 个样本
+        enrollCalls.fetch_add(1);
+        return true;
+    }
+    bool saveDb() const override { return true; }
+    void clearDb() override {}
+    double threshold() const override { return 0.0; }
+    void setThreshold(double) override {}
+    std::vector<std::string> personIds() const override { return {}; }
+};
 
 }  // namespace
 
@@ -339,4 +392,57 @@ bool test_pipeline_open_failure() {
     const auto res = runCameraOpen(0, 500, fake, fp);
     fp.shutdown();
     return !res.ok && res.reason.find("打开失败") != std::string::npos;
+}
+
+// enroll 回写竞态（B06-018 残余，本工作单元 RW3 修复）：处理旧注册（personA）期间
+// 新 requestEnroll("personB") 到达 → 旧命令回写不得覆盖 B 的样本计数。
+// 时序（确定性，无 sleep 固化）：门控假识别器在 run() 注册步骤阻塞 → 测试确认进入后
+// 发起新注册 → 放行 → 等该帧处理完成（facesSeq 递增发生在回写之后）→ 断言剩余计数。
+// 修复前：回写无条件写 enrollRemaining_=旧命令 post-run 值（12→11），B 的 12 被覆盖 → 断言失败（RED）。
+// 修复后：epoch 守卫（cmd epoch=1 vs 当前 enrollEpoch_=2 不等）→ 跳过覆盖，12 保持 → 断言通过（GREEN）。
+bool test_pipeline_enroll_writeback_does_not_overwrite_new_request() {
+    rk_win::AppConfig cfg;
+    cfg.model.recognition = "lbph";
+    cfg.recognition.cascadePath = "assets/lbpcascade_frontalface.xml";
+    cfg.recognition.databasePath = ".";
+    cfg.recognition.enrollSamples = 12;
+    cfg.dnn.enable = false;
+
+    rk_win::FramePipeline fp;
+    if (!fp.initialize(cfg)) return false;
+
+    // 注入门控假识别器：此刻 processLoop 空闲（尚无帧注入 → 阻塞在 frameCv_）
+    auto gate = std::make_shared<GateRecognizer>();
+    fp.setRecognizerForTest(gate);
+
+    // 1. 发起旧注册 personA：enrollEpoch_→1，remaining=12
+    fp.requestEnroll("personA");
+
+    // 2. 注入一帧驱动 processLoop：build cmd(personA, remaining=12, epoch=1) →
+    //    run() 进入 enrollFromFrame 阻塞（门控），制造"处理中途"确定性窗口
+    const std::uint64_t seqBefore = fp.currentFacesSeq();
+    cv::Mat frame(360, 640, CV_8UC3, cv::Scalar(64, 128, 192));
+    fp.injectFrameForTest(frame);
+
+    // 3. 确认 run() 已进入注册步骤且处理的是 personA（而非后到的 personB）
+    if (!gate->waitEntered(2000)) { fp.shutdown(); return false; }
+    if (gate->enteredPerson != "personA") { fp.shutdown(); return false; }
+
+    // 4. 处理中途发起新注册 personB：enrollEpoch_→2，remaining=12，pending=true
+    fp.requestEnroll("personB");
+
+    // 5. 放行门控：run() 返回（旧 cmd remaining 12→11, epoch=1）→ 随后进入回写
+    gate->go();
+
+    // 6. 等待该帧处理完成（facesSeq 递增在回写之后，确保读到的计数是回写后的稳定值）
+    std::uint64_t seqAfter = 0;
+    if (!fp.waitFacesSeqChanged(seqBefore, 2000, seqAfter)) { fp.shutdown(); return false; }
+
+    // 7. 判别断言：新请求 personB 的剩余计数必须保持 12（未被旧命令的 11 覆盖）
+    const bool preserved = fp.enrollRemainingForTest() == cfg.recognition.enrollSamples;
+
+    // 8. 收尾：兜底放行（防理论上再次进入门控的帧卡死）后关闭
+    gate->go();
+    fp.shutdown();
+    return preserved;
 }

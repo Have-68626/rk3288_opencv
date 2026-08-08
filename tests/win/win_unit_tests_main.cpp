@@ -45,6 +45,7 @@ bool test_pipeline_render_state_concurrent_access();
 bool test_pipeline_first_frame_delayed();
 bool test_pipeline_first_frame_timeout();
 bool test_pipeline_open_failure();
+bool test_pipeline_enroll_writeback_does_not_overwrite_new_request();
 bool test_config_put_bumps_generation();
 bool test_config_external_write_bumps_generation_once();
 bool test_config_put_and_external_each_consumed_once();
@@ -71,6 +72,7 @@ int main(int argc, char** argv) {
         {"pipeline_first_frame_delayed", test_pipeline_first_frame_delayed},
         {"pipeline_first_frame_timeout", test_pipeline_first_frame_timeout},
         {"pipeline_open_failure", test_pipeline_open_failure},
+        {"pipeline_enroll_writeback_does_not_overwrite_new_request", test_pipeline_enroll_writeback_does_not_overwrite_new_request},
         {"config_put_bumps_generation", test_config_put_bumps_generation},
         {"config_external_write_bumps_generation_once", test_config_external_write_bumps_generation_once},
         {"config_put_and_external_each_consumed_once", test_config_put_and_external_each_consumed_once},
