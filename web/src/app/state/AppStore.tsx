@@ -54,6 +54,11 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     status: 'idle',
   })
 
+  // 请求代次提交（Q-CQ-B08-003）：每次发起 GET/PUT 递增代次，响应回调先校验代次是否仍最新，
+  // 过期响应（逆序完成的旧请求）只丢弃状态写入与提示，保证仅最新 generation 能覆盖状态，
+  // 避免“慢 GET 后完成覆盖快 GET/PUT 结果”的竞态。
+  const settingsGenRef = useRef(0)
+
   const setPrefs = (patch: Partial<LocalPrefs>) => {
     setPrefsState((prev) => {
       const next = { ...prev, ...patch }
@@ -69,6 +74,8 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
 
   const refreshServerSettings = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent
+    // 代次提交：本次请求独占一个递增代次，作为“是否仍最新”的判定依据
+    const gen = ++settingsGenRef.current
     setServerSettings((prev) =>
       silent
         ? prev.status === 'idle'
@@ -90,13 +97,18 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
           details: env.error.details,
         })
       }
+      // 过期响应：后续已发起更新代次的请求，状态由新代次写入，不再重复覆盖
+      if (gen !== settingsGenRef.current) return true
       setServerSettings({ status: 'ready', data: env.data })
       if (!silent) notify.success('操作成功')
       return true
     } catch (e: unknown) {
       const err = toApiError(e)
-      setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
-      if (!silent) notify.error(err.message)
+      // 过期失败同样不污染新状态（新请求可能已成功）
+      if (gen === settingsGenRef.current) {
+        setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
+        if (!silent) notify.error(err.message)
+      }
       return false
     } finally {
       if (hide) hide()
@@ -104,6 +116,8 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const updateServerSettings = useCallback(async (patch: Partial<ServerSettingsDoc>) => {
+    // 代次提交：PUT 同样参与代次递增，过期 PUT 响应不覆盖更新的代次
+    const gen = ++settingsGenRef.current
     setServerSettings((prev) => ({
       status: 'loading',
       data: prev.data,
@@ -116,10 +130,14 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
           details: env.error.details,
         })
       }
-      setServerSettings({ status: 'ready', data: env.data })
+      if (gen === settingsGenRef.current) {
+        setServerSettings({ status: 'ready', data: env.data })
+      }
     } catch (e: unknown) {
       const err = toApiError(e)
-      setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
+      if (gen === settingsGenRef.current) {
+        setServerSettings((prev) => ({ status: 'error', data: prev.data, error: err }))
+      }
       throw err
     }
   }, [])

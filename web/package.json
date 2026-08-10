@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "bundle:check": "node scripts/check-bundle-budget.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "e2e:open": "cypress open",
     "e2e:run": "cypress run",
-    "e2e:run:coverage": "CYPRESS_COVERAGE=1 cypress run",
+    "e2e:run:coverage": "node scripts/e2e-run.mjs",
     "coverage:report": "nyc report --reporter=text-summary --reporter=lcov",
     "test": "vitest run"
   },
