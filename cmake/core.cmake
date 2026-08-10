@@ -131,14 +131,19 @@ set(RK_SAFETY_EXCLUDED
     win_face_database_perf
 )
 # 需异常/RTTI 的目标：自身用 try/catch，或依赖 OpenCV 头（flann throw/typeid）
+# P3 ②：win_* 目标（win_local_service/win_camera_face_recognition 等）自身含 try/catch 源，
+# 在 clang-cl（-fno-exceptions）下会编译失败；但 clang-cl 未在 CI/项目使用（Windows 均 MSVC），
+# 故不将其列入本列表，仅记录风险——未来启用 clang-cl 时需评估（RW8 低危遗留）。
 set(RK_EXCEPTIONS_REQUIRED
     native-lib rk3288_cli opencv_verify_cli inference_bench_cli
 )
 
 function(rk_apply_compiler_contract)
     # 门控用 CMAKE_CXX_COMPILER_ID 替代裸 MSVC 变量：IntelLLVM/clang-cl 下 MSVC=TRUE
-    # 但 ID≠MSVC，会误走 /EHsc 分支（IntelLLVM 的 /EHs- 是硬错误）；此类编译器归 Clang
-    # 分支处理（RW8 低危遗留）
+    # 但 ID≠MSVC。clang-cl（ID=Clang）命中下方 Clang|GNU 分支；IntelLLVM（ID=IntelLLVM）
+    # 两分支均不命中 → 无操作：不应用任何契约 flag（-fno-exceptions/-fvisibility=hidden），
+    # 配置期断言 rk_assert_contract_flags 同样跳过。当前项目不构建 IntelLLVM，无操作安全；
+    # 且避免了误走 /EHsc 分支（IntelLLVM 的 /EHs- 是硬错误）。（RW8 低危遗留，P3 ①）
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         # 项目代码使用 C++ 异常（try/catch）与 OpenCV 头，target 级启用 MSVC 异常处理
         # 避免 C4530（使用异常处理程序但未启用展开语义）；target 级不传播到 OpenCV 子目录
@@ -201,6 +206,10 @@ function(rk_assert_contract_flags)
                 else()
                     # 双锚：-fno-exceptions 与 -fvisibility=hidden 都必须存在，
                     # 防止仅删 -fno-exceptions 不被单锚断言捕获（RW8 ③）
+                    # P3 ③：本双锚 else 分支当前无 CI 覆盖——Linux/Android 非排除目标
+                    # 全为 RK_EXCEPTIONS_REQUIRED（只走上方单锚），win_* 目标仅 MSVC 构建，
+                    # clang-cl/IntelLLVM 未启用。故 -fno-rtti 亦未纳入锚定（保持现状，
+                    # 避免给无覆盖分支增加无法验证的断言）。
                     get_target_property(_rk_opts ${t} COMPILE_OPTIONS)
                     if(NOT _rk_opts MATCHES "-fno-exceptions")
                         message(FATAL_ERROR "CONTRACT_ASSERT_FAIL: ${t} 未应用 -fno-exceptions")
