@@ -52,6 +52,10 @@ bool test_config_external_write_bumps_generation_once();
 bool test_config_put_and_external_each_consumed_once();
 bool test_config_default_serialization_passes_schema();
 bool test_config_each_single_field_put_passes_schema();
+bool test_config_roundtrip_and_schema_alignment();
+bool test_config_masked_echo_preserves_real_value();
+bool test_reload_endpoint_bumps_generation();
+bool test_openapi_endpoint_returns_spec_json();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
@@ -80,6 +84,10 @@ int main(int argc, char** argv) {
         {"config_put_and_external_each_consumed_once", test_config_put_and_external_each_consumed_once},
         {"config_default_serialization_passes_schema", test_config_default_serialization_passes_schema},
         {"config_each_single_field_put_passes_schema", test_config_each_single_field_put_passes_schema},
+        {"config_roundtrip_and_schema_alignment", test_config_roundtrip_and_schema_alignment},
+        {"config_masked_echo_preserves_real_value", test_config_masked_echo_preserves_real_value},
+        {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
+        {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
     };
     const bool boolOk = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     ::testing::InitGoogleTest(&argc, argv);

@@ -142,6 +142,11 @@ public:
 
     std::vector<ModelSnapshot> getActiveModels() const { std::lock_guard<std::mutex> lock(modelsMu_); return activeModels_; }
 
+    // 运行时重载代次：reloadRuntime 原子替换成功时 +1。
+    // reload 端点（B06-020 治理项）以"成功重载必然改变代次"为契约——禁止"伪成功"
+    // （返回成功但从未真正重载）；消费方记录已消费代次即可感知重载确实发生。
+    std::uint64_t runtimeReloadGen() const { return runtimeReloadGen_.load(std::memory_order_relaxed); }
+
 private:
     void captureLoop();
     void processLoop();
@@ -226,6 +231,9 @@ private:
     mutable std::mutex modelsMu_;
 
     std::vector<ModelSnapshot> activeModels_;
+
+    // 运行时重载代次：见 runtimeReloadGen() 注释（B06-020 治理项）。
+    std::atomic<std::uint64_t> runtimeReloadGen_{0};
 };
 
 }  // namespace rk_win

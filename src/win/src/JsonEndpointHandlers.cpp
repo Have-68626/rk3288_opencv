@@ -156,19 +156,34 @@ HttpResp handleReloadModel(const HttpReq& req, EndpointContext& ctx) {
     if (!id || id->empty()) {
         return errJson(400, "missing_id", "缺少 id 字段");
     }
-    std::string status = "not_found";
+    // 目标模型须存在于当前活动模型清单中；不存在则返回 not_found（不触发重载）
+    bool found = false;
     if (ctx.pipe) {
         auto models = ctx.pipe->getActiveModels();
         for (const auto& m : models) {
             if (m.id == *id) {
-                status = "reload_requested";
+                found = true;
                 break;
             }
         }
     }
+    if (!found) {
+        JsonValue o = JsonValue::makeObject();
+        o.o["id"] = JsonValue::makeString(*id);
+        o.o["status"] = JsonValue::makeString("not_found");
+        return okJson(std::move(o));
+    }
+
+    // 真正执行重载（B06-020 治理项）：修复前仅返回 status="reload_requested" 占位、
+    // 从不调用 reloadRuntime，属于"伪成功"。现以当前生效配置原子重建运行时快照，
+    // 成功后 runtimeReloadGen 递增并随响应返回——成功必改变 generation。
+    if (!ctx.settings) return errJson(503, "settings_unavailable", "settings 存储未初始化");
+    ctx.pipe->reloadRuntime(ctx.settings->current());
+
     JsonValue o = JsonValue::makeObject();
     o.o["id"] = JsonValue::makeString(*id);
-    o.o["status"] = JsonValue::makeString(status);
+    o.o["status"] = JsonValue::makeString("reloaded");
+    o.o["generation"] = JsonValue::makeNumber(static_cast<double>(ctx.pipe->runtimeReloadGen()));
     return okJson(std::move(o));
 }
 
@@ -352,9 +367,24 @@ HttpResp handleGetAcceleration(const HttpReq&, EndpointContext& ctx) {
 }
 
 HttpResp handleGetOpenApi(const HttpReq&, EndpointContext&) {
-    JsonValue d = JsonValue::makeObject();
-    d.o["note"] = JsonValue::makeString("OpenAPI 文档见 docs/windows-web-spa/openapi.yaml；此端点为最小联调占位");
-    return okJson(std::move(d));
+    // OpenAPI 3.0.3 规范 JSON（B08-005 治理项）：修复前为占位响应（仅含 note 字段，
+    // 无 openapi/info/paths 结构）。此处返回真实规范文档。
+    // 注意同步关系：运行时以本内嵌 JSON 为事实源；docs/windows-web-spa/openapi.yaml
+    // 为文档镜像（S3 三方校验要求两者 paths 集合一致）。新增/变更端点时须同时更新
+    // 本字符串与 openapi.yaml。
+    // 流式端点（/api/faces/stream、/api/v1/faces/stream、/api/v1/preview.mjpeg）由
+    // StreamSessionRunner 旁路处理（HttpFacesServer::run 经 stream::isStreamRequest 分流，
+    // 见 StreamSession.cpp），不在 EndpointRegistry 注册表中，但此处同样声明以保持文档完整。
+    static const char* kOpenApiJson = R"JSON({"openapi":"3.0.3","info":{"title":"rk_wcfr Local API","version":"1.0","description":"RK_WCFR（Windows Camera Face Recognition）本地 REST API。"},"paths":{"/api/v1/health":{"get":{"summary":"健康检查","responses":{"200":{"description":"OK"}}}},"/api/v1/acceleration":{"get":{"summary":"加速配置与活动后端","responses":{"200":{"description":"OK"}}}},"/api/v1/openapi":{"get":{"summary":"获取本 OpenAPI 规范（JSON）","responses":{"200":{"description":"OpenAPI 规范 JSON"}}}},"/openapi.json":{"get":{"summary":"获取本 OpenAPI 规范（JSON，别名路径）","responses":{"200":{"description":"OpenAPI 规范 JSON"}}}},"/api/v1/models":{"get":{"summary":"模型列表与状态","responses":{"200":{"description":"OK"}}}},"/api/v1/models/reload":{"post":{"summary":"按 id 重载模型运行时（成功后代次 generation 递增）","responses":{"200":{"description":"OK"}}}},"/api/v1/settings":{"get":{"summary":"获取完整配置（敏感字段已脱敏）","responses":{"200":{"description":"OK"}}},"put":{"summary":"更新配置（局部更新；敏感字段加密落盘）","responses":{"200":{"description":"OK"}}}},"/api/v1/cameras":{"get":{"summary":"摄像头设备列表","responses":{"200":{"description":"OK"}}}},"/api/v1/camera/flip":{"put":{"summary":"设置画面翻转","responses":{"200":{"description":"OK"}}}},"/api/faces":{"get":{"summary":"人脸库快照","responses":{"200":{"description":"OK"}}}},"/api/v1/faces":{"get":{"summary":"人脸库快照（版本化路径）","responses":{"200":{"description":"OK"}}}},"/api/v1/actions/enroll":{"post":{"summary":"注册人脸","responses":{"200":{"description":"OK"}}}},"/api/v1/actions/db/clear":{"post":{"summary":"清空人脸库","responses":{"200":{"description":"OK"}}}},"/api/v1/actions/crypto/rotate":{"post":{"summary":"轮换加密主密钥","responses":{"200":{"description":"OK"}}}},"/api/v1/actions/privacy/open":{"post":{"summary":"打开隐私设置","responses":{"200":{"description":"OK"}}}},"/api/v1/preview.jpg":{"get":{"summary":"实时预览 JPEG 帧","responses":{"200":{"description":"image/jpeg"}}}},"/api/faces/stream":{"get":{"summary":"人脸识别结果 SSE 流（StreamSessionRunner 旁路）","responses":{"200":{"description":"text/event-stream"}}}},"/api/v1/faces/stream":{"get":{"summary":"人脸识别结果 SSE 流（版本化路径，StreamSessionRunner 旁路）","responses":{"200":{"description":"text/event-stream"}}}},"/api/v1/preview.mjpeg":{"get":{"summary":"实时预览 MJPEG 流（StreamSessionRunner 旁路）","responses":{"200":{"description":"multipart/x-mixed-replace"}}}}}})JSON";
+    HttpResp r;
+    r.status = 200;
+    r.reason = "OK";
+    r.contentType = "application/json; charset=utf-8";
+    r.body = kOpenApiJson;
+    r.headers.push_back({"X-Content-Type-Options", "nosniff"});
+    r.headers.push_back({"X-Frame-Options", "DENY"});
+    r.headers.push_back({"Content-Security-Policy", "default-src 'none'"});
+    return r;
 }
 
 HttpResp handleGetFaces(const HttpReq&, EndpointContext& ctx) {

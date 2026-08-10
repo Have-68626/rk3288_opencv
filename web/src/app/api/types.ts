@@ -62,7 +62,7 @@ export interface ServerSettingsDoc {
     detectorBackend: string
     recognitionBackend: string
     autoFallback: boolean
-    int8Enabled?: boolean
+    int8Enabled: boolean
   }
   http: {
     enable: boolean

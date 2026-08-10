@@ -466,6 +466,9 @@ void FramePipeline::reloadRuntime(const AppConfig& cfg) {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.ok ? "模型运行时已重载" : bootstrap.warning;
     }
+    // 重载完成，代次 +1：成功重载必然改变代次（B06-020 治理项，禁止"伪成功"——
+    // reload 端点据此向调用方证明重载确实发生，而非仅返回占位状态）。
+    runtimeReloadGen_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FramePipeline::updatePreviewLayout(int w, int h, const std::string& scaleMode) {
@@ -811,27 +814,35 @@ void FramePipeline::processLoop() {
                 // 回写守卫（上一节）已判定 run() 期间有新 requestEnroll 到达（enrollEpoch_ 递增），
                 // 此时 cmd/consumedCommand 仍是旧请求（personA）信息；改读当前 pending 状态
                 // （enrollRequested_/enrollPersonId_/enrollRemaining_）显示新请求。
-                // epoch 比较须在 mu_ 锁内（enrollEpoch_ 为 mu_ 保护成员），避免与 requestEnroll 竞态。
+                // epoch 比较与失配分支读当前 pending 共持一把 mu_ 锁：enrollEpoch_ 与
+                // enrollRequested_/enrollPersonId_/enrollRemaining_ 同受 mu_ 保护，原两段相邻
+                // 独立锁块合并为一次获取，减少锁开销并消除两次取锁间请求到达的显示不一致。
                 bool epochMismatch;
                 {
                     std::lock_guard<std::mutex> lock(mu_);
                     epochMismatch = (result.consumedCommand.enrollEpoch != enrollEpoch_);
-                }
-                if (epochMismatch) {
-                    std::lock_guard<std::mutex> lock(mu_);
-                    if (enrollRequested_) {
-                        render_.status = "注册中: " + enrollPersonId_
-                            + " 还需样本=" + std::to_string(enrollRemaining_);
-                    } else {
-                        render_.status = "注册完成: " + enrollPersonId_;
+                    if (epochMismatch) {
+                        if (enrollRequested_) {
+                            render_.status = "注册中: " + enrollPersonId_
+                                + " 还需样本=" + std::to_string(enrollRemaining_);
+                        } else {
+                            // 防御性死代码：epoch 失配意味着 run() 期间有新 requestEnroll 到达，
+                            // 新请求尚未经任何 run() 消费回写（epoch 匹配回写守卫已跳过旧命令），
+                            // 故本分支读到的 enrollRequested_ 恒为 true——"新请求已处理完成却失配"
+                            // 自相矛盾。仅作防御保留，不删除（保持最小改动）。
+                            render_.status = "注册完成: " + enrollPersonId_;
+                        }
                     }
-                } else if (result.consumedCommand.enrollRequested) {
-                    // 读 result.consumedCommand（本线程局部值）而非成员 enrollRemaining_，
-                    // 消除对 mu_ 保护成员的无锁读；无并发时两者值恒等（上一行写回同一值）
-                    render_.status = "注册中: " + cmd.enrollPersonId
-                        + " 还需样本=" + std::to_string(result.consumedCommand.enrollRemaining);
-                } else {
-                    render_.status = "注册完成: " + cmd.enrollPersonId;
+                }
+                if (!epochMismatch) {
+                    if (result.consumedCommand.enrollRequested) {
+                        // 读 result.consumedCommand（本线程局部值）而非成员 enrollRemaining_，
+                        // 消除对 mu_ 保护成员的无锁读；无并发时两者值恒等（上一行写回同一值）
+                        render_.status = "注册中: " + cmd.enrollPersonId
+                            + " 还需样本=" + std::to_string(result.consumedCommand.enrollRemaining);
+                    } else {
+                        render_.status = "注册完成: " + cmd.enrollPersonId;
+                    }
                 }
             }
         }

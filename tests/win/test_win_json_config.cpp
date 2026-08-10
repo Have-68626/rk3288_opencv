@@ -44,9 +44,12 @@ bool touchConfigFile(const std::filesystem::path& cfgPath) {
     f << " \n";
     if (!f) { f.close(); return false; }
     f.close();
-    const auto base = std::filesystem::last_write_time(cfgPath);
-    std::filesystem::last_write_time(cfgPath, base + std::chrono::seconds(2));
-    return true;
+    // error_code 重载：与生产 WinJsonConfig.cpp 一致，失败返回 false 而非抛异常中止测试
+    std::error_code ec;
+    const auto base = std::filesystem::last_write_time(cfgPath, ec);
+    if (ec) return false;
+    std::filesystem::last_write_time(cfgPath, base + std::chrono::seconds(2), ec);
+    return !ec;
 }
 
 }  // namespace
@@ -177,4 +180,108 @@ bool test_config_each_single_field_put_passes_schema() {
         if (!res.ok) return false;  // 单字段 PUT 未通过 schema（生成配置含 schema 不允许字段）
     }
     return true;
+}
+
+// B08-004：默认配置“序列化 → 反序列化 → 再序列化”往返不变量 + 与运行时 schema 逐字段对拍。
+//
+// 判别逻辑（修复前若 C++ 侧存在字段缺口/默认值不一致即失败）：
+//   1) 往返不变量：首版脱敏 JSON（currentRedactedJsonPretty，等价于 buildSettingsJson 脱敏输出）
+//      经公开 API 路径 updateFromJsonBody 全量写回（内部 = parseAndValidateSettingsDoc + schema 校验 +
+//      落盘），再序列化必须与首版逐字符一致。敏感字段走脱敏形态（postUrl="***"），避开加密
+//      nonce 随机导致的天然不等；RK_WCFR_* 环境覆盖项会改写解析结果，先清空保证纯默认配置。
+//   2) 逐字段对拍：序列化文档顶层段集 == 运行时 buildSettingsDocSchema().properties 段集，
+//      且每段字段集双向一致（schema 声明的段必须被序列化，序列化字段不得越出 schema）。
+bool test_config_roundtrip_and_schema_alignment() {
+    // 清空会改写配置解析结果的环境覆盖项（dnn model/config、http port、poster url）。
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("roundtrip_alignment");
+    ConfigEnvGuard env(dir / "config.json");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const std::string json1 = store.currentRedactedJsonPretty();
+    if (json1.find("\"_error\"") != std::string::npos) return false;
+
+    // 1) 往返不变量：全量写回再序列化必须与首版一致
+    const auto res = store.updateFromJsonBody(json1);
+    if (!res.ok) return false;
+    const std::string json2 = store.currentRedactedJsonPretty();
+    if (json1 != json2) return false;
+
+    // 2) 逐字段对拍：序列化输出字段树与运行时 schema 的段集/字段集双向一致
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(json2, doc, perr) || !doc.isObject()) return false;
+    const rk_win::JsonValue schema = rk_win::JsonSchemaValidator::buildSettingsDocSchema();
+    const rk_win::JsonValue* schemaProps = schema.find("properties");
+    if (!schemaProps || !schemaProps->isObject()) return false;
+
+    // 段集一致：doc 顶层键集合 == schema.properties 键集合
+    if (doc.o.size() != schemaProps->o.size()) return false;
+    for (const auto& [k, v] : schemaProps->o) {
+        if (doc.o.find(k) == doc.o.end()) return false;
+        (void)v;
+    }
+
+    // 每段字段集一致：schema 声明为 object 且带 properties 的段，doc 段字段集必须相同
+    for (const auto& [k, v] : schemaProps->o) {
+        if (!v.isObject()) continue;
+        const rk_win::JsonValue* sp = v.find("properties");
+        if (!sp || !sp->isObject()) continue;  // schemaVersion 等标量段跳过
+        const auto it = doc.o.find(k);
+        if (it == doc.o.end() || !it->second.isObject()) return false;  // schema 段必须被序列化
+        if (it->second.o.size() != sp->o.size()) return false;
+        for (const auto& [fk, fv] : sp->o) {
+            if (it->second.o.find(fk) == it->second.o.end()) return false;
+            (void)fv;
+        }
+    }
+    return true;
+}
+
+// B08-004-R2：脱敏全量回写不得销毁敏感字段真实值（"***" 哨兵语义 = 不修改）。
+//
+// 场景：API 调用者 GET settings（currentRedactedJsonPretty）拿到敏感字段的 "***" 占位，
+// 直接把该输出全量回写 updateFromJsonBody。修复前 deepMergeObject 把 base 中的
+// encrypted-object 覆盖为字面量 "***"；校验仅拦 isObject()，字符串 "***" 直接收下，
+// parseAndValidateSettingsDoc 置 postUrl="***"，buildSettingsJson 重加密落盘 → 真实密文永久丢失。
+//
+// 判别：先设置真实 postUrl，再回写 "***" 占位；updateFromJsonBody 必须成功（正常合并语义
+// 不变），且 store.current().poster.postUrl 必须仍是真实值（修复前为字面量 "***"）——用
+// current() 访问器读内存明文，避免脱敏输出恒为 "***" 掩盖破坏（脱敏相等不可判）。
+bool test_config_masked_echo_preserves_real_value() {
+    // 清空环境覆盖项，避免改写解析结果（同 roundtrip 测试）
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("masked_echo");
+    ConfigEnvGuard env(dir / "config.json");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const std::string realUrl = "https://real.example/api/faces";
+    const auto resSet = store.updateFromJsonBody(
+        "{\"poster\":{\"postUrl\":\"" + realUrl + "\"}}");
+    if (!resSet.ok) return false;
+    if (store.current().poster.postUrl != realUrl) return false;
+
+    // 模拟脱敏回写：echo GET 输出的 "***" 占位，同时携带一个正常字段变更（enable）
+    const auto resEcho = store.updateFromJsonBody(
+        "{\"poster\":{\"postUrl\":\"***\",\"enable\":true}}");
+    if (!resEcho.ok) return false;
+
+    // 修复前：postUrl 被覆盖为字面量 "***"（RED 失败点）
+    if (store.current().poster.postUrl != realUrl) return false;
+    // 正常字段应照常合并：哨兵剔除不得误伤同对象其他字段
+    return store.current().poster.enable;
 }

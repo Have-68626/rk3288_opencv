@@ -26,9 +26,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/Envelope"
 
+  /api/v1/acceleration:
+    get:
+      summary: 加速配置与活动后端
+      description: |
+        返回请求的加速器配置与实际生效的加速后端（requested/effective/evidence/reason 模式），
+        以及各加速器的自检状态。
+      responses:
+        "200":
+          description: 加速配置与活动后端列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
   /api/v1/openapi:
     get:
       summary: 获取本 OpenAPI 规范（JSON）
+      responses:
+        "200":
+          description: 返回 OpenAPI 规范的 JSON 表示
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /openapi.json:
+    get:
+      summary: 获取本 OpenAPI 规范（JSON，别名路径）
+      description: |
+        /openapi.json 为 /api/v1/openapi 的别名路径，返回同一份 OpenAPI 规范 JSON。
       responses:
         "200":
           description: 返回 OpenAPI 规范的 JSON 表示
@@ -120,6 +147,34 @@ paths:
           description: MJPEG 视频流
           content:
             multipart/x-mixed-replace:
+              schema:
+                type: string
+
+  /api/faces/stream:
+    get:
+      summary: 人脸识别结果 SSE 流
+      description: |
+        实时推送人脸识别事件（text/event-stream）。该路径由 StreamSessionRunner 旁路处理，
+        不经过 EndpointRegistry 路由表。
+      responses:
+        "200":
+          description: SSE 事件流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/faces/stream:
+    get:
+      summary: 人脸识别结果 SSE 流（版本化路径）
+      description: |
+        /api/v1/faces/stream 为 /api/faces/stream 的版本化别名，同样由 StreamSessionRunner
+        旁路处理（见 src/win/src/StreamSession.cpp 的 isStreamRequest）。
+      responses:
+        "200":
+          description: SSE 事件流
+          content:
+            text/event-stream:
               schema:
                 type: string
 
@@ -216,6 +271,32 @@ paths:
                 $ref: "#/components/schemas/Envelope"
         "400":
           $ref: "#/components/responses/BadRequest"
+
+  /api/faces:
+    get:
+      summary: 人脸库快照
+      description: |
+        返回当前人脸库快照。该路径与 /api/v1/faces 等价，均由 handleGetFaces 处理。
+      responses:
+        "200":
+          description: 人脸库快照
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/v1/faces:
+    get:
+      summary: 人脸库快照（版本化路径）
+      description: |
+        版本化的人脸库快照端点，行为与 /api/faces 一致。
+      responses:
+        "200":
+          description: 人脸库快照
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
 
   /api/v1/models:
     get:
@@ -324,8 +405,12 @@ components:
           $ref: "#/components/schemas/CameraSettings"
         recognition:
           $ref: "#/components/schemas/RecognitionSettings"
+        inference:
+          $ref: "#/components/schemas/InferenceSettings"
         dnn:
           $ref: "#/components/schemas/DnnSettings"
+        model:
+          $ref: "#/components/schemas/ModelSettings"
         http:
           $ref: "#/components/schemas/HttpSettings"
         poster:
@@ -377,6 +462,7 @@ components:
       required:
         - cascadePath
         - databasePath
+        - arcFaceModelPath
         - minFaceSizePx
         - identifyThreshold
         - enrollSamples
@@ -389,6 +475,10 @@ components:
           type: string
           description: 人脸特征库路径
           example: "C:\\ProgramData\\rk_wcfr\\face_db"
+        arcFaceModelPath:
+          type: string
+          description: ArcFace 识别模型路径
+          example: "C:\\ProgramData\\rk_wcfr\\models\\arcface_w600k_r50.onnx"
         minFaceSizePx:
           type: number
           description: 最小检测脸尺寸（像素边长）
@@ -407,6 +497,24 @@ components:
           minimum: 1
           maximum: 1000
           example: 5
+
+    InferenceSettings:
+      type: object
+      description: 推理节流配置
+      required:
+        - throttleMode
+        - intervalMs
+      properties:
+        throttleMode:
+          type: string
+          description: 推理节流模式（auto/manual/off，其他值归一为 auto）
+          example: "auto"
+        intervalMs:
+          type: number
+          description: 推理执行间隔（毫秒）
+          minimum: 80
+          maximum: 500
+          example: 150
 
     DnnSettings:
       type: object
@@ -484,6 +592,39 @@ components:
           type: number
           description: OpenCV DNN 目标设备（0=CPU, 1=OpenCL, 2=OpenCL_FP16, 3=VPU, 4=Vulkan）
           example: 0
+
+    ModelSettings:
+      type: object
+      description: 模型加载配置（缺省时全部回退默认值）
+      properties:
+        detection:
+          type: string
+          description: 检测模型标识
+          example: "yolo_face"
+        recognition:
+          type: string
+          description: 识别模型标识
+          example: "arcface"
+        backend:
+          type: string
+          description: 推理后端
+          example: "opencv_dnn"
+        detectorBackend:
+          type: string
+          description: 检测后端
+          example: "opencv_dnn"
+        recognitionBackend:
+          type: string
+          description: 识别后端
+          example: "opencv_dnn"
+        autoFallback:
+          type: boolean
+          description: 后端不可用时是否自动回退
+          example: true
+        int8Enabled:
+          type: boolean
+          description: 是否启用 INT8 量化模型推理
+          example: false
 
     HttpSettings:
       type: object
@@ -723,12 +864,17 @@ components:
       description: 硬件加速器配置
       required:
         - enableOpenCL
+        - enableLibyuv
         - enableMpp
         - enableQualcomm
       properties:
         enableOpenCL:
           type: boolean
           description: 是否启用 OpenCL 加速
+          example: false
+        enableLibyuv:
+          type: boolean
+          description: 是否启用 libyuv 加速
           example: false
         enableMpp:
           type: boolean
