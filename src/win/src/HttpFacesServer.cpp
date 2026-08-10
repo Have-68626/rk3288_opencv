@@ -210,15 +210,9 @@ void HttpFacesServer::stop() {
     std::unique_lock<std::mutex> lk(stopMu_);
     stopCv_.wait(lk, [this]() { return activeClients_.load() == 0; });
 
-    // 所有客户端线程已完成 → join 清理
+    // 所有客户端线程已完成 → join 清理（回收残余线程/句柄，Q-CQ-B06-017）
     serverStopping_ = true;
-    {
-        std::lock_guard<std::mutex> lk2(clientThreadsMu_);
-        for (auto& t : clientThreads_) {
-            if (t.joinable()) t.join();
-        }
-        clientThreads_.clear();
-    }
+    clientThreads_.joinAll();
 
     {
         std::lock_guard<std::mutex> lk3(clientMu_);
@@ -264,9 +258,21 @@ void HttpFacesServer::acceptLoop() {
         }
 
         activeClients_++;
+        std::shared_ptr<std::atomic<bool>> done;
+        std::thread t;
         try {
-            auto running = std::make_shared<std::atomic<bool>>(true);
-            std::thread t([this, cs, lease = std::move(*lease), running]() mutable {
+            // S3 CONFIRMED：try 仅包住"线程创建"阶段（make_shared + std::thread 构造）。
+            // 这两个操作可能抛 bad_alloc / std::system_error（线程资源不足）；
+            // 此时线程尚未创建/入池，catch 回滚 activeClients_ 是安全的。
+            //
+            // 若像旧实现那样把 add()/reclaimFinished() 也包进 try，计数会被破坏：
+            // add() 成功把线程入池后，reclaimFinished() 内部 vector push_back 抛 bad_alloc 时，
+            // catch 会误把"已入池线程"当作创建失败，执行 activeClients_-- + closesocket；
+            // 但线程仍在运行，其 Cleanup 析构还会再减一次 → 计数 0→1→0→-1，
+            // stop() 等待 activeClients_==0 的谓词永不成立，导致关停挂起。
+            // 故 add()/reclaimFinished() 移到 try 之外：其异常不触发回滚，计数不变量不被破坏。
+            done = std::make_shared<std::atomic<bool>>(false);
+            t = std::thread([this, cs, lease = std::move(*lease), done]() mutable {
                 struct Cleanup {
                     HttpFacesServer* self;
                     std::uintptr_t sockP;
@@ -286,14 +292,11 @@ void HttpFacesServer::acceptLoop() {
                 } cleanup{this, static_cast<std::uintptr_t>(cs)};
 
                 handleClient(static_cast<std::uintptr_t>(cs));
-                *running = false;
+                *done = true;   // 标记线程已完成：acceptLoop 据此 join 并释放线程句柄
             });
-            {
-                std::lock_guard<std::mutex> lk(clientThreadsMu_);
-                clientThreads_.push_back(std::move(t));
-            }
         } catch (const std::exception&) {
-            // 线程创建失败：回滚连接状态，防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)
+            // 仅"线程创建"失败才回滚：此时无线程被创建，还原连接状态，
+            // 防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)。
             {
                 std::lock_guard<std::mutex> lk(clientMu_);
                 for (auto it = clientSocks_.begin(); it != clientSocks_.end(); ++it) {
@@ -306,6 +309,16 @@ void HttpFacesServer::acceptLoop() {
             activeClients_--;
             stopCv_.notify_all();
             closesocket(cs);
+        }
+        // 线程入池与回收在 try 之外（S3 CONFIRMED）：add() 成功即拥有线程，
+        // 其后的异常（理论仅 bad_alloc）不得触发 catch 回滚，否则会二次递减
+        // activeClients_。t.joinable() 为 false 表示创建失败已回滚，跳过入池。
+        if (t.joinable()) {
+            clientThreads_.add(std::move(t), std::move(done));
+            // 回收机制（Q-CQ-B06-017）：每次 accept 后立即 join 已结束的客户端线程，
+            // 这样已完成连接的 std::thread 与 OS 线程句柄会被及时回收，
+            // clientThreads_ 长期有界（≤ 并发连接上限），不会随请求总量线性增长。
+            clientThreads_.reclaimFinished();
         }
     }
 }

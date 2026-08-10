@@ -240,6 +240,11 @@ add_executable(win_unit_tests
     "src/win/src/FramePipeline.cpp"
     "src/win/src/MfCamera.cpp"
     "src/win/src/EndpointRegistry.cpp"
+    "src/win/src/HttpFacesServer.cpp"
+    "src/win/src/StreamSessionRunner.cpp"
+    "src/win/src/StreamSession.cpp"
+    "src/win/src/JsonEndpointHandlers.cpp"
+    "src/win/src/FacesJson.cpp"
     "src/cpp/src/FileHash.cpp"
     "src/win/src/HttpFacesServerPath.cpp"
     "src/win/src/LbphEmbedder.cpp"
@@ -276,6 +281,7 @@ target_link_libraries(win_unit_tests
     ole32
     bcrypt
     crypt32
+    ws2_32
 )
 add_test(NAME win_unit_tests COMMAND win_unit_tests)
 # 并发死锁保护：win_unit_tests 多线程用例死锁会无限挂起 ctest（B06-014），设 120s 超时

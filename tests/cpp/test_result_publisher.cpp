@@ -1,6 +1,6 @@
 #include <atomic>
-#include <cassert>
 #include <chrono>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -21,7 +21,13 @@ bool test_publisher_emits_no_face_on_empty_tracks() {
     // outcome.tracks is empty by default
 
     pub.publish(std::move(outcome));
-    assert(lastMsg == "NO_FACE");
+    // 假绿根因：原用 assert()，Release 下定义 NDEBUG 时 assert 被编译为空，
+    // 断言永不执行、函数无条件 return true → 产品行为错误时 CTest 仍返回 0。
+    // 改为显式判断 + return false，NDEBUG 无关，Release 下失败必返回非零。
+    if (lastMsg != "NO_FACE") {
+        std::cerr << "publisher: expected NO_FACE, got \"" << lastMsg << "\"" << std::endl;
+        return false;
+    }
     return true;
 }
 
@@ -47,7 +53,12 @@ bool test_publisher_throttles_repeated_calls() {
     outcome2.events.push_back(ev2);
     pub.publish(std::move(outcome2));
 
-    assert(count == 1);  // 只有第一次应触发回调
+    // 同 NDEBUG 假绿根因：原 assert(count == 1) 在 Release 下被移除。
+    // 显式判断保证 Release 下产品节流行为错误时 CTest 返回非零。
+    if (count != 1) {
+        std::cerr << "publisher: throttle expected 1 callback, got " << count << std::endl;
+        return false;
+    }
     return true;
 }
 
