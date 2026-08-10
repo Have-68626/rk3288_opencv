@@ -20,6 +20,7 @@ import android.util.Size;
 import android.view.Surface;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,7 +29,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
-final class Camera2CaptureController implements CaptureController {
+// Q-CQ-B07-005/006: 非 final 以允许单测子类覆盖 startSync 驱动启动失败回滚路径
+class Camera2CaptureController implements CaptureController {
     private static final int MAX_W = 1920;
     private static final int MAX_H = 1080;
     private final Context appContext;
@@ -42,6 +44,13 @@ final class Camera2CaptureController implements CaptureController {
     private CameraDevice cameraDevice;
     private CameraCaptureSession session;
     private ImageReader imageReader;
+    private CameraDevice.StateCallback currentStateCallback;
+
+    // Q-CQ-B07-005: 代次隔离 —— stop/start 递增代次，旧代次回调到达时按代次丢弃，仅释放自身参数资源
+    // S3: 主线程写、Camera2 HandlerThread 回调线程读，跨线程代次读写需 volatile 保证可见性/原子性
+    private volatile int generation;
+    // Q-CQ-B07-005: 帧监听器创建时绑定的代次（startSync 内设置）
+    private volatile int listenerGeneration;
 
     private int sensorOrientation;
     private boolean mirrored;
@@ -55,11 +64,12 @@ final class Camera2CaptureController implements CaptureController {
     private long statsAnalyzeNsMax;
     private int statsApproxDropped;
 
-    Camera2CaptureController(@NonNull Context context,
+    Camera2CaptureController(@Nullable Context context,
                              @NonNull ExternalFrameSink sink,
                              @NonNull CaptureObserver observer,
                              @NonNull RotationDegreesProvider deviceRotationDegrees) {
-        this.appContext = context.getApplicationContext();
+        // Q-CQ-B07-005/006: 允许 null Context（JVM 单测无法创建 Context），生产路径行为不变
+        this.appContext = context == null ? null : context.getApplicationContext();
         this.sink = Objects.requireNonNull(sink);
         this.observer = Objects.requireNonNull(observer);
         this.deviceRotationDegrees = Objects.requireNonNull(deviceRotationDegrees);
@@ -74,44 +84,21 @@ final class Camera2CaptureController implements CaptureController {
     @SuppressLint("MissingPermission")
     public boolean start(String cameraId) {
         stop();
-        thread = new HandlerThread("Camera2Capture");
-        thread.start();
-        handler = new Handler(thread.getLooper());
-
+        // Q-CQ-B07-005: 每次启动递增代次 —— 新回调绑定新代次，旧回调按代次丢弃
+        int gen = ++generation;
         try {
-            CameraManager mgr = (CameraManager) appContext.getSystemService(Context.CAMERA_SERVICE);
-            if (mgr == null) {
-                observer.onError("camera2", "CameraManager 为空");
-                return false;
-            }
-            CameraCharacteristics chars = mgr.getCameraCharacteristics(cameraId);
-            this.chars = chars;
-            Integer so = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
-            sensorOrientation = so == null ? 0 : so;
-            Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
-            mirrored = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
-
-            Size size = chooseYuvSize(chars);
-            imageReader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
-            imageReader.setOnImageAvailableListener(this::onImageAvailable, handler);
-            lastStatsRealtimeMs = SystemClock.elapsedRealtime();
-            lastFrameTsNs = 0L;
-            statsFrames = 0;
-            statsPushOk = 0;
-            statsPushFail = 0;
-            statsAnalyzeNsSum = 0L;
-            statsAnalyzeNsMax = 0L;
-            statsApproxDropped = 0;
-
-            mgr.openCamera(cameraId, stateCallback, handler);
-            return true;
+            return startSync(cameraId, gen);
         } catch (SecurityException se) {
+            // Q-CQ-B07-006: 同步启动异常 —— 完整回滚已预建资源后再上报
+            rollbackStart();
             observer.onError("camera2", "缺少相机权限");
             return false;
         } catch (CameraAccessException e) {
+            rollbackStart();
             observer.onError("camera2", "CameraAccessException: " + e.getMessage());
             return false;
         } catch (Exception e) {
+            rollbackStart();
             observer.onError("camera2", "启动失败: " + e.getMessage());
             return false;
         }
@@ -119,46 +106,117 @@ final class Camera2CaptureController implements CaptureController {
 
     @Override
     public void stop() {
+        // Q-CQ-B07-005: 停止也递增代次 —— 停止后到达的旧回调一律按旧代次丢弃
+        generation++;
         if (handler != null) {
             handler.removeCallbacksAndMessages(null);
         }
+        // Q-CQ-B07-005/006: 停止与启动失败回滚共用同一完整释放路径
+        rollbackStart();
+    }
+
+    // Q-CQ-B07-006: 同步启动分阶段预建资源；任何一步抛异常由 start() 的 rollbackStart() 完整回滚
+    boolean startSync(String cameraId, int gen) throws CameraAccessException {
+        thread = new HandlerThread("Camera2Capture");
+        thread.start();
+        handler = new Handler(thread.getLooper());
+
+        CameraManager mgr = (CameraManager) appContext.getSystemService(Context.CAMERA_SERVICE);
+        if (mgr == null) {
+            // Q-CQ-B07-006: 前置失败同样回滚已预建的 thread/handler
+            rollbackStart();
+            observer.onError("camera2", "CameraManager 为空");
+            return false;
+        }
+        CameraCharacteristics chars = mgr.getCameraCharacteristics(cameraId);
+        this.chars = chars;
+        Integer so = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        sensorOrientation = so == null ? 0 : so;
+        Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
+        mirrored = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
+
+        Size size = chooseYuvSize(chars);
+        imageReader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
+        imageReader.setOnImageAvailableListener(this::onImageAvailable, handler);
+        // Q-CQ-B07-005: 帧监听绑定当前代次
+        listenerGeneration = gen;
+        lastStatsRealtimeMs = SystemClock.elapsedRealtime();
+        lastFrameTsNs = 0L;
+        statsFrames = 0;
+        statsPushOk = 0;
+        statsPushFail = 0;
+        statsAnalyzeNsSum = 0L;
+        statsAnalyzeNsMax = 0L;
+        statsApproxDropped = 0;
+
+        currentStateCallback = new GenerationStateCallback(gen);
+        mgr.openCamera(cameraId, currentStateCallback, handler);
+        return true;
+    }
+
+    // Q-CQ-B07-006: 启动失败回滚 —— reader/thread/device/session 全部释放并置空
+    private void rollbackStart() {
         if (session != null) {
             try {
                 session.stopRepeating();
             } catch (Exception ignored) {
             }
-            try {
-                session.close();
-            } catch (Exception ignored) {
-            }
-            session = null;
         }
-        if (cameraDevice != null) {
-            try {
-                cameraDevice.close();
-            } catch (Exception ignored) {
-            }
-            cameraDevice = null;
-        }
-        if (imageReader != null) {
-            try {
-                imageReader.close();
-            } catch (Exception ignored) {
-            }
-            imageReader = null;
-        }
-        if (thread != null) {
-            try {
-                thread.quitSafely();
-            } catch (Exception ignored) {
-            }
-            thread = null;
-        }
+        releaseCameraSession(session);
+        releaseCameraDevice(cameraDevice);
+        releaseImageReader(imageReader);
+        releaseCaptureThread(thread);
+        session = null;
+        cameraDevice = null;
+        imageReader = null;
+        thread = null;
         handler = null;
         chars = null;
+        currentStateCallback = null;
+    }
+
+    private static void closeQuietly(AutoCloseable r) {
+        try {
+            if (r != null) {
+                r.close();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void quitQuietly(HandlerThread t) {
+        try {
+            if (t != null) {
+                t.quitSafely();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    // Q-CQ-B07-005/006 测试接缝：资源释放出口。
+    // JVM 单测无法构造 CameraDevice/CameraCaptureSession/ImageReader 等框架对象，
+    // 测试子类覆盖这些方法以断言各释放路径被调用；生产实现仅委托 closeQuietly/quitQuietly。
+    void releaseCameraSession(CameraCaptureSession session) {
+        closeQuietly(session);
+    }
+
+    void releaseCameraDevice(CameraDevice cameraDevice) {
+        closeQuietly(cameraDevice);
+    }
+
+    void releaseImageReader(ImageReader imageReader) {
+        closeQuietly(imageReader);
+    }
+
+    void releaseCaptureThread(HandlerThread thread) {
+        quitQuietly(thread);
     }
 
     private void onImageAvailable(ImageReader reader) {
+        // Q-CQ-B07-005: 帧回调绑定启动代次 —— stop/start 后旧代次帧直接丢弃，不推送不统计
+        if (listenerGeneration != generation) {
+            return;
+        }
         Image image = null;
         long startNs = SystemClock.elapsedRealtimeNanos();
         try {
@@ -307,11 +365,23 @@ final class Camera2CaptureController implements CaptureController {
         return best;
     }
 
-    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
+    // Q-CQ-B07-005: 代次隔离 —— 每个 start 新建一个绑定当前代次的状态回调；
+    // 旧代次回调在 stop/start 后到达时，仅释放参数 camera，不触碰当前会话状态
+    final class GenerationStateCallback extends CameraDevice.StateCallback {
+        private final int boundGeneration;
+
+        GenerationStateCallback(int boundGeneration) {
+            this.boundGeneration = boundGeneration;
+        }
+
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
+            if (boundGeneration != generation) {
+                releaseCameraDevice(camera);
+                return;
+            }
             if (imageReader == null) {
-                camera.close();
+                releaseCameraDevice(camera);
                 return;
             }
             cameraDevice = camera;
@@ -323,6 +393,10 @@ final class Camera2CaptureController implements CaptureController {
                 camera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
                     @Override
                     public void onConfigured(@NonNull CameraCaptureSession s) {
+                        if (boundGeneration != generation) {
+                            releaseCameraSession(s);
+                            return;
+                        }
                         session = s;
                         try {
                             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
@@ -338,6 +412,10 @@ final class Camera2CaptureController implements CaptureController {
 
                     @Override
                     public void onConfigureFailed(@NonNull CameraCaptureSession s) {
+                        if (boundGeneration != generation) {
+                            releaseCameraSession(s);
+                            return;
+                        }
                         observer.onError("camera2", "createCaptureSession失败");
                     }
                 }, handler);
@@ -348,20 +426,22 @@ final class Camera2CaptureController implements CaptureController {
 
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
-            observer.onError("camera2", "相机断开连接");
-            try {
-                camera.close();
-            } catch (Exception ignored) {
+            if (boundGeneration != generation) {
+                releaseCameraDevice(camera);
+                return;
             }
+            observer.onError("camera2", "相机断开连接");
+            releaseCameraDevice(camera);
         }
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
-            observer.onError("camera2", "相机错误 error=" + error);
-            try {
-                camera.close();
-            } catch (Exception ignored) {
+            if (boundGeneration != generation) {
+                releaseCameraDevice(camera);
+                return;
             }
+            observer.onError("camera2", "相机错误 error=" + error);
+            releaseCameraDevice(camera);
         }
-    };
+    }
 }

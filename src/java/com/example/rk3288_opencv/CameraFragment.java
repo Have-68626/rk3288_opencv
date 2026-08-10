@@ -1,5 +1,6 @@
 package com.example.rk3288_opencv;
 
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -57,6 +58,8 @@ public class CameraFragment extends Fragment {
     private boolean isSpinnerInitialized = false;
     private String mockFilePath = null;
     private String currentPhotoPath;
+    // 拍照输出 URI：授予跨 UID 相机后，消费完成须及时撤销（Q-CQ-B07-009）
+    private Uri currentPhotoUri;
 
     // Flip state
     private boolean flipXEnabled = false;
@@ -398,6 +401,11 @@ public class CameraFragment extends Fragment {
                 Uri photoURI = FileProvider.getUriForFile(appContext,
                         BuildConfig.APPLICATION_ID + ".fileprovider",
                         photoFile);
+                currentPhotoUri = photoURI; // 记录 URI，消费完成后撤销（Q-CQ-B07-009）
+                // 跨 UID 临时读写授权：flags + ClipData，授权由 intent 传递给出相机进程（Q-CQ-B07-009）
+                PhotoUriGrant.GrantData grant = PhotoUriGrant.buildTakePictureGrant(photoURI.toString());
+                takePictureIntent.addFlags(grant.flags);
+                takePictureIntent.setClipData(ClipData.newRawUri(PhotoUriGrant.CLIP_DATA_LABEL, Uri.parse(grant.uri)));
                 takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
                 getActivity().startActivityForResult(takePictureIntent, REQUEST_CODE_TAKE_PHOTO);
             }
@@ -427,6 +435,21 @@ public class CameraFragment extends Fragment {
         Toast.makeText(appContext, "Photo Captured", Toast.LENGTH_SHORT).show();
         if (callback != null) {
             callback.onCameraChanged();
+        }
+        revokePhotoUriPermission(); // 消费完成，及时撤销跨 UID 授权（Q-CQ-B07-009）
+    }
+
+    /**
+     * 撤销跨 UID 拍照授权：幂等，以与授予一致的掩码回收读写权限，避免授权残留（Q-CQ-B07-009）。
+     */
+    private void revokePhotoUriPermission() {
+        if (currentPhotoUri == null) return;
+        try {
+            appContext.revokeUriPermission(currentPhotoUri, PhotoUriGrant.GRANT_MASK);
+        } catch (Exception ex) {
+            AppLog.e("CameraFragment", "revokePhotoUriPermission", "Revoke failed", ex);
+        } finally {
+            currentPhotoUri = null; // 无论成败都清空引用，保证只撤销一次
         }
     }
 

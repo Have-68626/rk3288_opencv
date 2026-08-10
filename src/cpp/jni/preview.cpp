@@ -18,6 +18,7 @@
 #include "NativeLog.h"
 #include "JniMethodRegistry.h"
 #include "jni_shared.h"
+#include "PreviewGeomCache.h"
 
 #define TAG "RK3288_JNI"
 
@@ -135,18 +136,18 @@ jboolean preview_nativeRenderFrameToSurface(JNIEnv* /* env */, jobject /* this *
     const int h = frame.rows;
     if (w <= 0 || h <= 0) return JNI_FALSE;
 
-    {
-        static int lastW = 0;
-        static int lastH = 0;
-        static int lastFormat = 0;
-        if (w != lastW || h != lastH || lastFormat != WINDOW_FORMAT_RGBA_8888) {
-            if (ANativeWindow_setBuffersGeometry(win, w, h, WINDOW_FORMAT_RGBA_8888) != 0) {
-                return JNI_FALSE;
-            }
-            lastW = w;
-            lastH = h;
-            lastFormat = WINDOW_FORMAT_RGBA_8888;
+    // 几何缓存：记录已下发到 ANativeWindow 的缓冲几何（代次+尺寸+格式），
+    // 用于跳过重复的 setBuffersGeometry。
+    // Q-CQ-B07-003 语义：Surface 重建（g_previewGeneration 代次变化）后旧缓存
+    // 必须失效并重设，否则新 Surface 沿用旧 geometry，尺寸/格式守卫（stride、
+    // format 校验）持续失败，预览卡黑。判定以代次为第一失效维度——即使帧尺寸
+    // 与旧代次相同，重建后也必须重新下发，保证新 Surface 尺寸生效。
+    static rk_jni::PreviewGeomCache geomCache;
+    if (geomCache.shouldSetGeometry(gen, w, h, WINDOW_FORMAT_RGBA_8888)) {
+        if (ANativeWindow_setBuffersGeometry(win, w, h, WINDOW_FORMAT_RGBA_8888) != 0) {
+            return JNI_FALSE;
         }
+        geomCache.update(gen, w, h, WINDOW_FORMAT_RGBA_8888);
     }
 
     ScopedWindowLock lockedWin(win);
