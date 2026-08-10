@@ -515,8 +515,20 @@ function scanTextConventions(md, sampleLimit) {
 function runMarkdownlintCli2(files, repoRoot) {
   const bin = "npx --yes markdownlint-cli2";
   const quoted = files.map((f) => `"${toPosix(path.relative(repoRoot, f))}"`).join(" ");
-  const out = safeExec(`${bin} ${quoted}`);
-  return out;
+  // Q-CQ-B08-007 门禁语义：markdownlint-cli2 非零退出码即视为检查失败。
+  // 此前 safeExec 吞掉非零退出码导致漏报，现需把退出码一并返回，由门禁阻断。
+  try {
+    return {
+      ok: true,
+      exitCode: 0,
+      output: String(execSync(`${bin} ${quoted}`, { stdio: ["ignore", "pipe", "pipe"] })).trim(),
+    };
+  } catch (e) {
+    const out = e && e.stdout ? String(e.stdout) : "";
+    const err = e && e.stderr ? String(e.stderr) : "";
+    const exitCode = e && typeof e.status === "number" ? e.status : 1;
+    return { ok: false, exitCode, output: (out + "\n" + err).trim() };
+  }
 }
 
 function findRequiredSections(md, required) {
@@ -885,7 +897,17 @@ async function main() {
   }
   for (const r of crossRefs) {
     const normalizedTo = resolveCrossRefPath(r.fromFile, r.toFile);
-    if (!anchorMap[normalizedTo]) continue;
+    if (!anchorMap[normalizedTo]) {
+      // Q-CQ-B08-007 门禁语义：交叉引用指向不存在（或未被 git 跟踪）的目标 .md 文档，
+      // 此前被 continue 静默跳过造成漏报；现计为必须阻断门禁的高危缺陷。
+      report.defects.push({
+        type: "xref",
+        severity: "high",
+        file: r.fromFile,
+        message: `交叉引用目标文档缺失：${r.raw}（目标 ${normalizedTo} 不存在或未被跟踪）`,
+      });
+      continue;
+    }
     if (r.anchor && !anchorMap[normalizedTo].has(r.anchor)) {
       report.defects.push({
         type: "xref",
@@ -1120,8 +1142,17 @@ async function main() {
   }
 
   if (args.runMarkdownlintCli2) {
-    const lintOut = runMarkdownlintCli2(files, repoRoot);
-    report.markdownlintCli2 = { enabled: true, output: lintOut };
+    const lintResult = runMarkdownlintCli2(files, repoRoot);
+    report.markdownlintCli2 = { enabled: true, output: lintResult.output, exitCode: lintResult.exitCode };
+    if (!lintResult.ok) {
+      // Q-CQ-B08-007 门禁语义：markdownlint 检查以非零退出码结束即存在违规，必须阻断门禁。
+      report.defects.push({
+        type: "markdownlint",
+        severity: "high",
+        file: "N/A",
+        message: `markdownlint-cli2 检查未通过（退出码 ${lintResult.exitCode}），存在违规需修复后通过门禁`,
+      });
+    }
   } else {
     report.markdownlintCli2 = { enabled: false, output: "" };
   }

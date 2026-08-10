@@ -63,6 +63,9 @@ extract_int() {
   awk -v k="${key}" 'match($0, k"=([0-9]+)", a) {print a[1]; exit 0}' || true
 }
 
+# Q-CQ-B08-008：样本计数，零样本时不得宣称完成。
+captured_samples=0
+
 for ((i=1; i<=iterations; i++)); do
   "${adb_bin}" "${adb_args[@]}" logcat -c >/dev/null 2>&1 || true
   "${adb_bin}" "${adb_args[@]}" shell am force-stop "${package_name}" >/dev/null 2>&1 || true
@@ -73,6 +76,8 @@ for ((i=1; i<=iterations; i++)); do
     printf "[%s] Iteration %s: timeout waiting for logcat output, skipping\n" "$(date -Iseconds)" "${i}" >&2
     continue
   fi
+  # 采集到 logcat bench 行才算成功样本。
+  captured_samples=$((captured_samples + 1))
   ttff="$(printf "%s\n" "${lines}" | extract_int "TTFF_MS")"
   capture_ok="$(printf "%s\n" "${lines}" | extract_int "CAPTURE_OK")"
   capture_fail="$(printf "%s\n" "${lines}" | extract_int "CAPTURE_FAIL")"
@@ -91,5 +96,11 @@ for ((i=1; i<=iterations; i++)); do
     "${log_tag}" \
     >> "${out_csv}"
 done
+
+# Q-CQ-B08-008：空样本（adb 启动失败 / logcat 全程超时）不得宣称完成 → 以非零码退出。
+if [[ "${captured_samples}" -eq 0 ]]; then
+  echo "基准失败：所有迭代均未采集到样本（adb 启动失败或 logcat 超时），未生成有效结果。" 1>&2
+  exit 1
+fi
 
 echo "已生成基准结果：${out_csv}"

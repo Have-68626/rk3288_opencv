@@ -91,12 +91,22 @@ $outCsv = Join-Path $OutputDir "bench_camera_$timestamp.csv"
 
 $rows = New-Object System.Collections.Generic.List[object]
 
+# Q-CQ-B08-008：样本计数，零样本时不得宣称完成。
+$capturedSamples = 0
+
 for ($i = 1; $i -le $Iterations; $i++) {
     & $adb @adbArgs logcat -c | Out-Null
     & $adb @adbArgs shell am force-stop $PackageName | Out-Null
     & $adb @adbArgs shell am start -n "$PackageName/$ActivityName" --ez BENCH true --ei BENCH_ITERATION $i | Out-Null
 
     $lines = Wait-ForBenchLines -AdbPath $adb -AdbArgs $adbArgs -LogTag $LogTag -TimeoutSec $TimeoutSec
+    if (-not $lines) {
+        Write-Warning "Iteration $i 超时未采集到样本，跳过"
+        continue
+    }
+    # 采集到 logcat bench 行才算成功样本。
+    $capturedSamples++
+
     $ttff = Parse-FirstMatchValue -Lines $lines -Key "TTFF_MS"
     $captureOk = Parse-FirstMatchValue -Lines $lines -Key "CAPTURE_OK"
     $captureFail = Parse-FirstMatchValue -Lines $lines -Key "CAPTURE_FAIL"
@@ -114,6 +124,12 @@ for ($i = 1; $i -le $Iterations; $i++) {
         camera_service_restart = $cameraServiceRestart
         log_tag = $LogTag
     }) | Out-Null
+}
+
+# Q-CQ-B08-008：空样本（adb 启动失败 / logcat 全程超时）不得宣称完成 → 以非零码退出。
+if ($capturedSamples -eq 0) {
+    Write-Error "基准失败：所有迭代均未采集到样本（adb 启动失败或 logcat 超时），未生成有效结果。"
+    exit 1
 }
 
 $rows | Export-Csv -Path $outCsv -NoTypeInformation -Encoding UTF8

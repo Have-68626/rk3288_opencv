@@ -582,7 +582,7 @@ function usage() {
     "默认行为:",
     "  - 默认 dry-run：不会移动/删除任何内容",
     "  - clean 默认“移动隔离”到系统临时目录，并生成 manifest",
-    "  - 输出写入 ErrorLog/cleanup/",
+    "  - scan 纯检查，默认报告定向系统临时区（不写仓库文件）；clean/restore 输出写入 ErrorLog/cleanup/",
   ].join("\n");
 }
 
@@ -1375,19 +1375,32 @@ async function main() {
 
   const repoRoot = await detectRepoRoot(args.rootDir || process.cwd());
   const { config: cfg, configPathUsed } = await loadConfig(repoRoot, args.configPath);
+  const runId = createRunId();
 
-  const errorLogDir = await resolveErrorLogDir(repoRoot);
-  const defaultOutputDir = path.join(errorLogDir, "cleanup");
-  const outputDirInput = args.outputDir || cfg.outputDir;
-  const outputDir =
-    outputDirInput && outputDirInput !== "ErrorLog/cleanup"
-      ? toAbsPath(repoRoot, outputDirInput, null)
-      : defaultOutputDir;
-  const normalizedOutputDir = path.isAbsolute(outputDir) ? outputDir : path.join(repoRoot, outputDir);
+  // Q-CQ-B08-010：scan 是纯检查命令，不得改动仓库文件集。默认（未显式指定
+  // --output-dir）把全部报告定向系统临时区，且不再创建仓库内 ErrorLog/——
+  // 连续执行 scan --ci 不会改变仓库文件集。clean/restore 保持默认
+  // ErrorLog/cleanup 行为不变。
+  const explicitOutput =
+    args.outputDir && args.outputDir !== "ErrorLog/cleanup"
+      ? toAbsPath(repoRoot, args.outputDir, null)
+      : null;
+  let normalizedOutputDir;
+  if (args.cmd === "scan" && !explicitOutput) {
+    normalizedOutputDir = path.join(os.tmpdir(), "rk3288_opencv-clean-scan", runId);
+  } else {
+    const errorLogDir = await resolveErrorLogDir(repoRoot);
+    const defaultOutputDir = path.join(errorLogDir, "cleanup");
+    const outputDirInput = explicitOutput || args.outputDir || cfg.outputDir;
+    const outputDir =
+      outputDirInput && outputDirInput !== "ErrorLog/cleanup"
+        ? toAbsPath(repoRoot, outputDirInput, null)
+        : defaultOutputDir;
+    normalizedOutputDir = path.isAbsolute(outputDir) ? outputDir : path.join(repoRoot, outputDir);
+  }
   await ensureDir(normalizedOutputDir);
 
   const quarantineDirBase = toAbsPath(repoRoot, args.quarantineDir || cfg.quarantineDir, null);
-  const runId = createRunId();
 
   const metaPath = path.join(normalizedOutputDir, `run-meta-${runId}.json`);
   const runMeta = {

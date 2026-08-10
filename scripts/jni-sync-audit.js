@@ -102,21 +102,18 @@ function stripComments(src) {
 // ---------- C++ 侧：注册条目提取 ----------
 /**
  * 剥离 C++ mangled 重载编号后缀，还原真实方法名。
- * 静态 Java_ 符号若来自 C++ 重载，符号表会带编号段，形如 method__2 / method__3
- * （个别工具为单下划线 method_2）。
+ * 静态 Java_ 符号若来自 C++ 重载，符号表会带编号段，形如 method__2 / method__3。
  * 规则：
- *  1. 尾随 "__<数字>" 必为编号——Java 标识符经 JNI 转义不会产生连续双下划线，直接剥离；
- *  2. 尾随 "_<数字>" 视为编号剥离（容错：宁可多剥一个数字段，也不把 method__2/method_2
- *     误判成不同方法）；以数字结尾的正常方法名（如 foo2）无下划线分隔，不受影响。
+ *  仅剥离尾随 "__<数字>"（双下划线）——C++ mangled 重载编号必为连续双下划线，
+ *  Java 标识符经 JNI 转义不会产生连续双下划线，故必为编号；
+ *  尾随 "_<数字>"（单下划线，如 push_2）是合法 Java 方法名，不属于重载编号，
+ *  不剥离，避免把用户定义的方法误判成编号而剥错。
  * @param {string} symbol 原始静态符号（如 Java_pkg_Class_method__2）
  * @returns {string} 剥离编号后的符号名；无编号时原样返回
  */
 function stripMangledOverloadSuffix(symbol) {
-  let m = symbol.match(/^(.*)__(?:\d+)$/);
-  if (m) return m[1];
-  m = symbol.match(/^(.*)_(\d+)$/);
-  if (m) return m[1];
-  return symbol;
+  const m = symbol.match(/^(.*)__(?:\d+)$/);
+  return m ? m[1] : symbol;
 }
 
 /**

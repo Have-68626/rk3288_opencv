@@ -33,10 +33,10 @@ test("stripMangledOverloadSuffix 剥离 C++ mangled 重载编号", () => {
     stripMangledOverloadSuffix("Java_com_example_rk3288_1opencv_MainActivity_nativePush__3"),
     "Java_com_example_rk3288_1opencv_MainActivity_nativePush"
   );
-  // 单下划线编号段也剥离（容错）
+  // 单下划线 "_<数字>"（如 nativePush_2）是合法 Java 方法名，非 mangled 重载编号，不剥离
   assert.equal(
     stripMangledOverloadSuffix("Java_com_example_rk3288_1opencv_MainActivity_nativePush_2"),
-    "Java_com_example_rk3288_1opencv_MainActivity_nativePush"
+    "Java_com_example_rk3288_1opencv_MainActivity_nativePush_2"
   );
   // 以数字结尾的正常方法名（无下划线分隔）不受影响
   assert.equal(
@@ -183,8 +183,17 @@ public class MappedTest {
   }
 });
 
-test("真实仓库全量比对 19/19 EXIT=0", () => {
+test("真实仓库全量比对 ALL_MATCH EXIT=0（符号数从输出解析，不硬编码）", () => {
   const r = spawnSync("node", [AUDIT_JS], { cwd: REPO_ROOT, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /JNI_SYNC: ALL_MATCH cpp=19 java=19 diffs=0 warnings=0/);
+  // 符号数动态解析自脚本输出：JNI 增删无需同步改测试；仅断言两侧一致且无真实差异
+  // （diffs=0；warnings 为软告警 [CPP_DUP]/[JAVA_DUP]，合法重载会报但不阻断，不断言 0）
+  const m = r.stdout.match(/JNI_SYNC: ALL_MATCH cpp=(\d+) java=(\d+) diffs=(\d+) warnings=(\d+)/);
+  assert.ok(m, `输出应含 JNI_SYNC 汇总行，实际：${r.stdout}`);
+  const cpp = Number(m[1]);
+  const java = Number(m[2]);
+  const diffs = Number(m[3]);
+  assert.ok(cpp > 0, "扫描应命中 native 符号（cpp>0），否则核对形同虚设");
+  assert.equal(cpp, java, "C++/Java 符号数应一致");
+  assert.equal(diffs, 0);
 });
