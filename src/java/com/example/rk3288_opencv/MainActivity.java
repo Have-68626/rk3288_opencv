@@ -4,7 +4,6 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
-import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -1461,11 +1460,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         BuildConfig.APPLICATION_ID + ".fileprovider",
                         photoFile);
                 currentPhotoUri = photoURI; // 记录 URI，消费完成后撤销（Q-CQ-B07-009）
-                // 跨 UID 临时读写授权：flags + ClipData，授权由 intent 传递给出相机进程（Q-CQ-B07-009）
-                PhotoUriGrant.GrantData grant = PhotoUriGrant.buildTakePictureGrant(photoURI.toString());
-                takePictureIntent.addFlags(grant.flags);
-                takePictureIntent.setClipData(ClipData.newRawUri(PhotoUriGrant.CLIP_DATA_LABEL, Uri.parse(grant.uri)));
-                takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
+                // WHY 单一来源：授权组装（flags + ClipData + EXTRA_OUTPUT）收敛到 PhotoUriGrant.applyTakePictureGrant
+                PhotoUriGrant.applyTakePictureGrant(takePictureIntent, photoURI);
                 startActivityForResult(takePictureIntent, REQUEST_CODE_TAKE_PHOTO);
             }
         } else {
@@ -1510,7 +1506,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void revokePhotoUriPermission() {
         if (currentPhotoUri == null) return;
         try {
-            revokeUriPermission(currentPhotoUri, PhotoUriGrant.GRANT_MASK);
+            // WHY 单一来源：撤销调用收敛到 PhotoUriGrant.revoke，掩码与授予一致（Q-CQ-B07-009）
+            PhotoUriGrant.revoke(this, currentPhotoUri);
         } catch (Exception ex) {
             AppLog.e("MainActivity", "revokePhotoUriPermission", "Revoke failed", ex);
         } finally {
@@ -1616,7 +1613,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
                 long copied = 0L;
                 long startMs = SystemClock.elapsedRealtime();
-                long lastUiMs = 0L;
+                final long[] lastUiMs = {0L};
                 boolean ok = false;
                 String err = null;
 
@@ -1627,6 +1624,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 java.io.InputStream is = null;
                 java.io.BufferedInputStream bis = null;
                 java.io.FileOutputStream fos = null;
+                // totalBytes 在查询块内被重赋值，故为进度回调取一份 final 快照（仅用于展示）。
+                final long totalForProgress = totalBytes;
                 try {
                     is = getContentResolver().openInputStream(uri);
                     if (is == null) throw new IOException("无法打开输入流");
@@ -1643,39 +1642,40 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     }
 
                     byte[] buffer = new byte[1024 * 1024];
-                    int n;
-                    while ((n = bis.read(buffer)) != -1) {
-                        if (cancelled.get()) {
-                            err = "用户取消";
-                            break;
-                        }
-                        fos.write(buffer, 0, n);
-                        copied += n;
-
-                        long nowMs = SystemClock.elapsedRealtime();
-                        if (nowMs - lastUiMs >= 350) {
-                            lastUiMs = nowMs;
-                            long elapsedMs = Math.max(1L, nowMs - startMs);
-                            double speed = (copied / 1024.0) / (elapsedMs / 1000.0);
-                            String msg = "已复制 " + CameraFragment.formatBytes(copied) +
-                                    (totalBytes > 0 ? (" / " + CameraFragment.formatBytes(totalBytes)) : "") +
-                                    "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
-                            int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, copied / 1024L));
-                            runOnUiThread(() -> {
-                                try {
-                                    progressDialog.setMessage(msg);
-                                    if (!progressDialog.isIndeterminate()) {
-                                        progressDialog.setProgress(progressKb);
-                                    }
-                                } catch (Throwable ignored) {
+                    CameraFragment.BoundedStreamCopy.Result r = CameraFragment.BoundedStreamCopy.copy(
+                            bis, fos, buffer,
+                            CameraFragment.MAX_MOCK_IMPORT_BYTES,
+                            CameraFragment.MAX_MOCK_IMPORT_MILLIS,
+                            cancelled::get,
+                            SystemClock::elapsedRealtime,
+                            p -> {
+                                long nowMs = SystemClock.elapsedRealtime();
+                                if (nowMs - lastUiMs[0] >= 350) {
+                                    lastUiMs[0] = nowMs;
+                                    long elapsedMs = Math.max(1L, nowMs - startMs);
+                                    double speed = (p.bytesCopied / 1024.0) / (elapsedMs / 1000.0);
+                                    String msg = "已复制 " + CameraFragment.formatBytes(p.bytesCopied) +
+                                            (totalForProgress > 0 ? (" / " + CameraFragment.formatBytes(totalForProgress)) : "") +
+                                            "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
+                                    int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, p.bytesCopied / 1024L));
+                                    runOnUiThread(() -> {
+                                        try {
+                                            progressDialog.setMessage(msg);
+                                            if (!progressDialog.isIndeterminate()) {
+                                                progressDialog.setProgress(progressKb);
+                                            }
+                                        } catch (Throwable ignored) {
+                                        }
+                                    });
                                 }
                             });
-                        }
-                    }
 
                     fos.flush();
-                    if (!cancelled.get() && (err == null || err.isEmpty())) {
+                    copied = r.bytesCopied;
+                    if (r.status == CameraFragment.BoundedStreamCopy.Status.OK) {
                         ok = true;
+                    } else {
+                        err = CameraFragment.BoundedStreamCopy.messageFor(r.status);
                     }
                 } catch (Throwable t) {
                     err = t.getMessage();

@@ -385,6 +385,12 @@ class Camera2CaptureController implements CaptureController {
                 return;
             }
             cameraDevice = camera;
+            // Q-CQ-B07-008: 会话创建主体提取为包内方法 —— JVM 单测以 null 框架参数直接驱动异常路径
+            handleSessionCreate(camera);
+        }
+
+        // Q-CQ-B07-008: onOpened 会话创建主体 —— 提取自 onOpened，生产行为与内联等价
+        void handleSessionCreate(@NonNull CameraDevice camera) {
             try {
                 Surface surface = imageReader.getSurface();
                 CaptureRequest.Builder builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
@@ -393,34 +399,69 @@ class Camera2CaptureController implements CaptureController {
                 camera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
                     @Override
                     public void onConfigured(@NonNull CameraCaptureSession s) {
-                        if (boundGeneration != generation) {
-                            releaseCameraSession(s);
-                            return;
-                        }
-                        session = s;
-                        try {
-                            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
-                            Range<Integer> fps = chooseFpsRange();
-                            if (fps != null) {
-                                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps);
-                            }
-                            session.setRepeatingRequest(builder.build(), null, handler);
-                        } catch (Exception e) {
-                            observer.onError("camera2", "setRepeatingRequest失败: " + e.getMessage());
-                        }
+                        handleSessionConfigured(s, builder);
                     }
 
                     @Override
                     public void onConfigureFailed(@NonNull CameraCaptureSession s) {
-                        if (boundGeneration != generation) {
-                            releaseCameraSession(s);
-                            return;
-                        }
-                        observer.onError("camera2", "createCaptureSession失败");
+                        handleSessionConfigureFailed(s);
                     }
                 }, handler);
             } catch (Exception e) {
+                // Q-CQ-B07-008 WHY: 修复前 catch 仅上报错误，cameraDevice 已在 try 前置位、
+                // reader/thread 存活 —— 相机停在"打开但无会话无帧"的半死态（与 Q4-7 已修的
+                // onConfigured 异常缺陷同构）。代次递增使后续迟到回调（onDisconnected/onError）
+                // 按旧代次丢弃；rollbackStart() 释放已置的 cameraDevice/reader/thread 并置空字段，
+                // 与 stop() 共用同一完整释放路径（B07-006）。不破坏正常路径。
+                generation++;
+                rollbackStart();
                 observer.onError("camera2", "onOpened失败: " + e.getMessage());
+            }
+        }
+
+        // Q-CQ-B07-008: onConfigureFailed 主体提取为包内方法 —— JVM 单测以 null 框架参数直接驱动
+        void handleSessionConfigureFailed(@NonNull CameraCaptureSession s) {
+            if (boundGeneration != generation) {
+                releaseCameraSession(s);
+                return;
+            }
+            // Q-CQ-B07-008 WHY: 修复前当前代次分支仅上报错误，失败的 session 参数（s）未释放、
+            // cameraDevice 已置未释放、reader/thread 存活 —— 相机停在"打开但无会话无帧"的半死态，
+            // 直到下次 stop/start 才恢复（与 Q4-7 已修的 onConfigured 异常缺陷同构）。此路径下
+            // session 字段为 null（onConfigured 未执行），故必须显式释放失败的 session 参数；
+            // 随后代次递增 + rollbackStart() 释放 cameraDevice/reader/thread 并置空字段，回到
+            // 可控的已停止状态。不破坏正常路径。
+            releaseCameraSession(s);
+            generation++;
+            rollbackStart();
+            observer.onError("camera2", "createCaptureSession失败");
+        }
+
+        // Q-CQ-B07-007: onConfigured 主体提取为包内方法 —— JVM 单测以 null 框架参数直接驱动，
+        // 覆盖"配置阶段异常（setRepeatingRequest 等）"路径；生产行为与内联等价。
+        void handleSessionConfigured(@NonNull CameraCaptureSession s, @NonNull CaptureRequest.Builder builder) {
+            if (boundGeneration != generation) {
+                releaseCameraSession(s);
+                return;
+            }
+            session = s;
+            try {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+                Range<Integer> fps = chooseFpsRange();
+                if (fps != null) {
+                    builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps);
+                }
+                session.setRepeatingRequest(builder.build(), null, handler);
+            } catch (Exception e) {
+                // Q-CQ-B07-007 WHY: 配置阶段异常（如 setRepeatingRequest 失败）若仅上报错误，
+                // 相机将停在"配置完成但无请求"的半死态——session 被占用、无帧流入，
+                // 期间相机一直不可用。代次递增使此后的迟到回调（onDisconnected/onError）
+                // 按旧代次丢弃，不再误报当前会话；rollbackStart() 释放已创建的
+                // session/device/reader/thread 并置空字段，与 stop() 共用同一完整释放路径
+                // （B07-006），回到可控的已停止状态；不破坏正常路径。
+                generation++;
+                rollbackStart();
+                observer.onError("camera2", "setRepeatingRequest失败: " + e.getMessage());
             }
         }
 

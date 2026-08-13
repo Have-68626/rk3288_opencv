@@ -1,5 +1,11 @@
 package com.example.rk3288_opencv;
 
+import android.content.ClipData;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.MediaStore;
+
 /**
  * 跨 UID 拍照 URI 临时授权契约（Q-CQ-B07-009）。
  *
@@ -11,13 +17,16 @@ package com.example.rk3288_opencv;
  * revokeUriPermission 及时撤销，避免授权残留到进程结束。
  *
  * 授权时序：
- *   1) dispatchTakePictureIntent：buildTakePictureGrant(uri) → flags + ClipData URI，
- *      授予跨 UID 相机临时读写权限；
- *   2) handleSystemCameraResult / onActivityResult：消费完成，revokeUriPermission 撤销，
+ *   1) dispatchTakePictureIntent：applyTakePictureGrant(intent, uri) 组装
+ *      flags + ClipData + EXTRA_OUTPUT，授予跨 UID 相机临时读写权限；
+ *   2) handleSystemCameraResult / onActivityResult：消费完成，revoke(context, uri) 撤销，
  *      授予与撤销必须使用同一掩码 GRANT_MASK 才能精确回收。
  *
- * 本类保持纯 Java（不依赖 android.* 框架类），使 JVM 单测可在无 Robolectric 环境下
- * 验证授权/撤销的位掩码语义；生产代码与单测共用同一常量与判定函数，保证契约单一来源。
+ * 掩码/判定核心保持纯 Java（不依赖 android.* 框架类），使 JVM 单测可在无 Robolectric
+ * 环境下验证授权/撤销的位掩码语义；生产代码与单测共用同一常量与判定函数，保证契约单一来源。
+ * 另提供 Android 绑定薄封装（applyTakePictureGrant/revoke）：仅把掩码/URI 载荷应用到
+ * Intent 或 Context 上，内部复用上述纯 Java 常量，作为两处拍照调用点
+ * （CameraFragment / MainActivity）的授权与撤销单一来源，成对契约集中可见。
  */
 public final class PhotoUriGrant {
 
@@ -73,5 +82,35 @@ public final class PhotoUriGrant {
     /** 依据拍照输出 URI 生成跨 UID 读写授权载荷（单一来源，生产与单测共用） */
     public static GrantData buildTakePictureGrant(String photoUri) {
         return new GrantData(GRANT_MASK, photoUri);
+    }
+
+    /**
+     * 组装拍照 Intent 的授权载荷（单一来源，Q-CQ-B07-009）。
+     *
+     * WHY 单一来源：CameraFragment 与 MainActivity 的 dispatchTakePictureIntent 原先各自手写
+     * addFlags/setClipData/putExtra 三行，逐行重复；授权组装（掩码 + ClipData 载体 + EXTRA_OUTPUT）
+     * 收敛到本方法后，两处调用点只传 Intent 与拍照输出 URI，任一调整（掩码/标签/载体）都只改一处，
+     * 不会出现一边改一边漏的漂移。本方法内部复用纯 Java 的 buildTakePictureGrant，掩码语义单一来源。
+     */
+    public static void applyTakePictureGrant(Intent intent, Uri photoUri) {
+        GrantData grant = buildTakePictureGrant(photoUri.toString());
+        intent.addFlags(grant.flags);
+        intent.setClipData(ClipData.newRawUri(CLIP_DATA_LABEL, Uri.parse(grant.uri)));
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+    }
+
+    /**
+     * 撤销跨 UID 拍照 URI 授权（单一来源，Q-CQ-B07-009）。
+     *
+     * WHY 单一来源：CameraFragment 与 MainActivity 的 revokePhotoUriPermission 原先各自直接调用
+     * context.revokeUriPermission(uri, GRANT_MASK)，撤销掩码必须与授予掩码一致才能精确回收；
+     * 收敛到本方法后，授予（applyTakePictureGrant）与撤销（revoke）共用同一 GRANT_MASK，成对契约
+     * 集中可见，避免撤销漏掩码/错掩码的残留。
+     */
+    public static void revoke(Context context, Uri photoUri) {
+        if (context == null || photoUri == null) {
+            return;
+        }
+        context.revokeUriPermission(photoUri, GRANT_MASK);
     }
 }
