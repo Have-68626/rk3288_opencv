@@ -21,7 +21,7 @@
 |:-----|:-----|:---|:-----|
 | `include/civetweb.h` | `e3a12c0a659b3bc6f75aa67799232ca343572dcb3add8b2475666633fa4afad3` | 逐字节一致 | 上游原样（Pristine） |
 | `src/civetweb.c` | `74f777048068dea7f12ac3de62a8fdbef97e6544647875693102e6689a4214e3` | 本地补丁 +149/−25 | 4 个安全补丁，见下表 |
-| `src/md5.inl` | `03fe15af6f6c64272534ccd4e2abe6f7129bf165a4acd9e42bb7c2f9ed8b38eb` | 本地精简变体 | 175 行 vs 上游 472 行，见下 |
+| `src/md5.inl` | `f689a56054f7a7a5d5c52f854046082442004e5c2bde95087b0841d379147fdc` | 本地精简变体 | 207 行 vs 上游 472 行；已补回上游 zlib 许可头，见下 |
 | `LICENSE.md` | `b5db2dc4706611a04a6ca0926d4c2b8389bd13026becf65b7f5d38bec52ab075` | 本地文件 | 头部为本仓库集成说明；正文为上游许可证正文（原样保留） |
 
 ## 本地差异（补丁集）
@@ -39,16 +39,16 @@
 
 ### `src/md5.inl` — 本地精简变体
 
-- 上游 v1.16 的 `src/md5.inl` 为 **472 行**（含 zlib 许可证头与 L. Peter Deutsch 署名注释）；本地为 **175 行**精简版本。
+- 上游 v1.16 的 `src/md5.inl` 为 **472 行**（含 zlib 许可证头与 L. Peter Deutsch 署名注释）；本地为 **207 行**精简版本（+32 行为补回的许可头）。
 - 保留相同 API（`md5_state_t` / `md5_init` / `md5_append` / `md5_finish` / `md5_process`）与 RFC 1321 常量，函数行为等价。
-- **剥离了上游 zlib 许可证头与 L. Peter Deutsch 署名注释**，未按 zlib 许可证条款 2 标注为修改版本 —— 合规隐患在此记录，本任务不改动该文件。
-- 自初始导入 commit `ec50bae` 起未再变更；`CREDITS.md` 将该实现记录为 L. Peter Deutsch / zlib。
+- 治理任务 **P2-2（许可合规）** 处置：早前导入时剥离了上游 zlib 许可证头与 L. Peter Deutsch 署名注释，构成 zlib 许可违规（条款 1/2）。现已在文件头**精确回补**上游 v1.16（commit `d7ba35b`）的 zlib 许可头原文（`Copyright (C) 1999, 2000, 2002 Aladdin Enterprises. All rights reserved.` + 5 条款 + 署名），并依 zlib 许可条款 2 声明本文件为修改版本。许可头文本经 `gh api` 从上游 commit `d7ba35bbb649209c66e582d5a0244ba988a15159` 原始 `src/md5.inl` 逐字复制，未改措辞。
+- 自初始导入 commit `ec50bae` 起正文未再变更（许可头为唯一新增）；`CREDITS.md` 将该实现记录为 L. Peter Deutsch / zlib。
 
 ## 许可证来源确认
 
 - 许可证正文见 `LICENSE.md`（上游原样保留；本账本任务**未改动任何作者/版权信息**）。
 - CivetWeb 本体：MIT（`Copyright (c) 2013-2021 The CivetWeb developers` 等，见 `LICENSE.md`）。
-- `src/md5.inl`：zlib（L. Peter Deutsch 的 MD5 实现，`CREDITS.md` 记录；本地文件未内嵌许可证头，见上）。
+- `src/md5.inl`：zlib（L. Peter Deutsch 的 MD5 实现，`CREDITS.md` 记录）。治理任务 P2-2 已在文件头回补上游 v1.16 的 zlib 许可头原文，并依条款 2 声明修改版本，见上。
 
 ## 维护说明
 

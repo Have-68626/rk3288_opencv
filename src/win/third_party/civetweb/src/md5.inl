@@ -1,3 +1,35 @@
+/*
+  Copyright (C) 1999, 2000, 2002 Aladdin Enterprises.  All rights reserved.
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  L. Peter Deutsch
+  ghost@aladdin.com
+
+ */
+
+/*
+ * 本文件为修改版本（zlib 许可条款 2 声明）：
+ * 源自 CivetWeb 1.16（civetweb/civetweb@d7ba35b）src/md5.inl 的本地精简变体，
+ * 保留相同 API（md5_state_t / md5_init / md5_append / md5_finish / md5_process）
+ * 与 RFC 1321 常量，原始实现作者为 L. Peter Deutsch（Aladdin Enterprises）。
+ * 详见本目录 LEDGER.md 与 CREDITS.md。
+ */
+
 #include <stdint.h>
 #include <string.h>
 

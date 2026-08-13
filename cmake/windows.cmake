@@ -291,6 +291,7 @@ set_tests_properties(win_unit_tests PROPERTIES TIMEOUT 120)
 add_executable(win_face_database_perf
     "tests/win/test_face_database_perf.cpp"
     "src/win/src/FaceDatabase.cpp"
+    "src/win/src/WinCrypto.cpp"
 )
 target_include_directories(win_face_database_perf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
@@ -302,6 +303,8 @@ if(MSVC)
 endif()
 target_link_libraries(win_face_database_perf
     ${RK_OPENCV_FULL_LIBS}
+    bcrypt
+    crypt32
 )
 add_test(NAME win_face_database_perf COMMAND win_face_database_perf)
 
