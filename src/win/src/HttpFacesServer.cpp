@@ -696,7 +696,7 @@ HttpFacesServer::HttpResponse HttpFacesServer::unauthorizedResponse() {
 //  1) 写方法（POST/PUT/DELETE）才校验；读方法恒放行（无副作用）；
 //  2) Sec-Fetch-Site: cross-site → 拒绝（现代浏览器强信号，不可被 JS 伪造）；
 //  3) 旧浏览器无 Sec-Fetch-Site → 回退校验 Origin：
-//     - Origin 缺失/空 → 放行（curl / API 客户端 / 旧浏览器写，兼容）；
+//     - Origin 缺失 → 放行（curl/API 客户端/旧浏览器写）；空值/字面量 "null" → 拒绝(403)（无源上下文）；
 //     - 字面量 "null"（沙箱 iframe / data: 等无源上下文）→ 拒绝；
 //     - 非本机回环 host → 拒绝；http(s)://127.0.0.1|localhost|::1 → 放行。
 //  4) Origin/Sec-Fetch-Site 均缺失 → 放行（与 SEC-02 兼容模式一致，不破坏 curl）。
