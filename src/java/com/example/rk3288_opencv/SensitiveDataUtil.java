@@ -12,8 +12,15 @@ public class SensitiveDataUtil {
     private static final Pattern GPS_PATTERN = Pattern.compile("(-?\\d{1,3}\\.\\d{4,}),\\s*(-?\\d{1,3}\\.\\d{4,})");
 
     // Authentication credentials and tokens
+    // 与 C++ 侧 NativeLog.cpp::maskSensitiveData 的 kSensitiveKvPattern 对齐（SEC-04/P3-4）：
+    //   1) 键集补组合键 secret_key / client_secret —— \bsecret\b 遇下划线（同为词字符）尾边界失效，
+    //      组合键须以完整词形列出，值才能被捕获。
+    //   2) 值前缀可选 "Bearer<空白>"：Authorization: Bearer <jwt> 场景掩掉 JWT 主体而保留 Bearer 前缀；
+    //      该前缀并入捕获组 2（分隔符），值仍为组 3，避免 appendReplacement 整体替换时丢弃前缀。
     private static final Pattern SENSITIVE_KV = Pattern.compile(
-            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret|api[_-]?key)\\b(\\s*[:=]\\s*)([^\\s,;]+)"
+            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key)\\b"
+            + "(\\s*[:=]\\s*(?:Bearer[ \\t\\r\\n]+)?)"
+            + "([^ \\t\\r\\n,;&]+)"
     );
     private static final Pattern EMAIL_PATTERN = Pattern.compile("(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b");
 
@@ -63,7 +70,7 @@ public class SensitiveDataUtil {
         StringBuffer kvSb = new StringBuffer();
         while (kvMatcher.find()) {
             String k = kvMatcher.group(1);
-            String sep = kvMatcher.group(2); // Assuming regex was updated to capture separator
+            String sep = kvMatcher.group(2); // 分隔符 + 可选 Bearer 前缀（原样保留）
             String v = kvMatcher.group(3);
             String masked = "***";
             int len = v.length();

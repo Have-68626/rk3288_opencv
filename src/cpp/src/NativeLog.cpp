@@ -240,12 +240,17 @@ std::string maskSensitiveData(const std::string& msg) {
     //   键集合（password/passwd/pwd/token/access_token/api_key 等）+ 分隔符(=/:) + 值，
     //   值截至空白/逗号/分号/&（& 为 URL query 分隔，避免吞掉后续参数）。
     //   \b 词边界保证 "keyword="、"tokens" 等普通词不被误掩。
+    //   SEC-04 补强（P3-4）：
+    //     1) 键集补组合键 secret_key / client_secret —— 单键 \bsecret\b 遇下划线
+    //        （同为词字符）尾边界失效，故组合键须以完整词形列出，值才能被捕获。
+    //     2) 值前缀可选 "Bearer<空白>"：Authorization: Bearer <jwt> 场景下捕获组
+    //        从 token 主体开始，掩掉整段 JWT，而 Bearer 前缀保留可见。
     //   静态局部正则编译一次、跨调用复用；C++11 保证线程安全初始化。
     static const std::regex kSensitiveKvPattern(
         R"(\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|)"
-        R"(authorization|bearer|secret|api[_-]?key)\b)"
+        R"(authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key)\b)"
         R"([ \t\r\n]*[:=][ \t\r\n]*)"
-        R"(([^ \t\r\n,;&]+))",
+        R"((?:Bearer[ \t\r\n]+)?([^ \t\r\n,;&]+))",
         std::regex_constants::icase);
 
     std::string out;

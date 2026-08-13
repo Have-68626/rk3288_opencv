@@ -82,6 +82,36 @@ TEST(NativeLogRedaction, MaskSensitiveKvValues) {
     EXPECT_EQ(rklog::maskSensitiveData("api-key=QWERTY123456"), "api-key=QW***56");  // 连字符变体
 }
 
+// RED 补充用例（SEC-04 遗留缺口，P3-4）：
+//   缺口 A：Authorization: Bearer <jwt> 原实现值捕获遇空格即停，只掩 "Bearer"，
+//           JWT 主体（空格后的整段）原样落盘 → 此处断言输出不含 JWT 原值。
+//   缺口 B：secret_key= / client_secret= 因 \bsecret\b 遇下划线（同为词字符）
+//           尾边界失效而完全不匹配 → 值明文泄露 → 此处断言输出不含值原值。
+TEST(NativeLogRedaction, MaskSensitiveKvBearerTokenAndCompoundKeys) {
+    // 缺口 A：JWT 主体必须被掩掉（Bearer 前缀保留，token 整体掩码）。
+    EXPECT_EQ(
+        rklog::maskSensitiveData(
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature"),
+        "Authorization: Bearer ey***re");
+    EXPECT_EQ(rklog::maskSensitiveData(
+                  "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature")
+                  .find("eyJhbGciOiJIUzI1NiJ9.payload.signature"),
+              std::string::npos)
+        << "Bearer 后的 JWT 主体原值不得出现在输出中";
+
+    // 缺口 B：下划线组合键必须命中并掩码。
+    EXPECT_EQ(rklog::maskSensitiveData("secret_key=superSecretVal"),
+              "secret_key=su***al");
+    EXPECT_EQ(rklog::maskSensitiveData("client_secret=clientVal"),
+              "client_secret=cl***al");
+    EXPECT_EQ(rklog::maskSensitiveData("secret_key=superSecretVal").find("superSecretVal"),
+              std::string::npos)
+        << "secret_key= 值原值不得出现在输出中";
+    EXPECT_EQ(rklog::maskSensitiveData("client_secret=clientVal").find("clientVal"),
+              std::string::npos)
+        << "client_secret= 值原值不得出现在输出中";
+}
+
 // maskSensitiveData 纯函数单测：不得误伤正常日志。
 TEST(NativeLogRedaction, MaskSensitiveKvNoFalsePositive) {
     EXPECT_EQ(rklog::maskSensitiveData(""), "");
