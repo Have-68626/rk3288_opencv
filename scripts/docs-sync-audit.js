@@ -642,9 +642,43 @@ async function saveLinkCache(cachePath, cache) {
 function resolveCrossRefPath(fromFile, rawPath) {
   const rootFiles = new Set(["README.md", "DEVELOP.md", "AGENTS.md", "CREDITS.md", "CHANGELOG.md"]);
   const raw = toPosix(rawPath);
-  if (rootFiles.has(raw) || raw.startsWith("docs/")) return path.posix.normalize(raw);
+  // P3-5 R2：裸名短路仅对根级文件生效（dirname="."）。非根文件（如 docs/research/appendix-e.md）
+  // 写 [CHANGELOG.md] 时 GitHub 按当前目录相对解析为 docs/research/CHANGELOG.md（可能 404），
+  // 短路会绕过相对解析导致漏报——故仅 dirname 为根时短路。
+  if (rootFiles.has(raw) && path.posix.dirname(fromFile) === ".") return raw;
   if (raw === "RK3288_CONSTRAINTS.md") return "docs/RK3288_CONSTRAINTS.md";
+  // P3-5 修复：docs/ 前缀链接此前一律按仓库根归一化，导致 docs/foo/bar.md 写 docs/other.md 时
+  // 门禁查根级 docs/other.md 放行，但 GitHub 按当前文件目录相对解析为 docs/foo/docs/other.md（404），
+  // 造成 xref 缺失漏报。现统一按引用文件所在目录相对解析（GitHub 语义）：
+  // 根级文件的 dirname 为 "."，join 后等价于仓库根解析，天然兼容旧行为。
   return path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), raw));
+}
+
+function auditCrossRefs(crossRefs, anchorMap) {
+  const defects = [];
+  for (const r of crossRefs) {
+    const normalizedTo = resolveCrossRefPath(r.fromFile, r.toFile);
+    if (!anchorMap[normalizedTo]) {
+      // Q-CQ-B08-007 门禁语义：交叉引用指向不存在（或未被 git 跟踪）的目标 .md 文档，
+      // 此前被 continue 静默跳过造成漏报；现计为必须阻断门禁的高危缺陷。
+      defects.push({
+        type: "xref",
+        severity: "high",
+        file: r.fromFile,
+        message: `交叉引用目标文档缺失：${r.raw}（目标 ${normalizedTo} 不存在或未被跟踪）`,
+      });
+      continue;
+    }
+    if (r.anchor && !anchorMap[normalizedTo].has(r.anchor)) {
+      defects.push({
+        type: "xref",
+        severity: "medium",
+        file: r.fromFile,
+        message: `交叉引用锚点不存在：${r.raw}（目标 ${normalizedTo} 缺少 #${r.anchor}）`,
+      });
+    }
+  }
+  return defects;
 }
 
 function parseCrossRefs(md, fromFile) {
@@ -895,28 +929,7 @@ async function main() {
     crossRefs.push(...parseCrossRefs(md, rel));
     anchorMap[rel] = collectAnchors(md);
   }
-  for (const r of crossRefs) {
-    const normalizedTo = resolveCrossRefPath(r.fromFile, r.toFile);
-    if (!anchorMap[normalizedTo]) {
-      // Q-CQ-B08-007 门禁语义：交叉引用指向不存在（或未被 git 跟踪）的目标 .md 文档，
-      // 此前被 continue 静默跳过造成漏报；现计为必须阻断门禁的高危缺陷。
-      report.defects.push({
-        type: "xref",
-        severity: "high",
-        file: r.fromFile,
-        message: `交叉引用目标文档缺失：${r.raw}（目标 ${normalizedTo} 不存在或未被跟踪）`,
-      });
-      continue;
-    }
-    if (r.anchor && !anchorMap[normalizedTo].has(r.anchor)) {
-      report.defects.push({
-        type: "xref",
-        severity: "medium",
-        file: r.fromFile,
-        message: `交叉引用锚点不存在：${r.raw}（目标 ${normalizedTo} 缺少 #${r.anchor}）`,
-      });
-    }
-  }
+  report.defects.push(...auditCrossRefs(crossRefs, anchorMap));
 
   const defconfigPath = findDefconfigPath(develop);
   if (!defconfigPath) {
@@ -1286,4 +1299,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { auditAgentGuides, isGatePassed, resolveCrossRefPath };
+module.exports = { auditAgentGuides, auditCrossRefs, isGatePassed, resolveCrossRefPath };

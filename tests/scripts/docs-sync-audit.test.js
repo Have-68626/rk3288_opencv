@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { auditAgentGuides, isGatePassed, resolveCrossRefPath } = require("../../scripts/docs-sync-audit.js");
+const { auditAgentGuides, auditCrossRefs, isGatePassed, resolveCrossRefPath } = require("../../scripts/docs-sync-audit.js");
 
 const FACTS = [
   "gradle_wrapper=gradle-9.0",
@@ -108,5 +108,32 @@ test("isGatePassed 仅在高、中优先级均为零时通过", () => {
 test("resolveCrossRefPath 按引用源目录解析 Markdown 路径", () => {
   assert.equal(resolveCrossRefPath("docs/research/appendix-b.md", "../../DEVELOP.md"), "DEVELOP.md");
   assert.equal(resolveCrossRefPath("docs/research/appendix-e.md", "appendix-c.md"), "docs/research/appendix-c.md");
-  assert.equal(resolveCrossRefPath("docs/research/appendix-e.md", "docs/RK3288_CONSTRAINTS.md"), "docs/RK3288_CONSTRAINTS.md");
+  // docs/ 前缀链接按 GitHub 语义相对解析：docs/research/appendix-e.md 内的
+  // docs/RK3288_CONSTRAINTS.md 实际指向 docs/research/docs/RK3288_CONSTRAINTS.md
+  // （若不存在即为失效链接，不再一律回落到仓库根 docs/RK3288_CONSTRAINTS.md）
+  assert.equal(resolveCrossRefPath("docs/research/appendix-e.md", "docs/RK3288_CONSTRAINTS.md"), "docs/research/docs/RK3288_CONSTRAINTS.md");
+});
+
+test("resolveCrossRefPath 对 docs/ 前缀链接按引用源目录相对解析且根级文件兼容", () => {
+  // 根级引用文件（dirname 为 "."）链接 docs/ 前缀等价于仓库根解析，兼容旧行为
+  assert.equal(resolveCrossRefPath("README.md", "docs/RK3288_CONSTRAINTS.md"), "docs/RK3288_CONSTRAINTS.md");
+  // 非根级引用文件链接 docs/ 前缀按 GitHub 语义相对解析（此前错误地回落到仓库根）
+  assert.equal(resolveCrossRefPath("docs/foo/bar.md", "docs/other.md"), "docs/foo/docs/other.md");
+});
+
+test("xref 门禁对 docs/ 前缀相对链接缺失目标报 high", () => {
+  // 场景：根级 docs/other.md 存在，但引用文件 docs/foo/bar.md 所在目录相对解析的
+  // docs/foo/docs/other.md 不存在（GitHub 渲染为 404）。修复前门禁查根级存在即放行（漏报）。
+  const crossRefs = [
+    { fromFile: "docs/foo/bar.md", toFile: "docs/other.md", anchor: null, raw: "docs/other.md" },
+  ];
+  const anchorMap = {
+    "docs/other.md": new Set(), // 根级存在
+    "docs/foo/bar.md": new Set(),
+  };
+  const defects = auditCrossRefs(crossRefs, anchorMap);
+  assert.ok(
+    defects.some((d) => d.type === "xref" && d.severity === "high" && d.message.includes("docs/foo/docs/other.md")),
+    "应报 high（xref 目标缺失：docs/foo/docs/other.md）"
+  );
 });

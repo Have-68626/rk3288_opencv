@@ -195,7 +195,7 @@
     *   A: 确保没有其他显示服务 (如 X11, Wayland, SurfaceFlinger) 占用 `/dev/dri/card0`。
 
 ### 7.3 变更日志 (Changelog)
-详见 [CHANGELOG.md](CHANGELOG.md)。
+详见 [CHANGELOG.md](../../CHANGELOG.md)。
 
 ---
 
