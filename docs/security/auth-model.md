@@ -99,7 +99,7 @@ Bearer token 只阻止"无凭据"请求，无法阻止"浏览器自动携带凭�
 | 1 | 非写方法（GET/HEAD 等） | **放行** |
 | 2 | `Sec-Fetch-Site: cross-site` | **拒绝（403）** |
 | 3 | `Sec-Fetch-Site` 存在但非 cross-site（same-origin/same-site/none） | **放行** |
-| 4 | `Origin` 缺失或为空 | **放行**（curl/API 客户端/旧浏览器写） |
+| 4 | `Origin` 缺失 → **放行**；空值 → **拒绝（403）**（curl/API 客户端/旧浏览器写：缺失放行；空 Origin 同 `"null"` 属无源上下文，按 §5 原则拒绝） |
 | 5 | `Origin` 为字面量 `"null"` | **拒绝（403）**（沙箱 iframe / data: 等无源上下文） |
 | 6 | `Origin` 的 host 为 `127.0.0.1`/`localhost`/`::1`（http/https，任意端口） | **放行** |
 | 7 | 其余一切 `Origin` | **拒绝（403）** |

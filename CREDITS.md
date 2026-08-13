@@ -110,6 +110,11 @@ CameraX 的传递依赖（已解析）：
 | **CVE-2026-50144**（GHSA-jxmc-3mv6-7pwr，2026-05-28 发布） | high（CVSS 7.1） | `ParamDict::load_param` 仅校验 `id >= NCNN_MAX_PARAM_COUNT(=32)` 上限，负 id（`[-23299,-1]`）绕过数组 key 归一化后直接作 `params[32]` 下标 → 可控偏移越界堆写（CWE-787）；.param 恶意文件在 `Net::load_param()` 加载时触发。公告同时另列数组长度 `create(len)` huge-alloc 弱点 | **受影响**：20260113（commit e956fbf）早于修复；**最新发布 20260526（commit e54f7b1）即公告确认的脆弱提交，尚无含修复的官方发布** |
 | GHSA-c44p-qr97-jccv | — | 上游 `pull_request_target` CI 工作流 RCE 风险 | 上游 CI 配置问题，不涉及本仓库使用面，仅记录 |
 
+> **CVE-2026-50144 在线细节待人工复核**：本环境 WebFetch 受限，未能访问
+> GHSA-jxmc-3mv6-7pwr 在线公告进行比对。上表该行的公告细节（严重度 / CVSS / 弱点条目 /
+> 受影响版本）为治理任务既有登记，**未经在线复核**；人工复核（GitHub Advisories 检索
+> `GHSA-jxmc-3mv6-7pwr`）确认后更新本表并移除本标注。不编造在线细节。
+
 **处置（受控回补）**：因无法升级到含修复的官方 ncnn，本仓库在模型加载路径新增前置校验 `src/cpp/include/NcnnParamGuard.h`，镜像上游修复语义（归一化后 `id < 0 || id >= 32` 拒绝）+ 数组长度上限封堵公告另列弱点，已接入全部 4 个 `load_param` 调用点（YoloFaceDetector / ArcFaceEmbedder / MobileFaceNetAdapter / inference_bench_cli），配 8 个恶意 param 负面测试（`tests/cpp/test_ncnn_param_guard.cpp`，含 CVE 官方 PoC `-1=305419896`），随 `core_unit_tests` 在 CI（`RK_SKIP_OPENCV=ON`）下构建运行。
 
 **升级/回补监控**：monitor 上游 ncnn 新发布（含 `src/paramdict.cpp` 两处 `id < 0` 修复）。出现后：替换本地 `NCNN_DIR` 指向新预编译库 → 同步本表版本/commit/SHA-256 → 运行 `core_unit_tests` 确认负面测试仍全过、真实模型无误拒。替换前可移除本仓库前置守卫或保留（无害的双保险）。

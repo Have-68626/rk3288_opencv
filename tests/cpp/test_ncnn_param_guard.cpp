@@ -17,6 +17,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -42,14 +43,15 @@ private:
     std::filesystem::path path_;
 };
 
-// 写入临时 param 文件并返回路径
-std::filesystem::path writeTempParam(const std::string& content) {
+// 写入临时 param 文件并返回路径；失败返回 nullopt（调用方以 ASSERT_TRUE 断言，
+// 避免退回"空路径静默通过"：不得依赖空路径命中 validateNcnnParamFile 的 EXPECT_FALSE）。
+std::optional<std::filesystem::path> writeTempParam(const std::string& content) {
     std::filesystem::path tempPath = std::filesystem::temp_directory_path() /
         ("ncnn_param_guard" + uniqueFileSuffix() + ".param");
     std::ofstream out(tempPath, std::ios::binary);
     if (!out) {
         ADD_FAILURE() << "failed to create temp param file: " << tempPath;
-        return {};
+        return std::nullopt;
     }
     out << content;
     out.close();
@@ -151,16 +153,16 @@ TEST(NcnnParamGuard, AcceptsBenignParams) {
 TEST(NcnnParamGuard, FileEntryMatchesTextEntry) {
     std::string err;
 
-    std::filesystem::path bad = writeTempParam(kCvePoC);
-    if (bad.empty()) return;
-    TempFileCleaner badCleaner(bad);
-    EXPECT_FALSE(rk_core::validateNcnnParamFile(bad.string().c_str(), err));
+    auto bad = writeTempParam(kCvePoC);
+    ASSERT_TRUE(bad.has_value()) << "failed to create temp param file";
+    TempFileCleaner badCleaner(*bad);
+    EXPECT_FALSE(rk_core::validateNcnnParamFile(bad->string().c_str(), err));
 
-    std::filesystem::path good = writeTempParam(kBenignScalar);
-    if (good.empty()) return;
-    TempFileCleaner goodCleaner(good);
+    auto good = writeTempParam(kBenignScalar);
+    ASSERT_TRUE(good.has_value()) << "failed to create temp param file";
+    TempFileCleaner goodCleaner(*good);
     err.clear();
-    EXPECT_TRUE(rk_core::validateNcnnParamFile(good.string().c_str(), err)) << err;
+    EXPECT_TRUE(rk_core::validateNcnnParamFile(good->string().c_str(), err)) << err;
 
     // 不存在的文件须报错（防御：缺失 param 直接拒绝，避免走到 ncnn 空路径）
     std::filesystem::path missing = std::filesystem::temp_directory_path() /
