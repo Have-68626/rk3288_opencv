@@ -596,6 +596,22 @@ TEST(HttpFacesAuth, HeadlessClientWriteAcceptedWithoutOrigin) {
     EXPECT_EQ(r.status, 200) << r.response;
 }
 
+// 无源上下文：Origin 头存在但值为空 → 403（与字面量 "null" 同判，见 auth-model.md §3.5）。
+// 钉 HttpFacesServer.cpp:719 `v.empty() || v == "null"` 的拒绝分支 —— 空 Origin 的写请求
+// 不得因"读取到空串"而被当作"头缺失"放行（缺失才放行，空值必须拒绝）。
+TEST(HttpFacesAuth, WriteWithEmptyOriginRejected) {
+    auto store = makeAuthConfigStore(L"csrf_empty_origin");
+    const std::string body = "{\"http\":{\"port\":8090}}";
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+                            "Authorization: Bearer test-secret-token\r\n"
+                            "Origin:\r\n"
+                            "Content-Type: application/json\r\nContent-Length: " +
+                            std::to_string(body.size()) + "\r\n\r\n" + body;
+    const auto r = runHttpRequest(L"test-secret-token", req, store.get());
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 403) << r.response;
+}
+
 // ── SEC-02：认证畸形 Authorization 头 fail-closed（RFC 6750 / auth-model.md §3.4）────
 // requestAuthorized 的解析契约（生产实现 HttpFacesServer.cpp）：
 //  - 仅接受 `Bearer` scheme（RFC 6750 scheme 大小写不敏感）；

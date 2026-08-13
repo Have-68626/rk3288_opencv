@@ -14,8 +14,9 @@
 // history 桩（pushState/replaceState 同步回写 location.hash）。antd 与页面模块均
 // mock（页面内部已有 e2e 覆盖），测试聚焦路由分派本身。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act } from 'react'
+import { act, useEffect, useRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { HashRouter, Navigate, Route, Routes, useNavigate, type NavigateFunction } from 'react-router-dom'
 
 import App from '../App'
 
@@ -105,8 +106,8 @@ function installHashEnvironment(initialHash: string) {
     port: '',
     pathname: '/',
     search: '',
-    assign: () => {},
-    replace: () => {},
+    assign: (url: string) => navigateBrowser(url),
+    replace: (url: string) => navigateBrowser(url),
     reload: () => {},
     toString: () => location.href,
   }
@@ -115,16 +116,29 @@ function installHashEnvironment(initialHash: string) {
     state: null as Record<string, unknown> | null,
     pushState(state: Record<string, unknown> | null, _title: string, url?: string) {
       history.state = state
-      if (url) setHashFromUrl(url)
+      if (url) navigateBrowser(url)
     },
     replaceState(state: Record<string, unknown> | null, _title: string, url?: string) {
       history.state = state
-      if (url) setHashFromUrl(url)
+      if (url) navigateBrowser(url)
     },
     go: () => {},
     back: () => {},
     forward: () => {},
     length: 1,
+  }
+
+  // 浏览器 URL 语义桩：pushState/replaceState/location.assign 统一收口。
+  // 关键：以 `//` 开头、不含 `#` 前缀的 URL 是"协议相对"外部地址（相对当前协议解析到
+  // 外部源，如 http: + //evil.example → http://evil.example）。真实浏览器会把页面导航
+  // 到该外部源（CVE-2026-40181 的逃逸机制）；桩忠实模拟：href 变为外部 URL。
+  // 站内导航（hash 历史始终以 `#` 开头）不受影响，仍走 setHashFromUrl。
+  function navigateBrowser(url: string) {
+    if (!url.startsWith('#') && /^\/\//.test(url)) {
+      location.href = new URL(`http:${url}`).href // 逃逸：页面离开站内，跳向协议相对外部源
+      return
+    }
+    setHashFromUrl(url)
   }
 
   function setHashFromUrl(url: string) {
@@ -238,6 +252,23 @@ async function mountApp(initialHash: string) {
   return { root, hash: env.hash, href: env.href }
 }
 
+// ── CVE-2026-40181 原语探针 ─────────────────────────────────
+// 路由级回归（App 兜底 <Navigate to="/" replace />）是第二道防线；本探针直接调用
+// react-router 的 navigate 原语（不经 App 的硬编码路由/兜底），钉住"导航原语本身收到
+// `//` 协议相对路径时不得把 location 带出站内"。渲染于 HashRouter 上下文内（与 App
+// 相同的最外层 router），经 useEffect 暴露 navigate 供测试在 act 内驱动。
+function NavigateProbe({ onReady }: { onReady: (nav: NavigateFunction) => void }) {
+  const navigate = useNavigate()
+  const ready = useRef(false)
+  useEffect(() => {
+    if (!ready.current) {
+      ready.current = true
+      onReady(navigate)
+    }
+  }, [navigate, onReady])
+  return null
+}
+
 describe('App.tsx 路由（HashRouter，SEC-11 / S-SEC-B10-002）', () => {
   beforeEach(() => {
     for (const spy of [
@@ -309,5 +340,40 @@ describe('App.tsx 路由（HashRouter，SEC-11 / S-SEC-B10-002）', () => {
     // 始终停留在本地 SPA：href 前缀为 http://localhost，绝不为 //evil.example / 外部 host
     expect(m.href()).toMatch(/^http:\/\/localhost\//)
     expect(m.href()).not.toContain('evil.example')
+  })
+
+  // P3-4a：CVE-2026-40181 原语钉住 —— 直接调用 useNavigate()('//evil.example')，
+  // 不经 App 路由/兜底（该回归用例覆盖的是"应用第二道防线"，本用例钉的是"原语本体"）。
+  // 探针路由镜像 App 的兜底（* → <Navigate to="/" replace />）：navigate 收到
+  // `//` 协议相对路径时，修复版本（6.30.4+）将其视为站内 pathname（hash 历史以
+  // fragment 承载），再由兜底归一为 #/；若 react-router 降级 <6.30.4，navigate 会把
+  // `//evil.example` 当协议相对外部 URL 逃逸（桩模拟真实浏览器：href 变为外部源）→ RED。
+  it('useNavigate 原语：navigate("//evil.example") 不得离开站内（CVE-2026-40181 本体）', async () => {
+    const env = installHashEnvironment('/')
+    const container = env.makeContainer()
+    const root = createRoot(container as unknown as Element)
+    rootRef = root
+    let navigate: NavigateFunction | null = null
+    await act(async () => {
+      root.render(
+        <HashRouter>
+          <Routes>
+            <Route path="/" element={<NavigateProbe onReady={(nav) => (navigate = nav)} />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </HashRouter>,
+      )
+    })
+    expect(navigate).not.toBeNull()
+    await act(async () => {
+      navigate!('//evil.example')
+    })
+    await act(async () => {})
+    await act(async () => {})
+    // 判别点：hash 被兜底归一为站内 #/，href 始终停留在 http://localhost ——
+    // 原语不得把 location 带出站内（协议相对逃逸时 href 为外部源，下列断言 RED）。
+    expect(env.hash()).toBe('#/')
+    expect(env.href()).toMatch(/^http:\/\/localhost\//)
+    expect(env.href()).not.toContain('evil.example')
   })
 })

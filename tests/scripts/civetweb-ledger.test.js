@@ -7,7 +7,6 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -37,15 +36,17 @@ function dirManifest() {
   return out.sort();
 }
 
-function git(args) {
-  const r = spawnSync("git", args, { cwd: REPO_ROOT, encoding: "buffer" });
-  assert.equal(r.status, 0, `git ${args.join(" ")} 失败: ${r.stderr && r.stderr.toString()}`);
-  return r.stdout;
-}
-
-// 规范摘要：git blob（LF 归一化入库字节），与 checkout 行尾状态无关（同 manifest-anchor 约定）。
+// 规范摘要：工作区读取（fs.readFile + CRLF→LF 归一化），与 git blob（LF 入库字节）对齐、
+// 与 checkout 行尾状态无关（同 manifest-anchor 约定，.gitattributes `* text=auto eol=lf`）。
+// 与旧实现 git show HEAD:... 的关键差异：后者只读"已提交 blob"，本地未提交的修改会假绿
+// （账本仍与 HEAD 一致，测不出工作区漂移）；工作区读取使任何未提交改动立即被账本校验
+// 捕获为 RED —— 账本校验的不再是"历史上提交了什么"，而是"磁盘当前实际是什么"。
 function blobSha256(rel) {
-  return crypto.createHash("sha256").update(git(["show", `HEAD:${DIR}/${rel}`])).digest("hex");
+  const raw = fs.readFileSync(path.join(REPO_ROOT, DIR, rel));
+  return crypto
+    .createHash("sha256")
+    .update(raw.toString("utf8").replace(/\r\n/g, "\n"))
+    .digest("hex");
 }
 
 // 从 LEDGER.md 解析路径→SHA-256 映射：匹配表格行 `| \`路径\` | \`64hex\` |`（hash 允许带/不带反引号）。

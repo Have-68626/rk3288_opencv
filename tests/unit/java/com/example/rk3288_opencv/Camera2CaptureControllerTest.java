@@ -368,6 +368,10 @@ public class Camera2CaptureControllerTest {
 
         // 成功路径：会话保持（字段写入且未释放），状态正常
         assertSame("成功配置后 session 字段应保持为已配置会话", fakeSession, getField(c, "session"));
+        // P3-4b：钉住 setRepeatingRequest 确实被调用（成功路径必须下发持续请求，
+        // 防回归"配置完成但无请求"的半死态 —— 调用计数为 0 即 RED）。
+        assertTrue("成功路径必须调用 session.setRepeatingRequest 下发持续请求",
+                fakeSession.setRepeatingRequestCalls >= 1);
         assertEquals("成功路径不得释放 session", 0, c.releaseCameraSessionCalls);
         assertEquals("成功路径不得释放 device", 0, c.releaseCameraDeviceCalls);
         assertEquals("成功路径不得释放 reader", 0, c.releaseImageReaderCalls);

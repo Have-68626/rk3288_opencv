@@ -19,7 +19,13 @@ public class CameraCaptureSession implements AutoCloseable {
     public CameraCaptureSession() {
     }
 
+    // 治理任务 P3-4b：setRepeatingRequest 调用计数。成功路径用例据此断言
+    // "配置完成后确实下发了持续请求"（>= 1），钉住 setRepeatingRequest 被真实调用，
+    // 防回归"配置完成但无请求"的半死态（计数为 0 即 RED）。
+    public int setRepeatingRequestCalls;
+
     public int setRepeatingRequest(CaptureRequest request, CaptureCallback callback, Handler handler) {
+        setRepeatingRequestCalls++;
         return 0;
     }
 
