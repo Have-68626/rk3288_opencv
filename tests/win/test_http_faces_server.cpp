@@ -837,14 +837,21 @@ bool makeToctouFixture(ToctouFixture& f) {
     return true;
 }
 
-// 在 link 处创建指向 target 的 file symlink；无 SeCreateSymbolicLinkPrivilege 则失败。
+// Win10 1703+ 且开启开发者模式（或管理员）时，非特权进程可创建 symlink，但必须带
+// SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE；旧 SDK 缺失该宏时回退为常量 0x2。
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
+
+// 在 link 处创建指向 target 的 file symlink；受限环境（无开发者模式/非管理员）则失败。
 bool tryCreateFileSymlink(const std::filesystem::path& link,
                           const std::filesystem::path& target,
                           DWORD& lastError) {
     std::error_code ec;
     std::filesystem::remove(link, ec);
     SetLastError(ERROR_SUCCESS);
-    if (CreateSymbolicLinkW(link.c_str(), target.c_str(), 0) != 0) {
+    if (CreateSymbolicLinkW(link.c_str(), target.c_str(),
+                            SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0) {
         lastError = ERROR_SUCCESS;
         return true;
     }
@@ -858,7 +865,9 @@ bool tryCreateDirectorySymlink(const std::filesystem::path& link,
     std::error_code ec;
     std::filesystem::remove(link, ec);
     SetLastError(ERROR_SUCCESS);
-    if (CreateSymbolicLinkW(link.c_str(), target.c_str(), SYMBOLIC_LINK_FLAG_DIRECTORY) != 0) {
+    if (CreateSymbolicLinkW(link.c_str(), target.c_str(),
+                            SYMBOLIC_LINK_FLAG_DIRECTORY |
+                                SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0) {
         lastError = ERROR_SUCCESS;
         return true;
     }
@@ -875,7 +884,7 @@ TEST(StaticFileToctou, StaticFileRootRejectsReparsePointInConfiguredRoot) {
     const std::filesystem::path rootLink = f.base / L"webroot-link";
     DWORD symlinkError = ERROR_SUCCESS;
     if (!tryCreateDirectorySymlink(rootLink, f.webroot, symlinkError)) {
-        GTEST_SKIP() << "无法创建目录 symlink（无 SeCreateSymbolicLinkPrivilege，GetLastError=" << symlinkError << ")";
+        GTEST_SKIP() << "无法创建目录 symlink（GetLastError=" << symlinkError << "，需开发者模式或管理员权限）";
     }
 
     rk_win::StaticFileRoot root;
@@ -888,7 +897,7 @@ TEST(StaticFileToctou, StaticFileRootRejectsReparsePointInRootAncestors) {
     const std::filesystem::path parentLink = f.base / L"parent-link";
     DWORD symlinkError = ERROR_SUCCESS;
     if (!tryCreateDirectorySymlink(parentLink, f.base, symlinkError)) {
-        GTEST_SKIP() << "无法创建目录 symlink（无 SeCreateSymbolicLinkPrivilege，GetLastError=" << symlinkError << ")";
+        GTEST_SKIP() << "无法创建目录 symlink（GetLastError=" << symlinkError << "，需开发者模式或管理员权限）";
     }
 
     rk_win::StaticFileRoot root;
@@ -911,7 +920,7 @@ TEST(StaticFileToctou, ValidatedPathSwappedOutsideIsReadableByRawOpen) {
     // 2) open 前 swap：在已校验路径处创建指向 webroot 外的 symlink。
     DWORD symlinkError = ERROR_SUCCESS;
     if (!tryCreateFileSymlink(resolved, f.secret, symlinkError)) {
-        GTEST_SKIP() << "无法创建 symlink（无 SeCreateSymbolicLinkPrivilege，GetLastError=" << symlinkError << ")";
+        GTEST_SKIP() << "无法创建 symlink（GetLastError=" << symlinkError << "，需开发者模式或管理员权限）";
     }
 
     // 3) 旧读取方式（按路径字符串 open）：跟随 symlink 读到越界内容。
@@ -985,7 +994,7 @@ TEST(StaticFileToctou, ReadFileWithinRootRejectsOutsideSymlink) {
     const std::filesystem::path link = f.webroot / L"sub" / L"link.txt";
     DWORD symlinkError = ERROR_SUCCESS;
     if (!tryCreateFileSymlink(link, f.secret, symlinkError)) {
-        GTEST_SKIP() << "无法创建 symlink（无 SeCreateSymbolicLinkPrivilege，GetLastError=" << symlinkError << ")";
+        GTEST_SKIP() << "无法创建 symlink（GetLastError=" << symlinkError << "，需开发者模式或管理员权限）";
     }
     std::string out;
     const bool ok = rk_win::readFileWithinRoot(root, std::filesystem::path(L"sub") / L"link.txt", out);
@@ -1002,7 +1011,7 @@ TEST(StaticFileToctou, ReadFileWithinRootRejectsOutsideDirectorySymlink) {
     const std::filesystem::path link = f.webroot / L"sub" / L"linked-outside";
     DWORD symlinkError = ERROR_SUCCESS;
     if (!tryCreateDirectorySymlink(link, f.outside, symlinkError)) {
-        GTEST_SKIP() << "无法创建目录 symlink（无 SeCreateSymbolicLinkPrivilege，GetLastError=" << symlinkError << ")";
+        GTEST_SKIP() << "无法创建目录 symlink（GetLastError=" << symlinkError << "，需开发者模式或管理员权限）";
     }
 
     std::string out;
@@ -1042,7 +1051,7 @@ TEST(StaticFileToctou, ReadFileWithinRootRejectsInsideSymlink) {
     const std::filesystem::path link = f.webroot / L"alias.js";
     DWORD symlinkError = ERROR_SUCCESS;
     if (!tryCreateFileSymlink(link, real, symlinkError)) {
-        GTEST_SKIP() << "无法创建 symlink（无 SeCreateSymbolicLinkPrivilege，GetLastError=" << symlinkError << ")";
+        GTEST_SKIP() << "无法创建 symlink（GetLastError=" << symlinkError << "，需开发者模式或管理员权限）";
     }
     std::string out;
     EXPECT_FALSE(rk_win::readFileWithinRoot(root, std::filesystem::path(L"alias.js"), out));
