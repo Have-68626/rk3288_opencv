@@ -45,16 +45,21 @@ int main() {
     // Validate correctness
     FaceDatabase loadDb;
     loadDb.load(testPath);
+    // persons() 按值返回整表：循环外各取一次副本，避免每次迭代整表拷贝，
+    // 也避免 const auto& 绑定到 .at() 返回的临时对象元素（悬垂引用，依赖生命周期延伸）。
+    const auto origPersons = db.persons();
+    const auto loadedPersons = loadDb.persons();
     bool valid = true;
-    if (loadDb.persons().size() != db.persons().size()) valid = false;
+    if (loadedPersons.size() != origPersons.size()) valid = false;
     else {
-        for (const auto& kv : db.persons()) {
-            if (!loadDb.hasPerson(kv.first)) {
+        for (const auto& kv : origPersons) {
+            const auto it = loadedPersons.find(kv.first);
+            if (it == loadedPersons.end()) {
                 valid = false;
                 break;
             }
             const auto& origE = kv.second;
-            const auto& loadE = loadDb.persons().at(kv.first);
+            const auto& loadE = it->second;
             if (origE.count != loadE.count || origE.mean.size() != loadE.mean.size()) {
                 valid = false;
                 break;
