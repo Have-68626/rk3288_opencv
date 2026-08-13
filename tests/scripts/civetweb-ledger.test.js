@@ -14,8 +14,28 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const DIR = "src/win/third_party/civetweb";
 const LEDGER = path.join(REPO_ROOT, DIR, "LEDGER.md");
 
-// 账本必须覆盖的目录文件清单（源文件 + 许可证归档）。
-const MANIFEST = ["LICENSE.md", "include/civetweb.h", "src/civetweb.c", "src/md5.inl"];
+// 运行时枚举目录内全部普通文件（排除账本自身）：新增文件无需手工改 MANIFEST 即被
+// "账本覆盖全部目录文件"校验捕获。用 fs 目录遍历而非 git ls-files —— 未提交的新文件
+// 同样会被识别，账本缺漏立即 RED（git ls-files 只列出已跟踪文件，会漏掉新增未提交文件）。
+function dirManifest() {
+  const root = path.join(REPO_ROOT, DIR);
+  const out = [];
+  const stack = [""];
+  while (stack.length > 0) {
+    const rel = stack.pop();
+    const abs = path.join(root, rel);
+    for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        stack.push(childRel);
+      } else if (entry.isFile()) {
+        if (childRel === "LEDGER.md") continue; // 账本不覆盖自身
+        out.push(childRel);
+      }
+    }
+  }
+  return out.sort();
+}
 
 function git(args) {
   const r = spawnSync("git", args, { cwd: REPO_ROOT, encoding: "buffer" });
@@ -51,13 +71,15 @@ test("SEC-17：LEDGER.md 账本必须存在", () => {
 
 test("SEC-17：账本覆盖全部目录文件，无缺漏", () => {
   const map = ledgerHashes();
-  const missing = MANIFEST.filter((f) => !(f in map));
+  const manifest = dirManifest();
+  assert.ok(manifest.length >= 4, `目录文件枚举异常: ${manifest.length}`);
+  const missing = manifest.filter((f) => !(f in map));
   assert.deepEqual(missing, [], `账本缺少条目: ${missing.join(", ")}`);
 });
 
 test("SEC-17：账本摘要可复算（记录 hash == 当前 git blob hash）", () => {
   const map = ledgerHashes();
-  for (const rel of MANIFEST) {
+  for (const rel of dirManifest()) {
     assert.equal(map[rel], blobSha256(rel), `${rel} 账本 hash 与 git blob 不一致，来源账本失步`);
   }
 });

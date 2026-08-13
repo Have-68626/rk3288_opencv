@@ -596,6 +596,88 @@ TEST(HttpFacesAuth, HeadlessClientWriteAcceptedWithoutOrigin) {
     EXPECT_EQ(r.status, 200) << r.response;
 }
 
+// ── SEC-02：认证畸形 Authorization 头 fail-closed（RFC 6750 / auth-model.md §3.4）────
+// requestAuthorized 的解析契约（生产实现 HttpFacesServer.cpp）：
+//  - 仅接受 `Bearer` scheme（RFC 6750 scheme 大小写不敏感）；
+//  - 分隔符必须是单个空格：无空格 / tab 分隔都视为畸形 → 拒绝；
+//  - 多个 Authorization 头只取第一个（读取时 break），首条畸形即拒绝。
+// 所有用例均启用认证（配置 token），验证畸形头一律 401，绝不因畸形而放行。
+
+// Basic scheme（合法 HTTP 认证 scheme，但本项目只接受 Bearer）→ 401。
+TEST(HttpFacesAuth, BasicSchemeRejected) {
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+                            "Authorization: Basic dXNlcjpwYXNz\r\n\r\n";
+    const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 401) << r.response;
+    EXPECT_NE(r.response.find("\"unauthorized\""), std::string::npos) << r.response;
+}
+
+// `Bearer` 无空格无 token（find(' ') 为 npos）→ 401。
+TEST(HttpFacesAuth, BearerWithoutSpaceRejected) {
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+                            "Authorization: Bearer\r\n\r\n";
+    const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 401) << r.response;
+}
+
+// 大写 scheme `BEARER`：RFC 6750 规定 scheme 大小写不敏感，故 `BEARER <正确 token>`
+// 会被接受（生产注释明确此契约）。本用例验证的 fail-closed 性质是：大写 scheme 不构成
+// 绕过——携带错误 token 时仍必须 401；同时以正确 token 断言大写 scheme 不破坏 RFC 契约。
+TEST(HttpFacesAuth, UppercaseSchemeDoesNotBypassTokenCheck) {
+    {
+        const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+                                "Authorization: BEARER wrong-token\r\n\r\n";
+        const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
+        ASSERT_TRUE(r.connected);
+        EXPECT_EQ(r.status, 401) << r.response;
+    }
+    {
+        const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+                                "Authorization: BEARER test-secret-token\r\n\r\n";
+        const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
+        ASSERT_TRUE(r.connected);
+        EXPECT_EQ(r.status, 200) << r.response;
+    }
+}
+
+// tab 分隔 `Bearer\t<token>`：解析器只认空格，tab 使 find(' ') 为 npos →
+// 即使 token 正确也畸形 → 401（fail-closed）。
+TEST(HttpFacesAuth, TabSeparatedSchemeRejected) {
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+                            "Authorization: Bearer\ttest-secret-token\r\n\r\n";
+    const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 401) << r.response;
+}
+
+// 多个 Authorization 头：读取仅取第一个，首条为畸形 Basic 时即使后随有效 Bearer 也必须
+// 401 —— 头歧义不得通过"追加一条有效头"绕过校验（fail-closed）。
+TEST(HttpFacesAuth, DuplicateAuthorizationMalformedFirstRejected) {
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+                            "Authorization: Basic dXNlcjpwYXNz\r\n"
+                            "Authorization: Bearer test-secret-token\r\n\r\n";
+    const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 401) << r.response;
+}
+
+// ── SEC-07：CSRF 与认证正交（auth-model.md §3.5）────────────────────
+// 兼容模式（未配置 token = 匿名放行）只豁免"认证"，不豁免 CSRF：跨站 Origin 的写请求
+// 在无 token 配置下同样必须 403。判别点：无 Authorization 头 + 跨站 Origin 的 POST。
+TEST(HttpFacesAuth, CrossSiteWriteRejectedWithoutAuthToken) {
+    const std::string body = "personId=attacker";
+    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: t\r\n"
+                            "Origin: https://evil.example\r\n"
+                            "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " +
+                            std::to_string(body.size()) + "\r\n\r\n" + body;
+    const auto r = runHttpRequest(nullptr, req, nullptr);
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 403) << r.response;
+    EXPECT_NE(r.response.find("\"cross_site_forbidden\""), std::string::npos) << r.response;
+}
+
 // ── S-SEC-B09-005：流会话配额（FPS 预算 / 字节配额 / 会话超时）────────────────────
 // 背景：全局 ConnectionQuota=64 只限制"并发连接数"，不限制单个流会话消耗的
 // CPU / 字节 / 时长 —— MJPEG 可被恶意客户端迫使按源帧率（30+ fps）连续 JPEG 编码；
@@ -1120,6 +1202,24 @@ TEST(HttpFacesAuth, SameOriginSecFetchSiteAccepted) {
     GTEST_SKIP() << "HTTP CSRF 用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, HeadlessClientWriteAcceptedWithoutOrigin) {
+    GTEST_SKIP() << "HTTP CSRF 用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, BasicSchemeRejected) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, BearerWithoutSpaceRejected) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, UppercaseSchemeDoesNotBypassTokenCheck) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, TabSeparatedSchemeRejected) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, DuplicateAuthorizationMalformedFirstRejected) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, CrossSiteWriteRejectedWithoutAuthToken) {
     GTEST_SKIP() << "HTTP CSRF 用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesStreamQuota, MjpegFpsThrottle) {

@@ -3,11 +3,13 @@ package com.example.rk3288_opencv;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CaptureRequest;
 import android.media.ImageReader;
 import android.os.HandlerThread;
 
@@ -341,5 +343,36 @@ public class Camera2CaptureControllerTest {
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
         assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
         assertTrue("应上报 onOpened 失败错误", obs.hasError());
+    }
+
+    // ---------- Q4-7：setRepeatingRequest 成功 → 会话保持 / 状态正常 ----------
+
+    /**
+     * 成功路径判别：handleSessionConfigured 在 setRepeatingRequest 成功时必须保持会话、
+     * 状态正常 —— session 字段保留已配置会话、四个释放接缝均不调用、代次不变、不上报错误。
+     * 现有用例均为错误路径（null 参数触发 NPE）或旧代次（未进入配置阶段），本用例是首个
+     * "正常路径"：以测试替身（android.hardware.camera2.CaptureRequest / CameraCaptureSession，
+     * 见 tests/unit/java/android/hardware/camera2/）提供可成功调用的 Builder/session，
+     * 驱动 setRepeatingRequest 成功分支。若未来有人误把成功路径改走回滚/释放，本用例即 RED。
+     */
+    @Test
+    public void configuredSetRepeatingRequestSuccess_keepsSessionAndStateNormal() {
+        FakeObserver obs = new FakeObserver();
+        SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
+        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
+
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        CameraCaptureSession fakeSession = new CameraCaptureSession();
+        CaptureRequest.Builder fakeBuilder = new CaptureRequest.Builder();
+        cb.handleSessionConfigured(fakeSession, fakeBuilder);
+
+        // 成功路径：会话保持（字段写入且未释放），状态正常
+        assertSame("成功配置后 session 字段应保持为已配置会话", fakeSession, getField(c, "session"));
+        assertEquals("成功路径不得释放 session", 0, c.releaseCameraSessionCalls);
+        assertEquals("成功路径不得释放 device", 0, c.releaseCameraDeviceCalls);
+        assertEquals("成功路径不得释放 reader", 0, c.releaseImageReaderCalls);
+        assertEquals("成功路径不得释放 thread", 0, c.releaseCaptureThreadCalls);
+        assertEquals("成功路径不得递增代次", Integer.valueOf(1), getField(c, "generation"));
+        assertFalse("成功路径不得上报错误", obs.hasError());
     }
 }
