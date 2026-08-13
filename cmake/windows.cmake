@@ -236,6 +236,7 @@ add_executable(win_unit_tests
     "tests/win/test_endpoint_registry.cpp"
     "tests/win/test_frame_pipeline_reload.cpp"
     "tests/win/test_win_json_config.cpp"
+    "tests/win/test_face_database_encryption.cpp"
     "src/win/src/RuntimeBootstrap.cpp"
     "src/win/src/FramePipeline.cpp"
     "src/win/src/MfCamera.cpp"
