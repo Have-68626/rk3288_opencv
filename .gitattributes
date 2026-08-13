@@ -8,6 +8,13 @@ tests/test_set01/** binary
 tests/win_eval_sample/** binary
 deps/WIDER_train/** binary
 
+# Android 资产（cascade / 模型）：声明 binary，禁止行尾转换。
+# WHY：.xml 默认走 text=auto 会把 Windows checkout 行尾换成 CRLF，使 working tree 字节
+# ≠ git blob（LF），cascade 的 SHA-256 因此跨平台漂移（本机 CRLF 6f5f20… vs blob 529f21…），
+# FramePipeline.cpp 的 manifest 自检在 LF 环境（CI / Linux）会误报 mismatch。
+# 声明 binary 后 checkout 原样写回 blob 字节，hash 恒定跨平台（治理任务 Q4-2 平台锚点）。
+app/src/main/assets/** binary
+
 # 图片 / 模型等二进制资产
 *.jpg binary
 *.jpeg binary

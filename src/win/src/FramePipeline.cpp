@@ -85,17 +85,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
     // Manifest check（保留——这是运行时自检，不归 bootstrap 管）
     {
         std::lock_guard<std::mutex> lock(modelsMu_);
-        for (const auto& m : activeModels_) {
-            const char* match = "unknown";
-            if (m.id == "cascade_frontalface") {
-                // 期望值须与 app/src/main/assets/lbpcascade_frontalface.xml 同步；
-                // 更新模型文件后须更新此值（RW2/R2-3 双审 P2）。
-                match = (m.hash == "6f5f20091b0d20311c929bcd8c927074e50bd0ac6424321016c679f43cf5ebcf")
-                    ? "match" : "mismatch";
-            }
-            std::fprintf(stderr, "MODEL_MANIFEST_CHECK [id=%s] hash=%s manifest_match=%s\n",
-                m.id.c_str(), m.hash.c_str(), match);
-        }
+        checkModelManifestsLocked();
     }
 
     // 装配 SideEffectSink（纯计算 + 副作用收口）；FrameProcessor 已在 runtime 快照内
@@ -445,12 +435,33 @@ int FramePipeline::enrollRemainingForTest() const {
     return enrollRemaining_;
 }
 
+// Manifest 自检：打印每个活动模型的 MODEL_MANIFEST_CHECK 诊断行（纯诊断、不阻塞）。
+// 期望值须与 app/src/main/assets/lbpcascade_frontalface.xml 的 git blob（LF 规范）SHA256 同步。
+// .gitattributes 已将 assets 声明 binary（不做行尾转换），checkout 后字节与 blob 一致，
+// 故部署的 cascade 计算出的运行时 hash 恒等于此值（Q4-2 平台锚点，RW2/R2-3 双审 P2）。
+// 更新模型文件后须更新此值。抽出为复用函数（Q4-4）：initialize 与 reloadRuntime 成功替换
+// activeModels_ 后均调用，使日志反映重载后的 hash/manifest_match。调用方须已持有 modelsMu_ 锁。
+void FramePipeline::checkModelManifestsLocked() const {
+    for (const auto& m : activeModels_) {
+        const char* match = "unknown";
+        if (m.id == "cascade_frontalface") {
+            match = (m.hash == "529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d")
+                ? "match" : "mismatch";
+        }
+        std::fprintf(stderr, "MODEL_MANIFEST_CHECK [id=%s] hash=%s manifest_match=%s\n",
+            m.id.c_str(), m.hash.c_str(), match);
+    }
+}
+
 void FramePipeline::reloadRuntime(const AppConfig& cfg) {
     cfg_ = cfg;
     auto bootstrap = RuntimeBootstrap::build(cfg);
     {
         std::lock_guard<std::mutex> lock(modelsMu_);
         activeModels_ = std::move(bootstrap.models);
+        // Q4-4：重载成功后重跑 manifest 校验——activeModels_ 已替换为 reload 后的模型，
+        // 校验随之重跑，使日志反映重载后的 hash/manifest_match（与 initialize 一致，纯诊断不阻塞）。
+        checkModelManifestsLocked();
     }
     // 构建不可变快照后原子替换：processLoop 已持有的旧快照继续存活到引用归零，
     // 不会在 run() 执行中被销毁（并发 reload/enroll 无 UAF）

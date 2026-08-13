@@ -1,12 +1,19 @@
 #include "rk_win/FramePipeline.h"
 #include "rk_win/IRecognizer.h"
 #include "rk_win/WinConfig.h"
+#include "FileHash.h"  // rk_wcfr::calculateSHA256：断言捕获日志中 hash 与临时文件实际值一致
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <io.h>  // MSVC: _dup/_dup2/_close/_fileno（stderr 重定向捕获）
+#include <iostream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -450,4 +457,143 @@ bool test_pipeline_enroll_writeback_does_not_overwrite_new_request() {
     gate->go();
     fp.shutdown();
     return preserved;
+}
+
+namespace {
+
+// Q4-4 临时文件助手：cascade A/B 两个内容不同但均可合法加载的模型副本 + stderr 捕获日志，
+// 析构时清理。用进程内递增序号保证多次运行/并行构建目录互不冲突。
+struct ManifestTempFiles {
+    std::filesystem::path fileA;
+    std::filesystem::path fileB;
+    std::filesystem::path capture;
+    ~ManifestTempFiles() {
+        std::error_code ec;
+        std::filesystem::remove(fileA, ec);
+        std::filesystem::remove(fileB, ec);
+        std::filesystem::remove(capture, ec);
+    }
+};
+
+ManifestTempFiles makeManifestTempFiles() {
+    static int seq = 0;
+    const int n = ++seq;
+    const auto tmp = std::filesystem::temp_directory_path();
+    ManifestTempFiles f;
+    f.fileA = tmp / ("rk_wcfr_q44_cascade_a_" + std::to_string(n) + ".xml");
+    f.fileB = tmp / ("rk_wcfr_q44_cascade_b_" + std::to_string(n) + ".xml");
+    f.capture = tmp / ("rk_wcfr_q44_manifest_capture_" + std::to_string(n) + ".log");
+    return f;
+}
+
+// 定位真实 LBP cascade（与 R2-3 测试同一探测策略）。两配置的 cascade 必须可被
+// cv::CascadeClassifier 正常加载：空/非法 XML 会落入 haar_cvt::convert 旧格式转换
+// 路径而崩溃（Q4-4 实证），故以"真实 cascade + 注入注释"构造两个合法、hash 不同的模型。
+std::filesystem::path findRealCascade() {
+    const std::filesystem::path cwd = std::filesystem::current_path();
+    for (const auto& cand : {
+             cwd / "assets" / "lbpcascade_frontalface.xml",
+             cwd.parent_path() / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml",
+             cwd / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml"}) {
+        if (std::filesystem::exists(cand)) return cand;
+    }
+    return {};
+}
+
+// 从捕获的 stderr 中提取 cascade_frontalface 的 MODEL_MANIFEST_CHECK 行。
+// 过滤掉 FaceRecognizer 的 [Self-Check] 等其它 stderr 输出，只统计 manifest 校验行。
+std::vector<std::string> extractCascadeManifestLines(const std::string& log) {
+    const std::string marker = "MODEL_MANIFEST_CHECK [id=cascade_frontalface]";
+    std::vector<std::string> out;
+    std::istringstream iss(log);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.find(marker) != std::string::npos) out.push_back(line);
+    }
+    return out;
+}
+
+}  // namespace
+
+// Q4-4（P2）：reloadRuntime 成功后须重跑 manifest 校验，使日志反映重载后的模型 hash。
+// 判别：捕获 stderr 下依次调用 initialize(cfgA) + reloadRuntime(cfgB)；cfgA/cfgB 的
+//   cascade 分别为"真实 cascade 副本"与"副本注入注释"→ hashA != hashB 且均可加载。
+// 修复前：reloadRuntime 不重跑校验 → 仅 initialize 打印 1 行 cascade MODEL_MANIFEST_CHECK
+//   （反映 hashA），行数 < 2 且末行不反映 hashB → 断言失败（RED）。
+// 修复后：reloadRuntime 重跑校验 → 恰好 2 行，首行 hashA、末行 hashB → 断言通过（GREEN）。
+bool test_pipeline_reload_reruns_manifest_check() {
+    auto tmp = makeManifestTempFiles();
+    const std::filesystem::path real = findRealCascade();
+    if (real.empty()) return false;  // 前置缺失：明确失败而非假绿
+    {
+        // fileA = 真实 cascade 逐字节副本；fileB = 副本在根元素后注入注释（仍合法可加载，
+        // 但字节不同 → hashB != hashA）。避开空 XML 触发 haar_cvt::convert 崩溃路径。
+        std::ifstream src(real, std::ios::binary);
+        std::ostringstream content;
+        content << src.rdbuf();
+        const std::string body = content.str();
+        const std::string rootTag = "<opencv_storage>";
+        const size_t rootPos = body.find(rootTag);
+        if (rootPos == std::string::npos) return false;  // 结构异常：不应发生
+        {
+            std::ofstream a(tmp.fileA, std::ios::binary);
+            a << body;
+        }
+        {
+            std::ofstream b(tmp.fileB, std::ios::binary);
+            // 根元素后插注释（XML 注释，CascadeClassifier 正常忽略）→ 仅 hash 变化
+            b << body.substr(0, rootPos + rootTag.size())
+              << "\n<!-- q44 reload manifest variant -->\n"
+              << body.substr(rootPos + rootTag.size());
+        }
+    }
+
+    // 重定向 stderr 到捕获文件（manifest 校验打印目标）。MSVC fd 三连：
+    // _dup 保留原 stderr fd → freopen 指向捕获文件 → 结束后 _dup2 还原（可被 ctest 重定向）。
+    fflush(stderr);
+    std::cerr.flush();
+    const int savedFd = _dup(_fileno(stderr));
+    if (savedFd < 0) return false;
+    FILE* cap = freopen(tmp.capture.string().c_str(), "w", stderr);
+    if (!cap) {
+        _close(savedFd);
+        return false;
+    }
+
+    rk_win::AppConfig cfgA;
+    cfgA.model.recognition = "lbph";
+    cfgA.recognition.cascadePath = tmp.fileA;
+    cfgA.recognition.databasePath = ".";
+    cfgA.dnn.enable = false;
+
+    rk_win::AppConfig cfgB = cfgA;
+    cfgB.recognition.cascadePath = tmp.fileB;  // 重载后模型内容变化 → hash 不同
+
+    bool initOk = false;
+    {
+        rk_win::FramePipeline fp;
+        initOk = fp.initialize(cfgA);
+        fp.reloadRuntime(cfgB);  // 重载：activeModels_ 替换为 hashB 对应模型
+        fflush(stderr);
+        std::cerr.flush();
+        _dup2(savedFd, _fileno(stderr));  // 还原 stderr（shutdown 前），后续输出不再进捕获文件
+        _close(savedFd);
+        fp.shutdown();
+    }
+    if (!initOk) return false;
+
+    std::ifstream in(tmp.capture, std::ios::binary);
+    std::ostringstream oss;
+    oss << in.rdbuf();
+    const std::string log = oss.str();
+
+    const auto lines = extractCascadeManifestLines(log);
+    if (lines.size() != 2) return false;
+
+    const std::string shaA = rk_wcfr::calculateSHA256(tmp.fileA);
+    const std::string shaB = rk_wcfr::calculateSHA256(tmp.fileB);
+    if (shaA == shaB) return false;  // 防御：内容不同则 hash 必不同
+    // 首行反映 initialize 的 hashA；末行必须反映重载后的 hashB（reload 重跑了校验）
+    return lines.front().find(shaA) != std::string::npos &&
+           lines.back().find(shaB) != std::string::npos;
 }

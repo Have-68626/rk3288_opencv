@@ -155,6 +155,11 @@ private:
     CameraSwitchResult startCameraWithRollbackLocked(int deviceIndex, const CameraFormat& desired, int maxTotalMs);
     std::optional<int> findExactFormatIndexLocked(int deviceIndex, int width, int height, int fps) const;
 
+    // Manifest 自检（Q4-4）：遍历 activeModels_ 打印 MODEL_MANIFEST_CHECK 诊断日志（stderr）。
+    // 纯诊断、不阻塞。initialize 与 reloadRuntime 成功替换模型后均调用，使日志反映重载后的
+    // hash/manifest_match。调用方须已持有 modelsMu_ 锁（命名 *Locked）。
+    void checkModelManifestsLocked() const;
+
     AppConfig cfg_{};
     mutable std::mutex mu_;
 
