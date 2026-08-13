@@ -1,4 +1,5 @@
 import type { CacheStrategy, LogLevel } from '../state/prefs'
+import { getApiToken } from '../state/prefs'
 
 export class ApiError extends Error {
   public readonly code: string
@@ -128,12 +129,15 @@ export async function fetchJson<T>(
     : 0
   try {
     log(init.logLevel, 'debug', '[api] request', init.method ?? 'GET', input)
+    // 后端 Bearer 鉴权：token 非空才附加 Authorization，空 token = 兼容模式，headers 与现状一致
+    const apiToken = getApiToken()
     const res = await fetch(input, {
       ...init,
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(init.headers ?? {}),
+        ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}),
       },
     })
 

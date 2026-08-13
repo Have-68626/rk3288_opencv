@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fetchJson, ApiError, CACHE_KEY_PREFIX } from '../http'
+import {
+  getApiToken,
+  setApiToken,
+  clearApiToken,
+  API_TOKEN_STORAGE_KEY,
+} from '../../state/prefs'
 
 // fetchJson 用 window.setTimeout/clearTimeout —— node 环境无 window，指向全局
 // 避免污染其他测试，afterEach 删除。
@@ -231,6 +237,82 @@ describe('fetchJson（导入真实 http.ts 实现）', () => {
       })
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(data).toEqual({ ok: true, v: 1 })
+    })
+  })
+
+  describe('Authorization Bearer 注入（API Token）', () => {
+    // 与 local-5m 同款 stub：只对以下用例生效，避免污染文件外全局
+    let backingStore: Record<string, string> = {}
+    let localStorageMock: ReturnType<typeof installLocalStorageStub>
+
+    function installLocalStorageStub(store: Record<string, string>) {
+      return {
+        getItem: vi.fn((k: string) => store[k] ?? null),
+        setItem: vi.fn((k: string, v: string) => {
+          store[k] = v
+        }),
+        removeItem: vi.fn((k: string) => {
+          delete store[k]
+        }),
+      }
+    }
+
+    const baseOpts = {
+      timeoutMs: 100,
+      logLevel: 'silent' as const,
+      cacheStrategy: 'no-cache' as const,
+    }
+
+    beforeEach(() => {
+      backingStore = {}
+      localStorageMock = installLocalStorageStub(backingStore)
+      ;(globalThis as unknown as { localStorage: unknown }).localStorage = localStorageMock
+      mockFetch.mockReset()
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, data: { x: 1 } }))
+    })
+    afterEach(() => {
+      // 清理全局，避免污染其他测试文件
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    })
+
+    it('已设置 token：请求附加 Authorization: Bearer <token>', async () => {
+      // 直接预置 localStorage，模拟用户已保存 token（绕过 setApiToken 以测试 http 读取路径）
+      backingStore[API_TOKEN_STORAGE_KEY] = 'secret-token'
+      await fetchJson('/api/x', baseOpts)
+      const init = mockFetch.mock.calls[0][1] as RequestInit
+      expect(init.headers).toEqual({
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer secret-token',
+      })
+    })
+
+    it('未设置 token：请求不带 Authorization（headers 与现状完全一致）', async () => {
+      await fetchJson('/api/x', baseOpts)
+      const init = mockFetch.mock.calls[0][1] as RequestInit
+      // 逐字比对：无 token 时 header 必须保持原样，保证默认行为不变
+      expect(init.headers).toEqual({ 'Content-Type': 'application/json' })
+    })
+
+    it('清除 token 后：后续请求不再附带 Authorization', async () => {
+      setApiToken('secret-token')
+      await fetchJson('/api/x', baseOpts)
+      expect((mockFetch.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+        Authorization: 'Bearer secret-token',
+      })
+      clearApiToken()
+      await fetchJson('/api/x', baseOpts)
+      expect((mockFetch.mock.calls[1][1] as RequestInit).headers).not.toHaveProperty('Authorization')
+    })
+
+    it('空白 token（纯空格）：视为未设置，不带 Authorization', async () => {
+      backingStore[API_TOKEN_STORAGE_KEY] = '   '
+      await fetchJson('/api/x', baseOpts)
+      expect((mockFetch.mock.calls[0][1] as RequestInit).headers).not.toHaveProperty('Authorization')
+    })
+
+    it('setApiToken 去除首尾空白后持久化，getApiToken 可读回', async () => {
+      setApiToken('  tok-en  ')
+      expect(getApiToken()).toBe('tok-en')
     })
   })
 })

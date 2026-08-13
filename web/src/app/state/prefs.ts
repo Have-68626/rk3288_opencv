@@ -96,3 +96,42 @@ export function savePrefs(next: LocalPrefs) {
     // 写入失败（localStorage 满/禁用）不应阻断使用；静默忽略
   }
 }
+
+// ---- API Token（后端 Bearer 鉴权）----
+// 为什么独立于 LocalPrefs 存储（不复用 STORAGE_KEY blob）：
+// - 后端鉴权 token 是凭据而非“运行策略”，与主题/超时等混写会让任何偏好变更都重写凭据；
+// - 独立 key 使“保存 token”“清除 token”各自原子，互不影响，且默认（空）时注入逻辑完全不生效。
+export const API_TOKEN_STORAGE_KEY = 'rk_wcfr_api_token'
+
+export function getApiToken(): string {
+  try {
+    const raw = localStorage.getItem(API_TOKEN_STORAGE_KEY)
+    if (!raw) return ''
+    return raw.trim()
+  } catch {
+    // 读取失败（localStorage 禁用/不存在）不应影响请求；按“未设置”处理（兼容模式）
+    return ''
+  }
+}
+
+export function setApiToken(token: string) {
+  try {
+    const t = token.trim()
+    if (!t) {
+      // 保存空值等价于清除：避免残留一个无法生效的空白 token
+      localStorage.removeItem(API_TOKEN_STORAGE_KEY)
+      return
+    }
+    localStorage.setItem(API_TOKEN_STORAGE_KEY, t)
+  } catch {
+    // 写入失败（配额满/禁用）静默忽略，与 savePrefs 一致
+  }
+}
+
+export function clearApiToken() {
+  try {
+    localStorage.removeItem(API_TOKEN_STORAGE_KEY)
+  } catch {
+    // 忽略
+  }
+}
