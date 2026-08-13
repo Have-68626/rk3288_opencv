@@ -1,6 +1,7 @@
 #include "adapters/MobileFaceNetAdapter.h"
 
 #include "NativeLog.h"
+#include "NcnnParamGuard.h"
 
 using namespace rk_core;
 
@@ -34,6 +35,13 @@ bool MobileFaceNetAdapter::load(const std::string& modelPath, std::string& err) 
         binPath = modelPath + ".bin";
     }
 
+    // S-SEC-B10-001：ncnn 20260113 受 CVE-2026-50144（.param 负 id 越界堆写）影响，
+    // 前置文本校验拒绝恶意 .param，再交给 ncnn 解析（镜像上游修复语义）
+    std::string paramErr;
+    if (!rk_core::validateNcnnParamFile(paramPath.c_str(), paramErr)) {
+        err = "mobilefacenet: param 被拒绝: " + paramErr;
+        return false;
+    }
     if (net_.load_param(paramPath.c_str()) != 0) {
         err = "mobilefacenet: load_param failed: " + paramPath;
         return false;

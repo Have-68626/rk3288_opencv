@@ -56,7 +56,9 @@ jboolean engine_nativeInitFile(
     if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
     if (storage) env->ReleaseStringUTFChars(storagePath, storage);
 
-    LOGI("Initializing Engine with Mock File: %s...", pathStr.c_str());
+    // S-SEC-B07-002：mock 文件路径可能是含 userinfo 的 URL，logcat 输出前脱敏
+    LOGI("Initializing Engine with Mock File: %s...",
+         rk_core::VideoManager::sanitizeUriForLog(pathStr).c_str());
     if (!g_engine) {
         g_engine = std::make_unique<rk_core::Engine>();
     }
@@ -155,7 +157,8 @@ jboolean engine_nativeInit(
     g_engine->setOnResultCallback(sendRecognitionResult);
 
     if (useFilePathInit) {
-        LOGI("Initializing Engine with file path: %s...", camIdStr.c_str());
+        LOGI("Initializing Engine with file path: %s...",
+             rk_core::VideoManager::sanitizeUriForLog(camIdStr).c_str());
         try {
             return g_engine->initialize(camIdStr, cascadeStr, storageStr);
         } catch (const std::exception& e) {

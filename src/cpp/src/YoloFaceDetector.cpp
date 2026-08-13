@@ -3,6 +3,7 @@
 using namespace rk_core;
 
 #include "FileHash.h"
+#include "NcnnParamGuard.h"
 
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
@@ -397,6 +398,13 @@ public:
             net_.opt.use_vulkan_compute = false;
             net_.opt.num_threads = std::max(1, ncnnSpec_.threads);
             net_.opt.lightmode = ncnnSpec_.lightmode;
+            // S-SEC-B10-001：ncnn 20260113 受 CVE-2026-50144（.param 负 id 越界堆写）影响，
+            // 前置文本校验拒绝恶意 .param，再交给 ncnn 解析（镜像上游修复语义）
+            std::string paramErr;
+            if (!rk_core::validateNcnnParamFile(ncnnSpec_.paramPath.c_str(), paramErr)) {
+                err = "ncnn_param_rejected: " + paramErr;
+                return false;
+            }
             if (net_.load_param(ncnnSpec_.paramPath.c_str()) != 0) {
                 err = "ncnn_load_param_failed";
                 return false;

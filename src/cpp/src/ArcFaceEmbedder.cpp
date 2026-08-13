@@ -3,6 +3,7 @@
 using namespace rk_core;
 
 #include "NativeLog.h"
+#include "NcnnParamGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -92,6 +93,15 @@ bool ArcFaceEmbedder::initialize(const ArcFaceEmbedderConfig& cfg, std::string* 
         st->net.opt.num_threads = std::max(1, cfg_.ncnnThreads);
         st->net.opt.lightmode = cfg_.ncnnLightmode;
 
+        // S-SEC-B10-001：ncnn 20260113 受 CVE-2026-50144（.param 负 id 越界堆写）影响，
+        // 前置文本校验拒绝恶意 .param，再交给 ncnn 解析（镜像上游修复语义）
+        {
+            std::string paramErr;
+            if (!rk_core::validateNcnnParamFile(cfg_.ncnnParam.c_str(), paramErr)) {
+                if (err) *err = "ArcFaceEmbedder: ncnn param 被拒绝: " + paramErr;
+                return false;
+            }
+        }
         if (st->net.load_param(cfg_.ncnnParam.c_str()) != 0) {
             if (err) *err = "ArcFaceEmbedder: ncnn load_param 失败";
             return false;

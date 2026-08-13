@@ -57,6 +57,13 @@ bool test_video_manager_is_url_source_valid_urls();
 bool test_video_manager_is_url_source_local_paths();
 bool test_video_manager_is_url_source_edge_cases();
 
+bool test_video_manager_sanitize_uri_hides_userinfo();
+bool test_video_manager_sanitize_uri_keeps_host_port();
+bool test_video_manager_sanitize_uri_http_variants();
+bool test_video_manager_sanitize_uri_non_url_passthrough();
+bool test_video_manager_sanitize_uri_no_userinfo();
+bool test_video_manager_uri_log_sink_no_userinfo();
+
 bool test_int8_precision_detection_iou();
 bool test_int8_precision_arcface_similarity();
 
@@ -135,6 +142,12 @@ int main() {
         {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
         {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
         {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},
+        {"video_manager_sanitize_uri_hides_userinfo", test_video_manager_sanitize_uri_hides_userinfo},
+        {"video_manager_sanitize_uri_keeps_host_port", test_video_manager_sanitize_uri_keeps_host_port},
+        {"video_manager_sanitize_uri_http_variants", test_video_manager_sanitize_uri_http_variants},
+        {"video_manager_sanitize_uri_non_url_passthrough", test_video_manager_sanitize_uri_non_url_passthrough},
+        {"video_manager_sanitize_uri_no_userinfo", test_video_manager_sanitize_uri_no_userinfo},
+        {"video_manager_uri_log_sink_no_userinfo", test_video_manager_uri_log_sink_no_userinfo},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

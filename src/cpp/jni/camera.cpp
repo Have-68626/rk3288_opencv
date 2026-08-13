@@ -7,6 +7,7 @@
  */
 #include <jni.h>
 #include <cstring>
+#include <cstdint>
 #include <vector>
 
 #include "Engine.h"
@@ -17,6 +18,11 @@
 #define TAG "RK3288_JNI"
 
 namespace {
+
+// S-SEC-B09-003：单平面拷贝字节上限（512MB，远高于任何真实相机帧）。
+// need 以 int64 精确计算后与上限比较，32 位 size_t（armeabi-v7a）不再回绕
+// 导致 undersized 拷贝与下游越界读。
+constexpr int64_t kMaxPlaneBytes = 512LL * 1024LL * 1024LL;
 
 // ========== 辅助函数：从 DirectByteBuffer 拷贝 ==========
 bool copyDirectBytes(JNIEnv* env, jobject byteBuffer, std::size_t needBytes, std::vector<uint8_t>& out) {
@@ -63,18 +69,29 @@ jboolean camera_nativePushFrameYuv420888(
 
     const int chromaW = (width + 1) / 2;
     const int chromaH = (height + 1) / 2;
-    const std::size_t yNeed = static_cast<std::size_t>(f.y.rowStride) * static_cast<std::size_t>(height - 1)
-                              + static_cast<std::size_t>(width);
-    const std::size_t uNeed = (uRowStride > 0 && uPixelStride > 0)
-                                  ? (static_cast<std::size_t>(uRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(uPixelStride)
-                                     + 1U)
-                                  : 0U;
-    const std::size_t vNeed = (vRowStride > 0 && vPixelStride > 0)
-                                  ? (static_cast<std::size_t>(vRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(vPixelStride)
-                                     + 1U)
-                                  : 0U;
+    // S-SEC-B09-003：need 以 int64 精确计算（32 位 int/size_t 乘法不回绕），
+    // 超过 kMaxPlaneBytes 直接拒绝，避免 undersized 拷贝后下游越界读
+    const int64_t yNeed64 =
+        static_cast<int64_t>(f.y.rowStride) * (height - 1) + width;
+    const int64_t uNeed64 = (uRowStride > 0 && uPixelStride > 0)
+                                ? (static_cast<int64_t>(uRowStride) * (chromaH - 1)
+                                   + static_cast<int64_t>(chromaW - 1) * uPixelStride
+                                   + 1)
+                                : 0;
+    const int64_t vNeed64 = (vRowStride > 0 && vPixelStride > 0)
+                                ? (static_cast<int64_t>(vRowStride) * (chromaH - 1)
+                                   + static_cast<int64_t>(chromaW - 1) * vPixelStride
+                                   + 1)
+                                : 0;
+    if (yNeed64 <= 0 || yNeed64 > kMaxPlaneBytes ||
+        uNeed64 < 0 || uNeed64 > kMaxPlaneBytes ||
+        vNeed64 < 0 || vNeed64 > kMaxPlaneBytes) {
+        rklog::logWarn(TAG, __func__, "平面尺寸溢出/超上限");
+        return JNI_FALSE;
+    }
+    const std::size_t yNeed = static_cast<std::size_t>(yNeed64);
+    const std::size_t uNeed = static_cast<std::size_t>(uNeed64);
+    const std::size_t vNeed = static_cast<std::size_t>(vNeed64);
 
     // 重要：GetDirectBufferAddress 指向 ByteBuffer 底层起始地址，不会自动应用 position/limit。
     // 约定：Java 侧传入前先 rewind()/position(0)，避免拷贝到错误偏移。
@@ -128,18 +145,29 @@ jboolean camera_nativePushFrameYuv420888Bytes(
 
     const int chromaW = (width + 1) / 2;
     const int chromaH = (height + 1) / 2;
-    const std::size_t yNeed = static_cast<std::size_t>(f.y.rowStride) * static_cast<std::size_t>(height - 1)
-                              + static_cast<std::size_t>(width);
-    const std::size_t uNeed = (uRowStride > 0 && uPixelStride > 0)
-                                  ? (static_cast<std::size_t>(uRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(uPixelStride)
-                                     + 1U)
-                                  : 0U;
-    const std::size_t vNeed = (vRowStride > 0 && vPixelStride > 0)
-                                  ? (static_cast<std::size_t>(vRowStride) * static_cast<std::size_t>(chromaH - 1)
-                                     + static_cast<std::size_t>(chromaW - 1) * static_cast<std::size_t>(vPixelStride)
-                                     + 1U)
-                                  : 0U;
+    // S-SEC-B09-003：need 以 int64 精确计算（32 位 int/size_t 乘法不回绕），
+    // 超过 kMaxPlaneBytes 直接拒绝，避免 undersized 拷贝后下游越界读
+    const int64_t yNeed64 =
+        static_cast<int64_t>(f.y.rowStride) * (height - 1) + width;
+    const int64_t uNeed64 = (uRowStride > 0 && uPixelStride > 0)
+                                ? (static_cast<int64_t>(uRowStride) * (chromaH - 1)
+                                   + static_cast<int64_t>(chromaW - 1) * uPixelStride
+                                   + 1)
+                                : 0;
+    const int64_t vNeed64 = (vRowStride > 0 && vPixelStride > 0)
+                                ? (static_cast<int64_t>(vRowStride) * (chromaH - 1)
+                                   + static_cast<int64_t>(chromaW - 1) * vPixelStride
+                                   + 1)
+                                : 0;
+    if (yNeed64 <= 0 || yNeed64 > kMaxPlaneBytes ||
+        uNeed64 < 0 || uNeed64 > kMaxPlaneBytes ||
+        vNeed64 < 0 || vNeed64 > kMaxPlaneBytes) {
+        rklog::logWarn(TAG, __func__, "平面尺寸溢出/超上限");
+        return JNI_FALSE;
+    }
+    const std::size_t yNeed = static_cast<std::size_t>(yNeed64);
+    const std::size_t uNeed = static_cast<std::size_t>(uNeed64);
+    const std::size_t vNeed = static_cast<std::size_t>(vNeed64);
 
     if (static_cast<std::size_t>(env->GetArrayLength(yBytes)) < yNeed) return JNI_FALSE;
     f.y.bytes.resize(yNeed);

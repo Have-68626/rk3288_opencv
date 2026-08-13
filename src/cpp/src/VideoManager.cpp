@@ -178,6 +178,37 @@ bool VideoManager::isUrlSource(const std::string& path) {
     return path.rfind("rtsp://", 0) == 0 || path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0 || path.rfind("rtmp://", 0) == 0;
 }
 
+std::string VideoManager::sanitizeUriForLog(const std::string& url) {
+    // S-SEC-B07-002：URI 日志脱敏。URI userinfo（scheme://user:pass@host）属敏感凭据，
+    // operator 输入的 RTSP/HTTP/RTMP 流地址若含 userinfo，原样写入日志即端到端凭据泄漏
+    // （VideoManager→NativeLog 文件/Logcat）。这里仅在日志层掩码：保留 scheme://host:port
+    // 可读性，将整个 userinfo 段替换为 ***（不暴露 user 也不暴露 pass）；非 URL 输入
+    // （无 ://，如本地文件路径）原样返回，不影响网络行为。
+    const size_t schemePos = url.find("://");
+    if (schemePos == std::string::npos) return url;  // 非 URL（本地路径）原样返回
+
+    // authority 段：scheme:// 之后、第一个路径/查询/片段分隔符（/ ? #）之前
+    const size_t authorityStart = schemePos + 3;
+    const size_t pathSep = url.find_first_of("/?#", authorityStart);
+    const size_t authorityEnd = (pathSep == std::string::npos) ? url.size() : pathSep;
+    if (authorityEnd <= authorityStart) return url;  // 空 authority（如 file:///）原样返回
+
+    // 在 authority 内找最后一个 '@'（userinfo 与 host 的分隔符）；@ 出现在路径/查询时不计
+    size_t at = std::string::npos;
+    for (size_t i = authorityStart; i < authorityEnd; ++i) {
+        if (url[i] == '@') at = i;
+    }
+    if (at == std::string::npos) return url;  // 无 userinfo 原样返回
+
+    // 将 userinfo 段（authorityStart..at 的 @ 之前部分）替换为 ***，保留 '@' 及之后
+    std::string out;
+    out.reserve(url.size() + 2);
+    out.append(url, 0, authorityStart);
+    out.append("***");
+    out.append(url, at, url.size() - at);
+    return out;
+}
+
 void VideoManager::setUseOpenCL(bool requested) {
     openCLRequested = requested;
     cv::ocl::setUseOpenCL(requested);
@@ -367,7 +398,7 @@ bool VideoManager::open(const std::string& filePath) {
     isStaticImage = false;
     mockState = MockState::INIT;
     mockFilePath = filePath;
-    rklog::logInfo("MockMode", "open", "Mock file path=" + filePath);
+    rklog::logInfo("MockMode", "open", "Mock file path=" + sanitizeUriForLog(filePath));
 
     // Check extension (case-insensitive)
     std::string ext = "";
@@ -394,7 +425,7 @@ bool VideoManager::open(const std::string& filePath) {
             // 内存监控与分块加载机制，防止超大文件导致 OOM 崩溃
             std::ifstream file(filePath, std::ios::binary | std::ios::ate);
             if (!file.is_open()) {
-                std::cerr << "Failed to open image file: " << filePath << std::endl;
+                std::cerr << "Failed to open image file: " << sanitizeUriForLog(filePath) << std::endl;
                 mockState = MockState::FAILED;
                 setMockRejectReason("MOCK_IO_OPEN_FAILED", "image_open_failed");
                 return false;
@@ -427,7 +458,7 @@ bool VideoManager::open(const std::string& filePath) {
             staticFrame = cv::imdecode(rawData, cv::IMREAD_COLOR);
 
             if (staticFrame.empty()) {
-                std::cerr << "Failed to decode image: " << filePath << std::endl;
+                std::cerr << "Failed to decode image: " << sanitizeUriForLog(filePath) << std::endl;
                 mockState = MockState::FAILED;
                 setMockRejectReason("MOCK_DECODE_FAILED", "static_image_decode_failed");
                 rklog::logError("MockMode", "open", "Failed to decode static image");
@@ -483,7 +514,7 @@ bool VideoManager::open(const std::string& filePath) {
             params.push_back(effectiveTimeout);
             params.push_back(cv::CAP_PROP_READ_TIMEOUT_MSEC);
             params.push_back(readTimeoutMs);
-            rklog::logInfo("MockMode", "tryOpen", "Opening: " + pathOrUrl + " timeoutMs=" + std::to_string(effectiveTimeout));
+            rklog::logInfo("MockMode", "tryOpen", "Opening: " + sanitizeUriForLog(pathOrUrl) + " timeoutMs=" + std::to_string(effectiveTimeout));
             try {
                 tmp.open(pathOrUrl, cv::CAP_ANY, params);
             } catch (const std::bad_alloc& e) {
@@ -519,12 +550,12 @@ bool VideoManager::open(const std::string& filePath) {
                 primary = filePath.substr(0, sep);
                 backup = filePath.substr(sep + 1);
             }
-            rklog::logInfo("VideoManager", "open", "Connecting to: " + primary);
+            rklog::logInfo("VideoManager", "open", "Connecting to: " + sanitizeUriForLog(primary));
             mockState = MockState::LOADING;
             if (!tryOpen(primary)) {
                 rklog::logError("MockMode", "open", "Primary stream failed, state=FAILED");
                 if (!backup.empty()) {
-                    rklog::logInfo("MockMode", "open", "Trying backup: " + backup);
+                    rklog::logInfo("MockMode", "open", "Trying backup: " + sanitizeUriForLog(backup));
                     if (!tryOpen(backup)) {
                         mockState = MockState::FAILED;
                         setMockRejectReason("MOCK_OPEN_FAILED", "stream_primary_backup_failed");
@@ -546,7 +577,7 @@ bool VideoManager::open(const std::string& filePath) {
             mppDecoder = std::make_unique<MppDecoder>();
             if (mppDecoder->init() && mppDecoder->open(filePath)) {
                 useMppDecode = true;
-                rklog::logInfo("MockMode", "open", "MPP hardware decoding enabled for: " + filePath);
+                rklog::logInfo("MockMode", "open", "MPP hardware decoding enabled for: " + sanitizeUriForLog(filePath));
                 // Also initialize cap as fallback in case MPP fails at runtime
                 if (!tryOpen(filePath)) {
                     rklog::logWarn("MockMode", "open", "MPP backup cap.open failed (non-fatal, MPP will be primary)");

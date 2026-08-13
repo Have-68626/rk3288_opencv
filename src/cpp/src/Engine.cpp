@@ -7,6 +7,7 @@
 #include "Config.h"
 #include "Storage.h"
 #include "NativeLog.h"
+#include "rk_checked_arith.h"
 #include <cctype>
 #include <cstring>
 #include <iostream>
@@ -71,10 +72,17 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
     }
     uint8_t* dst = outYuvI420.data;
 
-    const std::size_t yLast =
-        static_cast<std::size_t>(h - 1) * static_cast<std::size_t>(yRowStride) +
-        static_cast<std::size_t>(w - 1) * static_cast<std::size_t>(yPixelStride);
-    if (yRowStride < (w - 1) * yPixelStride + 1 || yLast >= f.y.bytes.size()) {
+    // S-SEC-B09-003：32 位 checked 乘法——pixelStride 乘积溢出前拒绝；
+    // 末字节用 int64 计算，32 位 size_t（armeabi-v7a）不再回绕导致越界读
+    int yMaxCol = 0;
+    if (!rk_jni::mulS32Checked(w - 1, yPixelStride, yMaxCol)) {
+        err = "Y 平面 stride/pixelStride 乘积溢出";
+        return false;
+    }
+    const int64_t yLast =
+        static_cast<int64_t>(h - 1) * yRowStride +
+        static_cast<int64_t>(w - 1) * yPixelStride;
+    if (yRowStride <= yMaxCol || yLast >= static_cast<int64_t>(f.y.bytes.size())) {
         err = "Y 平面缓冲区不足或 stride 不匹配";
         return false;
     }
@@ -114,17 +122,29 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
         return false;
     }
 
-    const std::size_t uLast =
-        static_cast<std::size_t>(h2 - 1) * static_cast<std::size_t>(uRowStride) +
-        static_cast<std::size_t>(w2 - 1) * static_cast<std::size_t>(uPixelStride);
-    const std::size_t vLast =
-        static_cast<std::size_t>(h2 - 1) * static_cast<std::size_t>(vRowStride) +
-        static_cast<std::size_t>(w2 - 1) * static_cast<std::size_t>(vPixelStride);
-    if (uRowStride < (w2 - 1) * uPixelStride + 1 || uLast >= f.u.bytes.size()) {
+    // S-SEC-B09-003：U/V pixelStride 为 JNI 侧 jint（无上限），(w2-1)*pixelStride
+    // 可能 int32 溢出回绕为负导致检查失效；checked 乘法溢出前拒绝
+    int uMaxCol = 0;
+    if (!rk_jni::mulS32Checked(w2 - 1, uPixelStride, uMaxCol)) {
+        err = "U 平面 stride/pixelStride 乘积溢出";
+        return false;
+    }
+    const int64_t uLast =
+        static_cast<int64_t>(h2 - 1) * uRowStride +
+        static_cast<int64_t>(w2 - 1) * uPixelStride;
+    if (uRowStride <= uMaxCol || uLast >= static_cast<int64_t>(f.u.bytes.size())) {
         err = "U 平面缓冲区不足或 stride 不匹配";
         return false;
     }
-    if (vRowStride < (w2 - 1) * vPixelStride + 1 || vLast >= f.v.bytes.size()) {
+    int vMaxCol = 0;
+    if (!rk_jni::mulS32Checked(w2 - 1, vPixelStride, vMaxCol)) {
+        err = "V 平面 stride/pixelStride 乘积溢出";
+        return false;
+    }
+    const int64_t vLast =
+        static_cast<int64_t>(h2 - 1) * vRowStride +
+        static_cast<int64_t>(w2 - 1) * vPixelStride;
+    if (vRowStride <= vMaxCol || vLast >= static_cast<int64_t>(f.v.bytes.size())) {
         err = "V 平面缓冲区不足或 stride 不匹配";
         return false;
     }
@@ -172,9 +192,10 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
     }
 
     const int uvH = h / 2;
-    const std::size_t needY = static_cast<std::size_t>(stride) * static_cast<std::size_t>(h);
-    const std::size_t needUV = static_cast<std::size_t>(stride) * static_cast<std::size_t>(uvH);
-    if (f.nv21.size() < needY + needUV) {
+    // S-SEC-B09-003：int64 精确计算（32 位 size_t 平台不回绕），比较在 int64 域
+    const int64_t needY = static_cast<int64_t>(stride) * h;
+    const int64_t needUV = static_cast<int64_t>(stride) * uvH;
+    if (needY + needUV > static_cast<int64_t>(f.nv21.size())) {
         err = "NV21 缓冲区长度不足";
         return false;
     }
@@ -198,7 +219,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
             std::memcpy(packedYuv.data + dstBase, f.nv21.data() + srcBase, static_cast<std::size_t>(w));
         }
 
-        const std::size_t uvSrcStart = needY;
+        const std::size_t uvSrcStart = static_cast<std::size_t>(needY);
         const std::size_t uvDstStart = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
         for (int row = 0; row < uvH; row++) {
             const std::size_t srcBase = uvSrcStart + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride);
@@ -213,7 +234,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
     if (getEnvBool("RK_USE_LIBYUV")) {
     const uint8_t* srcY = f.nv21.data();
-    const uint8_t* srcVu = f.nv21.data() + needY;
+    const uint8_t* srcVu = f.nv21.data() + static_cast<std::size_t>(needY);
     const int r = libyuv::NV21ToRGB24(
         srcY,
         stride,
@@ -569,7 +590,8 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         return false;
     }
     if (!videoManager_->open(filePath)) {
-        std::cerr << "Failed to open mock file: " << filePath << std::endl;
+        // S-SEC-B07-002：mock 文件路径可能是含 userinfo 的 URL，stderr 输出前脱敏
+        std::cerr << "Failed to open mock file: " << VideoManager::sanitizeUriForLog(filePath) << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager_->getLastMockRejectReason());
         return false;
     }
