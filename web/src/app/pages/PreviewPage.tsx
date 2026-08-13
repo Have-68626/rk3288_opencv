@@ -10,17 +10,20 @@ import {
   Popconfirm,
   Select,
   Space,
+  Spin,
   Tooltip,
   Typography,
   message,
 } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CameraDeviceInfo } from '../api/cameras'
 import { getCameras } from '../api/cameras'
 import type { ServerSettingsDoc } from '../api/types'
 import { clearDb, enroll, openPrivacySettings, setFlip } from '../api/actions'
 import { getErrorMessage } from '../api/error'
+import { fetchMjpegStream } from '../api/mjpeg'
+import { getApiToken } from '../state/prefs'
 import { useAppStore } from '../state/AppStore'
 import FlipSwitch from '../components/FlipSwitch'
 
@@ -36,6 +39,14 @@ export function PreviewPage() {
   const [camRetry, setCamRetry] = useState(0)
   const [previewKey, setPreviewKey] = useState(0)
   const [imgError, setImgError] = useState(false)
+  // 流式渲染状态：idle=未启动（无 token 的原生 <img src> 路径）/ connecting=首帧前 / live=已出帧
+  const [streamStatus, setStreamStatus] = useState<'idle' | 'connecting' | 'live'>('idle')
+  const imgRef = useRef<HTMLImageElement>(null)
+
+  const apiBase = import.meta.env.VITE_API_BASE || ''
+  const streamUrl = `${apiBase}/api/v1/preview.mjpeg`
+  // token 非空才走 fetch 流式渲染；空 token 保留原生 <img src>（兼容无鉴权部署）
+  const hasToken = getApiToken().trim().length > 0
 
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
@@ -81,6 +92,53 @@ export function PreviewPage() {
       }
     };
   }, [])
+
+  // 有 token：改用 fetch + ReadableStream 按边界切帧，Blob URL 赋给 <img>。
+  // 为什么不用 <img src> 直连：img 无法携带 Authorization 头，启用鉴权后必黑屏。
+  // 无 token：直接 return，不发起任何请求，保留原生 <img src> 路径。
+  // 错误/断流统一映射为 imgError（复用现有 Empty+重试，previewKey 刷新即重连）。
+  useEffect(() => {
+    const token = getApiToken().trim()
+    if (!token) return
+    const controller = new AbortController()
+    let aborted = false
+    let started = false
+    let objectUrl: string | null = null
+
+    void fetchMjpegStream({
+      url: streamUrl,
+      token,
+      signal: controller.signal,
+      onFrame: (jpegBytes) => {
+        if (aborted || !imgRef.current) return
+        // Blob 需要 ArrayBuffer 后备视图：把流切分出的 view 复制为独立快照再入 Blob
+        const next = URL.createObjectURL(new Blob([new Uint8Array(jpegBytes)], { type: 'image/jpeg' }))
+        imgRef.current.src = next
+        // 上一帧 URL 及时回收，避免 blob: 泄漏
+        if (objectUrl) URL.revokeObjectURL(objectUrl)
+        objectUrl = next
+        if (!started) {
+          started = true
+          setStreamStatus('live')
+        }
+      },
+      onError: (err) => {
+        if (aborted) return
+        if ((err as Error)?.name === 'AbortError') return
+        controller.abort() // 停止当前流，避免空转
+        setImgError(true) // 复用现有错误+重试 UI（previewKey 刷新即重连）
+      },
+    })
+
+    return () => {
+      aborted = true
+      controller.abort()
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+    }
+  }, [previewKey, streamUrl])
 
   const deviceOptions = useMemo(() => {
     if (cams.status !== 'ready') return []
@@ -171,16 +229,35 @@ export function PreviewPage() {
               </Button>
             </Empty>
           ) : (
-            <img
-              key={previewKey}
-              src={`${import.meta.env.VITE_API_BASE || ''}/api/v1/preview.mjpeg`}
-              style={{
-                width: '100%',
-                display: 'block',
-              }}
-              alt="摄像头实时预览"
-              onError={() => setImgError(true)}
-            />
+            <div style={{ position: 'relative', width: '100%' }}>
+              <img
+                key={previewKey}
+                ref={imgRef}
+                src={hasToken ? undefined : streamUrl}
+                style={{
+                  width: '100%',
+                  display: 'block',
+                  visibility: hasToken && streamStatus !== 'live' ? 'hidden' : 'visible',
+                }}
+                alt="摄像头实时预览"
+                onError={hasToken ? undefined : () => setImgError(true)}
+              />
+              {hasToken && streamStatus !== 'live' ? (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Typography.Text type="secondary">
+                    <Spin size="small" /> 连接摄像头流...
+                  </Typography.Text>
+                </div>
+              ) : null}
+            </div>
           )}
         </div>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 8 }}>
