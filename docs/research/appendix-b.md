@@ -213,7 +213,7 @@
 
 最后更新：2026-05-30
 
-> **关联文档**：[端到端加速方案可行性研究报告](feasibility/acceleration_feasibility_report.md) — 加速方案的可行性分析与决策门槛。
+> **关联文档**：本文档即《端到端加速方案可行性研究报告》（CPU / OpenCL / 专用硬件），加速方案的可行性分析与决策门槛见上文第 0-7 章。
 
 本文档作为当前仓库加速链路的定稿说明，目标是把“代码已经具备的能力”和“仍需真机验收的性能结论”明确分开。
 
@@ -309,7 +309,7 @@
 
 ### 3.2 仓库内历史证据的结论
 
-依据 [docs/analysis/evidence_20170115_analysis.md](docs/analysis/evidence_20170115_analysis.md) 这份历史设备证据，可以确认：
+依据 [appendix-f.md](appendix-f.md)（日志分析报告：evidence_20170115_035627）这份历史设备证据，可以确认：
 
 - 该次 RK3288 采集样本中：
   - `OpenCL` 不可用（`effective=0`）

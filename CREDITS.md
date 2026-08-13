@@ -28,13 +28,22 @@
 | Android NDK | 27.0 | Native 编译 | Android SDK License |
 | Node.js + pnpm | 22.17.1+ | Web 前端构建 | MIT |
 
+#### Gradle Wrapper 完整性锁定（S-SEC-B10-004 / SEC-13）
+
+| 项 | 内容 |
+|:---|:-----|
+| `gradle-wrapper.jar` | 已替换为官方 gradle-9.0.0 生成的 wrapper jar（SHA-256 `76805e32c009c0cf0dd5d206bddc9fb22ea42e84db904b764f3047de095493f3`，见 `gradle/wrapper/gradle-wrapper.jar.sha256`） |
+| `distributionSha256Sum` | `gradle/wrapper/gradle-wrapper.properties` 锁定 `gradle-9.0.0-bin.zip` 官方校验和 `8fad3d78296ca518113f3d29016617c7f9367dc005f932bd9d93bf45ba46072b` |
+| 校验和来源 | `services.gradle.org/versions/all` 与 `gradle.org/release-checksums/`（两处官方来源一致）；wrapper 校验不匹配时构建直接失败（RED→GREEN 已功能验证） |
+| 校验方式 | `cd gradle/wrapper && sha256sum -c gradle-wrapper.jar.sha256`；`distributionSha256Sum` 由 wrapper 下载发行版时自动校验 |
+
 ### 跨平台库
 
 | 依赖 | 版本 | 用途 | 许可证 |
 |:-----|:-----|:-----|:-------|
 | **OpenCV** | 4.10.0 | 图像采集、处理、特征提取 | Apache 2.0 |
 | **libyuv** | — | YUV/RGB 格式转换与缩放 | BSD 3-Clause |
-| **ncnn** | 20260113 | 端侧推理后端 | BSD 3-Clause |
+| **ncnn** | 1.0.20260113 | 端侧推理后端 | BSD 3-Clause | 详见 [ncnn 依赖账本与安全](#ncnn-依赖账本与安全) |
 
 ---
 
@@ -45,7 +54,7 @@
 | 依赖 | 用途 | 许可证 | 状态 |
 |:-----|:-----|:-------|:-----|
 | OpenCV 4.10.0 | 图像处理核心 | Apache 2.0 | ✅ 已集成 |
-| ncnn | 端侧推理加速 | BSD 3-Clause | ✅ 已下载 |
+| ncnn | 端侧推理加速 | BSD 3-Clause | ✅ 已下载（1.0.20260113，见 [ncnn 依赖账本与安全](#ncnn-依赖账本与安全)） |
 | Rockchip MPP | 硬件解码加速 | Apache 2.0 | ⚠️ 可选（自动回退） |
 | Qualcomm SDK | 推理加速 | — | ⚠️ 可选（未检测到） |
 | FFmpegKit | RTMP 推流 | LGPL 3.0 / GPL 3.0 | ⚠️ 可选（未集成） |
@@ -65,6 +74,47 @@ CameraX 的传递依赖（已解析）：
 - `androidx.concurrent:concurrent-futures:1.1.0` → Apache 2.0
 - `com.google.guava:listenablefuture:1.0` → Apache 2.0
 - `androidx.lifecycle:lifecycle-*:2.6.1` → Apache 2.0
+
+---
+
+<a id="ncnn-依赖账本与安全"></a>
+
+## 🔒 ncnn 依赖账本与安全（S-SEC-B10-001）
+
+本小节记录 ncnn 依赖的版本/来源/许可证/摘要与已知安全公告处置状态，作为审计与合规依据。
+
+### 版本与来源
+
+| 项 | 值 |
+|:---|:---|
+| 版本 | **1.0.20260113**（`NCNN_VERSION_STRING`，证据：安装目录 `arm64-v8a/lib/pkgconfig/ncnn.pc` → `Version: 1.0.20260113`；源码根 `CMakeLists.txt` `set(NCNN_VERSION_PATCH 20260113)`） |
+| 发布 | 官方 [Tencent/ncnn](https://github.com/Tencent/ncnn/releases/tag/20260113) GitHub Release，tag `20260113`，commit **`e956fbf`**，发布于 2026-01-13 |
+| 许可证 | **BSD 3-Clause**（根 `LICENSE.txt`）；附带子组件：glslang BSD-3、pybind11 BSD-3、neon/sse/avx_mathfun zlib |
+| 引入方式 | `app/build.gradle:70-79`：优先 `NCNN_DIR` 环境变量，后备硬编码本地路径 `D:/ProgramData/NCNN/ncnn-20260113-android-vulkan`；存在 `armeabi-v7a/`+`arm64-v8a/` ABI 目录才传 `-DRK_ENABLE_NCNN=ON` 与 `NCNN_DIR_ARMv7/ARM64`。Windows 侧使用 `ncnn-20260113-windows-vs2022` 预编译库 |
+| 完整性 | 本地资产与官方 Release 资产**大小逐字节一致**（android-vulkan 27086981B、shared 19294845B、full-source 22263010B） |
+
+### 可复现摘要（SHA-256，本地 `D:/ProgramData/NCNN/` 下文件）
+
+| 资产 | SHA-256 |
+|:---|:---|
+| `ncnn-20260113-android-vulkan.zip` | `41944630a7b305b190e7caea4b405bc6d103c6383dc4988e9e85616058e3cccd` |
+| `ncnn-20260113-android-vulkan-shared.zip` | `b9ec10f8ad5952a5b808abeb60b2580736ea3b937817749df5e66118d67c6848` |
+| `ncnn-20260113-full-source.zip` | `53696039ee8ba5c8db6446bdf12a576b8d7f7b0c33bb6749f94688bddf5a3d5c` |
+
+复算方式：`certutil -hashfile <zip> SHA256`（或 `sha256sum <zip>`）；升级/替换 ncnn 后必须同步更新本表。
+
+### 已知安全公告与处置
+
+| 公告 | 严重度 | 影响 | 本仓库状态 |
+|:---|:---|:---|:---|
+| **CVE-2026-50144**（GHSA-jxmc-3mv6-7pwr，2026-05-28 发布） | high（CVSS 7.1） | `ParamDict::load_param` 仅校验 `id >= NCNN_MAX_PARAM_COUNT(=32)` 上限，负 id（`[-23299,-1]`）绕过数组 key 归一化后直接作 `params[32]` 下标 → 可控偏移越界堆写（CWE-787）；.param 恶意文件在 `Net::load_param()` 加载时触发。公告同时另列数组长度 `create(len)` huge-alloc 弱点 | **受影响**：20260113（commit e956fbf）早于修复；**最新发布 20260526（commit e54f7b1）即公告确认的脆弱提交，尚无含修复的官方发布** |
+| GHSA-c44p-qr97-jccv | — | 上游 `pull_request_target` CI 工作流 RCE 风险 | 上游 CI 配置问题，不涉及本仓库使用面，仅记录 |
+
+**处置（受控回补）**：因无法升级到含修复的官方 ncnn，本仓库在模型加载路径新增前置校验 `src/cpp/include/NcnnParamGuard.h`，镜像上游修复语义（归一化后 `id < 0 || id >= 32` 拒绝）+ 数组长度上限封堵公告另列弱点，已接入全部 4 个 `load_param` 调用点（YoloFaceDetector / ArcFaceEmbedder / MobileFaceNetAdapter / inference_bench_cli），配 8 个恶意 param 负面测试（`tests/cpp/test_ncnn_param_guard.cpp`，含 CVE 官方 PoC `-1=305419896`），随 `core_unit_tests` 在 CI（`RK_SKIP_OPENCV=ON`）下构建运行。
+
+**升级/回补监控**：monitor 上游 ncnn 新发布（含 `src/paramdict.cpp` 两处 `id < 0` 修复）。出现后：替换本地 `NCNN_DIR` 指向新预编译库 → 同步本表版本/commit/SHA-256 → 运行 `core_unit_tests` 确认负面测试仍全过、真实模型无误拒。替换前可移除本仓库前置守卫或保留（无害的双保险）。
+
+**可测面说明**：Android 无模拟器、本机无 host ncnn 运行时，负面测试为**纯文本前置校验**（不依赖 ncnn/OpenCV）；真机运行时验证需 RK3288 设备（模型加载时恶意 .param 应在 `load_param` 之前被拒绝）。
 
 ---
 
