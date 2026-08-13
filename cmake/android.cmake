@@ -27,7 +27,7 @@ find_library(jnigraphics-lib jnigraphics)
 if(NOT RK_SKIP_OPENCV)
     # Android JNI Shared Library
     add_library(native-lib SHARED
-        ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
+        ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} ${RK_PIPELINE_SOURCES}
         "src/cpp/native-lib.cpp"
         "src/cpp/src/JniMethodRegistry.cpp"
         "src/cpp/jni/camera.cpp"

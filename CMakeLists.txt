@@ -160,7 +160,7 @@ if(NOT RK_SKIP_OPENCV)
 # Native Executable (CLI) for RK3288 (and Host Testing)
 add_executable(rk3288_cli
     "src/cpp/main.cpp"
-    ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
+    ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} ${RK_PIPELINE_SOURCES}
     "src/win/src/FaceDetector.cpp"
     "src/win/src/LbphEmbedder.cpp"
     "src/win/src/DnnSsdFaceDetector.cpp"
