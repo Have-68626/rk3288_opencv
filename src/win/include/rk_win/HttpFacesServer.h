@@ -2,6 +2,7 @@
 
 #include "Compat.h"
 #include "ConnectionQuota.h"
+#include "HttpFacesServerPath.h"
 #include "JsonLite.h"
 #include "StreamSessionRunner.h"
 
@@ -131,6 +132,21 @@ private:
     HttpResponse handleApi(const HttpRequest& req);
     HttpResponse handleStaticOrFallback(const HttpRequest& req);
 
+    // ──── HTTP 认证授权（S-SEC-B09-001，规格见 docs/security/auth-model.md）────
+    // 请求是否通过认证：未启用认证 / 匿名白名单路径 / 有效 Bearer token → true。
+    bool requestAuthorized(const HttpRequest& req) const;
+    // 匿名白名单：非 /api 前缀（静态文件）与 /api/v1/health、/api/v1/acceleration。
+    bool isAnonymousPath(const std::string& path) const;
+    // 401 统一响应：与既有 jsonErr 格式一致，不发送 WWW-Authenticate（规格 §3.4）。
+    static HttpResponse unauthorizedResponse();
+
+    // ──── 跨站请求伪造（CSRF）防护（S-SEC-B09-004，规格见 docs/security/auth-model.md §3.5）────
+    // 写方法（POST/PUT/DELETE）的跨站判定：Sec-Fetch-Site: cross-site 或跨站 Origin → false。
+    // 读方法恒 true；Origin/Sec-Fetch-Site 均缺失（curl/API 客户端/旧浏览器）→ true（兼容）。
+    bool csrfCheckPasses(const HttpRequest& req) const;
+    // 403 统一响应：与 jsonErr 格式一致，不回显请求中的 Origin/token（脱敏纪律 §6）。
+    static HttpResponse crossSiteForbiddenResponse();
+
     static HttpResponse jsonOk(const std::string& bodyJson);
     static HttpResponse jsonOk(JsonValue data);
     static HttpResponse jsonErr(int httpStatus, const std::string& code, const std::string& message,
@@ -148,9 +164,14 @@ private:
     WinJsonConfigStore* settings_ = nullptr;
     int port_ = 0;
 
+    // Bearer token：start() 从环境变量 RK_WCFR_HTTP_AUTH_TOKEN 读取一次；空=认证未启用。
+    // 不落日志/响应体（脱敏纪律，规格 §6）。
+    std::string authToken_;
+
     std::thread acceptThread_;
     std::uintptr_t listenSock_ = 0;
     std::filesystem::path docRoot_;
+    StaticFileRoot staticRoot_;
     std::mutex clientMu_;
 
     static constexpr int MAX_CONCURRENT_CONNECTIONS = 64;

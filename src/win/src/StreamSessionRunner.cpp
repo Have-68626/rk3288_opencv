@@ -33,8 +33,9 @@ constexpr int kMjpegIdleMs = 100;
 
 }  // namespace
 
-StreamSessionRunner::StreamSessionRunner(std::atomic<bool>& running, FrameProvider provider)
-    : running_(running), provider_(std::move(provider)) {}
+StreamSessionRunner::StreamSessionRunner(std::atomic<bool>& running, FrameProvider provider,
+                                         StreamLimits limits)
+    : running_(running), provider_(std::move(provider)), limits_(limits) {}
 
 void StreamSessionRunner::run(std::uintptr_t sock, StreamType type) {
     switch (type) {
@@ -43,7 +44,21 @@ void StreamSessionRunner::run(std::uintptr_t sock, StreamType type) {
     }
 }
 
+bool StreamSessionRunner::sessionExpired(const std::chrono::steady_clock::time_point& started) const {
+    const auto dur = limits_.maxSessionDuration;
+    if (dur.count() <= 0) return false;
+    return std::chrono::steady_clock::now() - started >= dur;
+}
+
 bool StreamSessionRunner::writeRaw(std::uintptr_t sock, const void* data, std::size_t n) {
+    const std::size_t maxBytes = limits_.maxBytesPerSession;
+    if (maxBytes > 0) {
+        // S-SEC-B09-005：单会话字节配额记账。配额耗尽 → 拒绝本次写入并返回 false，
+        // 调用方以"会话终止"处理（客户端随即收到连接关闭/EOF）。
+        // 防失控或被劫持的会话迫使服务端无限产出数据（回退硬顶，见 StreamLimits 注释）。
+        if (bytesWritten_ >= maxBytes || n > maxBytes - bytesWritten_) return false;
+        bytesWritten_ += n;
+    }
     const auto s = static_cast<SOCKET>(sock);
     const char* p = static_cast<const char*>(data);
     std::size_t left = n;
@@ -76,8 +91,14 @@ void StreamSessionRunner::runSse(std::uintptr_t sock) {
 
     std::uint64_t lastSeq = 0;
     auto lastKeep = std::chrono::steady_clock::now();
+    // S-SEC-B09-005：会话超时锚点（与 MJPEG 共用 sessionExpired 时长判定）。
+    const auto sessionStart = std::chrono::steady_clock::now();
 
     while (running_) {
+        // S-SEC-B09-005：SSE/流超时终止 —— 会话存活超限即断开（独立于全局
+        // ConnectionQuota 的流级时长限制，防无限持有线程/连接）。注意：当前迭代
+        // 仍会先完成一次 waitFacesSeqChanged（≤1s 轮询）后再判超时，精度即轮询粒度。
+        if (sessionExpired(sessionStart)) break;
         std::uint64_t seq = 0;
         const bool changed = pipe_->waitFacesSeqChanged(lastSeq, kSsePollMs, seq);
         if (!running_) break;
@@ -113,7 +134,25 @@ void StreamSessionRunner::runMjpeg(std::uintptr_t sock) {
         "Connection: close\r\n\r\n";
     if (!writeRaw(sock, header, std::strlen(header))) return;
 
+    // S-SEC-B09-005：MJPEG FPS 节流 —— 距上一帧未达帧间最小间隔前不再取帧/编码。
+    // 首帧立即发送（nextFrameAt 初始化为 now），其后每帧间隔 ≥ 1000/maxFps ms，
+    // 把每流 JPEG 编码 CPU 封顶（预算依据见 StreamLimits.mjpegMaxFps 注释）。
+    const auto minInterval = std::chrono::milliseconds(
+        limits_.mjpegMaxFps > 0 ? 1000 / limits_.mjpegMaxFps : 0);
+    auto nextFrameAt = std::chrono::steady_clock::now();
+    // S-SEC-B09-005：会话超时锚点（与 SSE 共用 sessionExpired 时长判定）。
+    const auto sessionStart = std::chrono::steady_clock::now();
+
     while (running_) {
+        // S-SEC-B09-005：流超时终止（独立于全局 ConnectionQuota 的流级时长限制）。
+        if (sessionExpired(sessionStart)) break;
+        if (minInterval.count() > 0) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < nextFrameAt) {
+                std::this_thread::sleep_for(nextFrameAt - now);
+                continue;
+            }
+        }
         cv::Mat frame;
         if (!provider_(frame)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(kMjpegIdleMs));
@@ -131,6 +170,7 @@ void StreamSessionRunner::runMjpeg(std::uintptr_t sock) {
         if (!writeRaw(sock, part.data(), part.size())) break;
         if (!writeRaw(sock, reinterpret_cast<const char*>(jpeg.data()), jpeg.size())) break;
         if (!writeRaw(sock, "\r\n", 2)) break;
+        nextFrameAt = std::chrono::steady_clock::now() + minInterval;
     }
 #else
     (void)sock;
