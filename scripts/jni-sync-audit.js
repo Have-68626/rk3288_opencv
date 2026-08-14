@@ -236,7 +236,10 @@ function parseParam(p) {
 function extractNativeMethods(javaSrc) {
   const clean = stripComments(javaSrc);
   const methods = [];
-  const re = /\bnative\s+([A-Za-z_$][\w$]*(?:\s*(?:\[\s*\])|<[\s\S]*?>)*)\s+([A-Za-z_$][\w$]*)\s*\(([\s\S]*?)\)\s*;/g;
+  // CodeQL CWE-1333 修复：`[\s\S]*?>`（任意字节惰性）在 `<[\s\S]*?>` 外层 `(...)*` 循环
+  // 中可对 "><" 大量重复输入指数回溯（ReDoS）。改为确定性 `[^<>]*>`（尖括号内非尖括号，
+  // 无回溯组合）——本仓库 native 返回类型无嵌套泛型（实测），单层泛型覆盖足够。
+  const re = /\bnative\s+([A-Za-z_$][\w$]*(?:\s*(?:\[\s*\])|<[^<>]*>)*)\s+([A-Za-z_$][\w$]*)\s*\(([\s\S]*?)\)\s*;/g;
   let m;
   while ((m = re.exec(clean)) !== null) {
     const line = clean.slice(0, m.index).split(/\r?\n/).length;
