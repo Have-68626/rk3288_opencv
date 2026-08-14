@@ -28,6 +28,10 @@ constexpr int kInferenceIntervalDefaultMs = 150;
 constexpr int kInferenceIntervalMinMs = 80;
 constexpr int kInferenceIntervalMaxMs = 500;
 
+// 脱敏输出占位哨兵：toSettingsDocObject 对敏感字段（poster.postUrl）输出该字面量掩码。
+// 回写语义 = "不修改该字段"（见 stripMaskedSentinels），防止全量回写销毁真实密文。
+constexpr const char* kMaskedSentinel = "***";
+
 constexpr std::uintmax_t kMaxConfigFileBytes = 10 * 1024 * 1024;      // 10MB max config file
 
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
@@ -158,6 +162,24 @@ static JsonValue buildEncryptedStringObject(const AesGcmCiphertext& ct, std::str
     }
     o.o["tag"] = JsonValue::makeString(b64);
     return o;
+}
+
+// 剔除脱敏回写哨兵（kMaskedSentinel="***"）：GET 输出中敏感字段以 "***" 占位，
+// 客户端全量回写会把 "***" 原样带回；若直接 deepMerge 会覆盖 base 中的真实密文，
+// 且校验仅拦 isObject() 放过字符串，buildSettingsJson 重加密后密文永久丢失
+// （S3 CONFIRMED：脱敏全量回写不得销毁密文）。
+// 因此哨兵语义 = "不修改该字段"：合并前从 patch 中剔除该键，等价于保留 base 既有值；
+// 递归处理嵌套对象，保证任意层级的脱敏字段都走同一保护。
+void stripMaskedSentinels(JsonValue& obj) {
+    if (!obj.isObject()) return;
+    for (auto it = obj.o.begin(); it != obj.o.end();) {
+        if (it->second.isString() && it->second.s == kMaskedSentinel) {
+            it = obj.o.erase(it);
+        } else {
+            stripMaskedSentinels(it->second);
+            ++it;
+        }
+    }
 }
 
 }  // namespace
@@ -320,7 +342,8 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
 
         if (redacted) {
             // 脱敏输出：避免把 URL 中可能携带的 token/凭证泄漏到前端/日志。
-            p.o["postUrl"] = JsonValue::makeString("***");
+            // 哨兵值须与 stripMaskedSentinels 的回写保护配对（"***" 回写=不修改）。
+            p.o["postUrl"] = JsonValue::makeString(kMaskedSentinel);
         } else if (encryptSensitive && keyOpt) {
             const std::string plain = cfg.poster.postUrl;
             std::vector<std::uint8_t> plainBin(plain.begin(), plain.end());
@@ -769,6 +792,10 @@ AppConfig WinJsonConfigStore::current() const {
     return cfg_;
 }
 
+uint64_t WinJsonConfigStore::generation() const {
+    return generation_.load();
+}
+
 std::string WinJsonConfigStore::currentRedactedJsonPretty() const {
     std::lock_guard<std::mutex> lock(mu_);
     return buildSettingsJson(cfg_, true, false);
@@ -807,6 +834,10 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         r.details.push_back(err);
         return r;
     }
+
+    // 脱敏全量回写保护：剔除 patch 中的 "***" 哨兵（语义=不修改，保留 base 既有值）。
+    // 否则 GET 脱敏输出被原样回写时，真实密文会被字面量 "***" 覆盖并重加密销毁。
+    stripMaskedSentinels(patch);
 
     deepMergeObject(baseDoc, patch);
 
@@ -868,6 +899,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         lastGoodJsonPretty_ = prettyEnc;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
+        generation_.fetch_add(1);  // PUT 成功提交：配置代数 +1（消费方据此恰好消费一次）
     }
 
     r.ok = true;
@@ -1039,6 +1071,7 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         cfg_ = cfg;
         lastGoodJsonPretty_ = pretty;
         lastWriteTime_ = wt;
+        generation_.fetch_add(1);  // 外部写入成功 reload：配置代数 +1
     }
     outApplied = true;
     return true;

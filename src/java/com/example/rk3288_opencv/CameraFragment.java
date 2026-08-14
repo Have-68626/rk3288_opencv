@@ -39,6 +39,15 @@ import java.util.Locale;
  */
 public class CameraFragment extends Fragment {
 
+    // S-SEC-B09-006: SAF/Mock 导入上限（冻结依据，不得凭空改动）
+    // mock 源是替身相机输入（native 侧按 ≤1080p60 解码），典型为几秒~几分钟短视频或图片（数十 MB）。
+    // 字节上限 512MiB —— 覆盖最长约 15 分钟 1080p（~4 Mbps ≈ 450MB）的极端合法用例，同时把单次导入对
+    //   cache 分区的占用封顶在 512MiB（RK3288 cache 分区通常 ≥1GB），防止无界流灌满分区。
+    // 时长上限 60 秒 —— 本地 content:// 读取通常在亚秒~数秒内完成；60s 是宽裕上限，兜底"涓流/停滞"型
+    //   provider（读而不止的 DoS 型流），超限受控失败并走既有失败路径清理临时文件。
+    public static final long MAX_MOCK_IMPORT_BYTES = 512L * 1024L * 1024L;
+    public static final long MAX_MOCK_IMPORT_MILLIS = 60_000L;
+
     public interface Callback {
         void onCameraChanged();
         void onInitEngine();
@@ -57,6 +66,8 @@ public class CameraFragment extends Fragment {
     private boolean isSpinnerInitialized = false;
     private String mockFilePath = null;
     private String currentPhotoPath;
+    // 拍照输出 URI：授予跨 UID 相机后，消费完成须及时撤销（Q-CQ-B07-009）
+    private Uri currentPhotoUri;
 
     // Flip state
     private boolean flipXEnabled = false;
@@ -398,7 +409,9 @@ public class CameraFragment extends Fragment {
                 Uri photoURI = FileProvider.getUriForFile(appContext,
                         BuildConfig.APPLICATION_ID + ".fileprovider",
                         photoFile);
-                takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
+                currentPhotoUri = photoURI; // 记录 URI，消费完成后撤销（Q-CQ-B07-009）
+                // WHY 单一来源：授权组装（flags + ClipData + EXTRA_OUTPUT）收敛到 PhotoUriGrant.applyTakePictureGrant
+                PhotoUriGrant.applyTakePictureGrant(takePictureIntent, photoURI);
                 getActivity().startActivityForResult(takePictureIntent, REQUEST_CODE_TAKE_PHOTO);
             }
         } else {
@@ -428,228 +441,24 @@ public class CameraFragment extends Fragment {
         if (callback != null) {
             callback.onCameraChanged();
         }
+        revokePhotoUriPermission(); // 消费完成，及时撤销跨 UID 授权（Q-CQ-B07-009）
     }
 
-    public void handleMockFileSelection(Uri uri) {
-        if (uri == null) return;
-        Context ctx = appContext;
-        if (ctx == null) return;
-
-        String direct = null;
+    /**
+     * 撤销跨 UID 拍照授权：幂等，以与授予一致的掩码回收读写权限，避免授权残留（Q-CQ-B07-009）。
+     */
+    private void revokePhotoUriPermission() {
+        if (currentPhotoUri == null) return;
         try {
-            if ("file".equalsIgnoreCase(uri.getScheme())) {
-                File f = new File(uri.getPath());
-                if (f.exists() && f.isFile() && f.canRead()) {
-                    direct = f.getAbsolutePath();
-                }
-            }
-        } catch (Throwable ignored) {
+            // WHY 单一来源：撤销调用收敛到 PhotoUriGrant.revoke，掩码与授予一致（Q-CQ-B07-009）
+            PhotoUriGrant.revoke(appContext, currentPhotoUri);
+        } catch (Exception ex) {
+            AppLog.e("CameraFragment", "revokePhotoUriPermission", "Revoke failed", ex);
+        } finally {
+            currentPhotoUri = null; // 无论成败都清空引用，保证只撤销一次
         }
-
-        if (direct != null && !direct.isEmpty()) {
-            mockFilePath = direct;
-            selectedCameraId = null;
-            isSpinnerInitialized = true;
-            if (callback != null) callback.onCameraChanged();
-            return;
-        }
-
-        if (getActivity() == null) return;
-        ProgressDialog progressDialog = new ProgressDialog(getActivity());
-        progressDialog.setTitle("加载 Mock 文件");
-        progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
-        progressDialog.setIndeterminate(true);
-        progressDialog.setCancelable(true);
-        progressDialog.setMessage("准备读取…");
-        progressDialog.show();
-
-        final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean(false);
-        progressDialog.setOnCancelListener(d -> cancelled.set(true));
-
-        new Thread(() -> {
-            try {
-                String displayName = "mock_source";
-                long totalBytes = -1L;
-                try {
-                    Cursor c = ctx.getContentResolver().query(uri, null, null, null, null);
-                    if (c != null) {
-                        try {
-                            if (c.moveToFirst()) {
-                                int nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                                if (nameIndex >= 0) {
-                                    String n = c.getString(nameIndex);
-                                    if (n != null && !n.trim().isEmpty()) displayName = n.trim();
-                                }
-                                int sizeIndex = c.getColumnIndex(OpenableColumns.SIZE);
-                                if (sizeIndex >= 0) {
-                                    long s = c.getLong(sizeIndex);
-                                    if (s > 0) totalBytes = s;
-                                }
-                            }
-                        } finally {
-                            try { c.close(); } catch (Throwable ignored) {}
-                        }
-                    }
-                } catch (Throwable ignored) {
-                }
-
-                String ext = "";
-                int dot = displayName.lastIndexOf('.');
-                if (dot >= 0 && dot < displayName.length() - 1) {
-                    ext = displayName.substring(dot + 1);
-                }
-                ext = sanitizeExtension(ext);
-
-                // Magic number pre-check
-                String magicCheckErr = null;
-                try {
-                    java.io.InputStream magicIs = ctx.getContentResolver().openInputStream(uri);
-                    if (magicIs != null) {
-                        try {
-                            byte[] magic = new byte[16];
-                            int magicN = magicIs.read(magic);
-                            String hexMagic = bytesToHex(magic, Math.max(0, magicN));
-                            AppLog.i("MockMode", "handleMockFileSelection", "Magic bytes: " + hexMagic + " ext=" + ext);
-                            if (!isValidMagicNumber(magic, magicN, ext)) {
-                                magicCheckErr = "不支持的文件格式或文件已损坏（魔数校验失败）";
-                            } else {
-                                AppLog.i("MockMode", "handleMockFileSelection",
-                                    "Magic check PASSED: " + hexMagic + " ext=" + ext);
-                            }
-                        } finally {
-                            try { magicIs.close(); } catch (Throwable ignored) {}
-                        }
-                    }
-                } catch (Throwable t) {
-                    AppLog.w("MockMode", "handleMockFileSelection", "Magic read error: " + t.getMessage());
-                }
-                if (magicCheckErr != null) {
-                    String finalErrMsg = magicCheckErr;
-                    if (getActivity() != null) {
-                        getActivity().runOnUiThread(() -> {
-                            try { progressDialog.dismiss(); } catch (Throwable ignored) {}
-                            Toast.makeText(ctx, finalErrMsg, Toast.LENGTH_LONG).show();
-                        });
-                    }
-                    return;
-                }
-
-                File root = null;
-                try {
-                    root = ctx.getExternalCacheDir();
-                } catch (Throwable ignored) {
-                }
-                if (root == null) root = ctx.getCacheDir();
-
-                String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-                String saveName = "mock_source_" + timeStamp + (ext.isEmpty() ? ".dat" : ("." + ext));
-                File outFile = new File(root, saveName);
-
-                long copied = 0L;
-                long copyStartMs = SystemClock.elapsedRealtime();
-                long lastUiMs = 0L;
-                boolean ok = false;
-                String err = null;
-
-                java.io.InputStream is = null;
-                java.io.BufferedInputStream bis = null;
-                java.io.FileOutputStream fos = null;
-                try {
-                    is = ctx.getContentResolver().openInputStream(uri);
-                    if (is == null) throw new java.io.IOException("无法打开输入流");
-                    bis = new java.io.BufferedInputStream(is, 1024 * 1024);
-                    fos = new java.io.FileOutputStream(outFile);
-
-                    if (totalBytes > 0) {
-                        final int maxKb = (int) Math.min(Integer.MAX_VALUE, Math.max(1L, totalBytes / 1024L));
-                        int finalMaxKb = maxKb;
-                        if (getActivity() != null) {
-                            getActivity().runOnUiThread(() -> {
-                                progressDialog.setIndeterminate(false);
-                                progressDialog.setMax(finalMaxKb);
-                            });
-                        }
-                    }
-
-                    byte[] buffer = new byte[1024 * 1024];
-                    int n;
-                    while ((n = bis.read(buffer)) != -1) {
-                        if (cancelled.get()) {
-                            err = "用户取消";
-                            break;
-                        }
-                        fos.write(buffer, 0, n);
-                        copied += n;
-
-                        long nowMs = SystemClock.elapsedRealtime();
-                        if (nowMs - lastUiMs >= 350) {
-                            lastUiMs = nowMs;
-                            long elapsedMs = Math.max(1L, nowMs - copyStartMs);
-                            double speed = (copied / 1024.0) / (elapsedMs / 1000.0);
-                            String msg = "已复制 " + formatBytes(copied) +
-                                    (totalBytes > 0 ? (" / " + formatBytes(totalBytes)) : "") +
-                                    "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
-                            int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, copied / 1024L));
-                            String finalMsg = msg;
-                            int finalProgressKb = progressKb;
-                            if (getActivity() != null) {
-                                getActivity().runOnUiThread(() -> {
-                                    try {
-                                        progressDialog.setMessage(finalMsg);
-                                        if (!progressDialog.isIndeterminate()) {
-                                            progressDialog.setProgress(finalProgressKb);
-                                        }
-                                    } catch (Throwable ignored) {}
-                                });
-                            }
-                        }
-                    }
-
-                    fos.flush();
-                    if (!cancelled.get() && (err == null || err.isEmpty())) {
-                        ok = true;
-                    }
-                } catch (Throwable t) {
-                    err = t.getMessage();
-                } finally {
-                    try { if (fos != null) fos.close(); } catch (Throwable ignored) {}
-                    try { if (bis != null) bis.close(); } catch (Throwable ignored) {}
-                    try { if (is != null) is.close(); } catch (Throwable ignored) {}
-                }
-
-                long elapsedMs = Math.max(1L, SystemClock.elapsedRealtime() - copyStartMs);
-
-                boolean finalOk = ok;
-                String finalErr = err;
-                long finalCopied = copied;
-                String finalDisplayName = displayName;
-                String finalOutPath = outFile.getAbsolutePath();
-                if (getActivity() != null) {
-                    getActivity().runOnUiThread(() -> {
-                        try { progressDialog.dismiss(); } catch (Throwable ignored) {}
-                        if (!finalOk) {
-                            try { if (outFile.exists()) outFile.delete(); } catch (Throwable ignored) {}
-                            Toast.makeText(ctx, "加载失败: " + finalErr, Toast.LENGTH_LONG).show();
-                            return;
-                        }
-                        mockFilePath = finalOutPath;
-                        selectedCameraId = null;
-                        isSpinnerInitialized = true;
-                        Toast.makeText(ctx, "Mock 源已就绪: " + finalDisplayName, Toast.LENGTH_SHORT).show();
-                        if (callback != null) callback.onCameraChanged();
-                    });
-                }
-            } catch (Throwable t) {
-                AppLog.e("CameraFragment", "handleMockFileSelection", "未捕获异常", t);
-                if (getActivity() != null) {
-                    getActivity().runOnUiThread(() -> {
-                        try { progressDialog.dismiss(); } catch (Throwable ignored) {}
-                        Toast.makeText(ctx, "加载文件遇到严重异常: " + t.getMessage(), Toast.LENGTH_LONG).show();
-                    });
-                }
-            }
-        }).start();
     }
+
 
     // ---- Utility helpers ----
 
@@ -695,5 +504,105 @@ public class CameraFragment extends Fragment {
         if (b < 1024) return String.format(Locale.US, "%.1fMB", b);
         b /= 1024.0;
         return String.format(Locale.US, "%.2fGB", b);
+    }
+
+    // ---- S-SEC-B09-006: SAF/Mock 导入有界拷贝辅助 ----
+    /**
+     * 有界 InputStream→OutputStream 拷贝：累计字节上限与总耗时上限，任一超限即受控中断并返回状态。
+     * 纯 JVM 可测（Android 单测无模拟器时以 InputStream/模拟时钟验证）。
+     * 注意：单次 read() 若被底层 provider 阻塞无法强制中断，超时以每次 read 返回后的 elapsed 判定为准
+     *   （Java InputStream 无通用读超时机制；调用方以 1MB 缓冲读取，单次数据量本身有界）。
+     */
+    public static final class BoundedStreamCopy {
+        public enum Status { OK, BYTE_LIMIT, TIME_LIMIT, CANCELLED }
+
+        public static final class Progress {
+            public final long bytesCopied;
+            public final long elapsedMs;
+
+            Progress(long bytesCopied, long elapsedMs) {
+                this.bytesCopied = bytesCopied;
+                this.elapsedMs = elapsedMs;
+            }
+        }
+
+        public static final class Result {
+            public final Status status;
+            public final long bytesCopied;
+
+            Result(Status status, long bytesCopied) {
+                this.status = status;
+                this.bytesCopied = bytesCopied;
+            }
+        }
+
+        /** 取消门：返回 true 表示应中断拷贝。 */
+        public interface Cancellation {
+            boolean isCancelled();
+        }
+
+        /** 单调时钟（毫秒）；生产用 SystemClock::elapsedRealtime，测试用模拟时钟。 */
+        public interface Clock {
+            long elapsedMs();
+        }
+
+        /** 每块进度回调（由调用方自行节流 UI）。 */
+        public interface ProgressSink {
+            void onProgress(Progress p);
+        }
+
+        /** 状态 → 用户可读错误消息；OK 返回 null。上限值取自 CameraFragment 常量，文案与上限保持一致。 */
+        public static String messageFor(Status s) {
+            if (s == null) return "未知错误";
+            switch (s) {
+                case OK:
+                    return null;
+                case BYTE_LIMIT:
+                    return "文件超过大小上限（" + (MAX_MOCK_IMPORT_BYTES / (1024L * 1024L)) + "MiB），已中断";
+                case TIME_LIMIT:
+                    return "导入超时（" + (MAX_MOCK_IMPORT_MILLIS / 1000L) + " 秒），已中断";
+                case CANCELLED:
+                    return "用户取消";
+                default:
+                    return "未知错误";
+            }
+        }
+
+        /**
+         * 拷贝 in→out，至多 maxBytes 字节且总耗时不超过 maxMillis；任何情况下写盘不超过 maxBytes。
+         * @param buffer    复用缓冲（建议 1MB）
+         * @param cancelled 用户取消门（每块判定一次）
+         * @param clock     单调时钟（毫秒）；生产传 SystemClock::elapsedRealtime，测试传模拟时钟
+         * @param progress  每块进度回调（可空；由调用方自行节流 UI）
+         */
+        public static Result copy(java.io.InputStream in, java.io.OutputStream out, byte[] buffer,
+                                  long maxBytes, long maxMillis,
+                                  Cancellation cancelled,
+                                  Clock clock,
+                                  ProgressSink progress) throws java.io.IOException {
+            if (buffer == null || buffer.length == 0) throw new IllegalArgumentException("buffer 不能为空");
+            if (maxBytes <= 0) throw new IllegalArgumentException("maxBytes 必须 > 0");
+            if (maxMillis <= 0) throw new IllegalArgumentException("maxMillis 必须 > 0");
+            if (cancelled == null || clock == null) throw new IllegalArgumentException("cancelled/clock 不能为空");
+            long startMs = clock.elapsedMs();
+            long copied = 0L;
+            int n;
+            while ((n = in.read(buffer)) != -1) {
+                if (cancelled.isCancelled()) return new Result(Status.CANCELLED, copied);
+                if (copied + n > maxBytes) {
+                    // 突破字节上限：仅写入到上限为止，随后受控中断（写盘不超过 maxBytes，临时文件由调用方失败路径清理）。
+                    int allowed = (int) Math.min((long) buffer.length, maxBytes - copied);
+                    if (allowed > 0) out.write(buffer, 0, allowed);
+                    copied += allowed;
+                    return new Result(Status.BYTE_LIMIT, copied);
+                }
+                out.write(buffer, 0, n);
+                copied += n;
+                long nowMs = clock.elapsedMs();
+                if (nowMs - startMs > maxMillis) return new Result(Status.TIME_LIMIT, copied);
+                if (progress != null) progress.onProgress(new Progress(copied, nowMs - startMs));
+            }
+            return new Result(Status.OK, copied);
+        }
     }
 }

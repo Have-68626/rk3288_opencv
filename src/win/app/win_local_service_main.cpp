@@ -13,6 +13,14 @@
 #include <windows.h>
 #endif
 
+// OpenCL 守卫：本 TU 未无条件直接 include ocl.hpp（下方为条件 include），
+// HAVE_OPENCL 依赖 rk_win 头传递包含；守卫保证无 OpenCL 构建下不引用 cv::ocl 符号。
+#if defined(HAVE_OPENCL) && defined(__has_include)
+#  if __has_include(<opencv2/core/ocl.hpp>)
+#    include <opencv2/core/ocl.hpp>
+#  endif
+#endif
+
 namespace rk_win {
 namespace {
 
@@ -121,7 +129,11 @@ int main() {
 
     rk_win::FramePipeline pipe;
     pipe.setEventLogger(&events);
+#if defined(HAVE_OPENCL) && defined(__has_include)
+#  if __has_include(<opencv2/core/ocl.hpp>)
     cv::ocl::setUseOpenCL(cfg.acceleration.enableOpenCL);
+#  endif
+#endif
     pipe.initialize(cfg);
     pipe.setPreviewLayout(1280, 720, cfg.ui.previewScaleMode);
     rk_win::ensureCameraRunning(pipe, cfg, events);
@@ -136,10 +148,16 @@ int main() {
         poster.start(&pipe, &events, cfg.poster.postUrl, cfg.poster.throttleMs, cfg.poster.backoffMinMs, cfg.poster.backoffMaxMs);
     }
 
+    std::uint64_t lastAppliedGen = 0;  // 已消费的配置代数（PUT 或外部写入，恰好消费一次）
     while (rk_win::g_running) {
         bool applied = false;
         std::string err;
-        if (settings.pollReloadOnce(applied, err) && applied) {
+        // 驱动外部写入热重载（含校验/回滚）；PUT 落盘会自更新 lastWriteTime_，
+        // pollReloadOnce 无法据此感知，消费统一由 generation 判定（两来源各一次、无重复/遗漏）
+        settings.pollReloadOnce(applied, err);
+        const std::uint64_t curGen = settings.generation();
+        if (curGen != lastAppliedGen) {
+            lastAppliedGen = curGen;
             rk_win::AppConfig next = settings.current();
 
             if (next.http.enable != cfg.http.enable || next.http.port != cfg.http.port) {
@@ -174,7 +192,11 @@ int main() {
                     std::to_string(next.ui.previewScaleMode));
                 break;
             case rk_win::ChangeKind::FullRestart:
+#if defined(HAVE_OPENCL) && defined(__has_include)
+#  if __has_include(<opencv2/core/ocl.hpp>)
                 cv::ocl::setUseOpenCL(next.acceleration.enableOpenCL);
+#  endif
+#endif
                 pipe.shutdown();
                 pipe.initialize(next);
                 pipe.setPreviewLayout(1280, 720, next.ui.previewScaleMode);

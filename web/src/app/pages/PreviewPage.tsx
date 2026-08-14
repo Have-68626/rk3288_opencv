@@ -10,17 +10,20 @@ import {
   Popconfirm,
   Select,
   Space,
+  Spin,
   Tooltip,
   Typography,
   message,
 } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CameraDeviceInfo } from '../api/cameras'
 import { getCameras } from '../api/cameras'
 import type { ServerSettingsDoc } from '../api/types'
 import { clearDb, enroll, openPrivacySettings, setFlip } from '../api/actions'
 import { getErrorMessage } from '../api/error'
+import { fetchMjpegStream } from '../api/mjpeg'
+import { getApiToken } from '../state/prefs'
 import { useAppStore } from '../state/AppStore'
 import FlipSwitch from '../components/FlipSwitch'
 
@@ -36,6 +39,20 @@ export function PreviewPage() {
   const [camRetry, setCamRetry] = useState(0)
   const [previewKey, setPreviewKey] = useState(0)
   const [imgError, setImgError] = useState(false)
+  // 流式渲染状态：idle=未启动（无 token 的原生 <img src> 路径）/ connecting=首帧前 / live=已出帧
+  const [streamStatus, setStreamStatus] = useState<'idle' | 'connecting' | 'live'>('idle')
+  const imgRef = useRef<HTMLImageElement>(null)
+  // 当前 MJPEG 流的 AbortController：供 <img> 解码失败（onError）回调触达 effect 内的
+  // 控制器并 abort 运行中的 fetch 流（P8-1 点2）；effect 每次启动/清理时同步此引用。
+  const streamAbortRef = useRef<AbortController | null>(null)
+
+  const apiBase = import.meta.env.VITE_API_BASE || ''
+  const streamUrl = `${apiBase}/api/v1/preview.mjpeg`
+  // token 提升为组件级常量：既是 hasToken 判据，也是 MJPEG effect 的依赖（P8-1 点4）。
+  // token 中途变更（无导航）时 effect 依依赖重启流，避免旧凭据继续空转/失效流不重启。
+  const token = getApiToken().trim()
+  // token 非空才走 fetch 流式渲染；空 token 保留原生 <img src>（兼容无鉴权部署）
+  const hasToken = token.length > 0
 
   const [flipX, setFlipX] = useState(false)
   const [flipY, setFlipY] = useState(false)
@@ -81,6 +98,62 @@ export function PreviewPage() {
       }
     };
   }, [])
+
+  // 有 token：改用 fetch + ReadableStream 按边界切帧，Blob URL 赋给 <img>。
+  // 为什么不用 <img src> 直连：img 无法携带 Authorization 头，启用鉴权后必黑屏。
+  // 无 token：直接 return，不发起任何请求，保留原生 <img src> 路径。
+  // 错误/断流统一映射为 imgError（复用现有 Empty+重试，previewKey 刷新即重连）。
+  useEffect(() => {
+    if (!token) return
+    // 重连（previewKey 刷新）时把流状态重置为 connecting，避免上一轮的 live 残留：
+    // 否则重连期不显示 spinner、img src=undefined 闪裂图。
+    setStreamStatus('connecting')
+    const controller = new AbortController()
+    streamAbortRef.current = controller
+    let aborted = false
+    let started = false
+    let objectUrl: string | null = null
+
+    void fetchMjpegStream({
+      url: streamUrl,
+      token,
+      signal: controller.signal,
+      onFrame: (jpegBytes) => {
+        if (aborted || !imgRef.current) return
+        // Blob 需要 ArrayBuffer 后备视图：把流切分出的 view 复制为独立快照再入 Blob
+        const next = URL.createObjectURL(new Blob([new Uint8Array(jpegBytes)], { type: 'image/jpeg' }))
+        imgRef.current.src = next
+        // 上一帧 URL 及时回收，避免 blob: 泄漏
+        if (objectUrl) URL.revokeObjectURL(objectUrl)
+        objectUrl = next
+        if (!started) {
+          started = true
+          setStreamStatus('live')
+        }
+      },
+      onError: (err) => {
+        if (aborted) return
+        if ((err as Error)?.name === 'AbortError') return
+        controller.abort() // 停止当前流，避免空转
+        // 断流/错误路径同步回收当前 blob URL，避免 blob: 对象滞留
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl)
+          objectUrl = null
+        }
+        setImgError(true) // 复用现有错误+重试 UI（previewKey 刷新即重连）
+      },
+    })
+
+    return () => {
+      aborted = true
+      streamAbortRef.current = null
+      controller.abort()
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+    }
+  }, [previewKey, streamUrl, token])
 
   const deviceOptions = useMemo(() => {
     if (cams.status !== 'ready') return []
@@ -171,16 +244,47 @@ export function PreviewPage() {
               </Button>
             </Empty>
           ) : (
-            <img
-              key={previewKey}
-              src={`${import.meta.env.VITE_API_BASE || ''}/api/v1/preview.mjpeg`}
-              style={{
-                width: '100%',
-                display: 'block',
-              }}
-              alt="摄像头实时预览"
-              onError={() => setImgError(true)}
-            />
+            <div style={{ position: 'relative', width: '100%' }}>
+              <img
+                key={previewKey}
+                ref={imgRef}
+                src={hasToken ? undefined : streamUrl}
+                style={{
+                  width: '100%',
+                  display: 'block',
+                  visibility: hasToken && streamStatus !== 'live' ? 'hidden' : 'visible',
+                }}
+                alt="摄像头实时预览"
+                // 两种路径的 JPEG 解码失败都映射到 imgError，复用 Empty+重试（token 分支不再静默）。
+                // P8-1 点2：解码失败须 abort 运行中的 fetch 流 —— 否则连接残留到用户点重试、坏帧永久黑屏。
+                // P8-1 点3：同时把 streamStatus 重置为非 live（'idle'）—— 否则 onError 后残留 'live'，
+                //   重试首帧到达前不显示 spinner 而闪裂图。streamAbortRef 使 img 回调能触达 effect 内控制器。
+                //   组件级（node 环境）不可测，abort 契约由 mjpeg.test.ts“中途 abort 不再投递/不重复上报”钉住。
+                onError={() => {
+                  if (hasToken && streamAbortRef.current) {
+                    streamAbortRef.current.abort()
+                    streamAbortRef.current = null
+                  }
+                  setStreamStatus('idle')
+                  setImgError(true)
+                }}
+              />
+              {hasToken && streamStatus !== 'live' ? (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Typography.Text type="secondary">
+                    <Spin size="small" /> 连接摄像头流...
+                  </Typography.Text>
+                </div>
+              ) : null}
+            </div>
           )}
         </div>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 8 }}>

@@ -47,24 +47,37 @@ struct CameraOpenResult {
     std::string message;
 };
 
-class MfCamera {
+// 相机采集源抽象：FramePipeline 通过此接口驱动采集。
+// 便于测试注入假相机（记录 open 的设备、返回受控帧），验证"切换后采集源确实改变"。
+class ICameraSource {
+public:
+    virtual ~ICameraSource() = default;
+    virtual CameraOpenResult open(const std::wstring& deviceId, int width, int height, int fps) = 0;
+    virtual void close() = 0;
+    virtual CameraOpenResult readFrameBgr(cv::Mat& outBgr, std::uint64_t& outTimestamp100ns) = 0;
+    virtual bool isOpen() const = 0;
+    virtual CameraDevice currentDevice() const = 0;
+    virtual CameraFormat currentFormat() const = 0;
+};
+
+class MfCamera : public ICameraSource {
 public:
     MfCamera();
-    ~MfCamera();
+    ~MfCamera() override;
 
     MfCamera(const MfCamera&) = delete;
     MfCamera& operator=(const MfCamera&) = delete;
 
     static std::vector<CameraDevice> enumerateDevices();
 
-    CameraOpenResult open(const std::wstring& deviceId, int width, int height, int fps);
-    void close();
+    CameraOpenResult open(const std::wstring& deviceId, int width, int height, int fps) override;
+    void close() override;
 
-    bool isOpen() const;
-    CameraDevice currentDevice() const;
-    CameraFormat currentFormat() const;
+    bool isOpen() const override;
+    CameraDevice currentDevice() const override;
+    CameraFormat currentFormat() const override;
 
-    CameraOpenResult readFrameBgr(cv::Mat& outBgr, std::uint64_t& outTimestamp100ns);
+    CameraOpenResult readFrameBgr(cv::Mat& outBgr, std::uint64_t& outTimestamp100ns) override;
 
 private:
     struct Impl;

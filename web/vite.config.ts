@@ -1,4 +1,5 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vitest/config'
+import { loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import istanbul from 'vite-plugin-istanbul'
 
@@ -38,6 +39,12 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: '../src/win/app/webroot',
       emptyOutDir: true,
+    },
+    test: {
+      // 单测以 JUnit 格式落盘到 web/tests/reports/（已 gitignore），CI 据此上传 web-vitest-junit 工件，
+      // 保证单测结果可判别、失败可回放；default 保留控制台可读输出。
+      reporters: ['default', 'junit'],
+      outputFile: { junit: 'tests/reports/junit.xml' },
     },
   }
 })

@@ -266,6 +266,7 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         mp.o["detectorBackend"] = objStr();
         mp.o["recognitionBackend"] = objStr();
         mp.o["autoFallback"] = objBool();
+        mp.o["int8Enabled"] = objBool();  // 与 toSettingsDocObject/fromJson 对齐（此前遗漏导致 PUT/热重载校验失败）
         m.o["properties"] = std::move(mp);
         props.o["model"] = std::move(m);
     }

@@ -2,13 +2,32 @@
 # android.cmake — Android JNI native-lib target
 # ═══════════════════════════════════════════════════════════════════
 
+# ── 冲突标记门禁（tracked conflict-marker gate）──
+# 未解析的 Git 冲突标记会阻断完整 Android native 构建（RK_SKIP_OPENCV=OFF），
+# 且在 RK_SKIP_OPENCV=ON 时被 stub 变体遮蔽。此处在配置期拦截。
+set(RK_JNI_GATE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/native-lib.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/camera.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/config.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/engine.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/preview.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/registry.cpp"
+)
+foreach(_gate_file ${RK_JNI_GATE_FILES})
+    file(READ "${_gate_file}" _gate_content)
+    if(_gate_content MATCHES "(^|\n)<<<<<<< " OR _gate_content MATCHES "(^|\n)>>>>>>> ")
+        message(FATAL_ERROR "Conflict markers found in ${_gate_file}. "
+            "Resolve before Android native build.")
+    endif()
+endforeach()
+
 find_library(log-lib log)
 find_library(jnigraphics-lib jnigraphics)
 
 if(NOT RK_SKIP_OPENCV)
     # Android JNI Shared Library
     add_library(native-lib SHARED
-        ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
+        ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} ${RK_PIPELINE_SOURCES}
         "src/cpp/native-lib.cpp"
         "src/cpp/src/JniMethodRegistry.cpp"
         "src/cpp/jni/camera.cpp"

@@ -1,5 +1,9 @@
 # 文档索引
 
+> 索引快照说明：本索引反映 2026-07 三层重构（Engine/FramePipeline/HttpFacesServer）后的文档基线，
+> 覆盖 windows-web-spa、架构、治理设计/计划、人员注册设计等模块；最近更新 2026-08-10（Q4 治理轮）。
+> 新增文档或模块结构变更后请同步维护本表，避免与 docs/ 实际内容脱节。
+
 ## windows-web-spa/
 | 文件 | 说明 |
 |------|------|
@@ -60,11 +64,11 @@
 | `REMOTE_BRANCH_AUDIT.md` | 19→3 远程分支审计与清理 |
 | `RK3288_CONSTRAINTS.md` | RK3288 目标设备画像与约束清单 |
 
-> 以下内容已合并到 [DEVELOP.md](../DEVELOP.md) 附录中：
-> - 附录 B：加速方案可行性分析与实现状态
-> - 附录 C：Android 摄像头调用机制研究
-> - 附录 D：人脸识别技术实现方案研究
-> - 附录 E：性能优化与故障排障研究
-> - 附录 F：证据日志分析报告
-> - 附录 G：稳定性治理审计修复计划
-> - 附录 H：稳定性治理分阶段执行报告
+> 以下研究与审计附录位于 `docs/research/` 下的独立文件（2026-07-05 从 [DEVELOP.md](../DEVELOP.md) 附录拆分为独立文档，DEVELOP.md 中仅保留指向这些文件的锚点）：
+> - 附录 B：[加速方案可行性分析与实现状态](research/appendix-b.md)
+> - 附录 C：[Android 摄像头调用机制研究](research/appendix-c.md)
+> - 附录 D：[人脸识别技术实现方案研究](research/appendix-d.md)
+> - 附录 E：[性能优化与故障排障研究](research/appendix-e.md)
+> - 附录 F：[证据日志分析报告](research/appendix-f.md)
+> - 附录 G：[稳定性治理审计修复计划](research/appendix-g.md)
+> - 附录 H：[稳定性治理分阶段执行报告](research/appendix-h.md)（占位文档，内容未填充）

@@ -49,6 +49,9 @@ final class CameraXCaptureController implements CaptureController {
     private volatile ProcessCameraProvider provider;
     private Camera camera;
     private ImageAnalysis analysis;
+    // Q-CQ-B07-004：异步 bind 会话代次门 —— 每次启动/停止递增代次，
+    // ProcessCameraProvider 回调先校验代次仍当前才继续，过期则整体忽略（不 bind/不覆盖）。
+    private final StartSessionGate startGate = new StartSessionGate();
 
     private int sensorOrientation;
     private boolean mirrored;
@@ -84,7 +87,14 @@ final class CameraXCaptureController implements CaptureController {
         stop();
         analyzerExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "CameraXAnalyzer"));
         ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(appContext);
+        // Q-CQ-B07-004：每次启动递增代次，旧会话的异步回调由此过期
+        long epoch = startGate.enter();
         future.addListener(() -> {
+            // 代次校验（Q-CQ-B07-004）：过期 Future 延迟完成时整体忽略 —— 不 bind 新 Surface/不覆盖新状态
+            if (!startGate.isCurrent(epoch)) {
+                AppLog.w("CameraXCapture", "start", "过期代次忽略（不 bind/不覆盖）: epoch=" + epoch);
+                return;
+            }
             try {
                 provider = future.get();
                 provider.unbindAll();
@@ -151,6 +161,8 @@ final class CameraXCaptureController implements CaptureController {
 
     @Override
     public void stop() {
+        // Q-CQ-B07-004：使进行中的异步绑定过期，旧回调不得在 stop 后重新拉起相机/覆盖状态
+        startGate.invalidate();
         if (analysis != null) {
             try {
                 analysis.clearAnalyzer();
@@ -381,5 +393,34 @@ final class CameraXCaptureController implements CaptureController {
             }
         });
         return list.get(0);
+    }
+
+    /**
+     * 会话代次门（Q-CQ-B07-004）。
+     *
+     * <p>ProcessCameraProvider.getInstance() 的 Future 可能延迟完成；若期间再次 start()/stop()，
+     * 旧 Future 的回调若继续执行 provider.unbindAll()/bindToLifecycle() 会覆盖 camera/analysis
+     * 等新状态、甚至 stop 后重新拉起相机。每次启动 enter() 递增代次使旧会话过期，回调通过
+     * isCurrent(epoch) 校验；过期则整体忽略。与 MonitoringCoordinator 的 isCurrentGeneration
+     * 取消门模式保持一致。</p>
+     */
+    static final class StartSessionGate {
+        // S3: 防御性硬化 —— 镜像 MonitoringCoordinator 取消门，跨线程代次读写需 volatile 保证可见性/原子性
+        private volatile long current;
+
+        // 进入新会话：返回本次代次，并使之前会话过期
+        long enter() {
+            return ++current;
+        }
+
+        // 停止/重建：使进行中的异步绑定过期
+        void invalidate() {
+            ++current;
+        }
+
+        // 代次校验：仅当前代次允许继续；过期 Future 回调不得 bind/覆盖新状态
+        boolean isCurrent(long epoch) {
+            return epoch == current;
+        }
     }
 }

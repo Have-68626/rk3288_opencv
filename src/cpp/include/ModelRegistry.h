@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -58,7 +59,10 @@ public:
     std::unique_ptr<Embedder>     createEmbedder(const std::string& id, std::string* err = nullptr);
 
     // --- Query ---
-    const ModelEntry* getEntry(const std::string& id) const;
+    // 返回值拷贝而非裸指针：并发注册同 key 覆盖会对现存 ModelEntry 做拷贝赋值，
+    // 改写 std::string 字段，裸指针在锁外使用会悬空/撕裂（data race）。
+    // 调用方在锁外安全持有完整快照。
+    std::optional<ModelEntry> getEntry(const std::string& id) const;
     std::vector<ModelEntry> listAll() const;
     std::vector<ModelEntry> listByTask(const std::string& taskType) const;
 

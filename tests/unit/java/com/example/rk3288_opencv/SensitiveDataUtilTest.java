@@ -2,6 +2,7 @@ package com.example.rk3288_opencv;
 
 import org.junit.Test;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 
 public class SensitiveDataUtilTest {
@@ -92,5 +93,65 @@ public class SensitiveDataUtilTest {
     public void testAlreadyMaskedText() {
         String input = "My phone is 138****5678 and ID is 110101********1234 and GPS is ***, ***.";
         assertEquals("Already masked text should remain stable", input, SensitiveDataUtil.maskSensitiveData(input));
+    }
+
+    @Test
+    public void testMaskSecretKey_CompositeKey() {
+        String input = "upload secret_key=superSecretVal done";
+        String expected = "upload secret_key=su***al done";
+        String result = SensitiveDataUtil.maskSensitiveData(input);
+        assertEquals("Composite key secret_key value must be masked", expected, result);
+        assertFalse("secret_key value must not leak", result.contains("superSecretVal"));
+    }
+
+    @Test
+    public void testMaskClientSecret_CompositeKey() {
+        String input = "client_secret=clientVal";
+        String expected = "client_secret=cl***al";
+        String result = SensitiveDataUtil.maskSensitiveData(input);
+        assertEquals("Composite key client_secret value must be masked", expected, result);
+        assertFalse("client_secret value must not leak", result.contains("clientVal"));
+    }
+
+    @Test
+    public void testMaskAuthorizationBearer_JwtBody() {
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiYXVkIjoiY2xpZW50X2lkIiwiZXhwIjoxOTc4MDIwMDAwfQ";
+        String input = "Authorization: Bearer " + jwt;
+        String expected = "Authorization: Bearer ey***fQ";
+        String result = SensitiveDataUtil.maskSensitiveData(input);
+        assertEquals("JWT body must be masked, Bearer prefix preserved", expected, result);
+        assertFalse("JWT body must not leak", result.contains(jwt));
+    }
+
+    @Test
+    public void testMaskPassword_Kv() {
+        String input = "password=myP@ssw0rd";
+        String expected = "password=my***rd";
+        String result = SensitiveDataUtil.maskSensitiveData(input);
+        assertEquals("password value must be masked", expected, result);
+        assertFalse("password value must not leak", result.contains("myP@ssw0rd"));
+    }
+
+    @Test
+    public void testMaskToken_Kv() {
+        String input = "token=abc";
+        String expected = "token=***";
+        String result = SensitiveDataUtil.maskSensitiveData(input);
+        assertEquals("Short token value must be fully masked", expected, result);
+        assertFalse("token value must not leak", result.contains("abc"));
+    }
+
+    @Test
+    public void testMaskEmail() {
+        String input = "contact me at alice@example.com now";
+        String expected = "contact me at ***@*** now";
+        assertEquals("email must be masked", expected, SensitiveDataUtil.maskSensitiveData(input));
+    }
+
+    @Test
+    public void testChineseTextUnchanged() {
+        String input = "人脸识别初始化成功，设备已就绪。";
+        assertEquals("Chinese text without sensitive data must remain unchanged",
+                input, SensitiveDataUtil.maskSensitiveData(input));
     }
 }

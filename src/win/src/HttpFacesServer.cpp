@@ -7,6 +7,7 @@
 #include "rk_win/EventLogger.h"
 #include "rk_win/FramePipeline.h"
 #include "rk_win/JsonLite.h"
+#include "rk_win/JsonEndpointHandlers.h"
 #include "rk_win/WinConfig.h"
 #include "rk_win/WinJsonConfig.h"
 
@@ -20,7 +21,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
-#include <fstream>
 #include <sstream>
 #include <thread>
 
@@ -84,6 +84,8 @@ static std::string statusReason(int code) {
         case 200: return "OK";
         case 204: return "No Content";
         case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
         case 413: return "Payload Too Large";
@@ -93,12 +95,64 @@ static std::string statusReason(int code) {
     }
 }
 
+// 恒定时间字符串比较（S-SEC-B09-001）：长度不同直接不等（长度本身属可接受信息泄漏）；
+// 同长时逐字节 XOR 归并后一次判定，不提前退出，防基于首个差异字节的时序侧信道。
+static bool constantTimeEquals(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+    }
+    return diff == 0;
+}
+
 static bool pathHasDot(const std::string& path) {
     return path.find('.') != std::string::npos;
 }
 
 static bool startsWith(const std::string& s, const std::string& prefix) {
     return s.rfind(prefix, 0) == 0;
+}
+
+// S-SEC-B09-004：请求头读取（头名已小写存储，见 readRequest）。返回是否找到并赋值。
+static bool getHeaderValue(const HttpFacesServer::HttpRequest& req, const char* name, std::string& out) {
+    for (const auto& h : req.headers) {
+        if (h.first == name) { out = h.second; return true; }
+    }
+    return false;
+}
+
+// 解析 Origin 头为 <scheme>://<host>[:<port>]，返回 host（小写）；scheme 非 http/https
+// 或格式异常 → 返回空串（视为不允许）。忽略端口：本机回环任意端口均同机，属安全边界
+// "同机器"，且兼容 Vite 开发代理（浏览器源为 localhost:<devPort>）。
+static std::string originHost(const std::string& origin) {
+    const auto sp = origin.find("://");
+    if (sp == std::string::npos) return "";
+    const std::string scheme = toLower(origin.substr(0, sp));
+    if (scheme != "http" && scheme != "https") return "";
+    std::string rest = origin.substr(sp + 3);
+    for (const char cut : {'/', '?', '#'}) {
+        const auto p = rest.find(cut);
+        if (p != std::string::npos) rest = rest.substr(0, p);
+    }
+    // 端口剥离：IPv6 字面量 [::1]:port 仅去掉 ']' 之后的 :port；其余去掉最后一个 ':'。
+    std::string host = rest;
+    const auto bracket = host.find(']');
+    const auto colon = host.rfind(':');
+    if (colon != std::string::npos) {
+        host = (bracket != std::string::npos && bracket < colon) ? host.substr(0, bracket + 1)
+                                                                : host.substr(0, colon);
+    }
+    return toLower(host);
+}
+
+// 本机回环 host 白名单：精确匹配，杜绝 localhost.evil.com / 127.0.0.1.evil.com 子域绕过。
+static bool isLoopbackHost(const std::string& host) {
+    return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]";
+}
+
+static bool isLoopbackOrigin(const std::string& origin) {
+    return isLoopbackHost(originHost(origin));
 }
 
 static std::string guessContentType(const std::string& path) {
@@ -119,21 +173,7 @@ static std::string guessContentType(const std::string& path) {
     return "application/octet-stream";
 }
 
-static bool readFileBinary(const std::filesystem::path& p, std::string& out) {
-    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
-    if (!ifs) return false;
-    const auto sz = ifs.tellg();
-    if (sz <= 0) { out.clear(); return true; }
-    ifs.seekg(0, std::ios::beg);
-    out.resize(static_cast<std::size_t>(sz));
-    ifs.read(out.data(), static_cast<std::streamsize>(sz));
-    return true;
-}
-
-
-}  // namespace
-
-}  // namespace
+}  // namespace (匿名)
 
 // ──── 构造函数 / 生命周期 ────────────────────────────────────
 
@@ -154,6 +194,11 @@ bool HttpFacesServer::start(FramePipeline* pipe, EventLogger* events, int port, 
     events_ = events;
     settings_ = settings;
     port_ = port;
+
+    // S-SEC-B09-001：Bearer token 来源 = 环境变量（配置字段 http.authToken 待 CONFIG 任务
+    // 扩展，见 docs/security/auth-model.md §2）。空 = 认证未启用（兼容模式，规格 §3.3）。
+    // token 仅存于进程内存，不写入日志与响应体（脱敏纪律 §6）。
+    authToken_ = utf8FromWide(getEnvW(L"RK_WCFR_HTTP_AUTH_TOKEN"));
 
     docRoot_ = resolvePathFromExeDir(L"webroot");
 
@@ -179,15 +224,28 @@ bool HttpFacesServer::start(FramePipeline* pipe, EventLogger* events, int port, 
         closesocket(s);
         return false;
     }
+    // webroot 缺失时保留既有服务启动语义；静态读取会因未固定根句柄而 fail-closed。
+    (void)staticRoot_.open(docRoot_);
 
     listenSock_ = static_cast<std::uintptr_t>(s);
     running_ = true;
-    acceptThread_ = std::thread([this]() { acceptLoop(); });
+    try {
+        acceptThread_ = std::thread([this]() { acceptLoop(); });
+    } catch (...) {
+        running_ = false;
+        closesocket(s);
+        listenSock_ = 0;
+        staticRoot_.close();
+        return false;
+    }
     return true;
 }
 
 void HttpFacesServer::stop() {
-    if (!running_) return;
+    if (!running_) {
+        staticRoot_.close();
+        return;
+    }
     running_ = false;
 
     const auto ls = static_cast<SOCKET>(listenSock_);
@@ -211,20 +269,15 @@ void HttpFacesServer::stop() {
     std::unique_lock<std::mutex> lk(stopMu_);
     stopCv_.wait(lk, [this]() { return activeClients_.load() == 0; });
 
-    // 所有客户端线程已完成 → join 清理
+    // 所有客户端线程已完成 → join 清理（回收残余线程/句柄，Q-CQ-B06-017）
     serverStopping_ = true;
-    {
-        std::lock_guard<std::mutex> lk2(clientThreadsMu_);
-        for (auto& t : clientThreads_) {
-            if (t.joinable()) t.join();
-        }
-        clientThreads_.clear();
-    }
+    clientThreads_.joinAll();
 
     {
         std::lock_guard<std::mutex> lk3(clientMu_);
         clientSocks_.clear();
     }
+    staticRoot_.close();
 }
 
 // ──── 连接 / I/O ────────────────────────────────────────────
@@ -265,9 +318,21 @@ void HttpFacesServer::acceptLoop() {
         }
 
         activeClients_++;
+        std::shared_ptr<std::atomic<bool>> done;
+        std::thread t;
         try {
-            auto running = std::make_shared<std::atomic<bool>>(true);
-            std::thread t([this, cs, lease = std::move(*lease), running]() mutable {
+            // S3 CONFIRMED：try 仅包住"线程创建"阶段（make_shared + std::thread 构造）。
+            // 这两个操作可能抛 bad_alloc / std::system_error（线程资源不足）；
+            // 此时线程尚未创建/入池，catch 回滚 activeClients_ 是安全的。
+            //
+            // 若像旧实现那样把 add()/reclaimFinished() 也包进 try，计数会被破坏：
+            // add() 成功把线程入池后，reclaimFinished() 内部 vector push_back 抛 bad_alloc 时，
+            // catch 会误把"已入池线程"当作创建失败，执行 activeClients_-- + closesocket；
+            // 但线程仍在运行，其 Cleanup 析构还会再减一次 → 计数 0→1→0→-1，
+            // stop() 等待 activeClients_==0 的谓词永不成立，导致关停挂起。
+            // 故 add()/reclaimFinished() 移到 try 之外：其异常不触发回滚，计数不变量不被破坏。
+            done = std::make_shared<std::atomic<bool>>(false);
+            t = std::thread([this, cs, lease = std::move(*lease), done]() mutable {
                 struct Cleanup {
                     HttpFacesServer* self;
                     std::uintptr_t sockP;
@@ -287,14 +352,11 @@ void HttpFacesServer::acceptLoop() {
                 } cleanup{this, static_cast<std::uintptr_t>(cs)};
 
                 handleClient(static_cast<std::uintptr_t>(cs));
-                *running = false;
+                *done = true;   // 标记线程已完成：acceptLoop 据此 join 并释放线程句柄
             });
-            {
-                std::lock_guard<std::mutex> lk(clientThreadsMu_);
-                clientThreads_.push_back(std::move(t));
-            }
         } catch (const std::exception&) {
-            // 线程创建失败：回滚连接状态，防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)
+            // 仅"线程创建"失败才回滚：此时无线程被创建，还原连接状态，
+            // 防止 activeClients_ 泄露和资源耗尽崩溃 (DoS)。
             {
                 std::lock_guard<std::mutex> lk(clientMu_);
                 for (auto it = clientSocks_.begin(); it != clientSocks_.end(); ++it) {
@@ -307,6 +369,16 @@ void HttpFacesServer::acceptLoop() {
             activeClients_--;
             stopCv_.notify_all();
             closesocket(cs);
+        }
+        // 线程入池与回收在 try 之外（S3 CONFIRMED）：add() 成功即拥有线程，
+        // 其后的异常（理论仅 bad_alloc）不得触发 catch 回滚，否则会二次递减
+        // activeClients_。t.joinable() 为 false 表示创建失败已回滚，跳过入池。
+        if (t.joinable()) {
+            clientThreads_.add(std::move(t), std::move(done));
+            // 回收机制（Q-CQ-B06-017）：每次 accept 后立即 join 已结束的客户端线程，
+            // 这样已完成连接的 std::thread 与 OS 线程句柄会被及时回收，
+            // clientThreads_ 长期有界（≤ 并发连接上限），不会随请求总量线性增长。
+            clientThreads_.reclaimFinished();
         }
     }
 }
@@ -536,13 +608,16 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
     if (rel == "/") rel = "/index.html";
 
     std::filesystem::path p;
-    if (!rk_win::isSafeRelativePath(docRoot_, rel, p)) return jsonErr(400, "invalid_path", "路径不合法");
+    if (!staticRoot_.resolve(rel, p)) return jsonErr(400, "invalid_path", "路径不合法");
 
     std::string body;
-    if (!readFileBinary(p, body)) {
+    // S-SEC-B09-007：根目录句柄在启动时固定；读取时逐层相对父目录句柄打开，
+    // 任一 symlink/junction 等重解析点均 fail-closed。
+    if (!rk_win::readFileWithinRoot(staticRoot_, p, body)) {
         if (!pathHasDot(req.path)) {
-            std::filesystem::path idx = docRoot_ / "index.html";
-            if (readFileBinary(idx, body)) {
+            std::filesystem::path idx;
+            if (staticRoot_.resolve("/index.html", idx) &&
+                rk_win::readFileWithinRoot(staticRoot_, idx, body)) {
                 HttpResponse r;
                 r.status = 200;
                 r.reason = "OK";
@@ -572,7 +647,80 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
     return r;
 }
 
-// ──── 客户端处理 ─────────────────────────────────────────────
+// ──── HTTP 认证授权（S-SEC-B09-001，规格见 docs/security/auth-model.md）────
+
+bool HttpFacesServer::isAnonymousPath(const std::string& path) const {
+    // 非 /api 前缀 = 静态文件托管（写操作已被 handleStaticOrFallback 以 405 拒绝）→ 匿名。
+    if (path.rfind("/api", 0) != 0) return true;
+    // /api 下仅只读状态端点匿名（健康检查 + 加速状态，无敏感动作/凭据）。
+    return path == "/api/v1/health" || path == "/api/v1/acceleration";
+}
+
+bool HttpFacesServer::requestAuthorized(const HttpRequest& req) const {
+    // 未启用认证（未配置 token）= 兼容模式：全匿名放行（规格 §3.3 残余风险）。
+    if (authToken_.empty()) return true;
+    // 匿名白名单：静态文件 + 只读状态端点。
+    if (isAnonymousPath(req.path)) return true;
+
+    // 提取 Authorization 头的 Bearer token。
+    std::string headerValue;
+    for (const auto& h : req.headers) {
+        if (h.first == "authorization") {
+            headerValue = h.second;
+            break;
+        }
+    }
+    // scheme 大小写不敏感（RFC 6750）；token 按原文比较。
+    std::string value = trim(headerValue);
+    const auto sp = value.find(' ');
+    if (sp == std::string::npos) return false;
+    std::string scheme = value.substr(0, sp);
+    std::string token = trim(value.substr(sp + 1));
+    for (auto& c : scheme) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (scheme != "bearer") return false;
+    if (token.empty()) return false;
+
+    // 恒定时间比较：防时序侧信道（规格 §4）。
+    return constantTimeEquals(token, authToken_);
+}
+
+HttpFacesServer::HttpResponse HttpFacesServer::unauthorizedResponse() {
+    // 与既有 jsonErr 格式一致（含安全响应头）；不发送 WWW-Authenticate，
+    // 避免暴露 token 机制/触发认证握手循环（规格 §3.4）。不回显请求 token。
+    return jsonErr(401, "unauthorized", "需要有效的认证令牌");
+}
+
+// S-SEC-B09-004：跨站请求伪造（CSRF）防护。
+// 仅在认证通过之后、路由/流分发之前调用（handleClient）。决策树见
+// docs/security/auth-model.md §3.5：
+//  1) 写方法（POST/PUT/DELETE）才校验；读方法恒放行（无副作用）；
+//  2) Sec-Fetch-Site: cross-site → 拒绝（现代浏览器强信号，不可被 JS 伪造）；
+//  3) 旧浏览器无 Sec-Fetch-Site → 回退校验 Origin：
+//     - Origin 缺失 → 放行（curl/API 客户端/旧浏览器写）；空值 → 拒绝(403)（无源上下文）；
+//     - 字面量 "null"（沙箱 iframe / data: 等无源上下文）→ 拒绝；
+//     - 非本机回环 host → 拒绝；http(s)://127.0.0.1|localhost|::1 → 放行。
+//  4) Origin/Sec-Fetch-Site 均缺失 → 放行（与 SEC-02 兼容模式一致，不破坏 curl）。
+HttpFacesServer::HttpResponse HttpFacesServer::crossSiteForbiddenResponse() {
+    // 与 jsonErr 格式一致（含安全响应头）；不回显请求中的 Origin/token（脱敏纪律 §6）。
+    return jsonErr(403, "cross_site_forbidden", "跨站请求被拒绝");
+}
+
+bool HttpFacesServer::csrfCheckPasses(const HttpRequest& req) const {
+    // 读方法无副作用，不受 CSRF 影响（GET/HEAD 等一律放行）。
+    if (req.method != "POST" && req.method != "PUT" && req.method != "DELETE") return true;
+
+    // 1) Sec-Fetch-Site：cross-site → 拒绝；其余值（same-origin/same-site/none）→ 放行。
+    std::string v;
+    if (getHeaderValue(req, "sec-fetch-site", v)) {
+        return toLower(v) != "cross-site";
+    }
+    // 2) 旧浏览器无 Sec-Fetch-Site：回退校验 Origin；缺失 → 放行（curl/API 客户端）。
+    if (getHeaderValue(req, "origin", v)) {
+        if (v.empty() || v == "null") return false;  // 无源上下文（沙箱 iframe/data:）跨站风险高
+        return isLoopbackOrigin(v);
+    }
+    return true;
+}
 
 // ──── 客户端处理 ─────────────────────────────────────────────
 
@@ -588,6 +736,22 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
         r.contentType = "application/json; charset=utf-8";
         r.body = jsonErr(r.status, "invalid_request", "请求解析失败", {err}).body;
         (void)writeResponse(sock, r);
+        return;
+    }
+
+    // S-SEC-B09-001：认证授权。在流旁路与 handleRequest 分发之前统一收口校验，
+    // 同时覆盖 EndpointRegistry 路由与 StreamSessionRunner 旁路两类请求，
+    // 避免"注册表已锁但流漏放行"（规格 §4）。未通过 → 401，不执行任何 handler。
+    if (!requestAuthorized(req)) {
+        (void)writeResponse(sock, unauthorizedResponse());
+        return;
+    }
+
+    // S-SEC-B09-004：跨站请求伪造（CSRF）防护。认证通过之后、路由/流分发之前收口：
+    // 对写方法（POST/PUT/DELETE）校验 Origin / Sec-Fetch-Site（决策树见 §3.5）。
+    // 拒绝 → 403，不执行任何 handler（写操作零副作用，含匿名兼容模式）。
+    if (!csrfCheckPasses(req)) {
+        (void)writeResponse(sock, crossSiteForbiddenResponse());
         return;
     }
 

@@ -7,6 +7,7 @@ namespace pipeline {
 ResultPublisher::ResultPublisher() {}
 
 void ResultPublisher::setCallback(TextCallback cb) {
+    std::lock_guard<std::mutex> lk(cbMu_);
     callback_ = std::move(cb);
 }
 
@@ -18,11 +19,17 @@ void ResultPublisher::publish(FrameOutcome&& outcome) {
             std::chrono::system_clock::now().time_since_epoch()).count();
     }
 
-    if (callback_) {
+    // 锁内复制回调快照、锁外调用：换回调与发布并发时，正在执行的回调不被 setCallback 销毁
+    TextCallback cb;
+    {
+        std::lock_guard<std::mutex> lk(cbMu_);
+        cb = callback_;
+    }
+    if (cb) {
         if (outcome.tracks.empty()) {
             if (now - lastNoFaceMs_ > 2000) {
                 lastNoFaceMs_ = now;
-                callback_("NO_FACE");
+                cb("NO_FACE");
             }
         } else if (outcome.tracks.size() > 1) {
             if (now - lastMultiMs_ > 650) {
@@ -34,20 +41,20 @@ void ResultPublisher::publish(FrameOutcome&& outcome) {
                         msg += "(" + std::to_string(static_cast<int>(t.stableConfidence * 100)) + "%)";
                     }
                 }
-                callback_(msg);
+                cb(msg);
             }
         } else {
             const auto& t = outcome.tracks[0];
             if (t.stableId != "Unknown") {
                 if (now - lastVerifiedMs_ > 800) {
                     lastVerifiedMs_ = now;
-                    callback_("VERIFIED " + t.stableId + " " +
+                    cb("VERIFIED " + t.stableId + " " +
                         std::to_string(static_cast<int>(t.stableConfidence * 100)) + "%");
                 }
             } else {
                 if (now - lastUnknownMs_ > 1200) {
                     lastUnknownMs_ = now;
-                    callback_("AUTH_FAIL Unknown");
+                    cb("AUTH_FAIL Unknown");
                 }
             }
         }

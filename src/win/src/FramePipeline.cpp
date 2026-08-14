@@ -21,6 +21,20 @@
 
 namespace rk_win {
 
+// 不可变运行时快照：recognizer/dnn/processor 共享所有权。
+// processLoop 与 applyCameraSettings 通过快照持有当前 runtime 整个调用期间，
+// reloadRuntime 原子替换快照，已持快照者不受影响（并发 reload/enroll 无 UAF）。
+struct RuntimeSnapshot {
+    std::shared_ptr<IRecognizer> recognizer;
+    std::shared_ptr<DnnSsdFaceDetector> dnn;
+    std::shared_ptr<FrameProcessor> processor;
+};
+
+std::shared_ptr<RuntimeSnapshot> FramePipeline::runtimeSnapshot() const {
+    std::lock_guard<std::mutex> lock(runtimeMu_);
+    return runtime_;
+}
+
 void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     if (bgr.empty()) return;
     if (!flipX && !flipY) return;
@@ -39,10 +53,12 @@ FramePipeline::~FramePipeline() {
 
 bool FramePipeline::initialize(const AppConfig& cfg) {
     cfg_ = cfg;
+    camera_ = std::make_unique<MfCamera>();
     devices_ = MfCamera::enumerateDevices();
 
     // 日志初始化（保留）
     if (!logger_.open(cfg_.log.logDir, cfg_.log.maxFileBytes, cfg_.log.maxRollFiles)) {
+        std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = "日志打开失败（将继续运行但不会落盘日志）";
     }
 
@@ -52,29 +68,27 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         std::lock_guard<std::mutex> lock(modelsMu_);
         activeModels_ = std::move(bootstrap.models);
     }
-    recognizer_ = std::move(bootstrap.recognizer);
-    dnn_ = std::move(bootstrap.detector);
+    auto snap = std::make_shared<RuntimeSnapshot>();
+    snap->recognizer = std::move(bootstrap.recognizer);
+    snap->dnn = std::move(bootstrap.detector);
+    snap->processor = std::make_shared<FrameProcessor>(snap->dnn.get(), snap->recognizer.get());
+    {
+        std::lock_guard<std::mutex> lock(runtimeMu_);
+        runtime_ = std::move(snap);
+    }
 
     if (!bootstrap.ok) {
+        std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.warning;
     }
 
     // Manifest check（保留——这是运行时自检，不归 bootstrap 管）
     {
         std::lock_guard<std::mutex> lock(modelsMu_);
-        for (const auto& m : activeModels_) {
-            const char* match = "unknown";
-            if (m.id == "cascade_frontalface") {
-                match = (m.hash == "529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d")
-                    ? "match" : "mismatch";
-            }
-            std::fprintf(stderr, "MODEL_MANIFEST_CHECK [id=%s] hash=%s manifest_match=%s\n",
-                m.id.c_str(), m.hash.c_str(), match);
-        }
+        checkModelManifestsLocked();
     }
 
-    // 装配 FrameProcessor + SideEffectSink（纯计算 + 副作用收口）
-    processor_ = std::make_unique<FrameProcessor>(dnn_.get(), recognizer_.get());
+    // 装配 SideEffectSink（纯计算 + 副作用收口）；FrameProcessor 已在 runtime 快照内
     sink_ = std::make_unique<SideEffectSink>(&logger_, &render_);
 
     running_ = true;
@@ -122,7 +136,7 @@ bool FramePipeline::startCameraByIndex(int deviceIndex, int formatIndex) {
 
     requestStopCamera();
     if (captureThread_.joinable()) captureThread_.join();
-    camera_.close();
+    camera_->close();
 
     {
         std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -199,7 +213,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
     requestStopCamera();
     if (captureThread_.joinable()) captureThread_.join();
-    camera_.close();
+    camera_->close();
 
     {
         std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -213,7 +227,11 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
     bool openFailed = false;
     CameraOpenResult lastOpen{};
     {
+        // 真正等待首帧（captureLoop 异步 open+采集 → cameraSignal_==4 成功 / ==3 打开失败），
+        // 超时 maxTotalMs 视为切换失败。此前仅检查一次（cameraSignal_ 刚重置为 0）恒判失败。
         std::unique_lock<std::mutex> lock(cameraSignalMu_);
+        cameraSignalCv_.wait_for(lock, std::chrono::milliseconds(maxTotalMs),
+                                 [&] { return cameraSignal_ == 4 || cameraSignal_ == 3; });
         if (cameraSignal_ == 4) gotFirstFrame = true;
         else if (cameraSignal_ == 3) openFailed = true;
         lastOpen = lastCameraOpenResult_;
@@ -245,7 +263,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
             requestStopCamera();
             if (captureThread_.joinable()) captureThread_.join();
-            camera_.close();
+            camera_->close();
 
             {
                 std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -262,9 +280,11 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
     }
 
     const auto td0 = clock::now();
-    if (cfg_.dnn.enable && dnn_ && dnn_->ready()) {
-        std::lock_guard<std::mutex> lock(dnnMu_);
-        dnn_->resetForStream();
+    auto rt = runtimeSnapshot();
+    if (cfg_.dnn.enable && rt && rt->dnn && rt->dnn->ready()) {
+        // dnnMu_ 已确认无共享不变式可护（A3）：快照保活 dnn 共享所有权，resetForStream 现为空操作；
+        // 删除无用锁不改变线程安全语义（B06-014）
+        rt->dnn->resetForStream();
     }
     const auto td1 = clock::now();
     out.detectorMs = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
@@ -288,7 +308,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
             requestStopCamera();
             if (captureThread_.joinable()) captureThread_.join();
-            camera_.close();
+            camera_->close();
 
             {
                 std::lock_guard<std::mutex> lock(cameraSignalMu_);
@@ -321,7 +341,26 @@ void FramePipeline::requestStopCamera() {
 void FramePipeline::stopCameraLocked() {
     cameraRunning_ = false;
     if (captureThread_.joinable()) captureThread_.join();
-    camera_.close();
+    camera_->close();
+}
+
+CameraOpenResult FramePipeline::openOnce() {
+    CameraDevice dev;
+    CameraFormat fmt;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (activeDeviceIndex_ < 0 || static_cast<std::size_t>(activeDeviceIndex_) >= devices_.size()) {
+            CameraOpenResult r;
+            r.ok = false;
+            r.category = ErrorCategory::BackendFailure;
+            r.code = "no_device";
+            r.message = "没有活动摄像头设备";
+            return r;
+        }
+        dev = devices_[static_cast<std::size_t>(activeDeviceIndex_)];
+        fmt = desiredFormat_;
+    }
+    return camera_->open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
 }
 
 void FramePipeline::setFlip(bool flipX, bool flipY) {
@@ -345,15 +384,10 @@ void FramePipeline::setPreviewLayout(int previewW, int previewH, int previewScal
 // ── ReloadPolicy 热更新方法 ──
 
 void FramePipeline::switchCamera(const AppConfig& cfg) {
-    CameraOpenParams params;
-    params.width = cfg.camera.width;
-    params.height = cfg.camera.height;
-    params.fps = cfg.camera.fps;
-
-    // 从 preferredDeviceId 查找设备索引（与 ensureCameraRunning 逻辑一致）
+    // 从 preferredDeviceId 解析设备索引（与 ensureCameraRunning 逻辑一致）
+    int idx = 0;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        int idx = 0;
         if (!cfg.camera.preferredDeviceId.empty()) {
             for (int i = 0; i < static_cast<int>(devices_.size()); i++) {
                 if (devices_[static_cast<size_t>(i)].deviceId == cfg.camera.preferredDeviceId) {
@@ -362,16 +396,60 @@ void FramePipeline::switchCamera(const AppConfig& cfg) {
                 }
             }
         }
-        params.deviceIndex = idx;
     }
 
-    auto result = CameraSession::switchWithRollback(params, currentDevice_);
-    if (result.ok) {
-        currentDevice_ = result.device;
-    }
+    CameraFormat desired;
+    desired.width = cfg.camera.width;
+    desired.height = cfg.camera.height;
+    desired.fps = cfg.camera.fps;
+
+    // 真正原子替换活动采集源（重启 captureLoop + 失败回滚），
+    // 避免仅探测却未真正切换采集管线的问题
+    const auto result = startCameraWithRollbackLocked(idx, desired, 300);
     {
         std::lock_guard<std::mutex> lock(renderMu_);
-        render_.status = result.code == "ok" ? "摄像头已切换" : result.message;
+        render_.status = result.rolledBack ? "切换失败已回滚" : (result.ok ? "摄像头已切换" : result.reason);
+    }
+}
+
+void FramePipeline::setCameraForTest(std::unique_ptr<ICameraSource> cam) {
+    camera_ = std::move(cam);
+}
+
+void FramePipeline::setDevicesForTest(std::vector<CameraDevice> devs) {
+    std::lock_guard<std::mutex> lock(mu_);
+    devices_ = std::move(devs);
+}
+
+void FramePipeline::setRecognizerForTest(std::shared_ptr<IRecognizer> rec) {
+    // 原子替换快照内 recognizer 并成对重建 processor（旧 processor 持有旧 recognizer 裸指针，
+    // 必须一起换避免新旧混用）；仅测试使用，调用时机须在 processLoop 空闲时（见头文件注释）。
+    std::lock_guard<std::mutex> lock(runtimeMu_);
+    if (!runtime_) return;
+    runtime_->recognizer = std::move(rec);
+    runtime_->processor = std::make_shared<FrameProcessor>(runtime_->dnn.get(), runtime_->recognizer.get());
+}
+
+int FramePipeline::enrollRemainingForTest() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return enrollRemaining_;
+}
+
+// Manifest 自检：打印每个活动模型的 MODEL_MANIFEST_CHECK 诊断行（纯诊断、不阻塞）。
+// 期望值须与 app/src/main/assets/lbpcascade_frontalface.xml 的 git blob（LF 规范）SHA256 同步。
+// .gitattributes 已将 assets 声明 binary（不做行尾转换），checkout 后字节与 blob 一致，
+// 故部署的 cascade 计算出的运行时 hash 恒等于此值（Q4-2 平台锚点，RW2/R2-3 双审 P2）。
+// 更新模型文件后须更新此值。抽出为复用函数（Q4-4）：initialize 与 reloadRuntime 成功替换
+// activeModels_ 后均调用，使日志反映重载后的 hash/manifest_match。调用方须已持有 modelsMu_ 锁。
+void FramePipeline::checkModelManifestsLocked() const {
+    for (const auto& m : activeModels_) {
+        const char* match = "unknown";
+        if (m.id == "cascade_frontalface") {
+            match = (m.hash == "529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d")
+                ? "match" : "mismatch";
+        }
+        std::fprintf(stderr, "MODEL_MANIFEST_CHECK [id=%s] hash=%s manifest_match=%s\n",
+            m.id.c_str(), m.hash.c_str(), match);
     }
 }
 
@@ -381,15 +459,27 @@ void FramePipeline::reloadRuntime(const AppConfig& cfg) {
     {
         std::lock_guard<std::mutex> lock(modelsMu_);
         activeModels_ = std::move(bootstrap.models);
+        // Q4-4：重载成功后重跑 manifest 校验——activeModels_ 已替换为 reload 后的模型，
+        // 校验随之重跑，使日志反映重载后的 hash/manifest_match（与 initialize 一致，纯诊断不阻塞）。
+        checkModelManifestsLocked();
     }
-    recognizer_ = std::move(bootstrap.recognizer);
-    dnn_ = std::move(bootstrap.detector);
-    // 重建 FrameProcessor（它持有 dnn_ 和 recognizer_ 的裸指针）
-    processor_ = std::make_unique<FrameProcessor>(dnn_.get(), recognizer_.get());
+    // 构建不可变快照后原子替换：processLoop 已持有的旧快照继续存活到引用归零，
+    // 不会在 run() 执行中被销毁（并发 reload/enroll 无 UAF）
+    auto snap = std::make_shared<RuntimeSnapshot>();
+    snap->recognizer = std::move(bootstrap.recognizer);
+    snap->dnn = std::move(bootstrap.detector);
+    snap->processor = std::make_shared<FrameProcessor>(snap->dnn.get(), snap->recognizer.get());
+    {
+        std::lock_guard<std::mutex> lock(runtimeMu_);
+        runtime_ = std::move(snap);
+    }
     {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.ok ? "模型运行时已重载" : bootstrap.warning;
     }
+    // 重载完成，代次 +1：成功重载必然改变代次（B06-020 治理项，禁止"伪成功"——
+    // reload 端点据此向调用方证明重载确实发生，而非仅返回占位状态）。
+    runtimeReloadGen_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FramePipeline::updatePreviewLayout(int w, int h, const std::string& scaleMode) {
@@ -405,11 +495,22 @@ void FramePipeline::requestEnroll(const std::string& personId) {
     std::lock_guard<std::mutex> lock(mu_);
     enrollPersonId_ = personId;
     enrollRemaining_ = cfg_.recognition.enrollSamples;
+    // 新注册递增代次：处理中的旧命令回写时凭 epoch 差异识别"期间有新注册"，
+    // 避免旧命令的递减/完成结果覆盖新请求的计数与 pending 标志（B06-018 残余竞态修复）。
+    ++enrollEpoch_;
     enrollRequested_ = true;
 }
 
 void FramePipeline::requestClearDb() {
     clearDbRequested_ = true;
+}
+
+void FramePipeline::injectFrameForTest(const cv::Mat& bgr) {
+    std::lock_guard<std::mutex> lock(frameMu_);
+    latestFrame_ = bgr.clone();
+    latestFrameTs_ = 0;
+    hasFrame_ = true;
+    frameCv_.notify_one();
 }
 
 bool FramePipeline::tryGetRenderState(RenderState& out) {
@@ -511,12 +612,16 @@ void FramePipeline::captureLoop() {
         le.errorCode = openRes.code;
         le.errorMessage = openRes.message;
         logger_.append(le);
-        render_.status = "摄像头打开失败: " + openRes.code + " " + openRes.message;
+        {
+            std::lock_guard<std::mutex> lock(renderMu_);
+            render_.status = "摄像头打开失败: " + openRes.code + " " + openRes.message;
+        }
         cameraRunning_ = false;
         return;
     }
 
     {
+        std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = "摄像头已打开";
     }
     {
@@ -530,10 +635,13 @@ void FramePipeline::captureLoop() {
     while (running_ && cameraRunning_) {
         cv::Mat bgr;
         std::uint64_t ts = 0;
-        const auto rr = camera_.readFrameBgr(bgr, ts);
+        const auto rr = camera_->readFrameBgr(bgr, ts);
         if (!rr.ok) {
             lastPrivacyDenied_ = (rr.category == ErrorCategory::PrivacyDenied);
-            render_.status = "采集失败: " + rr.code + " " + rr.message;
+            {
+                std::lock_guard<std::mutex> lock(renderMu_);
+                render_.status = "采集失败: " + rr.code + " " + rr.message;
+            }
             consecutiveFail++;
             if (consecutiveFail == 1) {
                 FrameLogEntry le;
@@ -549,7 +657,7 @@ void FramePipeline::captureLoop() {
                 logger_.append(le);
             }
             if (consecutiveFail >= 10 && rr.category == ErrorCategory::BackendFailure) {
-                camera_.close();
+                camera_->close();
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 CameraDevice dev;
                 CameraFormat fmt;
@@ -560,7 +668,7 @@ void FramePipeline::captureLoop() {
                     }
                     fmt = desiredFormat_;
                 }
-                const auto re = camera_.open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
+                const auto re = camera_->open(dev.deviceId, fmt.width, fmt.height, fmt.fps);
                 if (!re.ok) {
                     FrameLogEntry le;
                     le.tsIso8601 = nowIso8601Local();
@@ -606,7 +714,7 @@ void FramePipeline::captureLoop() {
         frameCv_.notify_one();
     }
 
-    camera_.close();
+    camera_->close();
 }
 
 void FramePipeline::processLoop() {
@@ -653,24 +761,40 @@ void FramePipeline::processLoop() {
         // ── 构建控制命令 ──
         ControlCommand cmd;
         cmd.clearDb = clearDbRequested_.exchange(false);
-        cmd.enrollRequested = enrollRequested_.load();
-        if (cmd.enrollRequested) {
+        // enroll 快照在 mu_ 锁内原子读取：enrollRequested_/personId/remaining/epoch 必须来自
+        // 同一注册代次；若标志在锁外读、字段在锁内读（TOCTOU），新请求可能被旧命令的
+        // 回写吃掉，epoch 守卫也会因"命令携带新 epoch + 旧标志"错配而失效。
+        {
             std::lock_guard<std::mutex> lock(mu_);
+            cmd.enrollRequested = enrollRequested_.load();
             cmd.enrollPersonId = enrollPersonId_;
             cmd.enrollRemaining = enrollRemaining_;
+            cmd.enrollEpoch = enrollEpoch_;
         }
         cmd.detectStride = detectStride_;
         cmd.frameCounter = frameIndex_;
 
         // ── 纯计算（检测/识别/清库/注册/背压跳过） ──
-        auto result = processor_->run(std::move(frameBuffer), cmd);
+        // 取当前运行时快照并持有整个 run()：reloadRuntime 并发替换不影响本帧处理
+        auto rt = runtimeSnapshot();
+        if (!rt) continue;
+        auto result = rt->processor->run(std::move(frameBuffer), cmd);
 
         // ── 同步已消费命令回成员变量 ──
         detectStride_ = result.consumedCommand.detectStride;
-        if (!result.consumedCommand.enrollRequested) {
-            enrollRequested_ = false;
+        {
+            // 写回 enroll 状态（与 requestEnroll 同锁 mu_，消除跨线程双写数据竞争 B06-018）。
+            // epoch 守卫：cmd 携带构建时快照的 enrollEpoch_；回写时若当前 enrollEpoch_ 已递增，
+            // 说明 run() 期间有新 requestEnroll 到达——旧命令的递减结果/完成标志不得覆盖新请求
+            // 的计数与 pending 标志（修复既有注释承认的残余竞态：旧计数 12→11 覆盖新请求的 12）。
+            std::lock_guard<std::mutex> lock(mu_);
+            if (result.consumedCommand.enrollEpoch == enrollEpoch_) {
+                enrollRemaining_ = result.consumedCommand.enrollRemaining;
+                if (!result.consumedCommand.enrollRequested) {
+                    enrollRequested_ = false;
+                }
+            }
         }
-        enrollRemaining_ = result.consumedCommand.enrollRemaining;
 
         // ── 构建日志条目元数据 ──
         FrameLogEntry le;
@@ -683,7 +807,7 @@ void FramePipeline::processLoop() {
             le.cameraId = activeCameraIdUtf8_;
         }
 
-        // ── 副作用收口（Overlay 绘制 + 渲染态发布 + 结构化日志） ──
+        // ── 副作用收口 + 渲染态状态文本（bgr/status 同临界区，读侧见原子一致快照） ──
         {
             std::lock_guard<std::mutex> lock(renderMu_);
             sink_->publish(result, le);
@@ -692,18 +816,45 @@ void FramePipeline::processLoop() {
             render_.dropRate = lastDropRate;
             render_.stride = detectStride_;
             render_.timestamp100ns = ts;
-        }
 
-        // ── 渲染态状态文本（publish 不处理） ──
-        if (result.consumedCommand.clearDb) {
-            render_.status = "已清空人脸库";
-        }
-        if (cmd.enrollRequested) {
-            if (result.consumedCommand.enrollRequested) {
-                render_.status = "注册中: " + cmd.enrollPersonId
-                    + " 还需样本=" + std::to_string(enrollRemaining_);
-            } else {
-                render_.status = "注册完成: " + cmd.enrollPersonId;
+            if (result.consumedCommand.clearDb) {
+                render_.status = "已清空人脸库";
+            }
+            if (cmd.enrollRequested) {
+                // B06-018/RW3 遗留：epoch 失配时 status 须读当前 pending，避免显示旧注册。
+                // 回写守卫（上一节）已判定 run() 期间有新 requestEnroll 到达（enrollEpoch_ 递增），
+                // 此时 cmd/consumedCommand 仍是旧请求（personA）信息；改读当前 pending 状态
+                // （enrollRequested_/enrollPersonId_/enrollRemaining_）显示新请求。
+                // epoch 比较与失配分支读当前 pending 共持一把 mu_ 锁：enrollEpoch_ 与
+                // enrollRequested_/enrollPersonId_/enrollRemaining_ 同受 mu_ 保护，原两段相邻
+                // 独立锁块合并为一次获取，减少锁开销并消除两次取锁间请求到达的显示不一致。
+                bool epochMismatch;
+                {
+                    std::lock_guard<std::mutex> lock(mu_);
+                    epochMismatch = (result.consumedCommand.enrollEpoch != enrollEpoch_);
+                    if (epochMismatch) {
+                        if (enrollRequested_) {
+                            render_.status = "注册中: " + enrollPersonId_
+                                + " 还需样本=" + std::to_string(enrollRemaining_);
+                        } else {
+                            // 防御性死代码：epoch 失配意味着 run() 期间有新 requestEnroll 到达，
+                            // 新请求尚未经任何 run() 消费回写（epoch 匹配回写守卫已跳过旧命令），
+                            // 故本分支读到的 enrollRequested_ 恒为 true——"新请求已处理完成却失配"
+                            // 自相矛盾。仅作防御保留，不删除（保持最小改动）。
+                            render_.status = "注册完成: " + enrollPersonId_;
+                        }
+                    }
+                }
+                if (!epochMismatch) {
+                    if (result.consumedCommand.enrollRequested) {
+                        // 读 result.consumedCommand（本线程局部值）而非成员 enrollRemaining_，
+                        // 消除对 mu_ 保护成员的无锁读；无并发时两者值恒等（上一行写回同一值）
+                        render_.status = "注册中: " + cmd.enrollPersonId
+                            + " 还需样本=" + std::to_string(result.consumedCommand.enrollRemaining);
+                    } else {
+                        render_.status = "注册完成: " + cmd.enrollPersonId;
+                    }
+                }
             }
         }
 

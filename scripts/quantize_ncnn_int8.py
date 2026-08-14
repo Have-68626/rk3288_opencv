@@ -162,14 +162,36 @@ def run_ncnn2int8(tool_path: str, fp32_param: str, fp32_bin: str,
 
 
 def find_fp32_model(fp32_dir: str) -> tuple[str, str]:
-    """在 fp32_dir 中找到第一对 .param + .bin。"""
+    """在 fp32_dir 中找到唯一同名配对的 .param + .bin。
+
+    要求 param/bin 同 stem 配对唯一（Q-CQ-B08-009）：
+      - 无任何同 stem 配对（param 与 bin 错配）→ 报错退出非零；
+      - 多个同 stem 配对（多模型混放，共同 stem 不唯一）→ 报错退出非零，
+        避免静默选中错误的 param/bin 组合。
+    """
     d = Path(fp32_dir)
     params = sorted(d.glob("*.param"))
     bins = sorted(d.glob("*.bin"))
     if not params or not bins:
         print(f"错误：{fp32_dir} 中未找到 .param/.bin 文件", file=sys.stderr)
         sys.exit(1)
-    return str(params[0]), str(bins[0])
+
+    # 仅保留 param 与 bin 同 stem 的候选对，排除跨模型错配
+    bin_stems = {p.stem for p in bins}
+    paired = [p for p in params if p.stem in bin_stems]
+    if not paired:
+        print(f"错误：{fp32_dir} 中无 param/bin 同 stem 配对"
+              f"（param: {[p.name for p in params]}; "
+              f"bin: {[b.name for b in bins]}）",
+              file=sys.stderr)
+        sys.exit(1)
+    if len(paired) > 1:
+        print(f"错误：{fp32_dir} 中 param/bin 同 stem 配对不唯一"
+              f"（{', '.join(p.stem for p in paired)}），"
+              f"请只放入单一模型的 param+bin",
+              file=sys.stderr)
+        sys.exit(1)
+    return str(paired[0]), str(paired[0].with_suffix(".bin"))
 
 
 def main():

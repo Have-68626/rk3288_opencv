@@ -1,7 +1,6 @@
 #pragma once
 
 #include "rk_win/RuntimeBootstrap.h"
-#include "rk_win/CameraSession.h"
 #include "FaceRecognizer.h"  // FaceMatch
 #include "IRecognizer.h"
 #include "MfCamera.h"
@@ -52,6 +51,7 @@ namespace rk_win {
 
 class DnnSsdFaceDetector;
 class EventLogger;
+class RuntimeSnapshot;  // 运行时快照：recognizer/dnn/processor 共享所有权
 
 struct RenderState {
     cv::Mat bgr;
@@ -116,6 +116,22 @@ public:
     void requestEnroll(const std::string& personId);
     void requestClearDb();
 
+    // 测试辅助：注入一帧驱动处理循环（无相机环境验证并发 reload/enroll 路径）
+    void injectFrameForTest(const cv::Mat& bgr);
+
+    // 测试辅助：注入假相机与设备列表（验证相机切换后采集源确实改变）
+    void setCameraForTest(std::unique_ptr<ICameraSource> cam);
+    void setDevicesForTest(std::vector<CameraDevice> devs);
+
+    // 测试辅助：注入假识别器（确定性验证 enroll 竞态）。
+    // ⚠️ 仅可在 processLoop 空闲时调用（推荐 initialize 后、注入首帧前）：原子替换
+    //   快照内 recognizer 并重建 processor；若在 run() 执行中替换，旧 processor 持有的
+    //   recognizer 裸指针会悬空（旧对象销毁 → UAF）。
+    void setRecognizerForTest(std::shared_ptr<IRecognizer> rec);
+
+    // 测试辅助：读取 enroll 剩余样本数（epoch 守卫回写不覆盖新计数的判别断言）
+    int enrollRemainingForTest() const;
+
     bool tryGetRenderState(RenderState& out);
     bool snapshotFaces(FacesSnapshot& out);
     std::uint64_t currentFacesSeq() const;
@@ -126,6 +142,11 @@ public:
 
     std::vector<ModelSnapshot> getActiveModels() const { std::lock_guard<std::mutex> lock(modelsMu_); return activeModels_; }
 
+    // 运行时重载代次：reloadRuntime 原子替换成功时 +1。
+    // reload 端点（B06-020 治理项）以"成功重载必然改变代次"为契约——禁止"伪成功"
+    // （返回成功但从未真正重载）；消费方记录已消费代次即可感知重载确实发生。
+    std::uint64_t runtimeReloadGen() const { return runtimeReloadGen_.load(std::memory_order_relaxed); }
+
 private:
     void captureLoop();
     void processLoop();
@@ -133,6 +154,11 @@ private:
     CameraOpenResult openOnce();
     CameraSwitchResult startCameraWithRollbackLocked(int deviceIndex, const CameraFormat& desired, int maxTotalMs);
     std::optional<int> findExactFormatIndexLocked(int deviceIndex, int width, int height, int fps) const;
+
+    // Manifest 自检（Q4-4）：遍历 activeModels_ 打印 MODEL_MANIFEST_CHECK 诊断日志（stderr）。
+    // 纯诊断、不阻塞。initialize 与 reloadRuntime 成功替换模型后均调用，使日志反映重载后的
+    // hash/manifest_match。调用方须已持有 modelsMu_ 锁（命名 *Locked）。
+    void checkModelManifestsLocked() const;
 
     AppConfig cfg_{};
     mutable std::mutex mu_;
@@ -143,18 +169,19 @@ private:
     CameraFormat desiredFormat_{};
     std::string activeCameraNameUtf8_;
     std::string activeCameraIdUtf8_;
-    CameraDeviceInfo currentDevice_{};
 
     std::atomic<bool> running_{false};
     std::atomic<bool> cameraRunning_{false};
     std::thread captureThread_;
     std::thread processThread_;
 
-    MfCamera camera_;
+    // 相机采集源：可注入接口（测试用假相机验证切换），initialize 默认注入 MfCamera
+    std::unique_ptr<ICameraSource> camera_;
     StructuredLogger logger_;
-    std::unique_ptr<IRecognizer> recognizer_;
-    std::unique_ptr<DnnSsdFaceDetector> dnn_;
-    std::mutex dnnMu_;
+    // 不可变运行时快照：reloadRuntime 原子替换，processLoop 取快照持有整个 run()，
+    // 避免并发 reload/enroll 时旧 processor/recognizer/dnn 被销毁（UAF）
+    std::shared_ptr<RuntimeSnapshot> runtime_;
+    mutable std::mutex runtimeMu_;
 
     bool flipX_ = false;
     bool flipY_ = false;
@@ -193,10 +220,15 @@ private:
     std::atomic<bool> enrollRequested_{false};
     std::string enrollPersonId_;
     int enrollRemaining_ = 0;
+    // 注册代次（mu_ 保护）：requestEnroll 成功时 +1 并随 cmd 携带；处理回写前比较
+    // 当前值与 cmd 携带值——未变才写回（变化说明期间有新注册，保留新计数不覆盖，
+    // 修复 B06-018 注释承认的残余竞态）。
+    std::uint64_t enrollEpoch_ = 0;
 
     std::atomic<bool> clearDbRequested_{false};
 
-    std::unique_ptr<FrameProcessor> processor_;
+    std::shared_ptr<RuntimeSnapshot> runtimeSnapshot() const;
+
     std::unique_ptr<SideEffectSink> sink_;
 
     std::atomic<bool> lastPrivacyDenied_{false};
@@ -204,6 +236,9 @@ private:
     mutable std::mutex modelsMu_;
 
     std::vector<ModelSnapshot> activeModels_;
+
+    // 运行时重载代次：见 runtimeReloadGen() 注释（B06-020 治理项）。
+    std::atomic<std::uint64_t> runtimeReloadGen_{0};
 };
 
 }  // namespace rk_win

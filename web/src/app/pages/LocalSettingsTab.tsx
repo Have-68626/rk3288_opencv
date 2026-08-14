@@ -1,15 +1,20 @@
+import { DeleteOutlined, SaveOutlined } from '@ant-design/icons'
 import {
   Alert,
+  Button,
   Card,
   Collapse,
   Form,
+  Input,
   InputNumber,
   Select,
   Space,
+  message,
 } from 'antd'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useAppStore } from '../state/AppStore'
+import { clearApiToken, getApiToken, setApiToken } from '../state/prefs'
 
 type LocalFormModel = {
   theme: 'system' | 'light' | 'dark'
@@ -23,6 +28,33 @@ type LocalFormModel = {
 export function LocalSettingsTab() {
   const { prefs, setPrefs } = useAppStore()
   const [localForm] = Form.useForm<LocalFormModel>()
+
+  // 后端 Bearer Token 独立于 LocalPrefs：凭据用显式“保存/清除”，
+  // 避免像其他偏好那样击键实时写入——那会存下输入到一半的 token。
+  // useState(getApiToken)：getApiToken 作为惰性初始化器，挂载时读取 localStorage。
+  const [apiTokenDraft, setApiTokenDraft] = useState(getApiToken)
+  const [tokenSaved, setTokenSaved] = useState(() => getApiToken() !== '')
+
+  const handleSaveToken = () => {
+    const t = apiTokenDraft.trim()
+    if (!t) {
+      // 空值等价于清除：回到兼容模式（后端未启用鉴权时无感）
+      clearApiToken()
+      setTokenSaved(false)
+      message.info('Token 已清除，请求不再附加 Authorization（兼容模式）')
+      return
+    }
+    setApiToken(t)
+    setTokenSaved(true)
+    message.success('已保存：后续请求自动附加 Authorization: Bearer ***')
+  }
+
+  const handleClearToken = () => {
+    clearApiToken()
+    setApiTokenDraft('')
+    setTokenSaved(false)
+    message.info('Token 已清除（兼容模式）')
+  }
 
   // 本地设置：用 onValuesChange 实时生效（减少"点保存但忘了"的坑）
   useEffect(() => {
@@ -133,6 +165,35 @@ export function LocalSettingsTab() {
             ]}
           />
         </Form>
+      </Card>
+
+      <Card title="后端鉴权（API Token，独立存储）">
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Form layout="vertical">
+            <Form.Item
+              label="Bearer Token"
+              extra="服务端设置 RK_WCFR_HTTP_AUTH_TOKEN 后，所有 /api 请求需携带该 token；留空 = 兼容模式（不附加 Authorization）"
+            >
+              <Input.Password
+                value={apiTokenDraft}
+                onChange={(e) => setApiTokenDraft(e.target.value)}
+                placeholder="留空表示不启用鉴权"
+                autoComplete="off"
+              />
+            </Form.Item>
+            <Space>
+              <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveToken}>
+                保存 Token
+              </Button>
+              <Button danger icon={<DeleteOutlined />} onClick={handleClearToken} disabled={!tokenSaved}>
+                清除 Token
+              </Button>
+            </Space>
+          </Form>
+          {tokenSaved && (
+            <Alert type="success" showIcon message="已启用 Bearer 鉴权，请求将自动携带 Authorization 头" />
+          )}
+        </Space>
       </Card>
 
       <Alert

@@ -15,7 +15,6 @@ struct DnnSsdFaceDetector::Impl {
     DnnSsdConfig cfg{};
     cv::dnn::Net net;
     bool ready = false;
-    bool streamWarm = false;
 
     static std::vector<DnnFaceDetection> parseSsdOutput(const cv::Mat& out, int imgW, int imgH, double confThr) {
         std::vector<DnnFaceDetection> dets;
@@ -93,13 +92,11 @@ bool DnnSsdFaceDetector::initialize(const DnnSsdConfig& cfg, std::string& error)
     }
 
     impl_->ready = true;
-    impl_->streamWarm = false;
     return true;
 }
 
 void DnnSsdFaceDetector::resetForStream() {
     if (!impl_) return;
-    impl_->streamWarm = false;
 }
 
 void DnnSsdFaceDetector::shutdown() {

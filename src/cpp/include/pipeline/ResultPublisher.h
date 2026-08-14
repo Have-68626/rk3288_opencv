@@ -48,6 +48,9 @@ public:
     bool getRenderFrame(cv::Mat& out, uint64_t& seq);
 
 private:
+    // 回调读写互斥：setCallback（换回调）与 publish（读+调用）可能跨线程并发，
+    // move 赋值会销毁正在执行的回调（UAF）。publish 锁内复制快照、锁外调用。
+    std::mutex cbMu_;
     TextCallback callback_;
 
     // 节流计时器

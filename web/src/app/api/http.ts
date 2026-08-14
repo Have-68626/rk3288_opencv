@@ -1,4 +1,5 @@
 import type { CacheStrategy, LogLevel } from '../state/prefs'
+import { getApiToken } from '../state/prefs'
 
 export class ApiError extends Error {
   public readonly code: string
@@ -37,6 +38,8 @@ function log(
 }
 
 type CacheEntry = { expiresAt: number; json: unknown }
+// localStorage 缓存 key 的统一前缀（单一来源；http.test.ts 直接复用此常量）
+export const CACHE_KEY_PREFIX = 'rk_wcfr_cache:'
 const memoryCache = new Map<string, CacheEntry>()
 const kMaxCacheEntries = 50
 function pruneCache() {
@@ -61,12 +64,12 @@ function getFromCache(strategy: CacheStrategy, key: string): unknown | undefined
 
   if (strategy === 'local-5m') {
     try {
-      const raw = localStorage.getItem(`rk_wcfr_cache:${key}`)
+      const raw = localStorage.getItem(`${CACHE_KEY_PREFIX}${key}`)
       if (!raw) return undefined
       const parsed = JSON.parse(raw) as CacheEntry
       if (typeof parsed?.expiresAt !== 'number') return undefined
       if (parsed.expiresAt < now) {
-        localStorage.removeItem(`rk_wcfr_cache:${key}`)
+        localStorage.removeItem(`${CACHE_KEY_PREFIX}${key}`)
         return undefined
       }
       return parsed.json
@@ -86,7 +89,7 @@ function putToCache(strategy: CacheStrategy, key: string, json: unknown) {
   } else if (strategy === 'local-5m') {
     try {
       localStorage.setItem(
-        `rk_wcfr_cache:${key}`,
+        `${CACHE_KEY_PREFIX}${key}`,
         JSON.stringify({ expiresAt: now + 5 * 60_000, json } satisfies CacheEntry),
       )
     } catch {
@@ -126,12 +129,15 @@ export async function fetchJson<T>(
     : 0
   try {
     log(init.logLevel, 'debug', '[api] request', init.method ?? 'GET', input)
+    // 后端 Bearer 鉴权：token 非空才附加 Authorization，空 token = 兼容模式，headers 与现状一致
+    const apiToken = getApiToken()
     const res = await fetch(input, {
       ...init,
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(init.headers ?? {}),
+        ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}),
       },
     })
 

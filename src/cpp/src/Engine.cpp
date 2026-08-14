@@ -7,6 +7,7 @@
 #include "Config.h"
 #include "Storage.h"
 #include "NativeLog.h"
+#include "rk_checked_arith.h"
 #include <cctype>
 #include <cstring>
 #include <iostream>
@@ -71,10 +72,17 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
     }
     uint8_t* dst = outYuvI420.data;
 
-    const std::size_t yLast =
-        static_cast<std::size_t>(h - 1) * static_cast<std::size_t>(yRowStride) +
-        static_cast<std::size_t>(w - 1) * static_cast<std::size_t>(yPixelStride);
-    if (yRowStride < (w - 1) * yPixelStride + 1 || yLast >= f.y.bytes.size()) {
+    // S-SEC-B09-003：32 位 checked 乘法——pixelStride 乘积溢出前拒绝；
+    // 末字节用 int64 计算，32 位 size_t（armeabi-v7a）不再回绕导致越界读
+    int yMaxCol = 0;
+    if (!rk_jni::mulS32Checked(w - 1, yPixelStride, yMaxCol)) {
+        err = "Y 平面 stride/pixelStride 乘积溢出";
+        return false;
+    }
+    const int64_t yLast =
+        static_cast<int64_t>(h - 1) * yRowStride +
+        static_cast<int64_t>(w - 1) * yPixelStride;
+    if (yRowStride <= yMaxCol || yLast >= static_cast<int64_t>(f.y.bytes.size())) {
         err = "Y 平面缓冲区不足或 stride 不匹配";
         return false;
     }
@@ -114,17 +122,29 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
         return false;
     }
 
-    const std::size_t uLast =
-        static_cast<std::size_t>(h2 - 1) * static_cast<std::size_t>(uRowStride) +
-        static_cast<std::size_t>(w2 - 1) * static_cast<std::size_t>(uPixelStride);
-    const std::size_t vLast =
-        static_cast<std::size_t>(h2 - 1) * static_cast<std::size_t>(vRowStride) +
-        static_cast<std::size_t>(w2 - 1) * static_cast<std::size_t>(vPixelStride);
-    if (uRowStride < (w2 - 1) * uPixelStride + 1 || uLast >= f.u.bytes.size()) {
+    // S-SEC-B09-003：U/V pixelStride 为 JNI 侧 jint（无上限），(w2-1)*pixelStride
+    // 可能 int32 溢出回绕为负导致检查失效；checked 乘法溢出前拒绝
+    int uMaxCol = 0;
+    if (!rk_jni::mulS32Checked(w2 - 1, uPixelStride, uMaxCol)) {
+        err = "U 平面 stride/pixelStride 乘积溢出";
+        return false;
+    }
+    const int64_t uLast =
+        static_cast<int64_t>(h2 - 1) * uRowStride +
+        static_cast<int64_t>(w2 - 1) * uPixelStride;
+    if (uRowStride <= uMaxCol || uLast >= static_cast<int64_t>(f.u.bytes.size())) {
         err = "U 平面缓冲区不足或 stride 不匹配";
         return false;
     }
-    if (vRowStride < (w2 - 1) * vPixelStride + 1 || vLast >= f.v.bytes.size()) {
+    int vMaxCol = 0;
+    if (!rk_jni::mulS32Checked(w2 - 1, vPixelStride, vMaxCol)) {
+        err = "V 平面 stride/pixelStride 乘积溢出";
+        return false;
+    }
+    const int64_t vLast =
+        static_cast<int64_t>(h2 - 1) * vRowStride +
+        static_cast<int64_t>(w2 - 1) * vPixelStride;
+    if (vRowStride <= vMaxCol || vLast >= static_cast<int64_t>(f.v.bytes.size())) {
         err = "V 平面缓冲区不足或 stride 不匹配";
         return false;
     }
@@ -159,6 +179,11 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
         err = "非法尺寸";
         return false;
     }
+    // NV21 色度子采样需偶数宽高：YUV2BGR_NV21 对奇数尺寸行为未定义/抛异常，显式拒绝
+    if ((w & 1) != 0 || (h & 1) != 0) {
+        err = "NV21 仅支持偶数宽高";
+        return false;
+    }
 
     const int stride = (f.nv21RowStrideY > 0) ? f.nv21RowStrideY : w;
     if (stride < w || stride <= 0) {
@@ -167,9 +192,10 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
     }
 
     const int uvH = h / 2;
-    const std::size_t needY = static_cast<std::size_t>(stride) * static_cast<std::size_t>(h);
-    const std::size_t needUV = static_cast<std::size_t>(stride) * static_cast<std::size_t>(uvH);
-    if (f.nv21.size() < needY + needUV) {
+    // S-SEC-B09-003：int64 精确计算（32 位 size_t 平台不回绕），比较在 int64 域
+    const int64_t needY = static_cast<int64_t>(stride) * h;
+    const int64_t needUV = static_cast<int64_t>(stride) * uvH;
+    if (needY + needUV > static_cast<int64_t>(f.nv21.size())) {
         err = "NV21 缓冲区长度不足";
         return false;
     }
@@ -193,7 +219,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
             std::memcpy(packedYuv.data + dstBase, f.nv21.data() + srcBase, static_cast<std::size_t>(w));
         }
 
-        const std::size_t uvSrcStart = needY;
+        const std::size_t uvSrcStart = static_cast<std::size_t>(needY);
         const std::size_t uvDstStart = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
         for (int row = 0; row < uvH; row++) {
             const std::size_t srcBase = uvSrcStart + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride);
@@ -208,7 +234,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
     if (getEnvBool("RK_USE_LIBYUV")) {
     const uint8_t* srcY = f.nv21.data();
-    const uint8_t* srcVu = f.nv21.data() + needY;
+    const uint8_t* srcVu = f.nv21.data() + static_cast<std::size_t>(needY);
     const int r = libyuv::NV21ToRGB24(
         srcY,
         stride,
@@ -500,11 +526,13 @@ int Engine::getRecognitionIntervalMs() const {
 }
 
 bool Engine::initCommon(const std::string& cascadePath, const std::string& storagePath) {
-    if (initialized_.exchange(true)) {
-        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
-        return true;
-    }
+    // 不在此提交 initialized_：由外层 initialize 成功后一次性 store(true)，
+    // 避免 storage/bioAuth/videoManager 失败污染状态导致无法重试（Q-CQ-B06-006）
     RKLOG_ENTER("Engine");
+    // 有意重置（Q-CQ-B06-006/007，仅记录未改行为）：initCommon 每次重新初始化清除
+    // 既有取消意图，使取消后重试可正常执行。若调用方在 initialize() 之前
+    // requestCancelInit()，此处会静默清除该意图——既有语义；JNI 入口也总是先
+    // clearCancelInit() 再 initialize（src/cpp/jni/engine.cpp），改动取消语义有回归风险。
     initCancelRequested_.store(false);
     videoManager_->setCancelToken(&initCancelRequested_);
     std::string base = storagePath;
@@ -527,6 +555,11 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
 }
 
 bool Engine::initialize(int cameraId, const std::string& cascadePath, const std::string& storagePath) {
+    std::lock_guard<std::mutex> lock(initMu_);
+    if (initialized_.load()) {
+        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
+        return true;
+    }
     if (!initCommon(cascadePath, storagePath)) return false;
     if (cameraId >= 0) {
         if (initCancelRequested_.load()) return false;
@@ -539,10 +572,16 @@ bool Engine::initialize(int cameraId, const std::string& cascadePath, const std:
         rklog::logInfo("Engine", __func__, "cameraId<0：跳过 VideoManager 相机打开（预期用于外部帧输入）");
     }
     performAccelSelfCheck();
+    initialized_.store(true);
     return true;
 }
 
 bool Engine::initialize(const std::string& filePath, const std::string& cascadePath, const std::string& storagePath) {
+    std::lock_guard<std::mutex> lock(initMu_);
+    if (initialized_.load()) {
+        rklog::logWarn("Engine", __func__, "Engine 已经初始化，跳过重复调用");
+        return true;
+    }
     if (!initCommon(cascadePath, storagePath)) return false;
     if (initCancelRequested_.load()) return false;
     if (filePath.empty()) {
@@ -551,7 +590,8 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         return false;
     }
     if (!videoManager_->open(filePath)) {
-        std::cerr << "Failed to open mock file: " << filePath << std::endl;
+        // S-SEC-B07-002：mock 文件路径可能是含 userinfo 的 URL，stderr 输出前脱敏
+        std::cerr << "Failed to open mock file: " << VideoManager::sanitizeUriForLog(filePath) << std::endl;
         rklog::logError("Engine", __func__, "Failed to open mock file reason=" + videoManager_->getLastMockRejectReason());
         return false;
     }
@@ -560,6 +600,7 @@ bool Engine::initialize(const std::string& filePath, const std::string& cascadeP
         return false;
     }
     performAccelSelfCheck();
+    initialized_.store(true);
     return true;
 }
 
@@ -575,49 +616,76 @@ void Engine::run() {
     RKLOG_ENTER("Engine");
     isRunning_ = true;
     cv::Mat frame;
+    // 连续异常退避（本 run() 生命周期）：超过阈值后短睡抑制错误日志风暴（Q-CQ-B06-007）
+    int consecutiveErrors = 0;
+    constexpr int kErrorBackoffThreshold = 50;
+    constexpr int kErrorBackoffSleepMs = 100;
+    // 仅在 catch 中调用；首次越过阈值打一次提示日志，之后每次异常短睡退避。
+    // 计数器在 try 体正常走完后清零（见下方 consecutiveErrors = 0），异常恢复即退出退避。
+    // MSVC 对 constexpr 局部变量在 lambda 内隐式捕获较严格，用 [&] 引用捕获全部所需变量
+    auto backoffOnError = [&]() {
+        if (++consecutiveErrors >= kErrorBackoffThreshold) {
+            if (consecutiveErrors == kErrorBackoffThreshold) {
+                rklog::logWarn("Engine", "run",
+                    "连续异常退避: 连续 " + std::to_string(kErrorBackoffThreshold) +
+                    " 次异常，此后每次异常间 sleep " + std::to_string(kErrorBackoffSleepMs) + "ms");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kErrorBackoffSleepMs));
+        }
+    };
 
     std::cout << "Engine started." << std::endl;
 
     while (isRunning_) {
-        // 1. 取帧：优先消费外部帧通道，其次回退到 VideoManager
-        double decodeMs = 0.0;
-        bool processed = false;
+        try {
+            // 1. 取帧：优先消费外部帧通道，其次回退到 VideoManager
+            double decodeMs = 0.0;
+            bool processed = false;
 
-        if (externalInputEnabled_.load() && externalInput_) {
-            ExternalFrame ef;
-            if (externalInput_->waitPop(ef, 30)) {
-                std::string err;
-                if (toBgrFromExternalFrame(ef, frame, err)) {
-                    decodeMs = 0.0;  // 外部帧不计解码耗时
-                    processed = true;
-                } else {
-                    rklog::logWarn("Engine", __func__, "外部帧转换失败: " + err + " / " + ef.brief());
+            if (externalInputEnabled_.load() && externalInput_) {
+                ExternalFrame ef;
+                if (externalInput_->waitPop(ef, 30)) {
+                    std::string err;
+                    if (toBgrFromExternalFrame(ef, frame, err)) {
+                        decodeMs = 0.0;  // 外部帧不计解码耗时
+                        processed = true;
+                    } else {
+                        rklog::logWarn("Engine", __func__, "外部帧转换失败: " + err + " / " + ef.brief());
+                    }
                 }
             }
-        }
-        if (!processed && videoManager_->getLatestFrame(frame)) {
-            processed = true;
-        }
+            if (!processed && videoManager_->getLatestFrame(frame)) {
+                processed = true;
+            }
 
-        if (!processed) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
-        }
+            if (!processed) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
 
-        // 2. Motion gate：MOTION_TRIGGERED 模式下仅在有运动时执行管线
-        // 注意：clone 保护 cv::putText 不会修改共享帧数据
-        if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
-            !motionDetector_->detect(frame)) {
-            pipeline::FrameOutcome outcome;
-            outcome.renderFrame = frame.clone();
-            cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
-                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
-            publisher_->publish(std::move(outcome));
-            continue;
-        }
+            // 2. Motion gate：MOTION_TRIGGERED 模式下仅在有运动时执行管线
+            // 注意：clone 保护 cv::putText 不会修改共享帧数据
+            if (currentMode_ == MonitoringMode::MOTION_TRIGGERED &&
+                !motionDetector_->detect(frame)) {
+                pipeline::FrameOutcome outcome;
+                outcome.renderFrame = frame.clone();
+                cv::putText(outcome.renderFrame, "WAITING", cv::Point(20, 40),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
+                publisher_->publish(std::move(outcome));
+                continue;
+            }
 
-        // 3-7. 委托 processFrame 管线
-        processFrame(frame, decodeMs);
+            // 3-7. 委托 processFrame 管线
+            processFrame(frame, decodeMs);
+            // 正常走完一轮视为异常已恢复，清零连续异常计数（continue 路径不计数也不清零，无影响）
+            consecutiveErrors = 0;
+        } catch (const std::exception& e) {
+            rklog::logError("Engine", __func__, "处理循环异常被捕获: " + std::string(e.what()));
+            backoffOnError();
+        } catch (...) {
+            rklog::logError("Engine", __func__, "处理循环未知异常被捕获");
+            backoffOnError();
+        }
     }
 }
 

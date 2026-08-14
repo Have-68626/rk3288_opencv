@@ -18,6 +18,8 @@
 #include "NativeLog.h"
 #include "JniMethodRegistry.h"
 #include "jni_shared.h"
+#include "PreviewGeomCache.h"
+#include "rk_checked_arith.h"
 
 #define TAG "RK3288_JNI"
 
@@ -135,18 +137,18 @@ jboolean preview_nativeRenderFrameToSurface(JNIEnv* /* env */, jobject /* this *
     const int h = frame.rows;
     if (w <= 0 || h <= 0) return JNI_FALSE;
 
-    {
-        static int lastW = 0;
-        static int lastH = 0;
-        static int lastFormat = 0;
-        if (w != lastW || h != lastH || lastFormat != WINDOW_FORMAT_RGBA_8888) {
-            if (ANativeWindow_setBuffersGeometry(win, w, h, WINDOW_FORMAT_RGBA_8888) != 0) {
-                return JNI_FALSE;
-            }
-            lastW = w;
-            lastH = h;
-            lastFormat = WINDOW_FORMAT_RGBA_8888;
+    // 几何缓存：记录已下发到 ANativeWindow 的缓冲几何（代次+尺寸+格式），
+    // 用于跳过重复的 setBuffersGeometry。
+    // Q-CQ-B07-003 语义：Surface 重建（g_previewGeneration 代次变化）后旧缓存
+    // 必须失效并重设，否则新 Surface 沿用旧 geometry，尺寸/格式守卫（stride、
+    // format 校验）持续失败，预览卡黑。判定以代次为第一失效维度——即使帧尺寸
+    // 与旧代次相同，重建后也必须重新下发，保证新 Surface 尺寸生效。
+    static rk_jni::PreviewGeomCache geomCache;
+    if (geomCache.shouldSetGeometry(gen, w, h, WINDOW_FORMAT_RGBA_8888)) {
+        if (ANativeWindow_setBuffersGeometry(win, w, h, WINDOW_FORMAT_RGBA_8888) != 0) {
+            return JNI_FALSE;
         }
+        geomCache.update(gen, w, h, WINDOW_FORMAT_RGBA_8888);
     }
 
     ScopedWindowLock lockedWin(win);
@@ -156,14 +158,32 @@ jboolean preview_nativeRenderFrameToSurface(JNIEnv* /* env */, jobject /* this *
     ANativeWindow_Buffer* buffer = lockedWin.buffer();
 
     const int dstStridePixels = buffer->stride;
+    // S-SEC-B09-003：32 位 checked 乘法——stride*4 溢出前拒绝，防止负偏移/
+    // 回绕越界写；主路径与清空回退路径共用该乘积（cv::Mat step 亦需安全）
+    int dstStrideBytes = 0;
+    if (!rk_jni::mulS32Checked(dstStridePixels, 4, dstStrideBytes)) {
+        return JNI_FALSE;
+    }
     if (dstStridePixels < w || buffer->bits == nullptr || buffer->format != WINDOW_FORMAT_RGBA_8888) {
-        const int dstStrideBytes = dstStridePixels * 4;
         if (buffer->bits != nullptr && dstStrideBytes > 0) {
             for (int row = 0; row < h; row++) {
-                std::memset(reinterpret_cast<uint8_t*>(buffer->bits) + row * dstStrideBytes, 0,
-                            static_cast<std::size_t>(w) * 4U);
+                int rowOffset = 0;
+                if (!rk_jni::mulS32Checked(row, dstStrideBytes, rowOffset)) {
+                    // 偏移溢出：放弃清空，不写缓冲（受控失败）
+                    return JNI_FALSE;
+                }
+                // 仅清空行内有效 stride 范围（stride<w 异常时亦不越界写缓冲）
+                std::memset(reinterpret_cast<uint8_t*>(buffer->bits) + rowOffset, 0,
+                            static_cast<std::size_t>(dstStrideBytes));
             }
         }
+        return JNI_FALSE;
+    }
+
+    // S-SEC-B09-003：主路径 32 位 checked 尺寸乘法——stride*4 与 (stride*4)*h
+    // 均须在 int32 内，否则 cv::Mat step/总字节在 32 位 size_t 回绕导致越界写
+    int dstBufBytes = 0;
+    if (!rk_jni::mulS32Checked(dstStrideBytes, h, dstBufBytes)) {
         return JNI_FALSE;
     }
 

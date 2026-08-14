@@ -56,6 +56,20 @@ public:
     static bool isUrlSource(const std::string& path);
 
     /**
+     * @brief Sanitizes a URI for log output by masking the userinfo segment.
+     *
+     * URI userinfo（scheme://user:pass@host）属敏感凭据：operator 输入的 RTSP/HTTP 流地址
+     * 若含 userinfo，原样写入日志即端到端凭据泄漏（S-SEC-B07-002）。本函数仅作用于日志层：
+     * 将 userinfo 段整体替换为 ***@（不暴露 user 也不暴露 pass），保留 scheme://host:port
+     * 可读性；非 URL（无 scheme://，如本地文件路径）原样返回，不影响网络行为。
+     * 纯函数，可独立单测（face_infer_unit_tests 的可测 seam）。
+     *
+     * @param url 待脱敏的 URL 或本地路径。
+     * @return 已掩码 userinfo 的 URL；非 URL 输入原样返回。
+     */
+    static std::string sanitizeUriForLog(const std::string& url);
+
+    /**
      * @brief Calling-phase preflight for mock input. Returns false with a reason code on fast reject.
      */
     static bool preflightMockInput(const std::string& filePath, std::string* reasonCode);

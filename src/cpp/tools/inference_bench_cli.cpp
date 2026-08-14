@@ -21,6 +21,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "AccelerationContract.h"
+#include "NcnnParamGuard.h"
 
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
 #include <net.h>
@@ -716,6 +717,15 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   net.opt.num_threads = std::max(1, args.ncnnThreads);
   net.opt.lightmode = args.ncnnLightmode;
 
+  // S-SEC-B10-001：ncnn 20260113 受 CVE-2026-50144（.param 负 id 越界堆写）影响，
+  // 前置文本校验拒绝恶意 .param，再交给 ncnn 解析（镜像上游修复语义）
+  {
+    std::string paramErr;
+    if (!rk_core::validateNcnnParamFile(args.ncnnParam.c_str(), paramErr)) {
+      err = "ncnn param 被拒绝: " + paramErr;
+      return std::nullopt;
+    }
+  }
   if (net.load_param(args.ncnnParam.c_str()) != 0) {
     err = "ncnn load_param 失败";
     return std::nullopt;

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <opencv2/core.hpp>
 #include <vector>
 #include <string>
@@ -22,6 +23,7 @@ struct ControlCommand {
     bool enrollRequested = false;
     std::string enrollPersonId;
     int enrollRemaining = 0;
+    std::uint64_t enrollEpoch = 0;  // 注册代次：requestEnroll 递增，随命令透传；FramePipeline 回写时凭它守卫不覆盖新请求
     int detectStride = 1;
     int frameCounter = 0;
 };

@@ -30,13 +30,12 @@ if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
         "src/win/src/FramePipeline.cpp"
         "src/win/src/FrameProcessor.cpp"
         "src/win/src/SideEffectSink.cpp"
-        "src/win/src/CameraSession.cpp"
         "src/win/src/RuntimeBootstrap.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/win/src/EventLogger.cpp"
-        "src/win/src/EndpointRegistry.cpp"
         "src/win/src/JsonEndpointHandlers.cpp"
         "src/cpp/src/FileHash.cpp"
+        "src/cpp/src/NativeLog.cpp"
     )
 
     target_include_directories(win_local_service PRIVATE
@@ -116,14 +115,12 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
         "src/win/src/FramePipeline.cpp"
         "src/win/src/FrameProcessor.cpp"
         "src/win/src/SideEffectSink.cpp"
-        "src/win/src/CameraSession.cpp"
         "src/win/src/RuntimeBootstrap.cpp"
         "src/win/src/EndpointRegistry.cpp"
         "src/win/src/DisplaySettings.cpp"
         "src/win/src/D3D11Renderer.cpp"
         "src/win/src/RenderMetricsLogger.cpp"
         "src/win/src/EventLogger.cpp"
-        "src/win/src/EndpointRegistry.cpp"
         "src/win/src/JsonEndpointHandlers.cpp"
     )
 
@@ -237,8 +234,18 @@ add_executable(win_unit_tests
     "tests/win/test_http_faces_server.cpp"
     "tests/win/test_runtime_bootstrap.cpp"
     "tests/win/test_endpoint_registry.cpp"
+    "tests/win/test_frame_pipeline_reload.cpp"
+    "tests/win/test_win_json_config.cpp"
+    "tests/win/test_face_database_encryption.cpp"
     "src/win/src/RuntimeBootstrap.cpp"
+    "src/win/src/FramePipeline.cpp"
+    "src/win/src/MfCamera.cpp"
     "src/win/src/EndpointRegistry.cpp"
+    "src/win/src/HttpFacesServer.cpp"
+    "src/win/src/StreamSessionRunner.cpp"
+    "src/win/src/StreamSession.cpp"
+    "src/win/src/JsonEndpointHandlers.cpp"
+    "src/win/src/FacesJson.cpp"
     "src/cpp/src/FileHash.cpp"
     "src/win/src/HttpFacesServerPath.cpp"
     "src/win/src/LbphEmbedder.cpp"
@@ -268,14 +275,23 @@ if(MSVC)
 endif()
 target_link_libraries(win_unit_tests
     ${RK_OPENCV_FULL_LIBS}
+    mfplat
+    mfreadwrite
+    mfuuid
+    mf
+    ole32
     bcrypt
     crypt32
+    ws2_32
 )
 add_test(NAME win_unit_tests COMMAND win_unit_tests)
+# 并发死锁保护：win_unit_tests 多线程用例死锁会无限挂起 ctest（B06-014），设 120s 超时
+set_tests_properties(win_unit_tests PROPERTIES TIMEOUT 120)
 
 add_executable(win_face_database_perf
     "tests/win/test_face_database_perf.cpp"
     "src/win/src/FaceDatabase.cpp"
+    "src/win/src/WinCrypto.cpp"
 )
 target_include_directories(win_face_database_perf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
@@ -287,6 +303,8 @@ if(MSVC)
 endif()
 target_link_libraries(win_face_database_perf
     ${RK_OPENCV_FULL_LIBS}
+    bcrypt
+    crypt32
 )
 add_test(NAME win_face_database_perf COMMAND win_face_database_perf)
 

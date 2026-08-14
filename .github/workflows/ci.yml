@@ -22,7 +22,7 @@ jobs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Classify changed paths
@@ -59,20 +59,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: Scan workspace junk (dry-run)
-        run: node scripts/clean-repo-junk.js scan --ci
+        # scan --ci 默认把报告写入系统临时区（os.tmpdir()/rk3288_opencv-clean-scan/<runId>，
+        # 随机 runId 无法被 upload-artifact 定位）；显式 --output-dir 指向 runner.temp
+        # 固定位置，供下方 Upload cleanup reports 上传（Q4-8）。
+        run: node scripts/clean-repo-junk.js scan --ci --output-dir "${{ runner.temp }}/cleanup-scan"
+      - name: Run JNI sync audit (gate)
+        # 纯 Node，无第三方依赖；脚本对 Java/C++ 侧 JNI 符号不一致返回非零退出码阻断
+        run: node scripts/jni-sync-audit.js
+      - name: Run workflow action pins gate (SEC-14)
+        # 纯 Node，无第三方依赖且不发起网络（正则/长度校验，离线可跑）；
+        # workflow 的 uses 若含可移动引用（tag/branch/短 SHA）返回非零退出码阻断
+        run: node scripts/check-workflow-pins.js
+      - name: Run scripts contract tests (all tests/scripts/*.test.js)
+        # 目录级接入：glob 覆盖全部 tests/scripts/*.test.js（含 jni-sync-audit，
+        # 现有 8 个文件共 29 个用例），新增治理测试无需逐个修改 CI（Q4-8）。
+        run: node --test tests/scripts/*.test.js
+      - name: Install pytest (quantize pairing tests)
+        # ubuntu 24.04 系统 Python 为 PEP 668 externally-managed，需 --break-system-packages；
+        # --user 避免以非 root runner 写系统 site-packages 失败。
+        run: python3 -m pip install --quiet --user --break-system-packages pytest
+      - name: Run quantize pairing tests (pytest)
+        run: python3 -m pytest tests/scripts/test_quantize_ncnn_int8_pairing.py -q
       - name: Upload cleanup reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cleanup-reports
           path: |
-            ErrorLog/cleanup
+            ${{ runner.temp }}/cleanup-scan
           if-no-files-found: ignore
 
   unit-tests:
@@ -82,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -106,10 +126,34 @@ jobs:
 
       - name: Upload Test Reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-unit-tests-reports
           path: build_ci/Testing/
+          if-no-files-found: ignore
+
+  docs-audit:
+    name: docs-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Run docs-sync-audit gate
+        # docs-sync 门禁为治理红线：脚本要求 high=0 且 medium=0（不满足时退出码 2 阻断）。
+        # --skip-links 跳过外部链接 HTTP 检查（网络慢且易抖动），只做仓库内文档同步门禁；
+        # 与 repo-hygiene/unit-tests 等不同，本 job 不因 docs_only 变更而跳过：
+        # docs 变更正是此门禁的审查对象（其余 job 对 docs-only PR 全部跳过）。
+        run: node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docs-audit-reports
+          path: tests/reports/docs-sync-audit/
           if-no-files-found: ignore
 
   web:
@@ -119,40 +163,102 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pnpm
-        run: npm install -g pnpm@9
+        # 固定 pnpm 小版本（对应 web/pnpm-lock.yaml lockfileVersion 9.0 的 pnpm 9.x 主线），
+        # 避免浮动版本（pnpm@9）导致 web job 行为漂移
+        run: npm install -g pnpm@9.15.9
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: "pnpm"
           cache-dependency-path: "web/pnpm-lock.yaml"
 
       - name: Install dependencies
-        run: cd web && pnpm install
+        run: cd web && pnpm install --frozen-lockfile
+
+      - name: Audit dependencies (High/Critical gate)
+        # 依赖审计门禁：High/Critical 漏洞必须阻断本 job。
+        # 已知豁免：GHSA-jmr9-qjv8-65gv（extract-zip symlink path traversal）——最新 2.0.1
+        # 仍 vulnerable 无修复版本，仅 cypress dev 工具链使用（安装时解压二进制），运行时
+        # 不受影响（获准豁免，记治理文件）。其余 high 阻断。
+        run: |
+          cd web && node -e "
+            const {execSync}=require('child_process');
+            let out='';
+            try{out=execSync('pnpm audit --audit-level high --json --registry=https://registry.npmjs.org',{encoding:'utf8',stdio:['ignore','pipe','ignore']});}catch(e){out=String(e.stdout||'');}
+            const d=JSON.parse(out);
+            const adv=d.advisories||{};
+            const exempt=new Set(['GHSA-jmr9-qjv8-65gv']);
+            let nonExemptHigh=[];
+            for(const [id,a] of Object.entries(adv)){
+              if(a.severity==='high'){
+                const ghsa=((a.url||'')+(a.references||'')).match(/GHSA-[a-z0-9]+(?:-[a-z0-9]+)*/i)?.[0]||'';
+                if(!exempt.has(ghsa)) nonExemptHigh.push(id+': '+ghsa+' '+a.title);
+              }
+            }
+            if(nonExemptHigh.length){console.error('High 漏洞（含非豁免）: '+JSON.stringify(nonExemptHigh));process.exit(1);}
+            console.log('Audit OK: high 仅豁免 extract-zip（无修复版本，dev 工具链）');
+          "
 
       - name: Lint
         run: cd web && pnpm lint
+
+      - name: Unit tests (Vitest)
+        # 单测失败必须阻断 job（不得 continue-on-error 吞掉失败）
+        run: cd web && pnpm test
+
+      - name: Upload Vitest JUnit report
+        # 单测失败也必须能取到 junit 报告（失败可判别、可回放），故 if: always()
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-vitest-junit
+          path: web/tests/reports/junit.xml
+          if-no-files-found: ignore
 
       - name: Build
         run: cd web && pnpm build
 
       - name: Test (E2E)
+        # E2E 失败不阻断 job（历史决策），但 coverage 报告仍需尽力生成。
+        # 插桩语义（vite-plugin-istanbul v6）：web/vite.config.ts 仅在 CYPRESS_COVERAGE==='1'
+        # 时注册 istanbul 插件，且该插件 apply 仅作用于 serve 命令——`vite build`/`vite preview`
+        # 都不做转译插桩（build 产物永不含插桩代码）。因此 CI 必须与本地 run-web-e2e.ps1 一致，
+        # 用 dev server + CYPRESS_COVERAGE=1 提供插桩后的代码，才能让 coverage 报告有数据。
         continue-on-error: true
+        env:
+          # 与 dev server 实际端口（127.0.0.1:5173）对齐；默认值即 5173，显式给出以防配置漂移
+          CYPRESS_BASE_URL: "http://127.0.0.1:5173"
         run: |
           cd web
-          pnpm preview > /tmp/preview.log 2>&1 &
-          PREVIEW_PID=$!
-          sleep 5
+          # 直接调用 vite 二进制而非 `pnpm run dev -- --host ...`：pnpm 各版本对 `--` 分隔符
+          # 的透传语义不一致（pnpm 10 会把 "--" 原样传给脚本导致 --host 被忽略），
+          # 直接调用保证 --host/--port 生效并绑定 127.0.0.1（与 baseUrl 对齐）。
+          CYPRESS_COVERAGE=1 node_modules/.bin/vite --host 127.0.0.1 --port 5173 > /tmp/preview.log 2>&1 &
+          DEV_PID=$!
+          # 轮询等待 dev server 就绪（最多 60s），避免固定 sleep 的启动竞态
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          # 就绪失败必须显式失败而非静默继续：否则 vite 未启动时 cypress 空跑、
+          # coverage 静默为空（continue-on-error 掩盖）——输出 vite 日志便于排查（S3 CONFIRMED P2）
+          if ! curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then
+            echo "vite dev server 未就绪，E2E 将空跑；日志如下："
+            cat /tmp/preview.log || true
+            exit 1
+          fi
           pnpm e2e:run:coverage || echo "E2E tests failed but continuing..."
-          kill $PREVIEW_PID || true
+          pnpm coverage:report || echo "coverage:report failed but continuing..."
+          kill $DEV_PID || true
 
       - name: Upload Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: web-coverage-reports
           path: |
@@ -169,16 +275,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70 # v3
 
       - name: Configure Gradle timeouts
         run: |
@@ -190,7 +296,7 @@ jobs:
 
       - name: Upload Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: android-reports
           path: |
@@ -220,12 +326,12 @@ jobs:
       OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
@@ -236,7 +342,7 @@ jobs:
           node scripts/clean-repo-junk.js scan --ci
 
       - name: Cache _deps (opencv sources, GTest build)
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ${{ env.DEPS_DIR }}
@@ -361,7 +467,7 @@ jobs:
 
       - name: Upload Test Reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-unit-tests-reports
           path: ${{ env.BUILD_DIR }}/Testing/

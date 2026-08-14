@@ -160,7 +160,7 @@ if(NOT RK_SKIP_OPENCV)
 # Native Executable (CLI) for RK3288 (and Host Testing)
 add_executable(rk3288_cli
     "src/cpp/main.cpp"
-    ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
+    ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES} ${RK_PIPELINE_SOURCES}
     "src/win/src/FaceDetector.cpp"
     "src/win/src/LbphEmbedder.cpp"
     "src/win/src/DnnSsdFaceDetector.cpp"
@@ -210,6 +210,7 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         "tests/cpp/test_mock_preflight_guards.cpp"
         "tests/cpp/test_video_manager.cpp"
         "tests/cpp/test_int8_quantization.cpp"
+        "tests/cpp/test_model_registry.cpp"
         "tests/cpp/test_face_align.cpp"
         "tests/cpp/test_resource_cleanup.cpp"
         "tests/cpp/test_gallery_cache.cpp"
@@ -245,7 +246,14 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/yolo_face_int8_ncnn/yolo_face_int8.param")
         target_compile_definitions(face_infer_unit_tests PRIVATE RK_HAVE_INT8_MODELS=1)
     endif()
-    add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests)
+    # 源码根作为 WORKING_DIRECTORY：test_mock_preflight_guards.cpp 的 findFixture 依赖
+    # 相对路径 tests/fixtures/mock/，其候选路径仅两级（cwd 与 cwd.parent_path()）——
+    # build 为源码根直接子目录时 parent_path() 兜底本可命中；仅两级以上的 out-of-tree
+    # build 才会解析失败。设源码根使 fixture 契约独立于 build 位置（B15-001）。
+    add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # 并发死锁保护：与 win_unit_tests 同策略，超时防卡死挂起整个 ctest（B06-014）
+    set_tests_properties(face_infer_unit_tests PROPERTIES TIMEOUT 120)
 endif()
 
 # 独立 ncnn 精度测试：仅链接 ncnn + OpenCV，不含适配器代码
@@ -266,12 +274,25 @@ endif()
 
 # ── GTest 基础测试（Engine / BioAuth / MotionDetector / ModelRegistry）─────
 if(NOT ANDROID)
-    include(FetchContent)
-    FetchContent_Declare(googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG release-1.12.1)
-    set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    # B06-005：googletest 已由 cmake/core.cmake:49-53 在 RK_BUILD_CORE_UNIT_TESTS 分支下
+    # FetchContent 构建（GTest::gtest 已存在）。此处仅在 core.cmake 未提供时兜底声明，
+    # 避免同一 configure 内对已填充依赖重复 Declare/MakeAvailable。
+    # GIT_REPOSITORY/GIT_TAG 与 cmake/core.cmake 保持一致（版本统一由 RK_GTEST_GIT_TAG 控制，RW8 ⑤）。
+    if(NOT TARGET GTest::gtest)
+        include(FetchContent)
+        # 与 cmake/core.cmake:47 一致（RW8 ④）：禁用系统预编译 GTest（Anaconda 等用动态
+        # CRT，与项目静态 /MT 不匹配，链接报 LNK2038 RuntimeLibrary 不匹配 / LNK2005）
+        set(CMAKE_DISABLE_FIND_PACKAGE_GTest ON CACHE BOOL "" FORCE)
+        FetchContent_Declare(googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG ${RK_GTEST_GIT_TAG})
+        if(MSVC)
+            # 与 cmake/core.cmake:50 门控一致（RW8 ②）：gtest_force_shared_crt 仅影响
+            # MSVC CRT（OFF → 静态 /MT）；Linux 下属噪音，不 FORCE
+            set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+        endif()
+        FetchContent_MakeAvailable(googletest)
+    endif()
 
     add_executable(core_gtest_tests
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
@@ -342,3 +363,5 @@ endforeach()
 
 # 编译器契约 — 在所有 target 定义之后统一应用
 rk_apply_compiler_contract()
+# 配置期断言（RW8 ①）— 契约应用后独立读回 COMPILE_OPTIONS，验证 flag 已落到 target
+rk_assert_contract_flags()

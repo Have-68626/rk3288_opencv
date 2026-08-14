@@ -61,7 +61,7 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
 6 jobs on `master` branch PR/push (ignores `*.md` and `docs/`):
 1. **repo-hygiene** — `node scripts/clean-repo-junk.js scan --ci`
 2. **unit-tests** — Linux CMake + Ninja, `RK_SKIP_OPENCV=ON`, builds/runs `core_unit_tests` + cross-platform compile-check for `src/win/src/*.cpp` via `g++`
-3. **docs-audit** — `node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json`
+3. **docs-audit** — `node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit`
 4. **web** — `pnpm install` → `pnpm lint` → `pnpm build` → `pnpm e2e:run:coverage` (E2E failures non-blocking)
 5. **android** — `./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`
 6. **windows** — 在 PR 和 push 时运行，`workflow_dispatch` 时跳过该 job。完整从源码构建 OpenCV（缓存于 `_deps/`）。INT8 量化和精度步骤仅在模型、量化脚本或校准数据变更时运行，且为非阻断步骤。
@@ -129,7 +129,7 @@ After the triple refactor (2026-07, PR #427), the three monolithic classes are n
 
 **FramePipeline** (`src/win/src/FramePipeline.cpp: ~350 lines, was 747`)
 - `RuntimeBootstrap::build()` — recognizer/DNN/ModelSnapshot assembly
-- `CameraSession::switchWithRollback()` — camera open/fallback/first-frame timeout
+- `FramePipeline::startCameraWithRollbackLocked()` — camera open/fallback/first-frame timeout
 - `FrameProcessor::run()` — pure computation (detect → recognize → result)
 - `SideEffectSink::publish()` — overlay drawing + structured log + render state
 

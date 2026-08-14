@@ -89,7 +89,7 @@ struct MfCamera::Impl {
 
     ComPtr<IMFSourceReader> reader;
     ComPtr<IMFMediaSource> source;
-    INT32 stride = 0;
+    INT32 stride = 0;  // 正 stride（字节/行），open() 时确定且会话期内不变
 };
 
 MfCamera::MfCamera() : impl_(std::make_unique<Impl>()) {
@@ -291,16 +291,18 @@ CameraOpenResult MfCamera::open(const std::wstring& deviceId, int width, int hei
 
     UINT32 strideU32 = 0;
     if (SUCCEEDED(actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &strideU32))) {
-        // MF stores signed stride in UINT32; reinterpret bits for negative (bottom-up) case
-        impl_->stride = static_cast<INT32>(strideU32);
+        // MF 用 UINT32 存有符号 stride，按位还原后可能为负（bottom-up 帧）。
+        // 此处统一取绝对值并缓存：stride 由协商媒体类型确定、会话期内不变，
+        // 避免 readFrameBgr 每帧重复 std::abs。
+        impl_->stride = std::abs(static_cast<INT32>(strideU32));
     } else {
+        // 无 MF_MT_DEFAULT_STRIDE 属性时按 BGRA 行宽推导，恒为正，无需取绝对值
         impl_->stride = aw * 4;
     }
 
     impl_->reader = reader;
     impl_->source = source;
     impl_->open = true;
-    impl_->stride = stride;
     impl_->device.deviceId = deviceId;
     impl_->device.name = L"";
     impl_->format.width = aw;
@@ -398,8 +400,8 @@ CameraOpenResult MfCamera::readFrameBgr(cv::Mat& outBgr, std::uint64_t& outTimes
 
     const int w = impl_->format.width;
     const int h = impl_->format.height;
-    // cv::Mat requires positive step; MF can return negative stride for bottom-up frames
-    const int stride = std::abs(static_cast<int>(impl_->stride));
+    // cv::Mat 需要正 step；stride 已在 open() 时取绝对值缓存（MF 负 stride 表示 bottom-up 帧）
+    const int stride = static_cast<int>(impl_->stride);
     cv::Mat bgra(h, w, CV_8UC4, data, stride);
     cv::cvtColor(bgra, outBgr, cv::COLOR_BGRA2BGR);
 

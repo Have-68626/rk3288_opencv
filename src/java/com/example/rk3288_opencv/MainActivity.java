@@ -4,8 +4,8 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
@@ -169,6 +169,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private boolean lastReadyVisible = false;
     private volatile boolean restartMonitoringOnStart = false;
     private volatile boolean pendingResumeStart = false;
+    // 生命周期停止门：onStop 置位、onStart 复位。
+    // 消除"后台未销毁 + isRunning==false 时 onStart 轮询到期误启动监控"窗口（RW5 遗留；
+    // 代次门拦不住因为轮询续排发生在代次递增之后）。
+    private volatile boolean isStopped = false;
     private int surfaceCreatedCount = 0;
     private PermissionStateMachine permissionStateMachine;
     private final MonitoringCoordinator monitoringCoordinator = new MonitoringCoordinator();
@@ -198,7 +202,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     pendingResumeStart = false;
                     AppLog.i("MainActivity", "surfaceCreated",
                         "Surface ready, resuming monitoring (delay 100ms)");
-                    handler.postDelayed(MainActivity.this::startMonitoring, 100);
+                    scheduleStartMonitoring(100);
                 }
             } catch (Throwable ignored) {
             }
@@ -552,7 +556,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             if (effect instanceof MonitoringCoordinator.ScheduleInitEngine) {
                 MonitoringCoordinator.ScheduleInitEngine se = (MonitoringCoordinator.ScheduleInitEngine) effect;
+                final int scheduledGen = se.generation;
                 handler.postDelayed(() -> {
+                    // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
+                    if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+                    // isStopped 门补充：重启/恢复排程在 onStop 后到期不得后台启动（R2-6 双审 P2）
+                    if (isStopped) return;
                     if (isFinishing()) return;
                     initEngine();
                     if (!se.wantMock) {
@@ -575,7 +584,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             if (effect instanceof MonitoringCoordinator.ScheduleStart) {
                 MonitoringCoordinator.ScheduleStart ss = (MonitoringCoordinator.ScheduleStart) effect;
-                handler.postDelayed(() -> dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null)), Math.max(0L, ss.delayMs));
+                final int scheduledGen = ss.generation;
+                handler.postDelayed(() -> {
+                    // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
+                    if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+                    // isStopped 门补充：重启/恢复排程在 onStop 后到期不得后台启动（R2-6 双审 P2）
+                    if (isStopped) return;
+                    if (isFinishing()) return;
+                    dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
+                }, Math.max(0L, ss.delayMs));
                 continue;
             }
         }
@@ -677,7 +694,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         refreshFlipFromPrefs(true);
         if (isRunning) {
             stopMonitoring();
-            handler.postDelayed(this::startMonitoring, 500);
+            scheduleStartMonitoring(500);
         } else {
             initEngine();
         }
@@ -743,7 +760,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
             if (isRunning) {
                 stopMonitoring();
-                handler.postDelayed(() -> startMonitoring(), 500);
+                scheduleStartMonitoring(500);
             } else {
                 initEngine();
                 dispatchMonitoringDecision(monitoringCoordinator.onEngineInitResult(snapshotMonitoringInputs(), engineInitialized, false));
@@ -1107,6 +1124,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final int REQUEST_CODE_TAKE_PHOTO = 1003;
     private String mockFilePath = null;
     private String currentPhotoPath;
+    // 拍照输出 URI：授予跨 UID 相机后，消费完成须及时撤销（Q-CQ-B07-009）
+    private Uri currentPhotoUri;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -1163,7 +1182,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 refreshFlipFromPrefs(true);
                 if (isRunning) {
                     stopMonitoring();
-                    handler.postDelayed(() -> startMonitoring(), 500);
+                    scheduleStartMonitoring(500);
                 } else {
                     initEngine();
                 }
@@ -1174,7 +1193,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             public void onStopMonitoring() { stopMonitoring(); }
             @Override
             public void onStartMonitoring(long delayMs) {
-                handler.postDelayed(() -> startMonitoring(), delayMs);
+                scheduleStartMonitoring(delayMs);
             }
             @Override
             public void onCameraSpinnerInitialized(boolean initialized) {
@@ -1415,8 +1434,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     handleMockFileSelection(uri);
                 }
             }
-        } else if (requestCode == REQUEST_CODE_TAKE_PHOTO && resultCode == RESULT_OK) {
-             handleSystemCameraResult();
+        } else if (requestCode == REQUEST_CODE_TAKE_PHOTO) {
+            if (resultCode == RESULT_OK) {
+                handleSystemCameraResult();
+            }
+            // 无论拍照成功与否，使用后都及时撤销跨 UID 授权（Q-CQ-B07-009）
+            revokePhotoUriPermission();
         } else if (requestCode == 1002) {
             syncOverlaySwitchState();
         }
@@ -1436,7 +1459,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 Uri photoURI = FileProvider.getUriForFile(this,
                         BuildConfig.APPLICATION_ID + ".fileprovider",
                         photoFile);
-                takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
+                currentPhotoUri = photoURI; // 记录 URI，消费完成后撤销（Q-CQ-B07-009）
+                // WHY 单一来源：授权组装（flags + ClipData + EXTRA_OUTPUT）收敛到 PhotoUriGrant.applyTakePictureGrant
+                PhotoUriGrant.applyTakePictureGrant(takePictureIntent, photoURI);
                 startActivityForResult(takePictureIntent, REQUEST_CODE_TAKE_PHOTO);
             }
         } else {
@@ -1465,12 +1490,28 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         
         AppLog.i("MainActivity", "handleSystemCameraResult", "Photo captured: " + mockFilePath);
         Toast.makeText(this, "Photo Captured", Toast.LENGTH_SHORT).show();
-        
+
         if (isRunning) {
             stopMonitoring();
-            handler.postDelayed(MainActivity.this::startMonitoring, 500);
+            scheduleStartMonitoring(500);
         } else {
             initEngine();
+        }
+        revokePhotoUriPermission(); // 消费完成，及时撤销跨 UID 授权（Q-CQ-B07-009）
+    }
+
+    /**
+     * 撤销跨 UID 拍照授权：幂等，以与授予一致的掩码回收读写权限，避免授权残留（Q-CQ-B07-009）。
+     */
+    private void revokePhotoUriPermission() {
+        if (currentPhotoUri == null) return;
+        try {
+            // WHY 单一来源：撤销调用收敛到 PhotoUriGrant.revoke，掩码与授予一致（Q-CQ-B07-009）
+            PhotoUriGrant.revoke(this, currentPhotoUri);
+        } catch (Exception ex) {
+            AppLog.e("MainActivity", "revokePhotoUriPermission", "Revoke failed", ex);
+        } finally {
+            currentPhotoUri = null; // 无论成败都清空引用，保证只撤销一次
         }
     }
 
@@ -1572,7 +1613,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
                 long copied = 0L;
                 long startMs = SystemClock.elapsedRealtime();
-                long lastUiMs = 0L;
+                final long[] lastUiMs = {0L};
                 boolean ok = false;
                 String err = null;
 
@@ -1583,6 +1624,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 java.io.InputStream is = null;
                 java.io.BufferedInputStream bis = null;
                 java.io.FileOutputStream fos = null;
+                // totalBytes 在查询块内被重赋值，故为进度回调取一份 final 快照（仅用于展示）。
+                final long totalForProgress = totalBytes;
                 try {
                     is = getContentResolver().openInputStream(uri);
                     if (is == null) throw new IOException("无法打开输入流");
@@ -1599,39 +1642,40 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     }
 
                     byte[] buffer = new byte[1024 * 1024];
-                    int n;
-                    while ((n = bis.read(buffer)) != -1) {
-                        if (cancelled.get()) {
-                            err = "用户取消";
-                            break;
-                        }
-                        fos.write(buffer, 0, n);
-                        copied += n;
-
-                        long nowMs = SystemClock.elapsedRealtime();
-                        if (nowMs - lastUiMs >= 350) {
-                            lastUiMs = nowMs;
-                            long elapsedMs = Math.max(1L, nowMs - startMs);
-                            double speed = (copied / 1024.0) / (elapsedMs / 1000.0);
-                            String msg = "已复制 " + CameraFragment.formatBytes(copied) +
-                                    (totalBytes > 0 ? (" / " + CameraFragment.formatBytes(totalBytes)) : "") +
-                                    "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
-                            int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, copied / 1024L));
-                            runOnUiThread(() -> {
-                                try {
-                                    progressDialog.setMessage(msg);
-                                    if (!progressDialog.isIndeterminate()) {
-                                        progressDialog.setProgress(progressKb);
-                                    }
-                                } catch (Throwable ignored) {
+                    CameraFragment.BoundedStreamCopy.Result r = CameraFragment.BoundedStreamCopy.copy(
+                            bis, fos, buffer,
+                            CameraFragment.MAX_MOCK_IMPORT_BYTES,
+                            CameraFragment.MAX_MOCK_IMPORT_MILLIS,
+                            cancelled::get,
+                            SystemClock::elapsedRealtime,
+                            p -> {
+                                long nowMs = SystemClock.elapsedRealtime();
+                                if (nowMs - lastUiMs[0] >= 350) {
+                                    lastUiMs[0] = nowMs;
+                                    long elapsedMs = Math.max(1L, nowMs - startMs);
+                                    double speed = (p.bytesCopied / 1024.0) / (elapsedMs / 1000.0);
+                                    String msg = "已复制 " + CameraFragment.formatBytes(p.bytesCopied) +
+                                            (totalForProgress > 0 ? (" / " + CameraFragment.formatBytes(totalForProgress)) : "") +
+                                            "  速度 " + String.format(Locale.US, "%.1f", speed) + " KB/s";
+                                    int progressKb = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, p.bytesCopied / 1024L));
+                                    runOnUiThread(() -> {
+                                        try {
+                                            progressDialog.setMessage(msg);
+                                            if (!progressDialog.isIndeterminate()) {
+                                                progressDialog.setProgress(progressKb);
+                                            }
+                                        } catch (Throwable ignored) {
+                                        }
+                                    });
                                 }
                             });
-                        }
-                    }
 
                     fos.flush();
-                    if (!cancelled.get() && (err == null || err.isEmpty())) {
+                    copied = r.bytesCopied;
+                    if (r.status == CameraFragment.BoundedStreamCopy.Status.OK) {
                         ok = true;
+                    } else {
+                        err = CameraFragment.BoundedStreamCopy.messageFor(r.status);
                     }
                 } catch (Throwable t) {
                     err = t.getMessage();
@@ -1673,7 +1717,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
                     if (isRunning) {
                         stopMonitoring();
-                        handler.postDelayed(MainActivity.this::startMonitoring, 500);
+                        scheduleStartMonitoring(500);
                     } else {
                         initEngine();
                     }
@@ -1743,6 +1787,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void startMonitoring() {
         AppLog.enter("MainActivity", "startMonitoring");
         dispatchMonitoringDecision(monitoringCoordinator.onStartRequested(snapshotMonitoringInputs(), null));
+    }
+
+    // 统一入口：延迟启动监控（stop 后重启 / Surface 恢复 / 相机切换 / Mock 切换等），携代次排程。
+    // 调度前先拦截 Activity 已销毁/正在结束的无效调度；回调内取消门：
+    // 代次已变（用户 STOP/撤权/Activity 停止/销毁）则陈旧触发不执行。
+    private void scheduleStartMonitoring(long delayMs) {
+        if (isFinishing() || isDestroyed() || isStopped) return;
+        final int scheduledGen = monitoringCoordinator.currentGeneration();
+        handler.postDelayed(() -> {
+            // 取消门：代次已变（Activity 停止/撤权/销毁）则陈旧任务不执行
+            if (!monitoringCoordinator.isCurrentGeneration(scheduledGen)) return;
+            if (isFinishing() || isDestroyed() || isStopped) return;
+            startMonitoring();
+        }, Math.max(0L, delayMs));
     }
 
     private String runInputPreflight(boolean wantCamera, boolean wantMock) {
@@ -2890,6 +2948,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onStart() {
         super.onStart();
+        // 复位停止门：回到前台后允许轮询与排程重新生效
+        isStopped = false;
         try {
             Intent i = new Intent(this, StatusService.class);
             i.setAction(StatusService.ACTION_SET_FOREGROUND);
@@ -2909,11 +2969,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
+                        // 停止门：onStop 后终止轮询，不再自我重排（堵住误启动窗口的关键）
+                        if (isStopped) return;
                         long waited = SystemClock.elapsedRealtime() - startWaitMs;
                         if (previewSurfaceReady || waited >= maxWaitMs) {
                             AppLog.i("MainActivity", "onStart",
                                 "Surface ready=" + previewSurfaceReady + " waitedMs=" + waited);
-                            startMonitoring();
+                            // 代次化启动：轮询到期统一走 scheduleStartMonitoring(0)，
+                            // 由取消门拦截 onStop/onDestroy 后的陈旧触发。
+                            scheduleStartMonitoring(0);
                         } else {
                             handler.postDelayed(this, 100);
                         }
@@ -2925,6 +2989,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     @Override
     protected void onStop() {
+        // 置位停止门：后台后终止 surface 轮询续排与排程回调，闭合误启动窗口
+        isStopped = true;
         if (isRunning) {
             restartMonitoringOnStart = true;
             stopMonitoring();
@@ -2945,6 +3011,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        monitoringCoordinator.onActivityDestroyed(snapshotMonitoringInputs());  // 递增代次使排程任务失效
         stopMonitoring();
         if (statsUpdater != null) {
             handler.removeCallbacks(statsUpdater);

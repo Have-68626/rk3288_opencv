@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
@@ -30,11 +30,13 @@ jobs:
         run: node --test tests/scripts/docs-sync-audit.test.js
 
       - name: Run Docs Sync Audit
-        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
+        # 与 ci.yml 的 docs-audit job 命令保持一致：--skip-links（本地可验证、内部一致性
+        # 门禁）；--link-cache 会验证外部 URL，CI 网络波动/失效会误报 medium（本地无法复现）。
+        run: node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit
 
       - name: Upload Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: docs-audit-reports
           path: tests/reports/docs-sync-audit/

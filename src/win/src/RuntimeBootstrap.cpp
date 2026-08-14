@@ -10,6 +10,14 @@
 
 namespace rk_win {
 
+// 模型文件 SHA256 计算：calculateSHA256 在文件缺失或读取失败时返回空串，
+// 若原样写入快照 hash，会让模型变更检测被静默绕过（空值既不匹配也无人感知）。
+// 统一以明确占位符 "(unavailable)" 替代空串，保证消费方总能拿到非空值、感知“模型不可用”。
+static std::string modelSha256OrUnavailable(const std::filesystem::path& p) {
+    const std::string sha = rk_wcfr::calculateSHA256(p);
+    return sha.empty() ? std::string("(unavailable)") : sha;
+}
+
 BootstrapResult::~BootstrapResult() = default;
 
 BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
@@ -47,11 +55,10 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         m.configuredPath = cascadeUtf8;
         m.resolvedPath = cascadeUtf8;
         m.backend = cfg.model.recognition == "arcface" ? "opencv_dnn_arcface" : "opencv_cascade";
-        if (cfg.model.recognition == "arcface") {
-            m.hash = rk_wcfr::calculateSHA256(cfg.recognition.arcFaceModelPath.string());
-        } else {
-            m.hash = rk_wcfr::calculateSHA256(cfg.recognition.cascadePath);
-        }
+        // 快照语义本就是 cascade 文件（id/path 均指向 cascadePath），
+        // 因此 hash 也必须取 cascadePath，与 id/path 保持一致，否则
+        // FramePipeline 的 cascade 快照 hash 断言会误报 mismatch。
+        m.hash = modelSha256OrUnavailable(cfg.recognition.cascadePath);
         m.status = cascadeOk ? "loaded" : "failed";
         m.isInUse = !cfg.dnn.enable;
         if (!cascadeOk) {
@@ -98,7 +105,7 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
             m.configuredPath = cfg.dnn.modelPath.string();
             m.resolvedPath = cfg.dnn.modelPath.string();
             m.backend = "opencv_dnn";
-            m.hash = rk_wcfr::calculateSHA256(cfg.dnn.modelPath);
+            m.hash = modelSha256OrUnavailable(cfg.dnn.modelPath);
             m.status = dnnOk ? "loaded" : (std::filesystem::exists(cfg.dnn.modelPath) ? "failed" : "missing");
             m.isInUse = true;
             m.lastError = err;
@@ -119,7 +126,7 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         m.configuredPath = cfg.dnn.modelPath.string();
         m.resolvedPath = cfg.dnn.modelPath.string();
         m.backend = "opencv_dnn";
-        m.hash = rk_wcfr::calculateSHA256(cfg.dnn.modelPath);
+        m.hash = modelSha256OrUnavailable(cfg.dnn.modelPath);
         m.status = "disabled";
         m.isInUse = false;
         result.models.push_back(m);

@@ -34,7 +34,7 @@ export interface ServerSettingsDoc {
     minFaceSizePx: number
     identifyThreshold: number
     enrollSamples: number
-    arcFaceModelPath?: string
+    arcFaceModelPath: string
   }
   inference: {
     throttleMode: string
@@ -62,7 +62,7 @@ export interface ServerSettingsDoc {
     detectorBackend: string
     recognitionBackend: string
     autoFallback: boolean
-    int8Enabled?: boolean
+    int8Enabled: boolean
   }
   http: {
     enable: boolean

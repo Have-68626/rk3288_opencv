@@ -12,9 +12,11 @@
 #include <time.h>
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <regex>
 #include <string>
 #include <iostream>
 
@@ -169,7 +171,10 @@ std::string formatLine(const char* module, const char* function, const std::stri
 }
 
 void logImpl(int prio, const char* module, const char* function, const std::string& msg) {
-    std::string line = formatLine(module, function, msg);
+    // 安全脱敏（S-SEC-B07-001）：logcat 与写盘两路共用本函数，在 formatLine 前
+    // 统一掩码敏感 KV，一处脱敏即覆盖两路输出。
+    const std::string redacted = maskSensitiveData(msg);
+    std::string line = formatLine(module, function, redacted);
 #ifdef __ANDROID__
     __android_log_print(prio, module ? module : "NATIVE", "%s", line.c_str());
 #else
@@ -180,7 +185,89 @@ void logImpl(int prio, const char* module, const char* function, const std::stri
     if (!g_internalDir.empty()) appendLineToDir(g_internalDir, g_internalFd, line);
     if (!g_externalDir.empty()) appendLineToDir(g_externalDir, g_externalFd, line);
 }
+
+// ── 通用日志脱敏辅助（S-SEC-B07-001）──────────────────────────────
+// 敏感键快速预检清单（大小写不敏感）：仅当消息含任一敏感键子串时才进入正则掩码，
+// 避免对绝大多数普通日志行造成正则开销（RK3288 Cortex-A17 性能约束，
+// 与 Java 侧 AppLog.needsMasking 的“先子串预检再正则”思路一致）。
+const char* const kSensitiveKeySubstrings[] = {
+    "password", "passwd", "pwd", "token",
+    "authorization", "bearer", "secret",
+    "api_key", "api-key", "apikey",
+};
+constexpr size_t kSensitiveKeySubstringsCount =
+    sizeof(kSensitiveKeySubstrings) / sizeof(kSensitiveKeySubstrings[0]);
+
+// 大小写不敏感子串查找
+bool containsIgnoreCase(const std::string& text, const char* needle) {
+    const size_t needleLen = std::char_traits<char>::length(needle);
+    if (needleLen == 0) return true;
+    if (text.size() < needleLen) return false;
+    const size_t max = text.size() - needleLen;
+    for (size_t i = 0; i <= max; ++i) {
+        size_t j = 0;
+        for (; j < needleLen; ++j) {
+            const unsigned char a = static_cast<unsigned char>(text[i + j]);
+            const unsigned char b = static_cast<unsigned char>(needle[j]);
+            if (std::tolower(a) != std::tolower(b)) break;
+        }
+        if (j == needleLen) return true;
+    }
+    return false;
+}
+
+// 敏感 KV 值掩码：与 Java 侧 SensitiveDataUtil.maskSensitiveData 一致——
+// 长度 >4 保留首 2 + "***" + 尾 2（兼顾可排查）；长度 ≤4 整体替换为 ***。
+std::string maskKvValue(const std::string& value) {
+    const size_t len = value.size();
+    if (len <= 4) return "***";
+    return value.substr(0, 2) + "***" + value.substr(len - 2);
+}
 }  // namespace
+
+std::string maskSensitiveData(const std::string& msg) {
+    // 快速预检：消息不含任何敏感键子串则原样返回（零分配、无正则开销）。
+    bool hasCandidate = false;
+    for (size_t i = 0; i < kSensitiveKeySubstringsCount; ++i) {
+        if (containsIgnoreCase(msg, kSensitiveKeySubstrings[i])) {
+            hasCandidate = true;
+            break;
+        }
+    }
+    if (!hasCandidate) return msg;
+
+    // 通用 KV 掩码正则——与 Java 侧 SensitiveDataUtil.SENSITIVE_KV 对齐：
+    //   键集合（password/passwd/pwd/token/access_token/api_key 等）+ 分隔符(=/:) + 值，
+    //   值截至空白/逗号/分号/&（& 为 URL query 分隔，避免吞掉后续参数）。
+    //   \b 词边界保证 "keyword="、"tokens" 等普通词不被误掩。
+    //   SEC-04 补强（P3-4）：
+    //     1) 键集补组合键 secret_key / client_secret —— 单键 \bsecret\b 遇下划线
+    //        （同为词字符）尾边界失效，故组合键须以完整词形列出，值才能被捕获。
+    //     2) 值前缀可选 "Bearer<空白>"：Authorization: Bearer <jwt> 场景下捕获组
+    //        从 token 主体开始，掩掉整段 JWT，而 Bearer 前缀保留可见。
+    //   静态局部正则编译一次、跨调用复用；C++11 保证线程安全初始化。
+    static const std::regex kSensitiveKvPattern(
+        R"(\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|)"
+        R"(authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key)\b)"
+        R"([ \t\r\n]*[:=][ \t\r\n]*)"
+        R"((?:Bearer[ \t\r\n]+)?([^ \t\r\n,;&]+))",
+        std::regex_constants::icase);
+
+    std::string out;
+    out.reserve(msg.size());
+    size_t last = 0;
+    for (std::sregex_iterator it(msg.begin(), msg.end(), kSensitiveKvPattern), end;
+         it != end; ++it) {
+        const std::smatch& m = *it;
+        // 键与分隔符原样保留（[m.position(0), m.position(2))），仅替换值。
+        out.append(msg, last, m.position(0) - last);
+        out.append(msg, m.position(0), m.position(2) - m.position(0));
+        out.append(maskKvValue(m[2].str()));
+        last = m.position(2) + m[2].length();
+    }
+    out.append(msg, last, msg.size() - last);
+    return out;
+}
 
 void setLogDirs(const std::string& internalDir, const std::string& externalDir, const std::string& filename) {
     std::lock_guard<std::mutex> guard(g_lock);

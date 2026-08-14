@@ -1,3 +1,4 @@
+#include <gtest/gtest.h>
 #include <iostream>
 #include <string>
 
@@ -35,12 +36,39 @@ bool test_lbph_embedder_dim_and_distance();
 bool test_face_metrics_confusion_matrix();
 bool test_bootstrap_returns_models_on_valid_config();
 bool test_bootstrap_reports_failure_on_bad_cascade();
+bool test_bootstrap_arcface_snapshot_hash_uses_cascade_path();
 bool test_registry_dispatch_returns_200_for_matching_route();
 bool test_registry_returns_405_for_method_mismatch();
+bool test_pipeline_concurrent_reload_no_uaf();
+bool test_pipeline_switch_camera_switches_source();
+bool test_pipeline_switch_camera_failure_keeps_old();
+bool test_pipeline_render_state_concurrent_access();
+bool test_pipeline_first_frame_delayed();
+bool test_pipeline_first_frame_timeout();
+bool test_pipeline_open_failure();
+bool test_pipeline_enroll_writeback_does_not_overwrite_new_request();
+bool test_pipeline_reload_reruns_manifest_check();
+bool test_config_put_bumps_generation();
+bool test_config_external_write_bumps_generation_once();
+bool test_config_put_and_external_each_consumed_once();
+bool test_config_default_serialization_passes_schema();
+bool test_config_each_single_field_put_passes_schema();
+bool test_config_roundtrip_and_schema_alignment();
+bool test_config_masked_echo_preserves_real_value();
+bool test_reload_endpoint_bumps_generation();
+bool test_openapi_endpoint_returns_spec_json();
+bool test_face_db_plaintext_vuln_documented();
+bool test_face_db_encrypted_no_plaintext();
+bool test_face_db_wrong_key_controlled_failure();
+bool test_face_db_migration_encrypts_legacy();
+bool test_face_db_migration_failure_preserves_legacy();
+bool test_face_db_encrypted_roundtrip();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
-int main() {
+// 接通两个 runner：自定义 bool 测试（runAll）+ GoogleTest 测试（RUN_ALL_TESTS）。
+// 任一失败均返回非零退出码，使 CTest 失败；全过返回 0。
+int main(int argc, char** argv) {
     using namespace rk_win_test;
     const TestCase cases[] = {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},
@@ -49,5 +77,34 @@ int main() {
         {"registry_returns_405_for_method_mismatch", test_registry_returns_405_for_method_mismatch},
         {"test_bootstrap_returns_models_on_valid_config", test_bootstrap_returns_models_on_valid_config},
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
+        {"test_bootstrap_arcface_snapshot_hash_uses_cascade_path", test_bootstrap_arcface_snapshot_hash_uses_cascade_path},
+        {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
+        {"pipeline_switch_camera_switches_source", test_pipeline_switch_camera_switches_source},
+        {"pipeline_switch_camera_failure_keeps_old", test_pipeline_switch_camera_failure_keeps_old},
+        {"pipeline_render_state_concurrent_access", test_pipeline_render_state_concurrent_access},
+        {"pipeline_first_frame_delayed", test_pipeline_first_frame_delayed},
+        {"pipeline_first_frame_timeout", test_pipeline_first_frame_timeout},
+        {"pipeline_open_failure", test_pipeline_open_failure},
+        {"pipeline_enroll_writeback_does_not_overwrite_new_request", test_pipeline_enroll_writeback_does_not_overwrite_new_request},
+        {"pipeline_reload_reruns_manifest_check", test_pipeline_reload_reruns_manifest_check},
+        {"config_put_bumps_generation", test_config_put_bumps_generation},
+        {"config_external_write_bumps_generation_once", test_config_external_write_bumps_generation_once},
+        {"config_put_and_external_each_consumed_once", test_config_put_and_external_each_consumed_once},
+        {"config_default_serialization_passes_schema", test_config_default_serialization_passes_schema},
+        {"config_each_single_field_put_passes_schema", test_config_each_single_field_put_passes_schema},
+        {"config_roundtrip_and_schema_alignment", test_config_roundtrip_and_schema_alignment},
+        {"config_masked_echo_preserves_real_value", test_config_masked_echo_preserves_real_value},
+        {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
+        {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
+        {"face_db_plaintext_vuln_documented", test_face_db_plaintext_vuln_documented},
+        {"face_db_encrypted_no_plaintext", test_face_db_encrypted_no_plaintext},
+        {"face_db_wrong_key_controlled_failure", test_face_db_wrong_key_controlled_failure},
+        {"face_db_migration_encrypts_legacy", test_face_db_migration_encrypts_legacy},
+        {"face_db_migration_failure_preserves_legacy", test_face_db_migration_failure_preserves_legacy},
+        {"face_db_encrypted_roundtrip", test_face_db_encrypted_roundtrip},
     };
+    const bool boolOk = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
+    ::testing::InitGoogleTest(&argc, argv);
+    const int gtestOk = RUN_ALL_TESTS();
+    return (boolOk && gtestOk == 0) ? 0 : 1;
 }

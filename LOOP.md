@@ -28,5 +28,5 @@
 
 ## Links
 
-- Pattern: [daily-triage](../../patterns/daily-triage.md)
-- Checklist: [loop-design-checklist](../../docs/loop-design-checklist.md)
+- Pattern: [daily-triage](docs/patterns/daily-triage.md)
+- Checklist: [loop-design-checklist](docs/patterns/loop-design-checklist.md)
