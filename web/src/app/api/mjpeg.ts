@@ -7,7 +7,7 @@
 export const MJPEG_BOUNDARY = 'rk_boundary'
 
 // 畸形流缓冲上限：boundary 命中但 \r\n\r\n / Content-Length 永不满足时，rest 每块整段保留、
-// 从头重扫，缓冲线性增长。超过该上限视为畸形流，通知错误并重置缓冲。
+// 从头重扫，缓冲线性增长。超过该上限视为畸形流，通知错误并终止读取。
 export const MJPEG_MAX_BUFFER_BYTES = 8 * 1024 * 1024
 
 // TS 5.7+ 泛型 TypedArray：subarray() 产出的 view 是 ArrayBufferLike 缓冲，
@@ -22,7 +22,7 @@ export interface MjpegStreamOptions {
   onFrame: (jpegBytes: Bytes) => void
   /** 流错误/断流时回调，恰好一次；前端据此触发重连（复用 previewKey 刷新机制） */
   onError: (err: unknown) => void
-  /** 累积缓冲上限（字节），默认 MJPEG_MAX_BUFFER_BYTES；超出即视为畸形流，onError + 重置缓冲 */
+  /** 累积缓冲上限（字节），默认 MJPEG_MAX_BUFFER_BYTES；超出即视为畸形流，onError + 终止读取 */
   maxBufferBytes?: number
 }
 
