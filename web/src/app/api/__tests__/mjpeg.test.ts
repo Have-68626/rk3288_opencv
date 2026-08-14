@@ -192,7 +192,7 @@ describe('fetchMjpegStream（Bearer 认证 MJPEG 流）', () => {
     expect(errors).toHaveLength(1)
   })
 
-  it('畸形流缓冲超限：onError 通知超限错误并重置缓冲，rest 不再无界累积', async () => {
+  it('畸形流缓冲超限：onError 通知超限错误并终止循环，rest 不再无界累积', async () => {
     // 边界命中 + Content-Length 声明 100000 字节但数据永不补齐 → split 每块都整段保留 rest、从头重扫
     const head = te.encode(
       `--${MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: 100000\r\n\r\n`,
@@ -223,6 +223,80 @@ describe('fetchMjpegStream（Bearer 认证 MJPEG 流）', () => {
     expect(frames).toHaveLength(0)
     expect(errors).toHaveLength(1)
     expect((errors[0] as Error).message).toMatch(/超限/)
+  })
+
+  it('畸形流缓冲超限后自行终止循环：超限块之后的合法帧不再被读取/切分（不依赖外部 abort）', async () => {
+    // 判别点：超限块之后紧跟一段完整合法帧。旧实现“重置缓冲继续读”会把该帧切出并投递；
+    // 修复后超限即 notify + 终止循环（return/结束读取），后续块不被读取 → 无帧投递。
+    // 这正是 P8-1 点1：独立消费者（未监听 abort 的调用方）不致在超限后继续空耗连接读取。
+    const head = te.encode(
+      `--${MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: 100000\r\n\r\n`,
+    )
+    const filler = Uint8Array.of(1, 2, 3)
+    const jpeg = Uint8Array.of(0xff, 0xd8, 0x99)
+    const goodFrame = cat(partHeader(jpeg), jpeg, te.encode('\r\n'))
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(cat(head, filler, filler, filler, filler, filler, filler))
+          controller.enqueue(goodFrame)
+          controller.close()
+        },
+      }),
+    })
+
+    const frames: Uint8Array[] = []
+    const errors: unknown[] = []
+    await fetchMjpegStream({
+      url: '/api/v1/preview.mjpeg',
+      token: 't',
+      signal: new AbortController().signal,
+      maxBufferBytes: 16,
+      onFrame: (f) => frames.push(f),
+      onError: (e) => errors.push(e),
+    })
+
+    expect(frames).toHaveLength(0) // 超限后不得继续读取超限块之后的合法帧
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).message).toMatch(/超限/)
+  })
+
+  it('中途 abort 进行中的流：挂起的 read 以 AbortError 终止，后续帧不投递、不重复上报', async () => {
+    // PreviewPage 解码失败时 abort 控制器（P8-1 点2）依赖的流层契约：
+    // 中止后停止继续读取（不再投递后续帧），且 AbortError 不当作断流故障上报（避免重连循环）。
+    const jpeg1 = Uint8Array.of(0xff, 0xd8, 0x11)
+    const p1 = cat(partHeader(jpeg1), jpeg1, te.encode('\r\n'))
+    const controller = new AbortController()
+    let bodyCtrl: ReadableStreamDefaultController<Uint8Array> | undefined
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        bodyCtrl = c
+        c.enqueue(p1) // 只投第一块：第二次 read() 挂起，等待 abort 信号
+      },
+    })
+    controller.signal.addEventListener('abort', () => {
+      bodyCtrl?.error(new DOMException('The operation was aborted.', 'AbortError'))
+    })
+    mockFetch.mockResolvedValue({ ok: true, status: 200, body: stream })
+
+    const frames: Uint8Array[] = []
+    const errors: unknown[] = []
+    const p = fetchMjpegStream({
+      url: '/api/v1/preview.mjpeg',
+      token: 't',
+      signal: controller.signal,
+      onFrame: (f) => frames.push(f),
+      onError: (e) => errors.push(e),
+    })
+    // 等第一帧投递后再中途 abort（模拟“坏帧解码失败时 abort 运行中的流”）
+    await vi.waitFor(() => expect(frames).toHaveLength(1))
+    controller.abort()
+    await p
+
+    expect(frames).toHaveLength(1) // 已投递帧保留，后续不再投递
+    expect(errors).toHaveLength(0) // 主动中止不重复上报 onError
   })
 
   it('abort 后不触发 onError：AbortError 属调用方主动行为，不当作断流故障上报', async () => {

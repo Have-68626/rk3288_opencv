@@ -69,10 +69,12 @@ export function fetchMjpegStream(opts: MjpegStreamOptions): Promise<void> | null
         const { frames, rest } = splitMjpegFrames(buffer)
         buffer = rest
         for (const f of frames) opts.onFrame(f)
-        // 畸形流防护：rest 无界累积（半帧/半边界永不满足）时报警并重置，内存有界
+        // 畸形流防护：rest 无界累积（半帧/半边界永不满足）时报警并终止循环。
+        // 终止而非“重置后继续”：否则独立消费者（未监听 abort 的调用方）会在超限后
+        // 继续空耗连接读取，超限通知无法自行止血，只能依赖外部 abort。
         if (buffer.length > maxBufferBytes) {
-          notify(new Error(`MJPEG 流缓冲超限（${buffer.length} 字节），已重置缓冲`))
-          buffer = new Uint8Array(0)
+          notify(new Error(`MJPEG 流缓冲超限（${buffer.length} 字节），已终止读取`))
+          return
         }
       }
     } catch (e) {
