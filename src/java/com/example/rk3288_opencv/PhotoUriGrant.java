@@ -34,8 +34,10 @@ public final class PhotoUriGrant {
     public static final int FLAG_GRANT_READ = 0x1;
     /** 与 Intent.FLAG_GRANT_WRITE_URI_PERMISSION 同值（Android ABI 稳定常量 = 2） */
     public static final int FLAG_GRANT_WRITE = 0x2;
-    /** 读写组合掩码：grantUriPermission 与 revokeUriPermission 必须使用同一掩码 */
-    public static final int GRANT_MASK = FLAG_GRANT_READ | FLAG_GRANT_WRITE;
+    /** 读写组合掩码：直接引用官方 Intent flag（lint WrongConstant 识别，0x1|0x2 自定义
+     *  整型会被 lint 判为非法 flag 值），供 grantUriPermission/revokeUriPermission/addFlags 使用 */
+    public static final int GRANT_MASK =
+            Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
     /** ClipData 标签：仅作为授权 URI 的冗余载体（API 16+ 依赖 data/clipData 传递授权） */
     public static final String CLIP_DATA_LABEL = "photo-output";
 

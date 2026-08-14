@@ -116,6 +116,7 @@ class Camera2CaptureController implements CaptureController {
     }
 
     // Q-CQ-B07-006: 同步启动分阶段预建资源；任何一步抛异常由 start() 的 rollbackStart() 完整回滚
+    @SuppressLint("MissingPermission") // CAMERA 权限由调用方（MainActivity/CameraFragment）授予后调用
     boolean startSync(String cameraId, int gen) throws CameraAccessException {
         thread = new HandlerThread("Camera2Capture");
         thread.start();
