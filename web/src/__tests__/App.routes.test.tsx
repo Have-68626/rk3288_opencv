@@ -43,6 +43,37 @@ function versionAtLeast(actual: string, min: string): boolean {
   return true
 }
 
+// P8-2：versionAtLeast 边界用例（独立 comparator 钉住，不依赖真实安装版本）。
+// 判别点：语义化版本按数字逐段比较 —— 相等/更高 → true；更低 → false；
+// "6.9" < "6.30"（数字逐段而非字符串字典序）；非数字段经 parseInt 得 NaN，
+// 参与比较一律返回 false（安全降级，不抛异常）。
+describe('versionAtLeast 边界（P8-2）', () => {
+  it('相等版本返回 true（6.30.4 vs 6.30.4）', () => {
+    expect(versionAtLeast('6.30.4', '6.30.4')).toBe(true)
+  })
+
+  it('修复版之上返回 true（6.30.5、7.0.0）', () => {
+    expect(versionAtLeast('6.30.5', '6.30.4')).toBe(true)
+    expect(versionAtLeast('7.0.0', '6.30.4')).toBe(true)
+  })
+
+  it('降级版本返回 false（6.30.3、6.30.2）', () => {
+    expect(versionAtLeast('6.30.3', '6.30.4')).toBe(false)
+    expect(versionAtLeast('6.30.2', '6.30.4')).toBe(false)
+  })
+
+  it('字符串陷阱：6.9 < 6.30（数字逐段比较而非字典序）', () => {
+    expect(versionAtLeast('6.9', '6.30')).toBe(false)
+    expect(versionAtLeast('6.30', '6.9')).toBe(true)
+  })
+
+  it('非数字段/畸形版本安全处理为 false（abc、6.x、空串）', () => {
+    expect(versionAtLeast('abc', '6.30.4')).toBe(false)
+    expect(versionAtLeast('6.x', '6.30.4')).toBe(false)
+    expect(versionAtLeast('', '6.30.4')).toBe(false)
+  })
+})
+
 // 页面挂载探针：mock 页面组件渲染时调用，用于断言"哪条路由被渲染"。
 const routeSpy = vi.hoisted(() => ({
   splash: vi.fn(),
