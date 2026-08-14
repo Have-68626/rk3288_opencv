@@ -100,6 +100,9 @@ export function PreviewPage() {
   useEffect(() => {
     const token = getApiToken().trim()
     if (!token) return
+    // 重连（previewKey 刷新）时把流状态重置为 connecting，避免上一轮的 live 残留：
+    // 否则重连期不显示 spinner、img src=undefined 闪裂图。
+    setStreamStatus('connecting')
     const controller = new AbortController()
     let aborted = false
     let started = false
@@ -126,6 +129,11 @@ export function PreviewPage() {
         if (aborted) return
         if ((err as Error)?.name === 'AbortError') return
         controller.abort() // 停止当前流，避免空转
+        // 断流/错误路径同步回收当前 blob URL，避免 blob: 对象滞留
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl)
+          objectUrl = null
+        }
         setImgError(true) // 复用现有错误+重试 UI（previewKey 刷新即重连）
       },
     })
@@ -240,7 +248,8 @@ export function PreviewPage() {
                   visibility: hasToken && streamStatus !== 'live' ? 'hidden' : 'visible',
                 }}
                 alt="摄像头实时预览"
-                onError={hasToken ? undefined : () => setImgError(true)}
+                // 两种路径的 JPEG 解码失败都映射到 imgError，复用 Empty+重试（token 分支不再静默）
+                onError={() => setImgError(true)}
               />
               {hasToken && streamStatus !== 'live' ? (
                 <div

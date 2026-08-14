@@ -6,6 +6,10 @@
 
 export const MJPEG_BOUNDARY = 'rk_boundary'
 
+// 畸形流缓冲上限：boundary 命中但 \r\n\r\n / Content-Length 永不满足时，rest 每块整段保留、
+// 从头重扫，缓冲线性增长。超过该上限视为畸形流，通知错误并重置缓冲。
+export const MJPEG_MAX_BUFFER_BYTES = 8 * 1024 * 1024
+
 // TS 5.7+ 泛型 TypedArray：subarray() 产出的 view 是 ArrayBufferLike 缓冲，
 // 与 Blob 要求的 ArrayBuffer 视图不同源，统一用该别名表达"任意缓冲上的字节视图"。
 export type Bytes = Uint8Array<ArrayBufferLike>
@@ -18,6 +22,8 @@ export interface MjpegStreamOptions {
   onFrame: (jpegBytes: Bytes) => void
   /** 流错误/断流时回调，恰好一次；前端据此触发重连（复用 previewKey 刷新机制） */
   onError: (err: unknown) => void
+  /** 累积缓冲上限（字节），默认 MJPEG_MAX_BUFFER_BYTES；超出即视为畸形流，onError + 重置缓冲 */
+  maxBufferBytes?: number
 }
 
 // 无 token（空/纯空白）时不发起任何请求，返回 null（兼容无鉴权部署的 <img src> 路径）；
@@ -42,7 +48,8 @@ export function fetchMjpegStream(opts: MjpegStreamOptions): Promise<void> | null
         signal: opts.signal,
       })
     } catch (e) {
-      notify(e)
+      // 主动中止（AbortError）是调用方意图，不当作断流故障上报（避免重连循环）
+      if ((e as Error)?.name !== 'AbortError') notify(e)
       return
     }
 
@@ -51,6 +58,7 @@ export function fetchMjpegStream(opts: MjpegStreamOptions): Promise<void> | null
       return
     }
 
+    const maxBufferBytes = opts.maxBufferBytes ?? MJPEG_MAX_BUFFER_BYTES
     const reader = res.body.getReader()
     let buffer: Bytes = new Uint8Array(0)
     try {
@@ -61,10 +69,16 @@ export function fetchMjpegStream(opts: MjpegStreamOptions): Promise<void> | null
         const { frames, rest } = splitMjpegFrames(buffer)
         buffer = rest
         for (const f of frames) opts.onFrame(f)
+        // 畸形流防护：rest 无界累积（半帧/半边界永不满足）时报警并重置，内存有界
+        if (buffer.length > maxBufferBytes) {
+          notify(new Error(`MJPEG 流缓冲超限（${buffer.length} 字节），已重置缓冲`))
+          buffer = new Uint8Array(0)
+        }
       }
     } catch (e) {
-      // 网络中断/主动中止（AbortError）也走 onError；前端用 aborted 标志忽略中止
-      notify(e)
+      // 网络中断/主动中止（AbortError）也走 onError；前端用 aborted 标志忽略中止。
+      // 其中 AbortError 属调用方主动行为，不重复上报。
+      if ((e as Error)?.name !== 'AbortError') notify(e)
       return
     }
 

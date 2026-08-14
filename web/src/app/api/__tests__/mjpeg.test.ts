@@ -191,6 +191,73 @@ describe('fetchMjpegStream（Bearer 认证 MJPEG 流）', () => {
     // 断流属于“需要重连”的事件，走 onError 恰好一次（不重复通知）
     expect(errors).toHaveLength(1)
   })
+
+  it('畸形流缓冲超限：onError 通知超限错误并重置缓冲，rest 不再无界累积', async () => {
+    // 边界命中 + Content-Length 声明 100000 字节但数据永不补齐 → split 每块都整段保留 rest、从头重扫
+    const head = te.encode(
+      `--${MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: 100000\r\n\r\n`,
+    )
+    const filler = Uint8Array.of(1, 2, 3)
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(cat(head, filler, filler, filler, filler, filler, filler))
+          controller.close()
+        },
+      }),
+    })
+
+    const frames: Uint8Array[] = []
+    const errors: unknown[] = []
+    await fetchMjpegStream({
+      url: '/api/v1/preview.mjpeg',
+      token: 't',
+      signal: new AbortController().signal,
+      maxBufferBytes: 16, // 测试用小上限：超过即视为畸形流（生产默认 8MB）
+      onFrame: (f) => frames.push(f),
+      onError: (e) => errors.push(e),
+    })
+
+    expect(frames).toHaveLength(0)
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).message).toMatch(/超限/)
+  })
+
+  it('abort 后不触发 onError：AbortError 属调用方主动行为，不当作断流故障上报', async () => {
+    const jpeg = Uint8Array.of(0xff, 0xd8, 0x11)
+    const body = cat(partHeader(jpeg), jpeg, te.encode('\r\n'))
+    const controller = new AbortController()
+    let bodyCtrl: ReadableStreamDefaultController<Uint8Array> | undefined
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        bodyCtrl = c
+        c.enqueue(body)
+      },
+    })
+    // 模拟真实 fetch 中止语义：signal abort 时 body 流以 AbortError 终止，挂起的 read() 被拒绝
+    controller.signal.addEventListener('abort', () => {
+      bodyCtrl?.error(new DOMException('The operation was aborted.', 'AbortError'))
+    })
+    mockFetch.mockResolvedValue({ ok: true, status: 200, body: stream })
+
+    const frames: Uint8Array[] = []
+    const errors: unknown[] = []
+    const p = fetchMjpegStream({
+      url: '/api/v1/preview.mjpeg',
+      token: 't',
+      signal: controller.signal,
+      onFrame: (f) => frames.push(f),
+      onError: (e) => errors.push(e),
+    })
+    controller.abort()
+    await p
+
+    // 主动中止不应触发重连/故障上报（否则重连循环 + 闪烁）；中止发生在消费首块前，也不投递帧回调
+    expect(errors).toHaveLength(0)
+    expect(frames).toHaveLength(0)
+  })
 })
 
 describe('splitMjpegFrames（纯函数：帧切分健壮性）', () => {
@@ -245,5 +312,18 @@ describe('splitMjpegFrames（纯函数：帧切分健壮性）', () => {
     const r = splitMjpegFrames(new Uint8Array(0))
     expect(r.frames).toHaveLength(0)
     expect(r.rest.length).toBe(0)
+  })
+
+  it('无 Content-Length：退化到“下一个边界之前”切帧（mjpeg.ts 退化分支）', () => {
+    const jpeg = Uint8Array.of(0xff, 0xd8, 0xaa, 0xbb)
+    const noLenHead = te.encode(`--${MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\n\r\n`)
+    // 帧数据后紧跟 \r\n 与下一段 boundary：退化分支以“下一个 boundary”为帧尾，
+    // 因此帧数据包含 jpeg 字节与帧后 \r\n 分隔符（无 Content-Length 无法精确裁剪）
+    const body = cat(noLenHead, jpeg, te.encode('\r\n'), noLenHead)
+    const r = splitMjpegFrames(body)
+    expect(r.frames).toHaveLength(1)
+    expect(Array.from(r.frames[0])).toEqual([0xff, 0xd8, 0xaa, 0xbb, 0x0d, 0x0a])
+    // 第二段只有头部、无数据 → 剩余部分保留为 rest，等待其数据到齐
+    expect(Array.from(r.rest)).toEqual(Array.from(noLenHead))
   })
 })
