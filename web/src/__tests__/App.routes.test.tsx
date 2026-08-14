@@ -16,9 +16,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, useEffect, useRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+// @ts-expect-error node:module 在 vitest 运行时可用；tsconfig.app types 仅 vite/client（build typecheck 不加载 node 类型），故此处显式抑制
+import { createRequire } from 'node:module'
 import { HashRouter, Navigate, Route, Routes, useNavigate, type NavigateFunction } from 'react-router-dom'
 
 import App from '../App'
+
+// P3-1：CVE-2026-40181 修复版本钉住。6.30.4 起才修复 navigate()/Link 收到 `//` 协议
+// 相对路径时的 open redirect；运行时构建并不导出 version（CJS 无该 key），故经
+// createRequire 读取实际安装的 react-router-dom/package.json（pnpm 解析到 node_modules
+// 真实版本）——比断言声明式 `^6.30.4` 更强：lockfile/依赖一旦被降级 <6.30.4，下方用例
+// 立即 RED。
+const reactRouterDomPkg = createRequire(import.meta.url)('react-router-dom/package.json') as {
+  version: string
+}
+
+// 语义化版本比较（按数字逐段比较，避免 "6.9" > "6.30" 的字符串比较陷阱）。
+function versionAtLeast(actual: string, min: string): boolean {
+  const a = actual.split('.').map((n) => Number.parseInt(n, 10))
+  const b = min.split('.').map((n) => Number.parseInt(n, 10))
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return true
+}
 
 // 页面挂载探针：mock 页面组件渲染时调用，用于断言"哪条路由被渲染"。
 const routeSpy = vi.hoisted(() => ({
@@ -375,5 +398,12 @@ describe('App.tsx 路由（HashRouter，SEC-11 / S-SEC-B10-002）', () => {
     expect(env.hash()).toBe('#/')
     expect(env.href()).toMatch(/^http:\/\/localhost\//)
     expect(env.href()).not.toContain('evil.example')
+  })
+
+  // P3-1：版本断言钉住 CVE-2026-40181 修复版本。上述原语用例在 HashRouter 结构下
+  // 6.30.3/6.30.4 行为一致恒绿（判别力缺陷）——若 react-router-dom 被降级 <6.30.4，
+  // 原语用例仍可能不 RED，但本用例直接断言安装版本 ≥ 6.30.4 即 RED。
+  it('react-router-dom 安装版本 ≥ 6.30.4（CVE-2026-40181 修复版）', () => {
+    expect(versionAtLeast(reactRouterDomPkg.version, '6.30.4')).toBe(true)
   })
 })
