@@ -5,6 +5,7 @@
 #include <vector>
 #include <filesystem>
 #include <random>
+#include <process.h>
 
 using namespace rk_win;
 
@@ -22,7 +23,10 @@ int main() {
         db.updateMean("person_" + std::to_string(i), mean);
     }
 
-    const std::filesystem::path testPath = std::filesystem::temp_directory_path() / "test_face_database_perf.xml";
+    // 临时库文件路径唯一化：进程 ID + 时间戳后缀，避免并发运行碰撞（不同进程各自独立路径，互不覆盖）。
+    const std::filesystem::path testPath = std::filesystem::temp_directory_path() /
+        ("test_face_database_perf_" + std::to_string(::_getpid()) + "_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".xml");
 
     // Timing save()
     int iterations = 1000;
@@ -78,7 +82,9 @@ int main() {
     std::cout << "SAVE_TIME_MS: " << saveDuration << "\n";
     std::cout << "LOAD_TIME_MS: " << loadDuration << "\n";
 
+    // 清理库文件及其 DPAPI 密钥文件（<路径>.key.dpapi，见 FaceDatabase::keyPathFor），避免 Temp 残留密钥材料。
     std::filesystem::remove(testPath);
+    std::filesystem::remove(FaceDatabase::keyPathFor(testPath));
 
     return valid ? 0 : 1;
 }
