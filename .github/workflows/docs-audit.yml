@@ -30,7 +30,9 @@ jobs:
         run: node --test tests/scripts/docs-sync-audit.test.js
 
       - name: Run Docs Sync Audit
-        run: node scripts/docs-sync-audit.js --out-dir tests/reports/docs-sync-audit --link-cache tests/reports/docs-sync-audit/link-cache.json
+        # 与 ci.yml 的 docs-audit job 命令保持一致：--skip-links（本地可验证、内部一致性
+        # 门禁）；--link-cache 会验证外部 URL，CI 网络波动/失效会误报 medium（本地无法复现）。
+        run: node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit
 
       - name: Upload Artifacts
         if: always()
