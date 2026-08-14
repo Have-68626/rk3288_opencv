@@ -15,7 +15,8 @@
 ## 文件清单与 SHA-256
 
 **规范哈希 = git blob（LF 归一化入库字节）**，与 checkout 行尾状态无关（仓库 `.gitattributes` 对本目录 `text`/`eol` 生效，`core.autocrlf=true`）。
-复算命令：`git cat-file blob HEAD:src/win/third_party/civetweb/<路径> | sha256sum`
+复算命令（**工作区语义，与测试 `tests/scripts/civetweb-ledger.test.js` 一致**；Git Bash）：`tr -d '\r' < src/win/third_party/civetweb/<路径> | sha256sum`
+读取磁盘当前实际内容（含未提交改动），CRLF→LF 归一化后取 SHA-256，等价于测试 `blobSha256()` 的 fs 读取 + `\r\n`→`\n`。勿用 `git cat-file blob HEAD:...`（只读已提交 blob，脏树时与工作区实测不一致）或 `git hash-object`（输出 SHA-1 且含 `blob` 对象头），二者均无法复算本表 SHA-256。
 
 | 文件 | SHA-256（git blob） | 相对上游 v1.16 | 说明 |
 |:-----|:-----|:---|:-----|
