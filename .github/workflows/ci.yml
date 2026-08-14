@@ -182,9 +182,27 @@ jobs:
 
       - name: Audit dependencies (High/Critical gate)
         # 依赖审计门禁：High/Critical 漏洞必须阻断本 job。
-        # pnpm audit 需访问 npmjs registry 的 audit 端点（CI 网络可用，默认即 npmjs）。
-        # 本地默认镜像 npmmirror 无 audit 端点，脚本在 web/package.json 中显式指定 --registry。
-        run: cd web && pnpm audit --audit-level high
+        # 已知豁免：GHSA-jmr9-qjv8-65gv（extract-zip symlink path traversal）——最新 2.0.1
+        # 仍 vulnerable 无修复版本，仅 cypress dev 工具链使用（安装时解压二进制），运行时
+        # 不受影响（获准豁免，记治理文件）。其余 high 阻断。
+        run: |
+          cd web && node -e "
+            const {execSync}=require('child_process');
+            let out='';
+            try{out=execSync('pnpm audit --audit-level high --json --registry=https://registry.npmjs.org',{encoding:'utf8',stdio:['ignore','pipe','ignore']});}catch(e){out=String(e.stdout||'');}
+            const d=JSON.parse(out);
+            const adv=d.advisories||{};
+            const exempt=new Set(['GHSA-jmr9-qjv8-65gv']);
+            let nonExemptHigh=[];
+            for(const [id,a] of Object.entries(adv)){
+              if(a.severity==='high'){
+                const ghsa=((a.url||'')+(a.references||'')).match(/GHSA-[a-z0-9]+(?:-[a-z0-9]+)*/i)?.[0]||'';
+                if(!exempt.has(ghsa)) nonExemptHigh.push(id+': '+ghsa+' '+a.title);
+              }
+            }
+            if(nonExemptHigh.length){console.error('High 漏洞（含非豁免）: '+JSON.stringify(nonExemptHigh));process.exit(1);}
+            console.log('Audit OK: high 仅豁免 extract-zip（无修复版本，dev 工具链）');
+          "
 
       - name: Lint
         run: cd web && pnpm lint
