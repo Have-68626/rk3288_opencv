@@ -1152,6 +1152,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         cameraAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
         cameraAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
 
+        // cameraFragment 必须先于 bindMainScreen 初始化：bindMainScreen → refreshFlipFromPrefs
+        // 会访问 cameraFragment.getFlipSourceKey()，此处若为 null 则启动即 NPE 闪退（bf9b009 引入）
+        cameraFragment = new CameraFragment();
+        getSupportFragmentManager().beginTransaction()
+            .add(cameraFragment, "camera_fragment")
+            .commitNow();
+
         bindMainScreen(true);
 
         if (switchAccelOpenCL != null) {
@@ -1171,11 +1178,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         camera2Capture = new Camera2CaptureController(this, sink, this, () -> getDeviceRotationDegrees());
         cameraXCapture = new CameraXCaptureController(this, this, sink, this, () -> getDeviceRotationDegrees());
 
-        // Init CameraFragment and EngineViewModel (preliminary split P1.7)
-        cameraFragment = new CameraFragment();
-        getSupportFragmentManager().beginTransaction()
-            .add(cameraFragment, "camera_fragment")
-            .commitNow();
         cameraFragment.setCallback(new CameraFragment.Callback() {
             @Override
             public void onCameraChanged() {
