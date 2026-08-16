@@ -611,6 +611,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private MonitoringCoordinator.Decision performStartMonitoringFlowEffect(@NonNull MonitoringCoordinator.StartMonitoringFlow s) {
         boolean wantCamera = s.wantCamera;
         boolean wantMock = s.wantMock;
+        // 启动时统一同步 CameraFragment 相机选择（覆盖启动恢复/mock 回退等路径，
+        // 而不仅 onItemSelected），确保翻转预置 key（getFlipSourceKey）与 MainActivity 一致
+        if (cameraFragment != null) {
+            cameraFragment.setSelectedCameraId(selectedCameraId);
+        }
 
         firstFrameReceived = false;
         updateSystemReadyUi("开始监控");
@@ -634,6 +639,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
 
         nativeStart();
+        // 暂停时 native stopAndJoinEngineThreadIfRunning 已释放 g_previewWindow；
+        // 恢复 start 必须重新注册预览 surface，否则渲染线程恒失败 → 预览卡在暂停帧（回归修复）
+        if (previewSurfaceReady && previewSurface != null) {
+            nativeSetPreviewSurface(previewSurface.getHolder().getSurface());
+        }
         isRunning = true;
         if (frameHandler != null) {
             frameHandler.post(frameUpdater);
@@ -750,6 +760,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
             selectedCameraId = String.valueOf(newId);
             mockFilePath = null;
+            // 同步 CameraFragment 的相机选择，使翻转预置 key（getFlipSourceKey）随相机切换
+            if (cameraFragment != null) {
+                cameraFragment.setSelectedCameraId(selectedCameraId);
+            }
             refreshFlipFromPrefs(true);
             AppLog.i("MainActivity", "onItemSelected", "切换 Camera ID: " + selectedCameraId);
 
@@ -2264,11 +2278,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         } catch (Exception ignored) {
             return 0;
         }
-    }
-
-    private String getFlipSourceKey() {
-        boolean wantCamera = (selectedCameraId != null && mockFilePath == null);
-        return wantCamera ? ("cam_" + (selectedCameraId != null ? selectedCameraId : "null")) : "mock";
     }
 
     private void refreshFlipFromPrefs(boolean applyToNativeIfReady) {

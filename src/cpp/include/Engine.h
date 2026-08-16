@@ -104,6 +104,22 @@ public:
     void setFlip(bool flipX, bool flipY);
 
     /**
+     * @brief 镜像翻转应用（独立纯逻辑，供单测验证不修改输入）。
+     * @return 翻转后的新 Mat；无翻转时返回输入引用。
+     * WHY 独立：preprocessFrame 原先对共享缓冲原地 cv::flip，渲染线程读取时
+     * 相位漂移导致画面按拍频来回镜像（RK3288 高频翻转回归）；提取为纯函数后
+     * 输出新 Mat，输入 frame 保持不变，发布缓冲稳定。
+     */
+    static cv::Mat applyFlip(const cv::Mat& frame, bool flipX, bool flipY);
+
+    /**
+     * @brief 在帧上绘制人脸跟踪框与标签（认证绿框/未认证红框）。
+     * WHY 独立：三层重构（029e43f）删除内联 drawTracks 后运行时无任何检测框；
+     * 提取为纯函数供 renderResults 调用并可单测验证绘制。
+     */
+    static void drawTracks(cv::Mat& frame, const std::vector<pipeline::TrackView>& tracks);
+
+    /**
      * @brief 运行时更新推理节流参数（通常由 JNI/配置线程调用）。
      *
      * 并发/线程安全：

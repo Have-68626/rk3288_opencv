@@ -724,12 +724,9 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
     } else {
         processedFrame_ = frame;
     }
-    const bool fx = flipXEnabled_.load();
-    const bool fy = flipYEnabled_.load();
-    if (fx || fy) {
-        int code = (fx && fy) ? -1 : (fy ? 0 : 1);
-        cv::flip(processedFrame_, processedFrame_, code);
-    }
+    // 翻转输出新 Mat：避免原地修改与发布缓冲（renderFrame_）共享的 frame 数据，
+    // 消除渲染线程 copy 相位漂移导致的画面按拍频来回镜像（RK3288 高频翻转回归）
+    processedFrame_ = applyFlip(processedFrame_, flipXEnabled_.load(), flipYEnabled_.load());
     return !processedFrame_.empty();
 }
 
@@ -740,8 +737,15 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
     outcome.tracks = currentTracks_;
-    // Performance optimization: Avoid redundant clone() before publish().
-    // The publisher inherently uses copyTo() to duplicate the data into its internal buffer.
+    if (!currentTracks_.empty()) {
+        // 绘制前断开与输入帧的共享：无 flip 时 processedFrame_ 别名输入帧（浅拷贝），
+        // 就地画框会写共享缓冲，与渲染线程 copyTo 并发撕裂（A1/A2 审计）；仅有人脸帧
+        // 才 clone，无脸路径保持零拷贝
+        processedFrame_ = processedFrame_.clone();
+        // 在发布帧上绘制人脸检测框（认证绿框/未认证红框 + 标签）——
+        // 三层重构（029e43f）删除内联绘制后运行时无任何检测框，此处恢复
+        drawTracks(processedFrame_, currentTracks_);
+    }
     outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
     publisher_->publish(std::move(outcome));
@@ -810,6 +814,33 @@ bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& inOutSeq) {
 void Engine::setFlip(bool flipX, bool flipY) {
     flipXEnabled_.store(flipX);
     flipYEnabled_.store(flipY);
+}
+
+cv::Mat Engine::applyFlip(const cv::Mat& frame, bool flipX, bool flipY) {
+    if (!flipX && !flipY) {
+        return frame;
+    }
+    int code = (flipX && flipY) ? -1 : (flipY ? 0 : 1);
+    cv::Mat flipped;
+    cv::flip(frame, flipped, code);
+    return flipped;
+}
+
+void Engine::drawTracks(cv::Mat& frame, const std::vector<pipeline::TrackView>& tracks) {
+    for (const auto& t : tracks) {
+        const bool authed = (t.stableId != "Unknown");
+        const cv::Scalar color = authed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+        const int thickness = authed ? 3 : 2;
+        cv::rectangle(frame, t.bbox, color, thickness);
+
+        std::ostringstream label;
+        label << "T" << t.trackId << " " << t.stableId;
+        if (authed) {
+            label << " " << static_cast<int>(t.stableConfidence * 100) << "%";
+        }
+        const cv::Point origin(std::max(0, t.bbox.x), std::max(0, t.bbox.y - 8));
+        cv::putText(frame, label.str(), origin, cv::FONT_HERSHEY_SIMPLEX, 0.6, color, 2);
+    }
 }
 
 void Engine::setOnResultCallback(std::function<void(std::string)> callback) {

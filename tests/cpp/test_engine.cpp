@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
+
+// flip 应用与检测框绘制提取为 Engine 公共静态纯函数（applyFlip/drawTracks），
+// 本测试直接验证其不变量，无需 private 访问。
 #include "Engine.h"
+#include "Config.h"
 
 #include <atomic>
 #include <thread>
@@ -78,4 +82,50 @@ TEST(EngineTest, OddNv21FrameRejected) {
     runner.join();
     // 到达此处即证明：奇数帧未崩溃进程、未摧毁 run 循环
     SUCCEED();
+}
+
+// 镜像翻转不原地修改输入帧（RK3288 高频来回翻转回归）。
+// 修复前：preprocessFrame 尺寸匹配时 processedFrame_=frame 浅拷贝后原地
+// cv::flip(processedFrame_,processedFrame_,code) 修改共享缓冲 → 输入帧被翻转（RED）；
+// 修复后：applyFlip 翻到新 Mat，输入帧保持原样，发布缓冲稳定不再按拍频抖动。
+TEST(EngineTest, ApplyFlipDoesNotModifyInput) {
+    // 非对称图案：左半边蓝、右半边红——原地翻转必然改变像素，可检出回归
+    cv::Mat input(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(0, 0, 255));
+    input(cv::Rect(0, 0, rk_core::config::FRAME_WIDTH / 2, rk_core::config::FRAME_HEIGHT))
+        .setTo(cv::Scalar(255, 0, 0));
+    cv::Mat before = input.clone();
+    cv::Mat out = rk_core::Engine::applyFlip(input, true, false);  // 水平翻转
+    // 输入帧必须未被原地翻转（reshape(1) 展平多通道供 countNonZero 计数）
+    const cv::Mat diffMask = before != input;
+    EXPECT_EQ(cv::countNonZero(diffMask.reshape(1)), 0);
+    // 输出应为水平镜像：左上像素 == 输入右上像素
+    ASSERT_EQ(out.cols, rk_core::config::FRAME_WIDTH);
+    const cv::Vec3b left = out.at<cv::Vec3b>(0, 0);
+    const cv::Vec3b right = input.at<cv::Vec3b>(0, rk_core::config::FRAME_WIDTH - 1);
+    EXPECT_EQ(left[0], right[0]);
+    EXPECT_EQ(left[1], right[1]);
+    EXPECT_EQ(left[2], right[2]);
+}
+
+// 渲染帧须含人脸检测框（三层重构 029e43f 删除 drawTracks 后无框 → RED）。
+// drawTracks 按 tracks 在帧上画框：认证绿框/未认证红框。
+TEST(EngineTest, DrawTracksDrawsFaceBoxes) {
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(10, 10, 10));  // 深色底
+    pipeline::TrackView track;
+    track.trackId = 1;
+    track.stableId = "alice";
+    track.stableConfidence = 0.95f;
+    track.bbox = cv::Rect(100, 80, 200, 240);
+    std::vector<pipeline::TrackView> tracks = {track};
+    rk_core::Engine::drawTracks(frame, tracks);
+    // 检测框顶边（y=80）应被绘制（绿框 G 通道 != 背景 10）
+    const cv::Vec3b border = frame.at<cv::Vec3b>(80, 150);
+    EXPECT_NE(border[1], 10);
+    // 框外像素保持背景
+    const cv::Vec3b outside = frame.at<cv::Vec3b>(10, 10);
+    EXPECT_EQ(outside[0], 10);
+    EXPECT_EQ(outside[1], 10);
+    EXPECT_EQ(outside[2], 10);
 }

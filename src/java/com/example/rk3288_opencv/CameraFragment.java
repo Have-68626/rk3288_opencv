@@ -2,7 +2,6 @@ package com.example.rk3288_opencv;
 
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
@@ -68,12 +67,6 @@ public class CameraFragment extends Fragment {
     private String currentPhotoPath;
     // 拍照输出 URI：授予跨 UID 相机后，消费完成须及时撤销（Q-CQ-B07-009）
     private Uri currentPhotoUri;
-
-    // Flip state
-    private boolean flipXEnabled = false;
-    private boolean flipYEnabled = false;
-    private boolean flipXHasOverride = false;
-    private boolean flipYHasOverride = false;
 
     public static final int REQUEST_CODE_PICK_MEDIA = 2001;
     public static final int REQUEST_CODE_TAKE_PHOTO = 1003;
@@ -196,32 +189,15 @@ public class CameraFragment extends Fragment {
         }
     }
 
+    // 相机切换时由 MainActivity 同步：getFlipSourceKey 依赖 selectedCameraId，
+    // 此前从不更新恒为 "cam_0"，导致翻转预置不随相机切换
+    public void setSelectedCameraId(String cameraId) {
+        this.selectedCameraId = cameraId;
+    }
+
     public String getFlipSourceKey() {
         boolean wantCamera = (selectedCameraId != null && mockFilePath == null);
         return wantCamera ? ("cam_" + (selectedCameraId != null ? selectedCameraId : "null")) : "mock";
-    }
-
-    public void refreshFlipFromPrefs(boolean applyToNativeIfReady, String prefsName,
-                                     boolean flipXEnabledRef, boolean flipYEnabledRef,
-                                     boolean flipXHasOverrideRef, boolean flipYHasOverrideRef) {
-        Context ctx = appContext;
-        if (ctx == null) return;
-        SharedPreferences prefs = ctx.getSharedPreferences(prefsName, Context.MODE_PRIVATE);
-        String sourceKey = getFlipSourceKey();
-
-        boolean defaultX = false;
-        if (selectedCameraId != null && mockFilePath == null) {
-            defaultX = isFrontCamera(selectedCameraId);
-        }
-        boolean hasX = prefs.contains("pref_flip_x_" + sourceKey);
-        boolean hasY = prefs.contains("pref_flip_y_" + sourceKey);
-        boolean nextX = hasX ? prefs.getBoolean("pref_flip_x_" + sourceKey, defaultX) : defaultX;
-        boolean nextY = hasY ? prefs.getBoolean("pref_flip_y_" + sourceKey, false) : false;
-
-        flipXHasOverride = hasX;
-        flipYHasOverride = hasY;
-        flipXEnabled = nextX;
-        flipYEnabled = nextY;
     }
 
     // ---- Preflight ----
