@@ -22,7 +22,7 @@ public class CameraXCaptureControllerStartGateTest {
     @Test
     public void staleFutureCompletionAfterRestartIsIgnored() {
         // 场景：启动 → 过期 Future 延迟完成 → 再启动新流程
-        CameraXCaptureController.StartSessionGate gate = new CameraXCaptureController.StartSessionGate();
+        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
 
         // 第一次启动：异步 Future 尚未完成，捕获本次会话代次
         long firstStart = gate.enter();
@@ -37,24 +37,24 @@ public class CameraXCaptureControllerStartGateTest {
     @Test
     public void stopInvalidatesInFlightBind() {
         // 启动后 stop()：尚未完成的异步绑定过期（旧回调不得重新拉起相机）
-        CameraXCaptureController.StartSessionGate gate = new CameraXCaptureController.StartSessionGate();
+        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
 
         long start = gate.enter();
         assertTrue(gate.isCurrent(start));
 
-        gate.invalidate();
+        gate.advance();
         assertFalse(gate.isCurrent(start));
     }
 
     @Test
     public void currentSessionWithoutInterruptionStillProceeds() {
         // 无并发/无 stop 的正常流程：当前代次始终放行，避免修复引入回归
-        CameraXCaptureController.StartSessionGate gate = new CameraXCaptureController.StartSessionGate();
+        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
 
         long epoch = gate.enter();
         assertTrue(gate.isCurrent(epoch));
 
-        gate.invalidate();
+        gate.advance();
         assertFalse(gate.isCurrent(epoch));
 
         // 再次启动后，新代次重新放行

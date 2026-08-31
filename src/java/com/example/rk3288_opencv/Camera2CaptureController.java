@@ -47,10 +47,11 @@ class Camera2CaptureController implements CaptureController {
     private CameraDevice.StateCallback currentStateCallback;
 
     // Q-CQ-B07-005: 代次隔离 —— stop/start 递增代次，旧代次回调到达时按代次丢弃，仅释放自身参数资源
-    // S3: 主线程写、Camera2 HandlerThread 回调线程读，跨线程代次读写需 volatile 保证可见性/原子性
-    private volatile int generation;
-    // Q-CQ-B07-005: 帧监听器创建时绑定的代次（startSync 内设置）
-    private volatile int listenerGeneration;
+    // 任务 2 归一：代次语义收敛到统一组件 CaptureSourceEpochGate（long epoch，跨线程 volatile）
+    // 包内可见（final）：JVM 单测在包内直接驱动 enter/advance 编排代次，属测试接缝
+    final CaptureSourceEpochGate epochGate = new CaptureSourceEpochGate();
+    // Q-CQ-B07-005: 帧监听器创建时绑定的 epoch（startSync 内设置）
+    private volatile long listenerEpoch;
 
     private int sensorOrientation;
     private boolean mirrored;
@@ -81,13 +82,18 @@ class Camera2CaptureController implements CaptureController {
     }
 
     @Override
+    public long currentSourceEpoch() {
+        return epochGate.current();
+    }
+
+    @Override
     @SuppressLint("MissingPermission")
     public boolean start(String cameraId) {
         stop();
-        // Q-CQ-B07-005: 每次启动递增代次 —— 新回调绑定新代次，旧回调按代次丢弃
-        int gen = ++generation;
+        // Q-CQ-B07-005: 每次启动递增 epoch —— 新回调绑定新 epoch，旧回调按 epoch 丢弃
+        long epoch = epochGate.enter();
         try {
-            return startSync(cameraId, gen);
+            return startSync(cameraId, epoch);
         } catch (SecurityException se) {
             // Q-CQ-B07-006: 同步启动异常 —— 完整回滚已预建资源后再上报
             rollbackStart();
@@ -106,8 +112,8 @@ class Camera2CaptureController implements CaptureController {
 
     @Override
     public void stop() {
-        // Q-CQ-B07-005: 停止也递增代次 —— 停止后到达的旧回调一律按旧代次丢弃
-        generation++;
+        // Q-CQ-B07-005: 停止也递增 epoch —— 停止后到达的旧回调一律按旧 epoch 丢弃
+        epochGate.advance();
         if (handler != null) {
             handler.removeCallbacksAndMessages(null);
         }
@@ -117,7 +123,7 @@ class Camera2CaptureController implements CaptureController {
 
     // Q-CQ-B07-006: 同步启动分阶段预建资源；任何一步抛异常由 start() 的 rollbackStart() 完整回滚
     @SuppressLint("MissingPermission") // CAMERA 权限由调用方（MainActivity/CameraFragment）授予后调用
-    boolean startSync(String cameraId, int gen) throws CameraAccessException {
+    boolean startSync(String cameraId, long epoch) throws CameraAccessException {
         thread = new HandlerThread("Camera2Capture");
         thread.start();
         handler = new Handler(thread.getLooper());
@@ -139,8 +145,8 @@ class Camera2CaptureController implements CaptureController {
         Size size = chooseYuvSize(chars);
         imageReader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
         imageReader.setOnImageAvailableListener(this::onImageAvailable, handler);
-        // Q-CQ-B07-005: 帧监听绑定当前代次
-        listenerGeneration = gen;
+        // Q-CQ-B07-005: 帧监听绑定当前 epoch
+        listenerEpoch = epoch;
         lastStatsRealtimeMs = SystemClock.elapsedRealtime();
         lastFrameTsNs = 0L;
         statsFrames = 0;
@@ -150,7 +156,7 @@ class Camera2CaptureController implements CaptureController {
         statsAnalyzeNsMax = 0L;
         statsApproxDropped = 0;
 
-        currentStateCallback = new GenerationStateCallback(gen);
+        currentStateCallback = new GenerationStateCallback(epoch);
         mgr.openCamera(cameraId, currentStateCallback, handler);
         return true;
     }
@@ -214,8 +220,8 @@ class Camera2CaptureController implements CaptureController {
     }
 
     private void onImageAvailable(ImageReader reader) {
-        // Q-CQ-B07-005: 帧回调绑定启动代次 —— stop/start 后旧代次帧直接丢弃，不推送不统计
-        if (listenerGeneration != generation) {
+        // Q-CQ-B07-005: 帧回调绑定启动 epoch —— stop/start 后旧 epoch 帧直接丢弃，不推送不统计
+        if (!epochGate.isCurrent(listenerEpoch)) {
             return;
         }
         Image image = null;
@@ -369,15 +375,15 @@ class Camera2CaptureController implements CaptureController {
     // Q-CQ-B07-005: 代次隔离 —— 每个 start 新建一个绑定当前代次的状态回调；
     // 旧代次回调在 stop/start 后到达时，仅释放参数 camera，不触碰当前会话状态
     final class GenerationStateCallback extends CameraDevice.StateCallback {
-        private final int boundGeneration;
+        private final long boundEpoch;
 
-        GenerationStateCallback(int boundGeneration) {
-            this.boundGeneration = boundGeneration;
+        GenerationStateCallback(long boundEpoch) {
+            this.boundEpoch = boundEpoch;
         }
 
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
-            if (boundGeneration != generation) {
+            if (!epochGate.isCurrent(boundEpoch)) {
                 releaseCameraDevice(camera);
                 return;
             }
@@ -414,7 +420,7 @@ class Camera2CaptureController implements CaptureController {
                 // onConfigured 异常缺陷同构）。代次递增使后续迟到回调（onDisconnected/onError）
                 // 按旧代次丢弃；rollbackStart() 释放已置的 cameraDevice/reader/thread 并置空字段，
                 // 与 stop() 共用同一完整释放路径（B07-006）。不破坏正常路径。
-                generation++;
+                epochGate.advance();
                 rollbackStart();
                 observer.onError("camera2", "onOpened失败: " + e.getMessage());
             }
@@ -422,7 +428,7 @@ class Camera2CaptureController implements CaptureController {
 
         // Q-CQ-B07-008: onConfigureFailed 主体提取为包内方法 —— JVM 单测以 null 框架参数直接驱动
         void handleSessionConfigureFailed(@NonNull CameraCaptureSession s) {
-            if (boundGeneration != generation) {
+            if (!epochGate.isCurrent(boundEpoch)) {
                 releaseCameraSession(s);
                 return;
             }
@@ -433,7 +439,7 @@ class Camera2CaptureController implements CaptureController {
             // 随后代次递增 + rollbackStart() 释放 cameraDevice/reader/thread 并置空字段，回到
             // 可控的已停止状态。不破坏正常路径。
             releaseCameraSession(s);
-            generation++;
+            epochGate.advance();
             rollbackStart();
             observer.onError("camera2", "createCaptureSession失败");
         }
@@ -441,7 +447,7 @@ class Camera2CaptureController implements CaptureController {
         // Q-CQ-B07-007: onConfigured 主体提取为包内方法 —— JVM 单测以 null 框架参数直接驱动，
         // 覆盖"配置阶段异常（setRepeatingRequest 等）"路径；生产行为与内联等价。
         void handleSessionConfigured(@NonNull CameraCaptureSession s, @NonNull CaptureRequest.Builder builder) {
-            if (boundGeneration != generation) {
+            if (!epochGate.isCurrent(boundEpoch)) {
                 releaseCameraSession(s);
                 return;
             }
@@ -460,7 +466,7 @@ class Camera2CaptureController implements CaptureController {
                 // 按旧代次丢弃，不再误报当前会话；rollbackStart() 释放已创建的
                 // session/device/reader/thread 并置空字段，与 stop() 共用同一完整释放路径
                 // （B07-006），回到可控的已停止状态；不破坏正常路径。
-                generation++;
+                epochGate.advance();
                 rollbackStart();
                 observer.onError("camera2", "setRepeatingRequest失败: " + e.getMessage());
             }
@@ -468,7 +474,7 @@ class Camera2CaptureController implements CaptureController {
 
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
-            if (boundGeneration != generation) {
+            if (!epochGate.isCurrent(boundEpoch)) {
                 releaseCameraDevice(camera);
                 return;
             }
@@ -478,7 +484,7 @@ class Camera2CaptureController implements CaptureController {
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
-            if (boundGeneration != generation) {
+            if (!epochGate.isCurrent(boundEpoch)) {
                 releaseCameraDevice(camera);
                 return;
             }

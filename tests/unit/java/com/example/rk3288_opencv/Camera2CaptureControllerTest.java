@@ -116,7 +116,7 @@ public class Camera2CaptureControllerTest {
         }
 
         @Override
-        boolean startSync(String cameraId, int gen) throws CameraAccessException {
+        boolean startSync(String cameraId, long epoch) throws CameraAccessException {
             startSyncCalls++;
             // Q-CQ-B07-006 模拟：reader/device/session/thread 已在真实路径中预建；
             // 这里直接抛异常，断言回滚路径经释放接缝释放全部四类资源
@@ -132,18 +132,6 @@ public class Camera2CaptureControllerTest {
             f.setAccessible(true);
             f.set(c, value);
         } catch (ReflectiveOperationException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    // 修复前无对应字段时静默跳过，交由后续断言判定 RED
-    private static void setFieldQuietly(Camera2CaptureController c, String name, Object value) {
-        try {
-            Field f = Camera2CaptureController.class.getDeclaredField(name);
-            f.setAccessible(true);
-            f.set(c, value);
-        } catch (NoSuchFieldException ignored) {
-        } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
         }
     }
@@ -176,10 +164,11 @@ public class Camera2CaptureControllerTest {
     public void staleCallback_onlyReleasesParamAndDoesNotTouchCurrentState() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 2); // 模拟已 stop/start，当前代次为 2
+        c.epochGate.enter(); // 模拟已 stop/start：epoch 推进到 2（enter 0→1，再 advance →2）
+        c.epochGate.advance();
 
         // 绑定旧代次 1 的回调 —— 模拟 stop/start 前注册、stop/start 后才到达的异步回调
-        Camera2CaptureController.GenerationStateCallback stale = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback stale = c.new GenerationStateCallback(1L);
 
         stale.onDisconnected(null);
         assertTrue("旧代次断开回调应释放参数 camera", c.releaseCameraDeviceCalls >= 1);
@@ -206,9 +195,10 @@ public class Camera2CaptureControllerTest {
     public void staleFrameCallback_isDroppedWithoutPushOrReport() throws Exception {
         FakeObserver obs = new FakeObserver();
         Camera2CaptureController c = newController(obs, new FakeSink());
-        // 模拟 stop/start：帧监听绑定旧代次 1，当前代次已到 2
-        setFieldQuietly(c, "listenerGeneration", 1);
-        setFieldQuietly(c, "generation", 2);
+        // 模拟 stop/start：帧监听绑定旧 epoch 1，当前 epoch 已到 2
+        setField(c, "listenerEpoch", 1L);
+        c.epochGate.enter();
+        c.epochGate.advance();
 
         Method m = Camera2CaptureController.class.getDeclaredMethod("onImageAvailable", ImageReader.class);
         m.setAccessible(true);
@@ -240,7 +230,7 @@ public class Camera2CaptureControllerTest {
 
         assertFalse("启动失败应返回 false", ok);
         assertEquals("startSync 应被调用一次", 1, c.startSyncCalls);
-        assertEquals("代次应已递增（stop + start 各一次）", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应已递增（stop + start 各一次）", 2L, c.epochGate.current());
         // stop() 回滚 + 失败回滚 各一次，共两次
         assertEquals("session 释放路径应被调用两次", 2, c.releaseCameraSessionCalls);
         assertEquals("device 释放路径应被调用两次", 2, c.releaseCameraDeviceCalls);
@@ -270,9 +260,9 @@ public class Camera2CaptureControllerTest {
     public void configuredSetRepeatingRequestFailure_releasesSessionAndRollsBack() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         cb.handleSessionConfigured(null, null);
 
         assertEquals("配置阶段异常应释放已创建的 session", 1, c.releaseCameraSessionCalls);
@@ -282,7 +272,7 @@ public class Camera2CaptureControllerTest {
         assertNull("session 字段应置空", getField(c, "session"));
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
         assertNull("thread 字段应置空", getField(c, "thread"));
-        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", 2L, c.epochGate.current());
         assertTrue("应上报配置阶段失败错误", obs.hasError());
     }
 
@@ -302,9 +292,9 @@ public class Camera2CaptureControllerTest {
     public void configureFailed_releasesFailedSessionAndRollsBack() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入失败处理分支
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入失败处理分支
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         cb.handleSessionConfigureFailed(null);
 
         assertEquals("onConfigureFailed 应释放失败的 session 参数及回滚 session 字段",
@@ -314,7 +304,7 @@ public class Camera2CaptureControllerTest {
         assertEquals("onConfigureFailed 应释放 thread", 1, c.releaseCaptureThreadCalls);
         assertNull("session 字段应置空", getField(c, "session"));
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
-        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", 2L, c.epochGate.current());
         assertTrue("应上报配置失败错误", obs.hasError());
     }
 
@@ -330,9 +320,9 @@ public class Camera2CaptureControllerTest {
     public void onOpenedCreateSessionFailure_releasesDeviceAndRollsBack() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入会话创建阶段
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入会话创建阶段
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         cb.handleSessionCreate(null);
 
         assertEquals("onOpened 异常应释放 session", 1, c.releaseCameraSessionCalls);
@@ -341,7 +331,7 @@ public class Camera2CaptureControllerTest {
         assertEquals("onOpened 异常应释放 thread", 1, c.releaseCaptureThreadCalls);
         assertNull("session 字段应置空", getField(c, "session"));
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
-        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", 2L, c.epochGate.current());
         assertTrue("应上报 onOpened 失败错误", obs.hasError());
     }
 
@@ -359,9 +349,9 @@ public class Camera2CaptureControllerTest {
     public void configuredSetRepeatingRequestSuccess_keepsSessionAndStateNormal() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         CameraCaptureSession fakeSession = new CameraCaptureSession();
         CaptureRequest.Builder fakeBuilder = new CaptureRequest.Builder();
         cb.handleSessionConfigured(fakeSession, fakeBuilder);
@@ -376,7 +366,7 @@ public class Camera2CaptureControllerTest {
         assertEquals("成功路径不得释放 device", 0, c.releaseCameraDeviceCalls);
         assertEquals("成功路径不得释放 reader", 0, c.releaseImageReaderCalls);
         assertEquals("成功路径不得释放 thread", 0, c.releaseCaptureThreadCalls);
-        assertEquals("成功路径不得递增代次", Integer.valueOf(1), getField(c, "generation"));
+        assertEquals("成功路径不得递增代次", 1L, c.epochGate.current());
         assertFalse("成功路径不得上报错误", obs.hasError());
     }
 }
