@@ -120,6 +120,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private TextView tvFps, tvCpu, tvMemory, tvStatus, tvOverlayStatus;
     private TextView tvLatency;
     private TextView tvCaptureStrategyInfo;
+    private TextView tvDiagnostics;
     private View recognitionTitle;
     private Button btnStartStop, btnViewLogs;
     private Button btnNavPlayback, btnNavSettings, btnNavAbout;
@@ -402,6 +403,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         tvMemory = b.tvMemory;
         tvLatency = b.tvLatency;
         tvCaptureStrategyInfo = b.tvCaptureStrategyInfo;
+        tvDiagnostics = b.tvDiagnostics;
         tvStatus = b.tvStatus;
         tvOverlayStatus = b.tvOverlayStatus;
         recognitionTitle = b.recognitionTitle;
@@ -507,6 +509,23 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 }
             }
         }
+        updateDiagnosticsText();
+    }
+
+    // 任务3：构建/相机诊断信息 —— 状态页展示 Git commit/构建时间/ABI/source epoch/
+    // flip generation/cameraId，仅在状态渲染时刷新（非逐帧写日志），用于直接判断设备
+    // 是否安装旧 APK，并定位频繁切源或配置变更。
+    private void updateDiagnosticsText() {
+        if (tvDiagnostics == null) return;
+        String cam = selectedCameraId != null ? selectedCameraId : "?";
+        long srcEpoch = (activeCapture != null) ? activeCapture.currentSourceEpoch() : 0L;
+        long flipGen = nativeGetFlipGeneration();
+        String abi = Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "?";
+        tvDiagnostics.setText(
+                "git=" + BuildConfig.BUILD_GIT_COMMIT +
+                " time=" + BuildConfig.BUILD_TIME +
+                " abi=" + abi +
+                "\ncam=" + cam + " srcEpoch=" + srcEpoch + " flipGen=" + flipGen);
     }
 
     private MonitoringCoordinator.Decision applyMonitoringEffects(@NonNull MonitoringCoordinator.Decision d) {
@@ -1103,6 +1122,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     public native void nativeRequestCancelInit();
     public native void nativeSetMode(int mode);
     public native void nativeSetFlip(boolean flipX, boolean flipY);
+    public native long nativeGetFlipGeneration();
     public native boolean nativeGetFrame(Bitmap bitmap);
     public native void nativeSetPreviewSurface(Surface surface);
     public native boolean nativeRenderFrameToSurface();
@@ -2335,6 +2355,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             nativeSetFlip(flipXEnabled, flipYEnabled);
         } catch (Throwable ignored) {
         }
+        // 任务3 诊断：翻转开关变化即刷新 flipGen 展示（renderMonitoringUi 事件驱动不覆盖此场景）
+        updateDiagnosticsText();
     }
 
     private boolean pushExternalYuv420888(ByteBuffer yBuffer,

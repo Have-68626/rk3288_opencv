@@ -8,6 +8,25 @@ def intProp(String name, int fallback) {
     return v != null ? (v as Integer) : fallback
 }
 
+// 诊断构建信息（任务3）：Git 短提交 + 构建时间，注入 BuildConfig 供状态区展示
+// （仅排查旧包/配置变更用，不写日志、不影响构建产物大小）
+def gitHeadShort = {
+    try {
+        new ByteArrayOutputStream().withStream { bos ->
+            exec {
+                commandLine 'git', 'rev-parse', '--short', 'HEAD'
+                standardOutput = bos
+                ignoreExitValue = true
+            }
+            String v = bos.toString().trim();
+            return v.isEmpty() ? 'unknown' : v
+        }
+    } catch (Exception ignored) {
+        return 'unknown'
+    }
+}()
+def buildStamp = new Date().format("yyyyMMdd-HHmm")
+
 android {
     namespace 'com.example.rk3288_opencv'
     compileSdk intProp('rk.compileSdk', 34)
@@ -46,6 +65,10 @@ android {
         targetSdk intProp('rk.targetSdk', 34)
         versionCode intProp('rk.versionCode', 3)
         versionName project.findProperty('rk.versionName') ?: "v0.1beta1"
+
+        // 诊断构建信息（任务3）：Git 短提交 + 构建时间；ABI 运行时读 Build.SUPPORTED_ABIS
+        buildConfigField("String", "BUILD_GIT_COMMIT", "\"${gitHeadShort}\"")
+        buildConfigField("String", "BUILD_TIME", "\"${buildStamp}\"")
 
         externalNativeBuild {
             cmake {

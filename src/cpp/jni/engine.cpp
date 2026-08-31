@@ -222,6 +222,12 @@ void engine_nativeSetFlip(JNIEnv* /* env */, jobject /* this */,
     g_engine->setFlip(flipX == JNI_TRUE, flipY == JNI_TRUE);
 }
 
+// ========== nativeGetFlipGeneration ==========
+jlong engine_nativeGetFlipGeneration(JNIEnv* /* env */, jobject /* this */) {
+    if (!g_engine) return 0;
+    return static_cast<jlong>(g_engine->getFlipGeneration());
+}
+
 } // anonymous namespace
 
 void registerEngineMethods(JniMethodRegistry& registry) {
@@ -242,5 +248,7 @@ void registerEngineMethods(JniMethodRegistry& registry) {
          reinterpret_cast<void*>(engine_nativeSetMode)},
         {"nativeSetFlip", "(ZZ)V",
          reinterpret_cast<void*>(engine_nativeSetFlip)},
+        {"nativeGetFlipGeneration", "()J",
+         reinterpret_cast<void*>(engine_nativeGetFlipGeneration)},
     });
 }
