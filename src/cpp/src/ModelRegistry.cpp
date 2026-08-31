@@ -3,6 +3,7 @@
 using namespace rk_core;
 
 #include "adapters/ArcFaceAdapter.h"
+#include "adapters/ScrfdNcnnAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
 #include "adapters/MobileFaceNetAdapter.h"
 #include "adapters/YuNetAdapter.h"
@@ -35,7 +36,7 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "YOLOv5 架构，320x320 输入，精度高。适合光照良好、角度正面的场景。RK3288 ncnn 约 15ms/帧。",
          "high_accuracy", 1});
 
-    reg.registerDetector("scrfd_0.5gf", []() { return std::make_unique<YoloFaceAdapter>(); },
+    reg.registerDetector("scrfd_0.5gf", []() { return std::make_unique<ScrfdNcnnAdapter>(); },
         {"scrfd_0.5gf", "SCRFD-0.5GF", "detect",
          "轻量级检测器，0.5G FLOPs，WiderFace 96.1% AP。适合资源受限设备。需要额外下载 ncnn 模型。",
          "high_speed", 2});
