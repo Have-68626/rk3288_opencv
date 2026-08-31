@@ -38,6 +38,12 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeSetFlip(JNIEnv*, jobject, jboolean, jboolean) {
 }
 
+// nativeGetFlipGeneration()J —— 任务3 诊断：占位返回 0（真实构建由 engine.cpp 注册返回 flipGeneration_）
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeGetFlipGeneration(JNIEnv*, jobject) {
+    return 0;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(JNIEnv* env, jobject /* this */, jobject, jint, jobject, jint, jint, jobject, jint, jint, jint, jint, jlong, jint, jboolean) {
     return JNI_FALSE;

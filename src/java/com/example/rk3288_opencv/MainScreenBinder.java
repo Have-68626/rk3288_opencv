@@ -63,6 +63,7 @@ final class MainScreenBinder {
         TextView tvMemory;
         TextView tvLatency;
         TextView tvCaptureStrategyInfo;
+        TextView tvDiagnostics;
         TextView tvStatus;
         TextView tvOverlayStatus;
         View recognitionTitle;
@@ -119,6 +120,7 @@ final class MainScreenBinder {
         b.tvMemory = activity.findViewById(R.id.tv_memory);
         b.tvLatency = activity.findViewById(R.id.tv_latency);
         b.tvCaptureStrategyInfo = activity.findViewById(R.id.tv_capture_strategy_info);
+        b.tvDiagnostics = activity.findViewById(R.id.tv_diagnostics);
         b.tvStatus = activity.findViewById(R.id.tv_app_status);
         b.tvOverlayStatus = activity.findViewById(R.id.tv_overlay_status);
 

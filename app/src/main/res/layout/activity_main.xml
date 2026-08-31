@@ -297,6 +297,15 @@
                 android:layout_marginBottom="16dp" />
 
             <TextView
+                android:id="@+id/tv_diagnostics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#88FF88"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="12dp" />
+
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/ui_settings_detection_throttle"
