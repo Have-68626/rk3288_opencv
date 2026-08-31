@@ -724,9 +724,15 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
     } else {
         processedFrame_ = frame;
     }
-    // 翻转输出新 Mat：避免原地修改与发布缓冲（renderFrame_）共享的 frame 数据，
-    // 消除渲染线程 copy 相位漂移导致的画面按拍频来回镜像（RK3288 高频翻转回归）
-    processedFrame_ = applyFlip(processedFrame_, flipXEnabled_.load(), flipYEnabled_.load());
+    // 变换输出新 Mat：避免原地修改与发布缓冲（renderFrame_）共享的 frame 数据，
+    // 消除渲染线程 copy 相位漂移导致的画面按拍频来回镜像（RK3288 高频翻转回归）。
+    // 变换完全由配置决定（不读取检测/轨迹）；水平实际翻转 = input XOR target。
+    // 旋转已在 toBgrFromExternalFrame 处理，故此处 rotation_degrees 恒为 0，避免二次旋转。
+    FrameTransformConfig cfg;
+    cfg.input_mirrored_x = inputMirroredX_.load();
+    cfg.target_mirrored_x = flipXEnabled_.load();
+    cfg.flip_y = flipYEnabled_.load();
+    processedFrame_ = FrameTransform::applyImage(processedFrame_, cfg);
     return !processedFrame_.empty();
 }
 
@@ -812,8 +818,18 @@ bool Engine::getRenderFrame(cv::Mat& outFrame, uint64_t& inOutSeq) {
 }
 
 void Engine::setFlip(bool flipX, bool flipY) {
-    flipXEnabled_.store(flipX);
-    flipYEnabled_.store(flipY);
+    const bool oldX = flipXEnabled_.exchange(flipX);
+    const bool oldY = flipYEnabled_.exchange(flipY);
+    if (oldX != flipX || oldY != flipY) {
+        flipGeneration_.fetch_add(1);  // 变换配置变化时 generation 递增
+    }
+}
+
+void Engine::setInputMirroredX(bool mirrored) {
+    const bool old = inputMirroredX_.exchange(mirrored);
+    if (old != mirrored) {
+        flipGeneration_.fetch_add(1);
+    }
 }
 
 cv::Mat Engine::applyFlip(const cv::Mat& frame, bool flipX, bool flipY) {

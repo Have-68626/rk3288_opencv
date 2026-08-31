@@ -297,6 +297,7 @@ if(NOT ANDROID)
     add_executable(core_gtest_tests
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
         "tests/cpp/test_motion.cpp" "tests/cpp/test_adapters.cpp"
+        "tests/cpp/test_frame_transform.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         ${RK_PIPELINE_SOURCES}
         "src/win/src/DnnSsdFaceDetector.cpp" "src/win/src/FaceDetector.cpp"

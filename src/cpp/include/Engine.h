@@ -14,6 +14,7 @@
 #include "FrameInputChannel.h"
 #include "Types.h"
 #include "InferenceThrottle.h"
+#include "FrameTransform.h"
 #include "pipeline/TrackCoordinator.h"
 #include "pipeline/ResultPublisher.h"
 #include "pipeline/PerfReporter.h"
@@ -104,6 +105,17 @@ public:
     void setFlip(bool flipX, bool flipY);
 
     /**
+     * @brief 设置输入源是否已镜像（通常来自相机元数据 mirrored）。
+     * 与 setFlip 共同决定实际水平变换：effective = input XOR target。
+     */
+    void setInputMirroredX(bool mirrored);
+
+    /**
+     * @brief 当前 frame transform generation（仅配置变化递增，供状态区诊断展示）。
+     */
+    uint64_t getFlipGeneration() const { return flipGeneration_.load(); }
+
+    /**
      * @brief 镜像翻转应用（独立纯逻辑，供单测验证不修改输入）。
      * @return 翻转后的新 Mat；无翻转时返回输入引用。
      * WHY 独立：preprocessFrame 原先对共享缓冲原地 cv::flip，渲染线程读取时
@@ -182,6 +194,9 @@ private:
     // Preprocess 参数
     std::atomic<bool> flipXEnabled_{false};
     std::atomic<bool> flipYEnabled_{false};
+    std::atomic<bool> inputMirroredX_{false};
+    // generation：仅变换配置变化时递增（FrameTransform 语义固定，不由检测改变）
+    std::atomic<uint64_t> flipGeneration_{0};
 
     // 节流
     std::atomic<InferenceThrottleMode> detThrottleMode_{InferenceThrottleMode::Off};
