@@ -232,9 +232,11 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     if(MSVC)
         target_compile_options(face_infer_unit_tests PRIVATE /utf-8)
     endif()
+    target_compile_definitions(face_infer_unit_tests PRIVATE
+            RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
     if(WIN32)
         target_compile_definitions(face_infer_unit_tests PRIVATE
-            NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
+            NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_MPP=0)
     endif()
     target_link_libraries(face_infer_unit_tests ${RK_OPENCV_FULL_LIBS})
     if(TARGET GTest::gtest)
@@ -297,6 +299,8 @@ if(NOT ANDROID)
     add_executable(core_gtest_tests
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
         "tests/cpp/test_motion.cpp" "tests/cpp/test_adapters.cpp"
+        "tests/cpp/test_arcface_contract.cpp"
+        "tests/cpp/test_scrfd_ncnn_adapter.cpp"
         "tests/cpp/test_frame_transform.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         ${RK_PIPELINE_SOURCES}
@@ -310,10 +314,11 @@ if(NOT ANDROID)
     if(MSVC)
         target_compile_options(core_gtest_tests PRIVATE /utf-8)
     endif()
+    target_compile_definitions(core_gtest_tests PRIVATE
+        RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
     if(WIN32)
         target_compile_definitions(core_gtest_tests PRIVATE
-            NOMINMAX WIN32_LEAN_AND_MEAN
-            RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
+            NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_MPP=0)
     endif()
     target_link_libraries(core_gtest_tests GTest::gtest_main ${RK_OPENCV_FULL_LIBS})
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)

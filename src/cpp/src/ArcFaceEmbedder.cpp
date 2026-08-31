@@ -43,7 +43,8 @@ static std::vector<float> takeFirst512AsF32(const cv::Mat& m) {
 
     if (!f.isContinuous()) f = f.clone();
     const std::size_t total = static_cast<std::size_t>(f.total());
-    if (total < static_cast<std::size_t>(ArcFaceEmbedding::kDim)) return {};
+    // 任务8：输出必须恰为 512 维；>512 的模型静默截断会让维度不匹配溜过（收紧）
+    if (total != static_cast<std::size_t>(ArcFaceEmbedding::kDim)) return {};
     std::vector<float> out(static_cast<std::size_t>(ArcFaceEmbedding::kDim));
     std::memcpy(out.data(), f.ptr<float>(), out.size() * sizeof(float));
     return out;
@@ -125,6 +126,14 @@ bool ArcFaceEmbedder::isInitialized() const {
     return inited_;
 }
 
+bool ArcFaceEmbedder::hasContractDim512(const std::vector<float>& v) {
+    return v.size() == static_cast<std::size_t>(ArcFaceEmbedding::kDim);
+}
+
+bool ArcFaceEmbedder::l2Normalize(std::vector<float>& v) {
+    return l2NormalizeInplace(v);  // 零/空向量 → false（L2 契约）
+}
+
 std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::Mat& alignedFaceBgr, std::string* err) const {
     if (!inited_) {
         if (err) *err = "ArcFaceEmbedder: 未初始化";
@@ -163,8 +172,8 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         emb.modelVersion = cfg_.modelVersion;
         emb.preprocessVersion = cfg_.preprocessVersion;
         emb.values = takeFirst512AsF32(out);
-        if (emb.values.size() != static_cast<std::size_t>(ArcFaceEmbedding::kDim)) {
-            if (err) *err = "ArcFaceEmbedder: 输出维度不满足 512";
+        if (!hasContractDim512(emb.values)) {
+            if (err) *err = "ArcFaceEmbedder: 输出维度不是 512";
             return std::nullopt;
         }
         if (!l2NormalizeInplace(emb.values)) {
@@ -226,8 +235,9 @@ std::optional<ArcFaceEmbedding> ArcFaceEmbedder::embedAlignedFaceBgr(const cv::M
         }
 
         const std::size_t total = static_cast<std::size_t>(out.total());
-        if (total < static_cast<std::size_t>(ArcFaceEmbedding::kDim)) {
-            if (err) *err = "ArcFaceEmbedder: ncnn 输出维度不满足 512";
+        // 任务8：与 OpenCV 路径收紧一致——ncnn 输出必须恰为 512 维（A2 M1）
+        if (total != static_cast<std::size_t>(ArcFaceEmbedding::kDim)) {
+            if (err) *err = "ArcFaceEmbedder: ncnn 输出维度不是 512";
             return std::nullopt;
         }
 
