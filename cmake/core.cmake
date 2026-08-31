@@ -21,6 +21,8 @@ set(RK_CORE_LITE_SOURCES
 # ── Pipeline 依赖（TrackCoordinator/ResultPublisher/PerfReporter）─────
 set(RK_PIPELINE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/TrackCoordinator.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/FacePostProcessor.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ScrfdDecoder.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ResultPublisher.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/PerfReporter.cpp
 )
@@ -70,8 +72,12 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_ncnn_param_guard.cpp"
         "tests/cpp/test_native_log_redaction.cpp"
         "tests/cpp/test_track_coordinator.cpp"
+        "tests/cpp/test_face_post_processor.cpp"
+        "tests/cpp/test_scrfd_decoder.cpp"
         "tests/cpp/test_checked_arith.cpp"
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
+        "src/cpp/src/pipeline/FacePostProcessor.cpp"
+        "src/cpp/src/pipeline/ScrfdDecoder.cpp"
         "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
         "src/cpp/src/FileHash.cpp"

@@ -244,7 +244,8 @@ FaceDetections RetinaFaceAdapter::detect(const cv::Mat& bgr, std::string& err) {
 
         for (int a = 0; a < numAnchors; a++) {
             float s = level.score[a * 2 + 1];  // 假设 score 输出为 [bg, fg] 格式
-            if (s < confThreshold_) continue;
+            // 任务4：NaN 分数不满足 s>=thr，须用负比较显式跳过（旧 if(s<thr) continue 会放行 NaN）
+            if (!(s >= confThreshold_)) continue;
 
             float dx = level.bbox[a * 4 + 0];
             float dy = level.bbox[a * 4 + 1];
@@ -264,6 +265,34 @@ FaceDetections RetinaFaceAdapter::detect(const cv::Mat& bgr, std::string& err) {
     }
 
     nms(allDets, nmsThreshold_);
+
+    // 任务4：越界框裁剪到画面边界，越界后无有效面积的框丢弃（防异常解码框灌注下游）
+    const float mw = static_cast<float>(bgr.cols);
+    const float mh = static_cast<float>(bgr.rows);
+    for (auto& d : allDets) {
+        // 模型输出非有限分量（NaN/Inf）→ 丢弃，避免后续 (int)NaN 未定义转型；
+        // std::min/max 遇 NaN 会顺着返回 NaN，不能依赖裁剪自愈（A2 M1）
+        if (!std::isfinite(d.bbox.x) || !std::isfinite(d.bbox.y) ||
+            !std::isfinite(d.bbox.width) || !std::isfinite(d.bbox.height)) {
+            d.score = -1.0f;
+            continue;
+        }
+        float x1 = std::max(d.bbox.x, 0.0f);
+        float y1 = std::max(d.bbox.y, 0.0f);
+        float x2 = std::min(d.bbox.x + d.bbox.width, mw);
+        float y2 = std::min(d.bbox.y + d.bbox.height, mh);
+        if (x2 <= x1 || y2 <= y1) {
+            d.score = -1.0f;  // 无有效面积：标记待删
+            continue;
+        }
+        d.bbox = cv::Rect2f(x1, y1, x2 - x1, y2 - y1);
+    }
+    allDets.erase(std::remove_if(allDets.begin(), allDets.end(),
+                                 [](const FaceDetection& d) { return d.score < 0.0f; }),
+                  allDets.end());
+    if (maxFaces_ > 0 && static_cast<int>(allDets.size()) > maxFaces_) {
+        allDets.resize(static_cast<std::size_t>(maxFaces_));
+    }
 
     return allDets;
 }
