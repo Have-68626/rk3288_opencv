@@ -63,6 +63,11 @@ public:
 
     std::optional<ArcFaceEmbedding> embedAlignedFaceBgr(const cv::Mat& alignedFaceBgr, std::string* err) const;
 
+    // 任务8：ArcFace 契约校验（与 embedAlignedFaceBgr 归一化路径同一语义，供测试固化）
+    // 输出必须恰为 kDim=512；L2 归一化后模长≈1；零/空向量拒绝。
+    static bool hasContractDim512(const std::vector<float>& v);
+    static bool l2Normalize(std::vector<float>& v);
+
 private:
     bool initOpenCvDnn(const char* logTag, std::string* err);
 
