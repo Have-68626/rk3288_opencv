@@ -737,7 +737,9 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
 }
 
 void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
-    currentTracks_ = trackCoordinator_->update(faces, nowMs());
+    // 任务5：detectionRan = 本次是否实际执行检测。当前 Android processFrame 每帧调用
+    // verifyMulti（恒有真实检测结果），跳过检测的调度语义由任务12 RealtimeFacePipeline 接入后按节流传参。
+    currentTracks_ = trackCoordinator_->update(faces, nowMs(), true);
 }
 
 void Engine::renderResults() {
