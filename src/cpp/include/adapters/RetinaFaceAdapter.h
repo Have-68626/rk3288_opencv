@@ -19,6 +19,9 @@ public:
 
     bool load(const std::string& modelPath, std::string& err) override;
     FaceDetections detect(const cv::Mat& bgr, std::string& err) override;
+
+    // 任务4：输出数量上限（0=不限）；供模型配置装配时设置（任务7 接线）
+    void setMaxFaces(int n) { maxFaces_ = n; }
     const char* name() const override;
 
 private:
@@ -53,6 +56,7 @@ private:
     int inputH_ = 640;
     float confThreshold_ = 0.5f;
     float nmsThreshold_ = 0.4f;
+    int maxFaces_ = 0;  // 最多输出数；0 = 不限（任务4：防止极端误检灌注下游轨迹）
     int topK_ = 5000;
     bool loaded_ = false;
     std::string currentName_;
