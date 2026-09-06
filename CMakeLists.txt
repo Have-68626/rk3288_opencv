@@ -164,6 +164,7 @@ add_executable(rk3288_cli
     "src/win/src/FaceDetector.cpp"
     "src/win/src/LbphEmbedder.cpp"
     "src/win/src/DnnSsdFaceDetector.cpp"
+    "src/win/src/JsonLite.cpp"
 )
 target_include_directories(rk3288_cli PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
@@ -219,9 +220,12 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         "src/win/src/DnnSsdFaceDetector.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
+        "src/win/src/JsonLite.cpp"
         "src/cpp/src/pipeline/ResultPublisher.cpp"
         "src/cpp/src/pipeline/PerfReporter.cpp"
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
+        "src/cpp/src/pipeline/FacePostProcessor.cpp"
+        "src/cpp/src/pipeline/ScrfdDecoder.cpp"
     )
     target_include_directories(face_infer_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
@@ -300,8 +304,11 @@ if(NOT ANDROID)
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
         "tests/cpp/test_motion.cpp" "tests/cpp/test_adapters.cpp"
         "tests/cpp/test_arcface_contract.cpp"
+        "tests/cpp/test_face_runtime_profile.cpp"
+        "tests/cpp/test_scrfd_decoder.cpp"
         "tests/cpp/test_scrfd_ncnn_adapter.cpp"
         "tests/cpp/test_frame_transform.cpp"
+        "src/win/src/JsonLite.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         ${RK_PIPELINE_SOURCES}
         "src/win/src/DnnSsdFaceDetector.cpp" "src/win/src/FaceDetector.cpp"
