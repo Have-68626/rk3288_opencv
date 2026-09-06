@@ -111,3 +111,72 @@ TEST(ScrfdNcnnAdapterTest, EffectiveOnlyAfterFirstSuccessfulInference) {
     // 此处仅验证静态函数输出正确（单元覆盖在 core_gtest_tests 内闭环）。
     (void)dets;
 }
+
+// normalizeLevel flat（det_10g 1D 展平）：c=1、h=grid²*N、w=perPosCh → canonical 零拷贝
+TEST(ScrfdNcnnAdapterTest, NormalizeLevelFlatZeroCopy) {
+    // side=2 → grid=4；N=2、perPosCh=4（bbox）
+    const int perPosCh = 4, N = 2, side = 2;
+    std::vector<float> data(static_cast<size_t>(side) * side * N * perPosCh, 0.0f);
+    data[0] = 2.0f; data[1] = 1.0f; data[2] = 1.0f; data[3] = 3.0f;  // pos0 a0 距离
+
+    std::vector<float> scratch;
+    pipeline::ScrfdTensor out;
+    std::string err;
+    bool ok = ScrfdNcnnAdapter::normalizeLevel(
+        1, side * side * N, perPosCh, data.data(), data.size(),
+        perPosCh, N, side, ScrfdNcnnConfig::OutputLayout::kFlat, scratch, out, err);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_EQ(out.channels, 8);  // 4N
+    EXPECT_EQ(out.featW, 2);
+    EXPECT_EQ(out.featH, 2);
+    EXPECT_EQ(out.data, data.data());  // 零拷贝：指针不变
+    EXPECT_EQ(out.dataLen, data.size());
+    // canonical 布局 [pos][anchor][4]：pos0 a0 的前 4 值 = data 前 4 值
+    EXPECT_FLOAT_EQ(out.data[0], 2.0f);
+    EXPECT_FLOAT_EQ(out.data[3], 3.0f);
+}
+
+// normalizeLevel NCHW（kps-opt2 ch-major）：c=4N、h=w=side → canonical 重排
+TEST(ScrfdNcnnAdapterTest, NormalizeLevelNChwTranspose) {
+    const int perPosCh = 4, N = 2, side = 2;
+    const int grid = side * side;
+    // ch-major：data[ch * grid + pos]，ch = a*perPosCh + o
+    std::vector<float> src(static_cast<size_t>(N) * perPosCh * grid, 0.0f);
+    // pos0 a0 距离 (2,1,1,3)：ch0..3 @ pos0
+    src[0 * grid + 0] = 2.0f;  // a0,o0 @ pos0
+    src[1 * grid + 0] = 1.0f;  // a0,o1
+    src[2 * grid + 0] = 1.0f;  // a0,o2
+    src[3 * grid + 0] = 3.0f;  // a0,o3
+
+    std::vector<float> scratch;
+    pipeline::ScrfdTensor out;
+    std::string err;
+    bool ok = ScrfdNcnnAdapter::normalizeLevel(
+        N * perPosCh, side, side, src.data(), src.size(),
+        perPosCh, N, side, ScrfdNcnnConfig::OutputLayout::kNChw, scratch, out, err);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_EQ(out.channels, 8);
+    EXPECT_EQ(out.featW, 2);
+    EXPECT_EQ(out.featH, 2);
+    EXPECT_NE(out.data, src.data());  // ch-major 需重排，非零拷贝
+    // canonical [pos][anchor][4]：pos0 a0 = (2,1,1,3)
+    EXPECT_FLOAT_EQ(out.data[0], 2.0f);
+    EXPECT_FLOAT_EQ(out.data[1], 1.0f);
+    EXPECT_FLOAT_EQ(out.data[2], 1.0f);
+    EXPECT_FLOAT_EQ(out.data[3], 3.0f);
+    // pos0 a1 = (0,0,0,0)（src ch4..7 @ pos0 全 0）
+    for (int o = 0; o < 4; o++) EXPECT_FLOAT_EQ(out.data[4 + o], 0.0f);
+}
+
+// normalizeLevel 无法识别布局 → 明确失败
+TEST(ScrfdNcnnAdapterTest, NormalizeLevelUnknownLayoutRejected) {
+    std::vector<float> data(8, 0.0f);
+    std::vector<float> scratch;
+    pipeline::ScrfdTensor out;
+    std::string err;
+    bool ok = ScrfdNcnnAdapter::normalizeLevel(
+        3, 4, 8, data.data(), data.size(),  // 非 flat（c!=1）非 NCHW（c!=4N）
+        4, 2, 2, ScrfdNcnnConfig::OutputLayout::kAuto, scratch, out, err);
+    EXPECT_FALSE(ok);
+    EXPECT_FALSE(err.empty());
+}
