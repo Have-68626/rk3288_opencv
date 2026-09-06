@@ -154,6 +154,93 @@ android {
     }
 }
 
+// 任务10：人脸模型本地校验与打包（模型二进制不提交 GitHub——仅本机/RK_BUNDLE_FACE_MODELS=true 时校验）
+def bundleFaceModels = (project.findProperty('RK_BUNDLE_FACE_MODELS')?.toString()?.toBoolean() ?: false)
+tasks.register('verifyFaceModels') {
+    onlyIf { bundleFaceModels }  // 默认 CI/Debug 跳过；显式启用时必须过本地校验
+    doLast {
+        // 纯 Gradle/JVM 校验（SHA-256 流式计算 + LFS pointer 检测）：
+        // 不依赖外部 python 进程——gradle(Windows cmd) PATH 常缺 python，且外部 exec 曾悬挂。
+        // 独立命令行工具仍是 scripts/verify_face_models.py（供手动/GitHub 之外使用）。
+        java.security.MessageDigest mdSha;
+        def sha256 = { java.io.File f ->
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            f.withInputStream { is ->
+                byte[] buf = new byte[1 << 20]
+                int n
+                while ((n = is.read(buf)) > 0) md.update(buf, 0, n)
+            }
+            md.digest().collect { String.format('%02x', it) }.join()
+        }
+        def lfs = { java.io.File f ->
+            def isr = new java.io.FileInputStream(f)
+            try {
+                byte[] head = new byte[512]
+                int got = isr.read(head)
+                return new String(head, 0, got > 0 ? got : 0, 'US-ASCII').contains(
+                        'version https://git-lfs.github.com/spec/v1')
+            } finally { isr.close() }
+        }
+        def files = [
+            'rk3288_light': [
+                'models/scrfd_face_detect_ncnn/scrfd_500m_kps-opt2.param',
+                'models/scrfd_face_detect_ncnn/scrfd_500m_kps-opt2.bin',
+                'models/arcface_int8_ncnn/arcface_int8.param',
+                'models/arcface_int8_ncnn/arcface_int8.bin',
+            ],
+            'arm64_accuracy': [
+                'models/scrfd_face_detect_ncnn/scrfd_2.5g_kps-opt2.param',
+                'models/scrfd_face_detect_ncnn/scrfd_2.5g_kps-opt2.bin',
+                'models/arcface_ncnn/arcface.param',
+                'models/arcface_ncnn/arcface.bin',
+            ],
+        ]
+        def bad = []
+        files.each { prof, rels ->
+            rels.each { rel ->
+                def f = rootProject.file(rel)
+                if (!f.isFile()) { bad.add("[$prof] 缺失: $rel"); return }
+                if (lfs(f)) { bad.add("[$prof] Git LFS pointer: $rel"); return }
+                println "[PASS] $prof $rel " + sha256(f)
+            }
+        }
+        if (!bad.isEmpty()) throw new GradleException('模型校验失败：\n' + bad.join('\n'))
+    }
+}
+tasks.register('stageFaceModels') {
+    onlyIf { bundleFaceModels }
+    dependsOn tasks.named('verifyFaceModels')  // 先校验后复制，防 LFS/损坏源被 staged（A2 M1）
+    doLast {
+        // 本地复制 profile 源模型到 assets（模型文件不入库；仅供含模型构建）
+        def pairs = [
+            'rk3288_light': [
+                'models/scrfd_face_detect_ncnn/scrfd_500m_kps-opt2.param',
+                'models/scrfd_face_detect_ncnn/scrfd_500m_kps-opt2.bin',
+                'models/arcface_int8_ncnn/arcface_int8.param',
+                'models/arcface_int8_ncnn/arcface_int8.bin',
+            ],
+            'arm64_accuracy': [
+                'models/scrfd_face_detect_ncnn/scrfd_2.5g_kps-opt2.param',
+                'models/scrfd_face_detect_ncnn/scrfd_2.5g_kps-opt2.bin',
+                'models/arcface_ncnn/arcface.param',
+                'models/arcface_ncnn/arcface.bin',
+            ],
+        ]
+        pairs.each { prof, srcs ->
+            srcs.each { src ->
+                def base = src.contains('scrfd') ? 'scrfd' : 'arcface'
+                def dstName = base + '.' + file(src).extension
+                def dst = file("src/main/assets/face_models/${prof}/${dstName}")
+                dst.parentFile.mkdirs()
+                // 流式复制，避免大模型(bin 数百 MB)整载入 daemon 堆（A2 M2）
+                rootProject.file(src).withInputStream { is ->
+                    dst.withOutputStream { os -> os << is }
+                }
+            }
+        }
+    }
+}
+
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'

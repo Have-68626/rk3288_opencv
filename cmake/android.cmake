@@ -38,6 +38,7 @@ if(NOT RK_SKIP_OPENCV)
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/DnnSsdFaceDetector.cpp"
+        "src/win/src/JsonLite.cpp"
     )
     # Link Libraries for JNI
     target_link_libraries(

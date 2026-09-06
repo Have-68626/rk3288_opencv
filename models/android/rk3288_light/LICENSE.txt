@@ -1,0 +1,12 @@
+License information for the bundled face models.
+
+本项目为开源项目、非商业用途。所用模型来自上游 InsightFace（deepinsight/insightface）：
+
+- SCRFD 人脸检测（detection/scrfd）：代码 Apache-2.0（Copyright Open-MMLab）；训练权重按上游声明**仅限非商业研究用途**。
+- ArcFace 人脸识别（recognition）：代码 MIT；训练权重按上游声明**仅限非商业研究用途**。
+- ncnn 模型转换链参考 nihui/ncnn-android-scrfd（无独立许可，权重不脱离上游约束）。
+
+权限边界：模型仅可在非商业研究场景使用与再分发。如需商业用途，请联系 InsightFace
+（recognition-oss-pack@insightface.ai 或 contact@insightface.ai）取得授权。
+
+对应 manifest licenseId：insightface-models-noncommercial-research

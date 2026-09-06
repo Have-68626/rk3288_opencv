@@ -129,6 +129,13 @@ graphify-out/
 # Model files (large binaries, not included in repo — see CREDITS.md)
 models/*
 !models/.gitkeep
+# 任务10：models/android/ 开放文本（manifest/LICENSE/NOTICE），模型二进制保持本地不入库（不上传 GitHub）
+!models/android/
+!models/android/**
+models/android/**/*.bin
+models/android/**/*.param
+# 任务10A2：stageFaceModels 的目标 assets 目录忽略——防止本地 stage 后二进制混入提交流（入库）
+app/src/main/assets/face_models/
 deps/WIDER_train/*
 !deps/WIDER_train/.gitkeep
 deps/insightface/*
