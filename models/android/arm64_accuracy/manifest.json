@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "profileId": "arm64_accuracy",
+  "displayName": "ARM64 Accuracy",
+  "supportedAbis": ["arm64-v8a"],
+  "detector": {
+    "param": {
+      "path": "scrfd.param",
+      "sha256": "119a1a4ec81631646b67e0023c709006f44077726f86f4ddf20658465d5a578f"
+    },
+    "bin": {
+      "path": "scrfd.bin",
+      "sha256": "b76dfa38cafe3d9c9581fbfa284c6de58b08090aceee4cc21b3dd38fcf3f3f74"
+    },
+    "input": "in0",
+    "outputs": ["out0","out1","out2","out3","out4","out5","out6","out7","out8"],
+    "inputWidth": 640,
+    "inputHeight": 640
+  },
+  "embedder": {
+    "param": {
+      "path": "arcface.param",
+      "sha256": "a0cad4eab851084396b768214980c698e76572ccd5e394b577a66e0a318cdba2"
+    },
+    "bin": {
+      "path": "arcface.bin",
+      "sha256": "e9c9147a406d6856863e14a38a6fe7cd4627a2fd511fac424b0a1f26fdb8b809"
+    },
+    "input": "in0",
+    "output": "out0",
+    "inputWidth": 112,
+    "inputHeight": 112,
+    "embeddingDim": 512
+  },
+  "detectionConfidence": 0.55,
+  "nmsIou": 0.40,
+  "identitySimilarity": 0.45,
+  "modelVersion": "1",
+  "licenseId": "insightface-models-noncommercial-research"
+}

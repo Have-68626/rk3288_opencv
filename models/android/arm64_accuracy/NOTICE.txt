@@ -1,0 +1,7 @@
+NOTICE — model attribution for arm64_accuracy profile.
+
+- Detector：SCRFD 2.5GF_KPS（InsightFace，detection/scrfd，ICLR-2022；代码 Apache-2.0；权重非商用研究用途）
+- Embedder：ArcFace（InsightFace，recognition，CVPR-2019；代码 MIT；权重非商用研究用途）
+- ncnn 模型转换：参考 nihui/ncnn-android-scrfd 与 InsightFace 官方 ONNX（OneDrive 发布）
+
+See LICENSE.txt for license terms in this project's use.
