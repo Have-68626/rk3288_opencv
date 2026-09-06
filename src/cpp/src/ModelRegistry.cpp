@@ -102,8 +102,8 @@ void ModelRegistry::ensureBuiltinRegistered() {
         reg.registerEmbedder("arcface_int8", []() {
             return std::make_unique<ArcFaceAdapter>();
         },
-        {"arcface_int8", "ArcFace INT8 128D", "recognize",
-         "ArcFace INT8 量化模型，128 维嵌入。推理快、体积小，适合嵌入式部署。",
+        {"arcface_int8", "ArcFace INT8 512D", "recognize",
+         "ArcFace INT8 量化模型，512 维嵌入（实测 linear_78 输出维度一致）。推理快、体积小，适合嵌入式部署。",
          "high_speed", 2});
     }
 
@@ -111,8 +111,8 @@ void ModelRegistry::ensureBuiltinRegistered() {
         reg.registerEmbedder("mobilefacenet_int8", []() {
             return std::make_unique<MobileFaceNetAdapter>();
         },
-        {"mobilefacenet_int8", "MobileFaceNet INT8 128D", "recognize",
-         "MobileFaceNet INT8 量化模型，128 维嵌入。极轻量，适合资源极度受限设备。",
+        {"mobilefacenet_int8", "MobileFaceNet INT8 512D", "recognize",
+         "MobileFaceNet INT8 量化模型，512 维嵌入（实测 linear_33 输出维度一致）。极轻量，适合资源极度受限设备。",
          "high_speed", 3});
     }
     });
