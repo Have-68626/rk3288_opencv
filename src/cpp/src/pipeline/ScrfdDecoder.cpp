@@ -144,21 +144,28 @@ std::vector<ScrfdDetection> ScrfdDecoder::decode(
 
                     ScrfdDetection d;
                     d.score = fg;
-                    d.keypoints.reserve(5);
+                    // 关键点先求值到栈数组并校验有限性（与 bbox 守卫同模式，A2-Med）：
+                    // kp 偏移 NaN/Inf 会经 distance×stride/delta 注入 FaceDetection::keypoints5 → 下游 FaceAlign 污染
+                    const float dcx = distance ? static_cast<float>(fx) * s : 0.0f;
+                    const float dcy = distance ? static_cast<float>(fy) * s : 0.0f;
+                    Keypoint pts[5];
+                    bool kpOk = true;
                     const float* kp = K.data + rowBase * 10;
                     for (int k = 0; k < 5; k++) {
                         if (distance) {
                             // distance：关键点 = 中心 + 偏移·stride（官方 kps_preds*stride → distance2kps）
-                            const float dcx = static_cast<float>(fx) * s;
-                            const float dcy = static_cast<float>(fy) * s;
-                            d.keypoints.emplace_back(Keypoint{
+                            pts[k] = Keypoint{
                                 mapX(dcx + kp[k * 2] * s, opt),
-                                mapY(dcy + kp[k * 2 + 1] * s, opt)});
+                                mapY(dcy + kp[k * 2 + 1] * s, opt)};
                         } else {
-                            d.keypoints.emplace_back(Keypoint{
-                                mapX(kp[k * 2], opt), mapY(kp[k * 2 + 1], opt)});
+                            pts[k] = Keypoint{
+                                mapX(kp[k * 2], opt), mapY(kp[k * 2 + 1], opt)};
                         }
+                        if (!(std::isfinite(pts[k].x) && std::isfinite(pts[k].y))) kpOk = false;
                     }
+                    if (!kpOk) continue;  // 关键点含 NaN/Inf → 丢弃该检测
+                    d.keypoints.reserve(5);
+                    for (int k = 0; k < 5; k++) d.keypoints.push_back(pts[k]);
                     const float mx1 = mapX(x1, opt), my1 = mapY(y1, opt);
                     const float mx2 = mapX(x2, opt), my2 = mapY(y2, opt);
                     if (!(std::isfinite(mx1) && std::isfinite(my1) &&
