@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace pipeline;
@@ -418,4 +419,87 @@ TEST(ScrfdDecoderTest, DistanceDataLenShortRejected) {
     auto dets = ScrfdDecoder::decode(score, bbox, kps, o, err);
     EXPECT_TRUE(dets.empty());
     EXPECT_FALSE(err.empty());
+}
+
+// distance + 关键点含 NaN：kps 偏移非有限 → 检测被拒（A2-Med，防 FaceAlign 注入 NaN）
+TEST(ScrfdDecoderTest, DistanceKeypointNaNRejected) {
+    Layer l;
+    l.score.assign(25, 0.0f);
+    l.bbox.assign(25 * 4, 0.0f);
+    l.kps.assign(25 * 10, 0.0f);
+    // 居中 pos(2,2)（锚中心 16,16），bbox 距离有限 (2,2,2,2)，仅 kps 首分量 NaN
+    const int pos = 2 * 5 + 2;
+    l.score[pos] = 0.9f;
+    l.bbox[pos * 4 + 0] = 2.0f;  l.bbox[pos * 4 + 1] = 2.0f;
+    l.bbox[pos * 4 + 2] = 2.0f;  l.bbox[pos * 4 + 3] = 2.0f;
+    l.kps[pos * 10 + 0] = std::numeric_limits<float>::quiet_NaN();
+
+    ScrfdTensor score[3], bbox[3], kps[3];
+    for (int i = 0; i < 3; i++) score[i] = bbox[i] = kps[i] = ScrfdTensor{};
+    score[0] = t(l.score, 1, 5, 5);
+    bbox[0] = t(l.bbox, 4, 5, 5);
+    kps[0] = t(l.kps, 10, 5, 5);
+
+    ScrfdDecodeOptions o = opt100();
+    o.mode = DecodeMode::kDistance;
+    std::string err;
+    auto dets = ScrfdDecoder::decode(score, bbox, kps, o, err);
+    EXPECT_TRUE(dets.empty());   // kps 非有限 → 该检测被丢弃，不注入 NaN
+    EXPECT_TRUE(err.empty());    // 非形状错误（过滤分支）
+}
+
+// delta 模式关键点含 Inf：同样被拒（同一守卫覆盖两模式）
+TEST(ScrfdDecoderTest, DeltaKeypointInfRejected) {
+    Layer l;
+    l.score = {0.0f, 0.9f};
+    l.bbox = {0, 0, 2.0f, 0};   // dw → 放大，避免被裁剪丢弃
+    l.kps.assign(10, 0.0f);
+    l.kps[0] = std::numeric_limits<float>::infinity();  // 左眼 x 偏移 Inf
+
+    ScrfdTensor score[3], bbox[3], kps[3];
+    for (int i = 0; i < 3; i++) score[i] = bbox[i] = kps[i] = ScrfdTensor{};
+    score[0] = t(l.score, 2, 1, 1);
+    bbox[0] = t(l.bbox, 4, 1, 1);
+    kps[0] = t(l.kps, 10, 1, 1);
+
+    std::string err;
+    auto dets = ScrfdDecoder::decode(score, bbox, kps, opt320(), err);
+    EXPECT_TRUE(dets.empty());   // kps Inf → 丢弃
+    EXPECT_TRUE(err.empty());
+}
+
+// distance + numAnchors>1：a1 关键点 NaN 只弃 a1，不连带丢弃合法的 a0（第三审计确认的独立性盲区）
+TEST(ScrfdDecoderTest, DistanceAnchorIndependenceOnNaN) {
+    Layer l;
+    l.score.assign(25 * 2, 0.0f);
+    l.bbox.assign(25 * 8, 0.0f);
+    l.kps.assign(25 * 20, 0.0f);
+    const int pos = 2 * 5 + 2;  // 中心 (16,16)
+    const int a0 = pos * 2 + 0;
+    const int a1 = pos * 2 + 1;
+    l.score[a0] = 0.9f;  // a0 合法
+    l.score[a1] = 0.8f;  // a1 关键点 NaN → 应被单独丢弃
+    for (int i = 0; i < 4; i++) {
+        l.bbox[a0 * 4 + i] = 2.0f;
+        l.bbox[a1 * 4 + i] = 1.0f;
+    }
+    l.kps[a0 * 10 + 0] = 2.0f;  l.kps[a0 * 10 + 1] = 2.0f;  // a0 关键点有限
+    l.kps[a1 * 10 + 0] = std::numeric_limits<float>::quiet_NaN();  // a1 首点 NaN
+
+    ScrfdTensor score[3], bbox[3], kps[3];
+    for (int i = 0; i < 3; i++) score[i] = bbox[i] = kps[i] = ScrfdTensor{};
+    score[0] = t(l.score, 2, 5, 5);
+    bbox[0] = t(l.bbox, 8, 5, 5);
+    kps[0] = t(l.kps, 20, 5, 5);
+
+    ScrfdDecodeOptions o = opt100();
+    o.mode = DecodeMode::kDistance;
+    o.numAnchors[0] = 2;
+    std::string err;
+    auto dets = ScrfdDecoder::decode(score, bbox, kps, o, err);
+    ASSERT_EQ(dets.size(), 1u) << err;  // a1 被弃，a0 保留
+    EXPECT_TRUE(near(dets[0].score, 0.9f));
+    EXPECT_EQ(dets[0].bbox.width, 32);
+    ASSERT_EQ(dets[0].keypoints.size(), 5u);
+    EXPECT_TRUE(near(dets[0].keypoints[0].x, 32.0f));
 }
