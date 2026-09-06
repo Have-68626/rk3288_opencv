@@ -19,8 +19,8 @@ namespace rk_core {
 
 namespace {
 
-// letterbox 填充背景（SCRFD/RetinaFace 惯例灰度）
-constexpr unsigned char kPadFill = 114;
+// letterbox 填充背景（SCRFD 官方/nihui 转换链为 0 填充，对齐 golden 查证 2026-09-03）
+constexpr unsigned char kPadFill = 0;
 
 // 图像按比例缩放入框并居中 pad（simplified letterbox），返回 pad/scale 供坐标回原图。
 // pad 取整数与复制区共用，避免 float/int 截断不一致造成的亚像素偏斜（A2 M4）
@@ -76,10 +76,14 @@ public:
              std::vector<std::vector<float>>& outs,
              std::vector<std::array<int, 3>>& shapes,  // channels, h, w
              std::string& err) {
-        ncnn::Mat in = ncnn::Mat::from_pixels(inBgr.data, ncnn::Mat::PIXEL_BGR,
-                                              inBgr.cols, inBgr.rows);
-        const float meanVals[3] = {0.f, 0.f, 0.f};
-        const float normVals[3] = {1.f / 255.f, 1.f / 255.f, 1.f / 255.f};
+        // 预处理对齐 SCRFD 官方/nihui 转换链（golden 查证 2026-09-03）：
+        //   BGR→RGB，mean 127.5×3，norm 1/128×3。
+        cv::Mat inRgb;
+        cv::cvtColor(inBgr, inRgb, cv::COLOR_BGR2RGB);
+        ncnn::Mat in = ncnn::Mat::from_pixels(inRgb.data, ncnn::Mat::PIXEL_RGB,
+                                              inRgb.cols, inRgb.rows);
+        const float meanVals[3] = {127.5f, 127.5f, 127.5f};
+        const float normVals[3] = {1.f / 128.f, 1.f / 128.f, 1.f / 128.f};
         in.substract_mean_normalize(meanVals, normVals);
 
         ncnn::Extractor ex = net_.create_extractor();
@@ -207,18 +211,23 @@ FaceDetections ScrfdNcnnAdapter::detect(const cv::Mat& bgr, std::string& err) {
         if (!ncnn_->run(inBgr, cfg_, outs, shapes, err)) {
             return {};
         }
-        // 9 输出 → 组装张量（score 0-2 / bbox 3-5 / kps 6-8）
+        // 9 输出 → 布局归一化为 canonical（score 0-2 / bbox 3-5 / kps 6-8）
+        // 每层 perPosCh：score=1、bbox=4、kps=10；featureSide = inputW / stride
+        std::vector<std::vector<float>> scratch(9);  // NCHW 重排缓冲区（flat 零拷贝不占用）
         for (int l = 0; l < 3; l++) {
-            const auto fill = [&](int idx, pipeline::ScrfdTensor& t) {
-                t.data = outs[idx].data();
-                t.channels = shapes[idx][0];
-                t.featH = shapes[idx][1];
-                t.featW = shapes[idx][2];
-                t.dataLen = outs[idx].size();
-            };
-            fill(l, score[l]);
-            fill(3 + l, bbox[l]);
-            fill(6 + l, kps[l]);
+            const int perPosCh[3] = {1, 4, 10};  // score / bbox / kps
+            const int side = cfg_.inputW / cfg_.stride[l];
+            const int N = cfg_.anchorsPerPos[l];
+            pipeline::ScrfdTensor* dst[3] = {&score[l], &bbox[l], &kps[l]};
+            for (int k = 0; k < 3; k++) {
+                const int idx = k * 3 + l;  // 0-2 score、3-5 bbox、6-8 kps
+                if (!normalizeLevel(shapes[idx][0], shapes[idx][1], shapes[idx][2],
+                                    outs[idx].data(), outs[idx].size(),
+                                    perPosCh[k], N, side, cfg_.outputLayout,
+                                    scratch[idx], *dst[k], err)) {
+                    return {};
+                }
+            }
         }
         opt = makeDecodeOptions(bgr.cols, bgr.rows, padX, padY, scale, cfg_);
         dets = decodeFromTensors(score, bbox, kps, opt, err);
@@ -238,6 +247,65 @@ const char* ScrfdNcnnAdapter::name() const {
     return "scrfd_ncnn";
 }
 
+bool ScrfdNcnnAdapter::normalizeLevel(
+    int channels, int h, int w, const float* data, std::size_t dataLen,
+    int perPosCh, int N, int featureSide, const ScrfdNcnnConfig::OutputLayout layout,
+    std::vector<float>& scratch, pipeline::ScrfdTensor& out, std::string& err) {
+    err.clear();
+    if (featureSide <= 0 || N <= 0 || perPosCh <= 0 || !data) {
+        err = "scrfd normalizeLevel 非法入参";
+        return false;
+    }
+    const std::size_t grid = static_cast<std::size_t>(featureSide) * featureSide;
+    const std::size_t rows = grid * static_cast<std::size_t>(N);
+    const std::size_t canonicalCh = static_cast<std::size_t>(perPosCh) * N;
+
+    const bool flat = (layout == ScrfdNcnnConfig::OutputLayout::kFlat) ||
+                      (layout == ScrfdNcnnConfig::OutputLayout::kAuto &&
+                       channels == 1 && static_cast<std::size_t>(h) == rows && w == perPosCh);
+    const bool nchw = (layout == ScrfdNcnnConfig::OutputLayout::kNChw) ||
+                      (layout == ScrfdNcnnConfig::OutputLayout::kAuto &&
+                       h == featureSide && w == featureSide &&
+                       channels == static_cast<int>(canonicalCh));
+    if (!flat && !nchw) {
+        err = "scrfd 输出布局无法识别（c=" + std::to_string(channels) +
+              " h=" + std::to_string(h) + " w=" + std::to_string(w) +
+              "；期望 flat 或 NCHW）";
+        return false;
+    }
+
+    const std::size_t expected = rows * static_cast<std::size_t>(perPosCh);
+    if (dataLen > 0 && dataLen < expected) {
+        err = "scrfd 层数据长度不足";
+        return false;
+    }
+
+    out.featW = featureSide;
+    out.featH = featureSide;
+    if (flat) {
+        // 零拷贝：ncnn 1D 展平内存顺序已是 [pos*N+a][perPosCh] 行连续
+        out.channels = static_cast<int>(canonicalCh);
+        out.data = data;
+        out.dataLen = dataLen;
+        return true;
+    }
+
+    // NCHW ch-major：重排为 [pos*N+a][perPosCh] 行连续（canonical 布局）
+    scratch.assign(expected, 0.0f);
+    for (std::size_t pos = 0; pos < grid; pos++) {
+        for (int a = 0; a < N; a++) {
+            for (int o = 0; o < perPosCh; o++) {
+                scratch[(pos * static_cast<std::size_t>(N) + a) * perPosCh + o] =
+                    data[(static_cast<std::size_t>(a) * perPosCh + o) * grid + pos];
+            }
+        }
+    }
+    out.channels = static_cast<int>(canonicalCh);
+    out.data = scratch.data();
+    out.dataLen = expected;
+    return true;
+}
+
 pipeline::ScrfdDecodeOptions ScrfdNcnnAdapter::makeDecodeOptions(
     int origWidth, int origHeight, float padX, float padY, float scale,
     const ScrfdNcnnConfig& cfg) {
@@ -250,7 +318,9 @@ pipeline::ScrfdDecodeOptions ScrfdNcnnAdapter::makeDecodeOptions(
     for (int i = 0; i < 3; i++) {
         opt.stride[i] = cfg.stride[i];
         opt.anchorScale[i] = cfg.anchorScale[i];
+        opt.numAnchors[i] = cfg.anchorsPerPos[i];
     }
+    opt.mode = cfg.decodeMode;
     opt.confThreshold = cfg.confThreshold;
     opt.post = cfg.post;
     return opt;

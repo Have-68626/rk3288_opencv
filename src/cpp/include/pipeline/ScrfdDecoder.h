@@ -23,6 +23,13 @@ struct Keypoint {
     float y = 0.0f;
 };
 
+// 解码模式：delta（dx/dy/dw/dh 偏移 + exp，原 RetinaFace 式）vs distance
+// （SCRFD 真实布局：bbox/kps 为到 anchor 中心四边/锚点的绝对距离，无 exp）。
+enum class DecodeMode : int {
+    kDelta = 0,    // 历史兼容：单 anchor + 偏移 + exp
+    kDistance = 1  // 真实 SCRFD：multi-anchor + 绝对距离（golden 实证 2026-09-03）
+};
+
 struct ScrfdDetection {
     cv::Rect bbox;                       // 原图坐标（int，供下游追踪/渲染）
     float score = 0.0f;
@@ -37,9 +44,11 @@ struct ScrfdDecodeOptions {
     float padY = 0.0f;
     float scale = 1.0f;
     int stride[3] = {8, 16, 32};       // 与 score/bbox/kps 张量一一对应
-    float anchorScale[3] = {1.0f, 1.0f, 1.0f};  // anchor 基线尺寸 = stride×scale（SCRFD anchor；默认简化 1）
+    float anchorScale[3] = {1.0f, 1.0f, 1.0f};  // delta 模式 anchor 基线尺寸 = stride×scale（SCRFD anchor；默认简化 1）
     float confThreshold = 0.55f;        // 检测置信度
     FacePostProcessOptions post;        // 转发 FacePostProcessor（NMS/包含抑制/maxFaces），默认 0.40/0.80
+    DecodeMode mode = DecodeMode::kDelta;  // 默认 delta（历史兼容）；真实 SCRFD 用 kDistance
+    int numAnchors[3] = {1, 1, 1};         // 每位置 anchor 数；distance 模式 canonical 契约 = score N / bbox 4N / kps 10N
 };
 
 /**
