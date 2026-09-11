@@ -1,4 +1,5 @@
 #include "FaceRuntimeProfile.h"
+#include "adapters/ScrfdNcnnAdapter.h"
 #include <gtest/gtest.h>
 
 #include <cstdio>
@@ -29,6 +30,24 @@ std::string validManifest() {
 
 std::filesystem::path tempBase() {
     return std::filesystem::temp_directory_path() / "rk_face_profile_test";
+}
+
+// P1-5：带真实 SCRFD 解码语义的 manifest（原生输出节点名 + distance + 2 anchor + nchw）。
+std::string manifestWithDetectorRuntime() {
+    return
+        "{\"schemaVersion\":1,"
+        "\"profileId\":\"rk3288_light\",\"displayName\":\"RK3288 Light\","
+        "\"supportedAbis\":[\"armeabi-v7a\",\"arm64-v8a\"],"
+        "\"detector\":{\"param\":{\"path\":\"scrfd/scrfd.param\"},\"bin\":{\"path\":\"scrfd/scrfd.bin\"},"
+        " \"input\":\"in0\","
+        " \"outputs\":[\"score_8\",\"score_16\",\"score_32\",\"bbox_8\",\"bbox_16\",\"bbox_32\","
+        " \"kps_8\",\"kps_16\",\"kps_32\"],"
+        " \"inputWidth\":640,\"inputHeight\":640,"
+        " \"decodeMode\":\"distance\",\"anchorsPerPos\":[2,2,2],\"outputLayout\":\"nchw\"},"
+        "\"embedder\":{\"param\":{\"path\":\"arc/arc.param\"},\"bin\":{\"path\":\"arc/arc.bin\"},"
+        " \"input\":\"in0\",\"output\":\"out0\",\"inputWidth\":112,\"inputHeight\":112,\"embeddingDim\":512},"
+        "\"detectionConfidence\":0.55,\"nmsIou\":0.40,\"identitySimilarity\":0.45,"
+        "\"modelVersion\":\"1\",\"licenseId\":\"apache-2.0\"}";
 }
 
 class FaceRuntimeManifestTest : public ::testing::Test {
@@ -168,4 +187,134 @@ TEST_F(FaceRuntimeManifestTest, HashMismatchRejected) {
     ASSERT_TRUE(FaceRuntimeManifest::parseV1(manifest, "arm64-v8a", p, err));
     EXPECT_FALSE(FaceRuntimeManifest::verifyFiles(p, tempBase().string(), err));
     EXPECT_NE(err.find("SHA-256"), std::string::npos);
+}
+
+// P1-5：detector 新字段解析 + ScrfdNcnnConfig/DecodeOptions 装配。
+TEST_F(FaceRuntimeManifestTest, DetectorRuntimeFieldsParsedAndAssembled) {
+    FaceRuntimeProfile p;
+    std::string err;
+    ASSERT_TRUE(FaceRuntimeManifest::parseV1(manifestWithDetectorRuntime(), "arm64-v8a", p, err))
+        << err;
+    EXPECT_EQ(static_cast<int>(p.detectorDecodeMode),
+              static_cast<int>(FaceRuntimeProfile::DetectorDecodeMode::kDistance));
+    EXPECT_EQ(p.detectorAnchorsPerPos[0], 2);
+    EXPECT_EQ(p.detectorAnchorsPerPos[1], 2);
+    EXPECT_EQ(p.detectorAnchorsPerPos[2], 2);
+    EXPECT_EQ(static_cast<int>(p.detectorOutputLayout),
+              static_cast<int>(FaceRuntimeProfile::DetectorOutputLayout::kNChw));
+
+    std::string aerr;
+    const ScrfdNcnnConfig cfg =
+        ScrfdNcnnAdapter::configFromProfile(p, "scrfd.param", "scrfd.bin", aerr);
+    EXPECT_TRUE(aerr.empty()) << aerr;
+    EXPECT_EQ(cfg.paramPath, "scrfd.param");
+    EXPECT_EQ(cfg.binPath, "scrfd.bin");
+    EXPECT_EQ(cfg.inputName, "in0");
+    // 节点名按 manifest 顺序 score×3 / bbox×3 / kps×3 映射
+    EXPECT_EQ(cfg.scoreNames[0], "score_8");
+    EXPECT_EQ(cfg.scoreNames[2], "score_32");
+    EXPECT_EQ(cfg.bboxNames[1], "bbox_16");
+    EXPECT_EQ(cfg.kpsNames[2], "kps_32");
+    EXPECT_EQ(cfg.inputW, 640);
+    EXPECT_EQ(cfg.inputH, 640);
+    EXPECT_EQ(cfg.stride[0], 8);
+    EXPECT_EQ(cfg.stride[1], 16);
+    EXPECT_EQ(cfg.stride[2], 32);
+    EXPECT_EQ(static_cast<int>(cfg.decodeMode),
+              static_cast<int>(pipeline::DecodeMode::kDistance));
+    EXPECT_EQ(cfg.anchorsPerPos[0], 2);
+    EXPECT_EQ(cfg.anchorsPerPos[1], 2);
+    EXPECT_EQ(cfg.anchorsPerPos[2], 2);
+    EXPECT_EQ(static_cast<int>(cfg.outputLayout),
+              static_cast<int>(ScrfdNcnnConfig::OutputLayout::kNChw));
+    EXPECT_FLOAT_EQ(cfg.confThreshold, 0.55f);
+    EXPECT_FLOAT_EQ(cfg.post.nmsIouThreshold, 0.40f);
+
+    const pipeline::ScrfdDecodeOptions opt = ScrfdNcnnAdapter::decodeOptionsFromProfile(p);
+    EXPECT_EQ(static_cast<int>(opt.mode), static_cast<int>(pipeline::DecodeMode::kDistance));
+    EXPECT_EQ(opt.numAnchors[0], 2);
+    EXPECT_EQ(opt.numAnchors[1], 2);
+    EXPECT_EQ(opt.numAnchors[2], 2);
+    EXPECT_EQ(opt.stride[0], 8);
+    EXPECT_FLOAT_EQ(opt.confThreshold, 0.55f);
+    EXPECT_FLOAT_EQ(opt.post.nmsIouThreshold, 0.40f);
+}
+
+// 向后兼容：旧 manifest 无新字段时保持 delta / {1,1,1} / auto 默认。
+TEST_F(FaceRuntimeManifestTest, DetectorRuntimeDefaultsBackwardCompatible) {
+    FaceRuntimeProfile p;
+    std::string err;
+    ASSERT_TRUE(FaceRuntimeManifest::parseV1(validManifest(), "arm64-v8a", p, err));
+    EXPECT_EQ(static_cast<int>(p.detectorDecodeMode),
+              static_cast<int>(FaceRuntimeProfile::DetectorDecodeMode::kDelta));
+    EXPECT_EQ(p.detectorAnchorsPerPos[0], 1);
+    EXPECT_EQ(p.detectorAnchorsPerPos[1], 1);
+    EXPECT_EQ(p.detectorAnchorsPerPos[2], 1);
+    EXPECT_EQ(static_cast<int>(p.detectorOutputLayout),
+              static_cast<int>(FaceRuntimeProfile::DetectorOutputLayout::kAuto));
+
+    std::string aerr;
+    const ScrfdNcnnConfig cfg =
+        ScrfdNcnnAdapter::configFromProfile(p, "p.param", "b.bin", aerr);
+    EXPECT_TRUE(aerr.empty()) << aerr;
+    EXPECT_EQ(static_cast<int>(cfg.decodeMode),
+              static_cast<int>(pipeline::DecodeMode::kDelta));
+    EXPECT_EQ(cfg.anchorsPerPos[0], 1);
+    EXPECT_EQ(static_cast<int>(cfg.outputLayout),
+              static_cast<int>(ScrfdNcnnConfig::OutputLayout::kAuto));
+    // 无新字段 → 沿用 PNNX 约定节点名
+    EXPECT_EQ(cfg.scoreNames[0], "out0");
+    EXPECT_EQ(cfg.kpsNames[2], "out8");
+
+    const pipeline::ScrfdDecodeOptions opt = ScrfdNcnnAdapter::decodeOptionsFromProfile(p);
+    EXPECT_EQ(static_cast<int>(opt.mode), static_cast<int>(pipeline::DecodeMode::kDelta));
+    EXPECT_EQ(opt.numAnchors[0], 1);
+}
+
+TEST_F(FaceRuntimeManifestTest, DetectorDecodeModeInvalidRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"decodeMode\":\"distance\"");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"decodeMode\":\"distance\"").size(),
+                "\"decodeMode\":\"bogus\"");
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("decodeMode"), std::string::npos);
+}
+
+TEST_F(FaceRuntimeManifestTest, DetectorAnchorsPerPosWrongLengthRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"anchorsPerPos\":[2,2,2]");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"anchorsPerPos\":[2,2,2]").size(),
+                "\"anchorsPerPos\":[2,2]");
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("anchorsPerPos"), std::string::npos);
+}
+
+TEST_F(FaceRuntimeManifestTest, DetectorAnchorsPerPosNonPositiveRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"anchorsPerPos\":[2,2,2]");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"anchorsPerPos\":[2,2,2]").size(),
+                "\"anchorsPerPos\":[2,0,2]");
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("anchorsPerPos"), std::string::npos);
+}
+
+TEST_F(FaceRuntimeManifestTest, DetectorOutputLayoutInvalidRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"outputLayout\":\"nchw\"");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"outputLayout\":\"nchw\"").size(),
+                "\"outputLayout\":\"xyz\"");
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("outputLayout"), std::string::npos);
 }

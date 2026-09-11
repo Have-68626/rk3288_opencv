@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FaceDetector.h"
+#include "FaceRuntimeProfile.h"
 #include "pipeline/FacePostProcessor.h"
 #include "pipeline/ScrfdDecoder.h"
 
@@ -78,6 +79,22 @@ public:
     static pipeline::ScrfdDecodeOptions makeDecodeOptions(
         int origWidth, int origHeight, float padX, float padY, float scale,
         const ScrfdNcnnConfig& cfg);
+
+    // 由 manifest profile 装配 SCRFD ncnn 配置（P1-5，消费真实模型）：
+    //   - 节点名：profile.detectorInput；detectorOutputs 顺序 score×3/bbox×3/kps×3
+    //     （真实 SCRFD 原签名 score_8/bbox_8/kps_8 等，经此显式装配）
+    //   - decodeMode / anchorsPerPos / outputLayout / inputWidth/Height / 阈值(NMS)
+    //   - stride 固定 {8,16,32}（SCRFD 约定，profile 无对应字段）
+    // paramPath/binPath 由调用方按 manifest 基目录解析后传入（profile 存相对路径）。
+    // detectorOutputs 非空且非 9 个 → err 非空并返回默认配置。
+    static ScrfdNcnnConfig configFromProfile(const FaceRuntimeProfile& profile,
+                                             const std::string& paramPath,
+                                             const std::string& binPath,
+                                             std::string& err);
+
+    // 由 profile 装配解码选项（经 configFromProfile + makeDecodeOptions 同一透传路径）。
+    // 几何字段 orig/pad/scale 置默认（0/0/0/0/1），由运行时 letterbox 结果回填。
+    static pipeline::ScrfdDecodeOptions decodeOptionsFromProfile(const FaceRuntimeProfile& profile);
 
     // 布局归一化：把单层 ncnn 输出（score 或 bbox 或 kps）× stride 的原始 shape
     // （flat 1D 或 NCHW）转为 canonical ScrfdTensor（每位置 N anchor 行连续；见备注契约）。
