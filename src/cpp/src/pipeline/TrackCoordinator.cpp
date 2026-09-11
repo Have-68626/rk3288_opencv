@@ -7,6 +7,10 @@ namespace pipeline {
 namespace {
 
 // 中心距离 + 尺寸比 fallback（IoU 不足时的轻量跟踪，任务5）
+// 中心偏移 / max(宽,高) 上限：过松会让多脸靠近时相邻脸被回退匹配串到同一轨迹；
+// 但过度收紧（如 0.25）会使大位移/尺寸变化目标每帧新建 track、永远达不到 stableFrames
+// 确认而在 views() 中恒不显示（第三代理实证）。暂维持任务5 既有值 0.8——
+// **调优依据待用户/设计确认**（0.25 在代码/文档/测试中均无出处）。
 constexpr float kCenterMaxRatio = 0.8f;  // 中心偏移 / max(宽,高) 上限
 constexpr float kSizeRatioMin = 0.5f;
 constexpr float kSizeRatioMax = 2.0f;
@@ -152,7 +156,12 @@ std::vector<TrackView> TrackCoordinator::update(
 std::vector<TrackView> TrackCoordinator::views() const {
     std::vector<TrackView> out;
     out.reserve(tracks_.size());
-    for (const auto& t : tracks_) out.push_back(t.view);
+    // 任务5：仅对外输出已确认轨迹（连续实际检测命中 ≥ stableFrames）。
+    // 未确认轨迹仍保留在 tracks_ 内以累计确认计数、并在下次实际检测缺失时删除，
+    // 但不进入对外视图——避免首帧误检立即显示（stableFrames 从删除规则升级为输出门槛）。
+    for (const auto& t : tracks_) {
+        if (t.confirmFrames >= config_.stableFrames) out.push_back(t.view);
+    }
     return out;
 }
 
