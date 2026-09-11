@@ -116,3 +116,37 @@ TEST(FacePostProcessorTest, InnerHighScoreBoxSurvives) {
     ASSERT_EQ(out.size(), 2u);
     EXPECT_EQ(out[0].confidence, 0.95f);
 }
+
+// 回归：中间夹无效框会拉开原始索引与紧凑下标，若用原始索引去索引紧凑数组即越界读。
+// 用例 [有效, 无效(NaN), 有效, 有效]：修复前 order={0,2,3} 而 clippedFaces 仅 3 项，
+// 排序/NMS/包含抑制中 clippedFaces[order[...]] 会读到下标 3（越界，Debug 下断言/Release 下 UB）。
+TEST(FacePostProcessorTest, InvalidFaceInMiddlePreservesOriginalIndexMapping) {
+    DetectedFace invalid = makeFace(0, 0, 40, 40, 0.99f);
+    invalid.confidence = std::numeric_limits<float>::quiet_NaN();  // 无效：被丢弃
+    std::vector<DetectedFace> in = {
+        makeFace(10, 10, 100, 100, 0.60f),   // 原始索引 0，有效
+        invalid,                              // 原始索引 1，无效（NaN）
+        makeFace(200, 10, 100, 100, 0.90f),  // 原始索引 2，有效
+        makeFace(400, 10, 100, 100, 0.80f),  // 原始索引 3，有效
+    };
+
+    // keptIndices 必须返回原始 faces 索引：全部落在 [0, faces.size()) 内且映射到正确检测
+    std::vector<std::size_t> idx = FacePostProcessor::keptIndices(in, 640, 480);
+    ASSERT_EQ(idx.size(), 3u);
+    for (std::size_t k : idx) {
+        ASSERT_LT(k, in.size());
+    }
+    EXPECT_EQ(in[idx[0]].confidence, 0.90f);
+    EXPECT_EQ(in[idx[1]].confidence, 0.80f);
+    EXPECT_EQ(in[idx[2]].confidence, 0.60f);
+
+    // process 输出：无效框被丢弃，三个有效框按置信度降序稳定输出，且能正确回映到原始 bbox
+    std::vector<DetectedFace> out = FacePostProcessor::process(in, 640, 480);
+    ASSERT_EQ(out.size(), 3u);
+    EXPECT_FLOAT_EQ(out[0].confidence, 0.90f);
+    EXPECT_FLOAT_EQ(out[1].confidence, 0.80f);
+    EXPECT_FLOAT_EQ(out[2].confidence, 0.60f);
+    EXPECT_EQ(out[0].bbox.x, 200);
+    EXPECT_EQ(out[1].bbox.x, 400);
+    EXPECT_EQ(out[2].bbox.x, 10);
+}

@@ -57,9 +57,11 @@ std::vector<std::size_t> FacePostProcessor::keptIndices(
 
     // 1. 丢弃 NaN 置信度、负尺寸、越界后无有效面积的框；2. 裁剪到画面边界
     std::vector<std::size_t> order;            // 有效检测在 faces 中的原始索引（加入序 = 原始序）
-    std::vector<DetectedFace> clippedFaces;    // 与 order 平行的裁剪后数据
+    // 与 faces 等长，下标 == faces 原始索引；无效槽位保持默认构造且永不被 order 引用。
+    // 关键：order 存的是原始索引，若 clippedFaces 用 push_back 紧凑存放，则后续
+    // clippedFaces[order[...]] 会用原始索引越界访问紧凑数组（丢弃无效框后索引错位）。
+    std::vector<DetectedFace> clippedFaces(faces.size());
     order.reserve(faces.size());
-    clippedFaces.reserve(faces.size());
     for (std::size_t i = 0; i < faces.size(); i++) {
         const DetectedFace& f = faces[i];
         if (std::isnan(f.confidence)) continue;
@@ -71,7 +73,7 @@ std::vector<std::size_t> FacePostProcessor::keptIndices(
             c.bbox = clipped;
         }
         order.push_back(i);
-        clippedFaces.push_back(std::move(c));
+        clippedFaces[i] = std::move(c);  // 以原始索引写入，保证 order 元素可直接寻址
     }
     if (order.empty()) return order;
 
