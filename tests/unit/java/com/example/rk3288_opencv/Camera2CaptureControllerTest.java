@@ -16,8 +16,6 @@ import android.os.HandlerThread;
 import org.junit.Test;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -187,27 +185,21 @@ public class Camera2CaptureControllerTest {
     }
 
     /**
-     * RED 判别：修复前 onImageAvailable 不检查代次，stop/start 后旧 reader 的帧仍会推送
-     * （此处以 null reader 触发异常路径，catch 中仍调用 onFramePushed）。
-     * 修复后帧监听绑定代次与当前代次不一致时直接丢弃：不推送、不统计、不上报。
+     * RED 判别：修复前 onImageAvailable 读取共享可变字段 listenerEpoch，stop/start 覆盖该字段后，
+     * 旧 reader 的迟到帧会读到新 epoch 被错误放行并推送。
+     * P1-3 修复后 epoch 由回调闭包在创建时捕获、经参数传入 onImageAvailable：
+     * 过期代次（1）直接丢弃 —— 不推送、不统计、不上报；且即使当前代次已推进，旧捕获值也不会被“洗白”。
      */
     @Test
     public void staleFrameCallback_isDroppedWithoutPushOrReport() throws Exception {
         FakeObserver obs = new FakeObserver();
         Camera2CaptureController c = newController(obs, new FakeSink());
-        // 模拟 stop/start：帧监听绑定旧 epoch 1，当前 epoch 已到 2
-        setField(c, "listenerEpoch", 1L);
+        // 模拟 stop/start：帧监听创建时捕获旧 epoch 1，当前 epoch 已推进到 2
         c.epochGate.enter();
         c.epochGate.advance();
 
-        Method m = Camera2CaptureController.class.getDeclaredMethod("onImageAvailable", ImageReader.class);
-        m.setAccessible(true);
-        try {
-            m.invoke(c, (ImageReader) null);
-        } catch (InvocationTargetException e) {
-            // 修复前无代次门禁时 null reader 触发 NPE：仍应以“不得推送”判定失败
-            throw new RuntimeException("修复前旧帧回调不应可达（应被代次门禁丢弃）", e.getCause());
-        }
+        // 直接以旧 reader 回调携带的过期 epoch 驱动门禁（不再经共享字段注入）
+        c.onImageAvailable(null, 1L);
 
         assertFalse("旧代次帧不得推送", obs.pushed);
         assertFalse("旧代次帧不得上报错误", obs.hasError());

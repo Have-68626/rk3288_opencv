@@ -2,6 +2,14 @@ package com.example.rk3288_opencv;
 
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -74,5 +82,40 @@ public class CaptureSourceEpochGateTest {
         assertEquals(e1, gate.current());
         gate.advance();
         assertEquals(e1 + 1, gate.current());
+    }
+
+    // ⑤ P2-3 并发推进不丢更新：多线程并发 enter/advance 时，epoch 单调递增且不丢任何一次更新。
+    // 修复前 volatile long 上的 ++ 非原子，并发下会丢失更新（最终值 < 总操作数）→ 本用例 RED；
+    // 改用 AtomicLong 后 incrementAndGet 原子自增，最终值恰等于初始值 + 总操作数。
+    @Test
+    public void concurrentAdvancesDoNotLoseUpdates() throws Exception {
+        final CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
+        final long base = gate.current();
+        final int threads = 8;
+        final int perThread = 2000;
+        final CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        List<Future<?>> futures = new ArrayList<>();
+        try {
+            for (int t = 0; t < threads; t++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < perThread; i++) {
+                        gate.enter();
+                        gate.advance();
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> f : futures) {
+                f.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals("并发自增不得丢更新",
+                base + (long) threads * perThread * 2L, gate.current());
     }
 }

@@ -47,11 +47,9 @@ class Camera2CaptureController implements CaptureController {
     private CameraDevice.StateCallback currentStateCallback;
 
     // Q-CQ-B07-005: 代次隔离 —— stop/start 递增代次，旧代次回调到达时按代次丢弃，仅释放自身参数资源
-    // 任务 2 归一：代次语义收敛到统一组件 CaptureSourceEpochGate（long epoch，跨线程 volatile）
+    // 任务 2 归一：代次语义收敛到统一组件 CaptureSourceEpochGate（long epoch，AtomicLong 跨线程原子）
     // 包内可见（final）：JVM 单测在包内直接驱动 enter/advance 编排代次，属测试接缝
     final CaptureSourceEpochGate epochGate = new CaptureSourceEpochGate();
-    // Q-CQ-B07-005: 帧监听器创建时绑定的 epoch（startSync 内设置）
-    private volatile long listenerEpoch;
 
     private int sensorOrientation;
     private boolean mirrored;
@@ -144,9 +142,10 @@ class Camera2CaptureController implements CaptureController {
 
         Size size = chooseYuvSize(chars);
         imageReader = ImageReader.newInstance(size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
-        imageReader.setOnImageAvailableListener(this::onImageAvailable, handler);
-        // Q-CQ-B07-005: 帧监听绑定当前 epoch
-        listenerEpoch = epoch;
+        // P1-3 代次隔离：把 epoch 捕获进回调闭包（而非共享可变字段）——旧 reader 在新会话开始后
+        // 回调时，读到的是自身创建时捕获的旧 epoch，无法再被新会话覆盖后的字段“洗白”而错误放行。
+        final long capturedEpoch = epoch;
+        imageReader.setOnImageAvailableListener(reader -> onImageAvailable(reader, capturedEpoch), handler);
         lastStatsRealtimeMs = SystemClock.elapsedRealtime();
         lastFrameTsNs = 0L;
         statsFrames = 0;
@@ -219,9 +218,11 @@ class Camera2CaptureController implements CaptureController {
         quitQuietly(thread);
     }
 
-    private void onImageAvailable(ImageReader reader) {
-        // Q-CQ-B07-005: 帧回调绑定启动 epoch —— stop/start 后旧 epoch 帧直接丢弃，不推送不统计
-        if (!epochGate.isCurrent(listenerEpoch)) {
+    // P1-3: 帧回调入口 —— capturedEpoch 为回调创建时（startSync）捕获的代次，不是共享字段；
+    // 非当前代次即 stop/切换源前排队的旧帧，整帧丢弃（不推送、不统计、不上报）。
+    // 包内可见：JVM 单测直接以过期/当前代次驱动本条门禁，属测试接缝。
+    void onImageAvailable(ImageReader reader, long capturedEpoch) {
+        if (!epochGate.isCurrent(capturedEpoch)) {
             return;
         }
         Image image = null;

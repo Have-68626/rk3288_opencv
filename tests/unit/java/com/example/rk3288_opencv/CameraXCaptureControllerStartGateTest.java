@@ -61,4 +61,24 @@ public class CameraXCaptureControllerStartGateTest {
         long again = gate.enter();
         assertTrue(gate.isCurrent(again));
     }
+
+    /**
+     * P1-4：旧代次排队帧被丢弃。
+     * analyzer 绑定（setAnalyzer）时捕获会话代次，帧送达时以该捕获值校验；stop/切换源
+     * 推进代次后，stop 前排队的 ImageProxy 携带旧捕获值，analyze 入口 isCurrent 为 false
+     * → 整帧丢弃（不推送、不统计）。修复前 analyze 无代次校验，旧帧仍会被推送/统计。
+     */
+    @Test
+    public void staleQueuedFrameEpochIsDropped() {
+        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
+        long bindEpoch = gate.enter();          // start：bind analyzer 时捕获会话代次
+        assertTrue("绑定时的会话帧应放行", gate.isCurrent(bindEpoch));
+
+        gate.advance();                         // stop：使在途/排队的旧帧过期
+        assertFalse("stop 后旧 analyzer 捕获的代次应失效", gate.isCurrent(bindEpoch));
+
+        long newEpoch = gate.enter();           // 再次 start：新会话
+        assertFalse("旧会话排队帧不得在新会话被放行", gate.isCurrent(bindEpoch));
+        assertTrue("新会话绑定帧应放行", gate.isCurrent(newEpoch));
+    }
 }

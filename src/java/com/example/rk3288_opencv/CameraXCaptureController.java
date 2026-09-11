@@ -126,7 +126,10 @@ final class CameraXCaptureController implements CaptureController {
 
                 analysis = builder.build();
 
-                analysis.setAnalyzer(analyzerExecutor, this::analyze);
+                // P1-4 帧代次隔离：把当前会话 epoch 捕获进 analyzer 闭包 —— stop/切换源前已排队、
+                // stop 后才送达的 ImageProxy 携带旧 epoch，analyze 入口校验不通过即丢弃。
+                final long analyzeEpoch = epoch;
+                analysis.setAnalyzer(analyzerExecutor, image -> analyze(image, analyzeEpoch));
                 outputResolutionLogged = false;
                 lastStatsRealtimeMs = SystemClock.elapsedRealtime();
                 lastFrameTsNs = 0L;
@@ -146,7 +149,7 @@ final class CameraXCaptureController implements CaptureController {
                         applyCamera2Fps(builder720, fps);
                     }
                     analysis = builder720.build();
-                    analysis.setAnalyzer(analyzerExecutor, this::analyze);
+                    analysis.setAnalyzer(analyzerExecutor, image -> analyze(image, analyzeEpoch));
                     camera = provider.bindToLifecycle(lifecycleOwner, selector, analysis);
                 }
 
@@ -193,7 +196,17 @@ final class CameraXCaptureController implements CaptureController {
         }
     }
 
-    private void analyze(@NonNull ImageProxy image) {
+    private void analyze(@NonNull ImageProxy image, long capturedEpoch) {
+        // P1-4: 帧代次门禁 —— capturedEpoch 为 bind 时捕获的会话代次；stop/切换源后到达的
+        // 旧代次帧直接丢弃（不推送、不统计）。ImageProxy 必须显式 close，否则缓冲区泄漏、
+        // 后续帧无法送达（等价于原 finally 的释放责任在此路径上不可省略）。
+        if (!startGate.isCurrent(capturedEpoch)) {
+            try {
+                image.close();
+            } catch (Exception ignored) {
+            }
+            return;
+        }
         long startNs = SystemClock.elapsedRealtimeNanos();
         try {
             int w = image.getWidth();
