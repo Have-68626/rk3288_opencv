@@ -79,14 +79,21 @@ cv::Point2f FrameTransform::mapPoint(const cv::Point2f& p, const FrameTransformC
     return {x, y};
 }
 
-// 映射矩形四角后取外接框
+// 映射矩形四角后取外接框。
+// 注意 cv::Rect 是半开区间 [x, x+width) x [y, y+height)，而 mapPoint 使用闭区间像素坐标，
+// 故四角须取最右下像素 r.x+r.width-1 / r.y+r.height-1 与左上角 r.x / r.y 配对；
+// 若直接用 r.x+r.width（半开边界）传入，水平/垂直翻转后外接框会整体偏移 1px。
 cv::Rect FrameTransform::mapRect(const cv::Rect& r, const FrameTransformConfig& c,
                                  int inWidth, int inHeight) {
+    const float xBeg = static_cast<float>(r.x);
+    const float yBeg = static_cast<float>(r.y);
+    const float xEnd = static_cast<float>(r.x + r.width - 1);   // 闭区间右边界像素
+    const float yEnd = static_cast<float>(r.y + r.height - 1);  // 闭区间下边界像素
     const cv::Point2f pts[4] = {
-        mapPoint({static_cast<float>(r.x), static_cast<float>(r.y)}, c, inWidth, inHeight),
-        mapPoint({static_cast<float>(r.x + r.width), static_cast<float>(r.y)}, c, inWidth, inHeight),
-        mapPoint({static_cast<float>(r.x), static_cast<float>(r.y + r.height)}, c, inWidth, inHeight),
-        mapPoint({static_cast<float>(r.x + r.width), static_cast<float>(r.y + r.height)}, c, inWidth, inHeight),
+        mapPoint({xBeg, yBeg}, c, inWidth, inHeight),
+        mapPoint({xEnd, yBeg}, c, inWidth, inHeight),
+        mapPoint({xBeg, yEnd}, c, inWidth, inHeight),
+        mapPoint({xEnd, yEnd}, c, inWidth, inHeight),
     };
     float x0 = pts[0].x, x1 = pts[0].x;
     float y0 = pts[0].y, y1 = pts[0].y;
@@ -96,10 +103,11 @@ cv::Rect FrameTransform::mapRect(const cv::Rect& r, const FrameTransformConfig& 
         y0 = std::min(y0, pts[i].y);
         y1 = std::max(y1, pts[i].y);
     }
+    // 四角为闭区间像素坐标，跨度需 +1 还原为像素个数，才能写成半开的 cv::Rect 宽度/高度。
     const int rx = static_cast<int>(std::floor(x0));
     const int ry = static_cast<int>(std::floor(y0));
-    const int rw = static_cast<int>(std::ceil(x1)) - rx;
-    const int rh = static_cast<int>(std::ceil(y1)) - ry;
+    const int rw = static_cast<int>(std::ceil(x1)) - rx + 1;
+    const int rh = static_cast<int>(std::ceil(y1)) - ry + 1;
     return cv::Rect(rx, ry, rw, rh);
 }
 
