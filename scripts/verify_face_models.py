@@ -129,7 +129,10 @@ def main() -> int:
                 reason = "哈希不符"
             else:
                 status = "PASS"
-                ok_all = ok_all and True
+            # 四个 FAIL 分支（缺失/LFS/缺引脚/哈希不符）必须置位 ok_all，
+            # 否则所有文件都 FAIL 时 ok_all 仍为 True，发布门禁会误判模型有效（P1）。
+            if status != "PASS":
+                ok_all = False
             lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
                 profile, key, status, exists, lfs, pin or "-", sha))
             print("[%s] %-8s %-16s %s %s%s" % (
