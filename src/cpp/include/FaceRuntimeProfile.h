@@ -26,6 +26,16 @@ struct FaceRuntimeProfile {
     int detectorInputW = 640;
     int detectorInputH = 640;
 
+    // detector 解码语义（P1-5，可选字段；缺省保持历史兼容）。
+    // 真实 SCRFD（det_10g / 500m_kps / 2.5g_kps）为 distance 解码 + 每位置 2 anchor；
+    // 输出布局视 .param 输出 blob 而定：原生 score_8/bbox_8/kps_8 为 NCHW，
+    // PNNX 展平 out0..out8 为 flat，缺省 auto 由形状嗅探。
+    enum class DetectorDecodeMode { kDelta = 0, kDistance = 1 };
+    enum class DetectorOutputLayout { kAuto = 0, kNChw = 1, kFlat = 2 };
+    DetectorDecodeMode detectorDecodeMode = DetectorDecodeMode::kDelta;
+    int detectorAnchorsPerPos[3] = {1, 1, 1};
+    DetectorOutputLayout detectorOutputLayout = DetectorOutputLayout::kAuto;
+
     // embedder（ArcFace：in0/out0、112×112、512 维）
     FaceModelManifestEntry embedderParam;
     FaceModelManifestEntry embedderBin;

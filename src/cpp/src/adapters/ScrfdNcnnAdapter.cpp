@@ -326,6 +326,62 @@ pipeline::ScrfdDecodeOptions ScrfdNcnnAdapter::makeDecodeOptions(
     return opt;
 }
 
+ScrfdNcnnConfig ScrfdNcnnAdapter::configFromProfile(
+    const FaceRuntimeProfile& profile, const std::string& paramPath,
+    const std::string& binPath, std::string& err) {
+    err.clear();
+    ScrfdNcnnConfig cfg;
+    cfg.paramPath = paramPath;
+    cfg.binPath = binPath;
+    if (!profile.detectorInput.empty()) cfg.inputName = profile.detectorInput;
+    // manifest detectorOutputs 顺序：score×3 / bbox×3 / kps×3（parseV1 已校验长度）
+    if (!profile.detectorOutputs.empty()) {
+        if (profile.detectorOutputs.size() != 9) {
+            err = "detectorOutputs 非 9 个，无法装配 SCRFD 配置";
+            return ScrfdNcnnConfig{};
+        }
+        for (int i = 0; i < 3; i++) {
+            cfg.scoreNames[i] = profile.detectorOutputs[static_cast<std::size_t>(i)];
+            cfg.bboxNames[i] = profile.detectorOutputs[static_cast<std::size_t>(3 + i)];
+            cfg.kpsNames[i] = profile.detectorOutputs[static_cast<std::size_t>(6 + i)];
+        }
+    }
+    if (profile.detectorInputW > 0) cfg.inputW = profile.detectorInputW;
+    if (profile.detectorInputH > 0) cfg.inputH = profile.detectorInputH;
+    cfg.stride[0] = 8;  // SCRFD 约定固定（profile 无 stride 字段）
+    cfg.stride[1] = 16;
+    cfg.stride[2] = 32;
+    // 阈值：检测置信度 + NMS IoU（包含抑制/maxFaces 沿用 FacePostProcessOptions 默认）
+    cfg.confThreshold = profile.detectionConfidence;
+    cfg.post.nmsIouThreshold = profile.nmsIou;
+    cfg.decodeMode =
+        (profile.detectorDecodeMode == FaceRuntimeProfile::DetectorDecodeMode::kDistance)
+            ? pipeline::DecodeMode::kDistance
+            : pipeline::DecodeMode::kDelta;
+    for (int i = 0; i < 3; i++) cfg.anchorsPerPos[i] = profile.detectorAnchorsPerPos[i];
+    switch (profile.detectorOutputLayout) {
+        case FaceRuntimeProfile::DetectorOutputLayout::kNChw:
+            cfg.outputLayout = ScrfdNcnnConfig::OutputLayout::kNChw;
+            break;
+        case FaceRuntimeProfile::DetectorOutputLayout::kFlat:
+            cfg.outputLayout = ScrfdNcnnConfig::OutputLayout::kFlat;
+            break;
+        default:
+            cfg.outputLayout = ScrfdNcnnConfig::OutputLayout::kAuto;
+            break;
+    }
+    return cfg;
+}
+
+pipeline::ScrfdDecodeOptions ScrfdNcnnAdapter::decodeOptionsFromProfile(
+    const FaceRuntimeProfile& profile) {
+    // 经 configFromProfile + makeDecodeOptions 走与推理时一致的透传路径，避免字段漂移。
+    // param/bin 对解码选项无意义（传空）；几何字段留默认由运行时 letterbox 回填。
+    std::string err;
+    const ScrfdNcnnConfig cfg = configFromProfile(profile, std::string(), std::string(), err);
+    return makeDecodeOptions(0, 0, 0.0f, 0.0f, 1.0f, cfg);
+}
+
 FaceDetections ScrfdNcnnAdapter::decodeFromTensors(
     const pipeline::ScrfdTensor score[3], const pipeline::ScrfdTensor bbox[3],
     const pipeline::ScrfdTensor kps[3], const pipeline::ScrfdDecodeOptions& opt,

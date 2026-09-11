@@ -72,6 +72,32 @@ bool parseThreshold(const rk_win::JsonValue& o, const std::string& key, float& o
     return true;
 }
 
+// 可选 "anchorsPerPos"：恰 3 个正整数（每位置 anchor 数，P1-5）。
+// 缺省返回 true 且不改 out（保持调用方预设默认）；非法长度/非正整数 → false + err。
+bool parseAnchorsPerPos(const rk_win::JsonValue& o, int out[3], std::string& err) {
+    const rk_win::JsonValue* v = o.find("anchorsPerPos");
+    if (!v) return true;  // 可选字段
+    if (!v->isArray() || v->a.size() != 3) {
+        err = "detector.anchorsPerPos 必须恰 3 个正整数";
+        return false;
+    }
+    for (std::size_t i = 0; i < v->a.size(); i++) {
+        const rk_win::JsonValue& e = v->a[i];
+        // 先判 >0（NaN 亦为假）再转 int，避免对 NaN/非正数做未定义转换
+        if (!e.isNumber() || !(e.n > 0.0)) {
+            err = "detector.anchorsPerPos 元素非法（须正整数）";
+            return false;
+        }
+        const int n = static_cast<int>(e.n);
+        if (static_cast<double>(n) != e.n) {  // 拒绝 1.5 等非整数值
+            err = "detector.anchorsPerPos 元素非法（须正整数）";
+            return false;
+        }
+        out[i] = n;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool FaceRuntimeManifest::isSafeRelativePath(const std::string& p) {
@@ -158,6 +184,42 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
     }
     if (!parsePositiveInt(*det, "inputWidth", out.detectorInputW)) out.detectorInputW = 640;
     if (!parsePositiveInt(*det, "inputHeight", out.detectorInputH)) out.detectorInputH = 640;
+
+    // P1-5 可选解码语义：缺省 delta / {1,1,1} / auto（向后兼容旧 manifest）。
+    // 显式置默认，避免复用 out 时残留上一次解析值。
+    out.detectorDecodeMode = FaceRuntimeProfile::DetectorDecodeMode::kDelta;
+    out.detectorAnchorsPerPos[0] = 1;
+    out.detectorAnchorsPerPos[1] = 1;
+    out.detectorAnchorsPerPos[2] = 1;
+    out.detectorOutputLayout = FaceRuntimeProfile::DetectorOutputLayout::kAuto;
+    const rk_win::JsonValue* dm = det->find("decodeMode");
+    if (dm) {
+        if (!dm->isString() || (dm->s != "delta" && dm->s != "distance")) {
+            err = "detector.decodeMode 非法（仅 delta/distance）";
+            return false;
+        }
+        out.detectorDecodeMode = (dm->s == "distance")
+                                     ? FaceRuntimeProfile::DetectorDecodeMode::kDistance
+                                     : FaceRuntimeProfile::DetectorDecodeMode::kDelta;
+    }
+    if (!parseAnchorsPerPos(*det, out.detectorAnchorsPerPos, err)) return false;
+    const rk_win::JsonValue* ol = det->find("outputLayout");
+    if (ol) {
+        if (!ol->isString()) {
+            err = "detector.outputLayout 非字符串";
+            return false;
+        }
+        if (ol->s == "auto") {
+            out.detectorOutputLayout = FaceRuntimeProfile::DetectorOutputLayout::kAuto;
+        } else if (ol->s == "nchw") {
+            out.detectorOutputLayout = FaceRuntimeProfile::DetectorOutputLayout::kNChw;
+        } else if (ol->s == "flat") {
+            out.detectorOutputLayout = FaceRuntimeProfile::DetectorOutputLayout::kFlat;
+        } else {
+            err = "detector.outputLayout 非法（仅 auto/nchw/flat）";
+            return false;
+        }
+    }
 
     const rk_win::JsonValue* emb = root.find("embedder");
     if (!emb || !parseFilePair(*emb, out.embedderParam, out.embedderBin)) {
