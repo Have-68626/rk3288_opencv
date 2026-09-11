@@ -170,13 +170,15 @@ TEST(FrameTransformTest, Rotation270CombinedWithFlipUsesSameTransform) {
 }
 
 // ⑪ mapRect 与水平翻转后的外接框一致
+// cv::Rect 为半开区间，实际像素范围为 [r.x, r.x+r.width-1]；水平翻转后
+// 最左输出像素 = (w-1) - (r.x+r.width-1) = w - (r.x+r.width)，故外接框 x 取该值。
 TEST(FrameTransformTest, MapRectMatchesHorizontalMirror) {
     FrameTransformConfig cfg;
     cfg.target_mirrored_x = true;
     const int w = 320, h = 200;
     cv::Rect r(10, 20, 30, 40);
     cv::Rect mapped = FrameTransform::mapRect(r, cfg, w, h);
-    EXPECT_EQ(mapped.x, w - 1 - (r.x + r.width));
+    EXPECT_EQ(mapped.x, w - (r.x + r.width));
     EXPECT_EQ(mapped.y, r.y);
     EXPECT_EQ(mapped.width, r.width);
     EXPECT_EQ(mapped.height, r.height);
