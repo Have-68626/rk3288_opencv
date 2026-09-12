@@ -36,6 +36,15 @@ final class NativeFaceBridge {
     /** 内存人脸库容量上限（JNI 边界硬约束，超出即失败）。 */
     static final int GALLERY_CAPACITY = 1000;
 
+    /**
+     * 注册采集回调 metrics 打包数组长度（与 C++ {@code kEnrollMetricsLen} 一致）：
+     * [0]frameWidth [1]frameHeight [2]detScore [3]faceCount
+     * [4]grayMean [5]grayStd [6]laplacianVariance [7]areaRatio
+     * [8..11]bbox(left,top,right,bottom) [12..21]landmarks(x0,y0,...,x4,y4)。
+     * 无关键点时 landmarks 段为 NaN（调用方应构造 landmarks=null，令姿态判不定）。
+     */
+    static final int ENROLL_METRICS_LEN = 22;
+
     private NativeFaceBridge() {
     }
 
@@ -127,4 +136,65 @@ final class NativeFaceBridge {
      *         "galleryCount":N,"enrollmentState":"...","effective":...,"reason":"..."}}
      */
     static native String getRuntimeStatus();
+
+    /**
+     * 开启实时管线的「注册采集」模式：native 对每帧每个检测脸计算 512 维 embedding 与
+     * 几何/质量指标，并经 {@link #onEnrollmentFrame(ByteBuffer, float[])} 回调到 Java。
+     *
+     * <p>embedding 复用调用方传入的 direct ByteBuffer（精确 2048 字节，小端 float32），
+     * native 逐帧覆盖写入后回调，避免每帧分配；因此调用方必须保证该缓冲在
+     * {@link #stopEnrollmentCapture()} 之前不被释放或复用。调用方在丢弃该缓冲前应先向
+     * 其底层内存写零（模板红线）。
+     *
+     * <p>重入约束：<b>不得</b>在 {@link #onEnrollmentFrame(ByteBuffer, float[])} 回调内
+     * 同步调用本方法或 {@link #stopEnrollmentCapture()}，否则返回
+     * {@code FACE_ENROLL_CAPTURE_REENTRANT}（回调运行在 native 引擎线程，同步关闭会自等死锁）。
+     * 如需在回调中停止，请先切到其他线程（如 post 到 UI 线程）再调用。
+     *
+     * @param embeddingBuffer direct ByteBuffer，容量精确 2048 字节
+     * @return 成功 {@code {"ok":true,"capturing":true}}；失败返回错误 JSON（重入为
+     *         {@code FACE_ENROLL_CAPTURE_REENTRANT}）
+     */
+    static native String startEnrollmentCapture(ByteBuffer embeddingBuffer);
+
+    /**
+     * 停止注册采集：native 先静默在途回调再返回，之后可安全丢弃接收缓冲。
+     *
+     * <p>重入约束：不得在 {@link #onEnrollmentFrame(ByteBuffer, float[])} 回调内同步调用
+     * 本方法（返回 {@code FACE_ENROLL_CAPTURE_REENTRANT}），原因同
+     * {@link #startEnrollmentCapture(ByteBuffer)}。
+     *
+     * @return {@code {"ok":true,"capturing":false}}
+     */
+    static native String stopEnrollmentCapture();
+
+    /** 注册采集帧监听器；由 MainActivity 实现并桥接到 EnrollmentSession。 */
+    interface EnrollmentFrameListener {
+        /**
+         * @param embedding 复用的 direct ByteBuffer（LE float32，512 维；仅本次回调有效）
+         * @param metrics   {@link #ENROLL_METRICS_LEN} 长度的打包指标（见字段说明）
+         */
+        void onEnrollmentFrame(ByteBuffer embedding, float[] metrics);
+    }
+
+    private static volatile EnrollmentFrameListener sEnrollmentFrameListener;
+
+    /** 设置/清除采集帧监听器（MainActivity 在会话来去时调用）。 */
+    static void setEnrollmentFrameListener(EnrollmentFrameListener listener) {
+        sEnrollmentFrameListener = listener;
+    }
+
+    /**
+     * native 线程回调入口（由 {@code registerFaceBridgeMethods} 缓存并调用）。
+     *
+     * <p>注意：运行在 native 引擎线程，**不得**在此触碰 UI；仅转发给监听器，
+     * 由 MainActivity 同步喂入 EnrollmentSession（其 feed 已 synchronized）。
+     */
+    @SuppressWarnings("unused")
+    private static void onEnrollmentFrame(ByteBuffer embedding, float[] metrics) {
+        EnrollmentFrameListener listener = sEnrollmentFrameListener;
+        if (listener != null) {
+            listener.onEnrollmentFrame(embedding, metrics);
+        }
+    }
 }

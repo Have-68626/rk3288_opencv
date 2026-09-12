@@ -179,6 +179,18 @@ Java_com_example_rk3288_1opencv_NativeFaceBridge_takeEnrollmentTemplate(JNIEnv* 
     return nullptr;
 }
 
+// #1 startEnrollmentCapture(ByteBuffer)Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_startEnrollmentCapture(JNIEnv* env, jclass /* clazz */, jobject) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// #1 stopEnrollmentCapture()Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_stopEnrollmentCapture(JNIEnv* env, jclass /* clazz */) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
 // getRuntimeStatus()Ljava/lang/String; —— 占位失败 JSON
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_rk3288_1opencv_NativeFaceBridge_getRuntimeStatus(JNIEnv* env, jclass /* clazz */) {
