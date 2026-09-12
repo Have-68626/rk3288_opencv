@@ -450,6 +450,88 @@ public class EnrollmentSessionTest {
         assertEquals(EnrollmentSession.Reason.DUPLICATE_PERSON, dup.reason);
     }
 
+    // ---------- ⑦b 仓库不可用：无法判重时绝不放行（第二波审查 #4） ----------
+
+    /**
+     * list() 失败（注册表头损坏）时，现有模板来源必须上报失败，判定点拒绝样本，
+     * 不得静默空遍历把「无法检查」当成「没有重复人员」。
+     */
+    @Test
+    public void repositoryListFailureRejectsSampleWithRepoUnavailable() throws Exception {
+        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        // 写入非法注册表头：list() 返回 CORRUPTED（非 OK）。
+        Files.write(repo.registryFile().toPath(),
+                "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
+        assertFalse("前置条件：注册表必须不可读", repo.list().isOk());
+
+        EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
+        s.start();
+        assertTrue("list 失败必须落定失败标记", s.isExistingLoadFailed());
+
+        EnrollmentSession.FeedResult r = s.feed(sample(base(), EnrollmentSession.Pose.FRONT));
+        assertFalse("仓库不可用不得放行注册", r.accepted);
+        assertEquals(EnrollmentSession.Reason.REPO_UNAVAILABLE, r.reason);
+        assertEquals(0, s.acceptedCount());
+    }
+
+    /**
+     * 注册表有条目但单个模板 readTemplate 失败时，必须中止遍历并整体拒绝，
+     * 不得跳过该模板后放行（否则本可判重的样本会被误收）。
+     */
+    @Test
+    public void repositoryTemplateReadFailureRejectsSampleInsteadOfSkipping() throws Exception {
+        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        assertTrue(repo.add("bob", EnrollmentSession.encodeLe(otherEmbedding()), MV, TSV).isOk());
+        // 注册表仍有 bob 条目，但模板文件被删除 -> readTemplate 失败。
+        assertTrue("前置条件：删除 bob 模板文件", repo.templateFileFor("bob").delete());
+        assertTrue("前置条件：注册表本身可读", repo.list().isOk());
+
+        EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
+        s.start();
+        assertTrue("单模板读取失败必须落定失败标记", s.isExistingLoadFailed());
+
+        EnrollmentSession.FeedResult r = s.feed(sample(base(), EnrollmentSession.Pose.FRONT));
+        assertFalse("存在不可读模板时不得放行注册", r.accepted);
+        assertEquals(EnrollmentSession.Reason.REPO_UNAVAILABLE, r.reason);
+        assertEquals(0, s.acceptedCount());
+    }
+
+    /** 正常空库仍可正常注册，失败通道不误伤。 */
+    @Test
+    public void emptyRepositoryStillAllowsNormalEnrollment() throws Exception {
+        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
+        s.start();
+        assertFalse("空库读取成功，不得置失败标记", s.isExistingLoadFailed());
+        assertTrue(s.feed(sample(base(), EnrollmentSession.Pose.FRONT)).accepted);
+    }
+
+    /** 失败标记的生命周期：start() 时确定，cancel()/reset() 后清除。 */
+    @Test
+    public void cancelAndResetClearExistingLoadFailedFlag() throws Exception {
+        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        Files.write(repo.registryFile().toPath(),
+                "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
+
+        EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
+        s.start();
+        assertTrue(s.isExistingLoadFailed());
+        s.cancel();
+        assertFalse("cancel 必须清除失败标记", s.isExistingLoadFailed());
+
+        // 重新开始再次落定失败标记，reset 也必须清除。
+        s.start();
+        assertTrue(s.isExistingLoadFailed());
+        s.reset();
+        assertFalse("reset 必须清除失败标记", s.isExistingLoadFailed());
+
+        // 修复仓库（移除损坏注册表 -> 空库）后重新开始，恢复为可校验并放行。
+        assertTrue(repo.registryFile().delete());
+        assertTrue(s.start());
+        assertFalse(s.isExistingLoadFailed());
+        assertTrue(s.feed(sample(base(), EnrollmentSession.Pose.FRONT)).accepted);
+    }
+
     @Test
     public void commitBeforeCompletionIsRejectedWithoutWriting() throws Exception {
         AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
