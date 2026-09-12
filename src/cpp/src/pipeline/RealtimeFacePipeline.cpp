@@ -110,7 +110,16 @@ public:
         out.clear();
         out.reserve(faces.size());
         for (const FaceDetection& f : faces) {
-            out.push_back(RealtimeFaceBox{f.bbox.x, f.bbox.y, f.bbox.width, f.bbox.height, f.score});
+            RealtimeFaceBox b{f.bbox.x, f.bbox.y, f.bbox.width, f.bbox.height, f.score};
+            // #1 注册采集：把检测关键点带出到统一框结构，供对齐与姿态分类使用。
+            if (f.keypoints5.has_value()) {
+                b.hasKeypoints = true;
+                for (std::size_t i = 0; i < 5; ++i) {
+                    b.keypoints[i * 2] = (*f.keypoints5)[i].x;
+                    b.keypoints[i * 2 + 1] = (*f.keypoints5)[i].y;
+                }
+            }
+            out.push_back(b);
         }
         return true;
     }

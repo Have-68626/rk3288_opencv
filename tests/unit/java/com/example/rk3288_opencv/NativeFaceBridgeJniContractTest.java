@@ -55,6 +55,9 @@ public class NativeFaceBridgeJniContractTest {
         EXPECTED.put("getEnrollmentStatus", "()Ljava/lang/String;");
         EXPECTED.put("takeEnrollmentTemplate", "()[B");
         EXPECTED.put("getRuntimeStatus", "()Ljava/lang/String;");
+        // #1 注册采集逐帧 API（打通注册闭环）
+        EXPECTED.put("startEnrollmentCapture", "(Ljava/nio/ByteBuffer;)Ljava/lang/String;");
+        EXPECTED.put("stopEnrollmentCapture", "()Ljava/lang/String;");
     }
 
     private static final Map<String, String> PRIMS = new HashMap<>();
