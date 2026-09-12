@@ -50,6 +50,24 @@ final class NativeFaceBridge {
     static native String loadProfile(String manifestJson, String currentAbi);
 
     /**
+     * 激活实时管线：把 manifest 与模型基目录绑定到原生实时管线（SCRFD 检测 + ArcFace 识别），
+     * 使运行时从「仅预览 missing_model」切换到真实检测/识别。
+     *
+     * <p>必须在本方法成功（返回 {@code ok:true}）之前先经 {@link #loadProfile(String, String)}
+     * 校验 manifest；本方法会再解析一次并触发 native 侧装配/自检/基准。若 Engine 尚未创建，
+     * native 侧只登记待激活参数，待 Engine 创建后自动补激活（返回 {@code pending:true}）。
+     *
+     * @param manifestJson manifest v1 的 JSON 文本
+     * @param baseDir      模型文件基目录（manifest 引用的相对路径相对此目录解析）
+     * @param currentAbi   当前设备 ABI，必须出现在 manifest 的 {@code supportedAbis} 中
+     * @param galleryDir   图库目录（当前图库来自内存注册，此参数作为契约位保留）
+     * @return 成功 {@code {"ok":true,"pending":bool,"effective":bool,"reason":"..","generation":N}}；
+     *         失败返回错误 JSON
+     */
+    static native String activateRuntime(String manifestJson, String baseDir,
+                                         String currentAbi, String galleryDir);
+
+    /**
      * 用一批 (personId, embedding) 原子替换内存人脸库。
      *
      * <p>边界：{@code personIds.length == embeddings.length}；每项 embedding 必须为 direct
