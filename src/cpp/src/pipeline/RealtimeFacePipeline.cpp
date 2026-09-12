@@ -179,15 +179,17 @@ RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
 #endif
     };
 
-    // ArcFace 识别装配。注意：profile 的 embedder 节点名/维度无法经 ArcFaceAdapter
-    // 现有 API 注入（其默认 data/output），此处按 manifest 的 .param 装配 ncnn 后端；
-    // 节点名差异留待后续扩展 ArcFaceAdapter 时对齐（不在任务11范围内）。
+    // ArcFace 识别装配。P1-1：manifest 的 embedder 节点名（真实模型 in0/out0）必须注入
+    // ArcFaceAdapter；其历史默认 data/output 用于旧调用方，直接沿用会导致真实模型
+    // load/推理失败（自检通不过 → 管线无法发布）。
     h.loadEmbedder = [](const FaceRuntimeProfile& profile, const std::string& baseDir,
                         std::string& err) -> std::shared_ptr<IRealtimeEmbedder> {
 #if !defined(RK_SKIP_OPENCV) && defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
         const std::string paramPath =
             (std::filesystem::path(baseDir) / profile.embedderParam.relativePath).string();
         auto emb = std::make_shared<ArcFaceAdapter>();
+        // 注入 manifest 节点名（ncnn 节点名 / OpenCV blob 名同源对齐）；空串则保留默认。
+        emb->setNodeNames(profile.embedderInput, profile.embedderOutput);
         std::string loadErr;
         if (!emb->load(paramPath, loadErr)) {
             err = reasonFromLoadError(loadErr);
