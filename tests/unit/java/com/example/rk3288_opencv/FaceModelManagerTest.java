@@ -271,10 +271,10 @@ public class FaceModelManagerTest {
         assertNoTempArtifacts(dir);
     }
 
-    // ---------- ⑦ native 自检门禁 ----------
+    // ---------- ⑦ native 校验/暂存门禁 ----------
 
     @Test
-    public void nativeSelfCheckFailureKeepsNotImported() throws Exception {
+    public void nativeValidateFailureKeepsNotImported() throws Exception {
         FakeRuntime rt = new FakeRuntime();
         rt.ok = false;
         File dir = tmp.newFolder();
@@ -309,6 +309,51 @@ public class FaceModelManagerTest {
         assertEquals(FaceModelManager.Status.NATIVE_CHECK_FAILED, r.status);
         // status() 在 native 不可用时也必须能返回，而不是崩溃。
         assertTrue(m.status().isNotImported());
+    }
+
+    /** P1-2：loadProfile 只回 ok 而无 validated 时，不得视为校验通过。 */
+    @Test
+    public void loadProfileOkButNotValidatedFailsNativeGate() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        rt.validated = false;
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        String manifest = manifest("p1", "[\"arm64-v8a\"]", files, "lic");
+        FaceModelManager.Result r = m.importZip(stream(zip("", manifest, files)), ABI, true);
+        assertEquals("仅 ok 而无 validated 不得视为校验通过",
+                FaceModelManager.Status.NATIVE_CHECK_FAILED, r.status);
+        assertFalse("校验失败不得落盘 profile 目录", m.profileDir("p1").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * P1-2 核心：manifest 已校验/暂存（profileValidated=true）但实时管线未生效
+     * （effective=false，如 Engine 未创建 reason=pending）——status 必须区分「已校验」与「已加载生效」，
+     * 绝不把仅校验暂存误报为就绪生效。
+     */
+    @Test
+    public void validatedButPipelineNotEffectiveIsDistinguishedFromActive() throws Exception {
+        FaceModelManager.NativeRuntime rt = new FaceModelManager.NativeRuntime() {
+            @Override
+            public String loadProfile(String manifestJson, String currentAbi) {
+                return "{\"ok\":true,\"validated\":true,\"staged\":true,\"effective\":false}";
+            }
+
+            @Override
+            public String getRuntimeStatus() {
+                return "{\"ok\":true,\"profileValidated\":true,\"effective\":false,"
+                        + "\"reason\":\"pending\",\"embeddingDim\":512}";
+            }
+        };
+        FaceModelManager m = new FaceModelManager(tmp.newFolder(), rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        String manifest = manifest("p1", "[\"arm64-v8a\"]", files, "lic");
+        FaceModelManager.Result r = m.importZip(stream(zip("", manifest, files)), ABI, true);
+        assertTrue("校验/落盘成功仍应导入成功（激活为 best-effort）", r.isOk());
+        FaceRuntimeStatus st = m.status();
+        assertTrue("manifest 已校验/暂存", st.nativeProfileValidated);
+        assertFalse("仅校验暂存不得判为已加载生效", st.nativeProfileActive);
     }
 
     // ---------- ⑧ 失败保留原配置 ----------
@@ -579,18 +624,22 @@ public class FaceModelManagerTest {
         }
     }
 
-    /** 可编程 native 假实现：ok=false 时 loadProfile 返回失败 JSON。 */
+    /** 可编程 native 假实现：ok=false 时 loadProfile 返回失败 JSON，validated=false 时只校验不通过。 */
     private static final class FakeRuntime implements FaceModelManager.NativeRuntime {
         boolean ok = true;
+        boolean validated = true;
         String lastManifest;
-        String runtimeJson = "{\"ok\":true,\"profileLoaded\":true,\"embeddingDim\":512,"
+        String runtimeJson = "{\"ok\":true,\"profileValidated\":true,\"profileLoaded\":true,"
+                + "\"effective\":true,\"reason\":\"ok\",\"embeddingDim\":512,"
                 + "\"galleryCount\":0,\"enrollmentState\":\"IDLE\"}";
 
         @Override
         public String loadProfile(String manifestJson, String currentAbi) {
             lastManifest = manifestJson;
             if (ok) {
-                return "{\"ok\":true,\"profileId\":\"x\",\"modelVersion\":\"1\",\"embeddingDim\":512}";
+                return "{\"ok\":true,\"validated\":" + validated + ",\"staged\":true,"
+                        + "\"effective\":false,\"profileId\":\"x\",\"modelVersion\":\"1\","
+                        + "\"embeddingDim\":512}";
             }
             return "{\"ok\":false,\"error\":{\"code\":\"FACE_PROFILE_INVALID\",\"message\":\"bad\"}}";
         }
@@ -601,19 +650,20 @@ public class FaceModelManagerTest {
         }
     }
 
-    /** 记录 activateRuntime 调用的 native 假实现（loadProfile 恒 ok）。 */
+    /** 记录 activateRuntime 调用的 native 假实现（loadProfile 恒 validated）。 */
     private static final class RecordingRuntime implements FaceModelManager.NativeRuntime {
         int activateCalls = 0;
         String lastBaseDir;
 
         @Override
         public String loadProfile(String manifestJson, String currentAbi) {
-            return "{\"ok\":true,\"profileId\":\"x\",\"modelVersion\":\"1\",\"embeddingDim\":512}";
+            return "{\"ok\":true,\"validated\":true,\"staged\":true,\"effective\":false,"
+                    + "\"profileId\":\"x\",\"modelVersion\":\"1\",\"embeddingDim\":512}";
         }
 
         @Override
         public String getRuntimeStatus() {
-            return "{\"ok\":true,\"profileLoaded\":true,\"embeddingDim\":512}";
+            return "{\"ok\":true,\"profileValidated\":true,\"effective\":true,\"embeddingDim\":512}";
         }
 
         @Override

@@ -39,10 +39,13 @@ import java.util.zip.ZipInputStream;
  *   <li>用 {@link FaceModelManifest#parse} 做 schemaVersion==1 / ABI / 路径 / sha256 格式校验
  *       （与 native 契约一致），并要求 {@code licenseAccepted==true}。</li>
  *   <li>对 manifest 引用的 param/bin 逐个校验：存在、非 Git LFS pointer、SHA-256 与引脚一致。</li>
- *   <li><b>native 自检</b>：把 manifest 原文交给 {@link NativeRuntime#loadProfile}，非 ok 立即失败，
- *       此时旧目录与激活指针完全未被触碰。</li>
+ *   <li><b>native 校验/暂存</b>：把 manifest 原文交给 {@link NativeRuntime#loadProfile} 做格式/ABI
+ *       校验（<b>只校验暂存，不等于加载生效</b>），非 validated 立即失败，此时旧目录与激活指针完全未被触碰。</li>
  *   <li><b>原子启用</b>：把基目录 rename 到 {@code <storeDir>/<profileId>}（旧目录先 rename 为 .bak），
  *       再原子写激活指针 {@code active_profile}；指针写失败则回滚目录。全程同盘 rename，保证原子性。</li>
+ *   <li><b>激活并生效</b>：目录稳定后调 {@link NativeRuntime#activateRuntime} 绑定实时管线；是否真正
+ *       加载生效由 activateRuntime 返回的 {@code effective}/{@code reason}（并经 {@code getRuntimeStatus} 暴露）
+ *       决定，导入状态本身不据此失败（模型文件与激活指针此时均已有效）。</li>
  * </ol>
  *
  * <h2>切换 profile</h2>
@@ -94,7 +97,10 @@ public final class FaceModelManager {
 
     /** native 运行时依赖；抽成接口以便纯 JVM 单测注入假实现（真实实现会加载 so）。 */
     public interface NativeRuntime {
-        /** 见 {@link NativeFaceBridge#loadProfile(String, String)}。 */
+        /**
+         * 见 {@link NativeFaceBridge#loadProfile(String, String)}：仅做 manifest 格式/ABI 校验并暂存，
+         * 返回 {@code validated:true} 表示校验通过；<b>不代表</b>推理管线已加载生效。
+         */
         @NonNull String loadProfile(@NonNull String manifestJson, @NonNull String currentAbi);
 
         /** 见 {@link NativeFaceBridge#getRuntimeStatus()}。 */
@@ -157,7 +163,7 @@ public final class FaceModelManager {
         /** manifest 引用的模型文件缺失或为 LFS pointer。 */
         MISSING_MODEL_FILE,
         ABI_MISMATCH,
-        /** native 自检（loadProfile）失败。 */
+        /** native manifest 校验/暂存（loadProfile）失败；不代表加载生效判定。 */
         NATIVE_CHECK_FAILED,
         IO_ERROR,
         ATOMIC_RENAME_FAILED,
@@ -319,16 +325,17 @@ public final class FaceModelManager {
                 // ⑤ 四个模型文件存在性 + LFS + sha256 引脚校验。
                 verifyModelFiles(base, profile);
 
-                // ⑥ native 自检：失败时磁盘/指针未被改动。
-                nativeSelfCheck(manifestJson, currentAbi);
+                // ⑥ native 校验/暂存：只判 manifest 格式/ABI，失败时磁盘/指针未被改动。
+                nativeValidateProfile(manifestJson, currentAbi);
 
                 // ⑦ 原子启用（rename 基目录 + 原子写激活指针）。
                 enableProfile(base, tmpDir, profile.profileId);
 
                 // ⑧ 激活实时管线：目录已稳定，用最终 profileId 目录绑定（临时目录随后被清理）。
+                //    是否真正生效由本次 activateRuntime 的 effective/reason 决定，并经 status() 暴露。
                 nativeActivateRuntime(manifestJson, profileDir(profile.profileId), currentAbi);
 
-                return new Result(Status.OK, buildStatus(null), "");
+                return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
                 return fail(f.status, f.getMessage());
             } catch (Exception | StackOverflowError ex) {
@@ -366,14 +373,15 @@ public final class FaceModelManager {
                 String manifestJson = readTextFile(manifestFile, limits.maxManifestBytes);
                 FaceModelManifest.Profile profile = validateManifest(manifestJson, currentAbi);
                 verifyModelFiles(dir, profile);
-                nativeSelfCheck(manifestJson, currentAbi);
+                nativeValidateProfile(manifestJson, currentAbi);
                 if (!persistActive(profile.profileId)) {
                     // 指针未改动 -> 原配置保留。
                     return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已保留原配置");
                 }
-                // 切换成功后重绑实时管线到该 profile 的稳定目录（best-effort）。
+                // 切换成功后重绑实时管线到该 profile 的稳定目录（best-effort）；
+                // 是否真正生效由 activateRuntime 的 effective/reason（经 status()）暴露。
                 nativeActivateRuntime(manifestJson, dir, currentAbi);
-                return new Result(Status.OK, buildStatus(null), "");
+                return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
                 return fail(f.status, f.getMessage());
             } catch (Exception | StackOverflowError ex) {
@@ -457,30 +465,39 @@ public final class FaceModelManager {
         }
     }
 
-    private void nativeSelfCheck(@NonNull String manifestJson, @NonNull String currentAbi)
+    /**
+     * native manifest 校验/暂存门禁（原 nativeSelfCheck，P1-2 澄清语义）：
+     * {@link NativeRuntime#loadProfile} <b>只做格式/ABI 校验并暂存</b>，返回 {@code validated:true}。
+     * 因此本方法只判「已校验」，<b>绝不</b>把它当作「已加载生效」——后者由
+     * {@link #nativeActivateRuntime} 的 {@code effective}/{@code reason}（经 {@code getRuntimeStatus} 暴露）
+     * 决定，并映射到 {@link FaceRuntimeStatus#nativeProfileActive}。
+     */
+    private void nativeValidateProfile(@NonNull String manifestJson, @NonNull String currentAbi)
             throws ImportFailure {
         String resp;
         try {
             resp = runtime.loadProfile(manifestJson, currentAbi);
         } catch (Throwable t) {
-            // native 库缺失/加载失败也按自检失败处理，绝不把坏配置设为当前。
-            throw new ImportFailure(Status.NATIVE_CHECK_FAILED, "native 模型自检不可用");
+            // native 库缺失/加载失败也按校验失败处理，绝不把坏配置设为当前。
+            throw new ImportFailure(Status.NATIVE_CHECK_FAILED, "native 模型校验不可用");
         }
-        if (!isNativeOk(resp)) {
-            throw new ImportFailure(Status.NATIVE_CHECK_FAILED, "native 模型自检未通过");
+        if (!isNativeValidated(resp)) {
+            throw new ImportFailure(Status.NATIVE_CHECK_FAILED, "native 模型校验/暂存未通过");
         }
     }
 
     /**
-     * 绑定实时管线（best-effort）：{@link #nativeSelfCheck} 已通过后，把 manifest 与<b>稳定的</b>
+     * 绑定实时管线（best-effort）：{@link #nativeValidateProfile} 已校验/暂存后，把 manifest 与<b>稳定的</b>
      * 模型基目录交给 native {@code activateRuntime}，使识别真正生效（否则 Android 端恒
      * {@code missing_model}，仅预览不识别）。
      *
      * <p>调用时机有意放在目录原子启用<b>之后</b>（用最终 profileId 目录而非临时目录）：临时目录
      * 导入成功后会被清理，若以临时目录绑定，运行时快照将指向已消失的路径。
      *
-     * <p>失败不阻断导入/切换：模型文件与激活指针均已有效，运行时状态经
-     * {@code getRuntimeStatus} 的 {@code reason}/{@code effective} 如实暴露，UI 不误报就绪。
+     * <p><b>唯一「加载生效」判据</b>是本次返回的 {@code effective}/{@code reason}（并存于 native
+     * {@code getRuntimeStatus}，映射到 {@link FaceRuntimeStatus#nativeProfileActive}）。导入/切换状态本身
+     * 不据此失败：模型文件与激活指针均已有效，Engine 尚未创建时会返回 {@code pending:true}，
+     * 由 UI 依 {@code effective=false} 显示「已校验未生效」，绝不误报就绪。
      */
     private void nativeActivateRuntime(@NonNull String manifestJson, @NonNull File baseDir,
                                        @NonNull String currentAbi) {
@@ -511,6 +528,27 @@ public final class FaceModelManager {
             }
             Boolean ok = FaceModelManifest.asBoolean(root.get("ok"));
             return ok != null && ok;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    /**
+     * 判定 {@code loadProfile} 的响应是否为「已校验/暂存」：必须 {@code ok==true} 且
+     * {@code validated==true}。仅 {@code ok} 为真不足以确认新版契约已生效，故一并严格要求，
+     * 防止旧实现（只回 ok、不校验暂存）被误判为通过。
+     */
+    private static boolean isNativeValidated(@Nullable String resp) {
+        if (!isNativeOk(resp)) {
+            return false;
+        }
+        try {
+            Map<String, Object> root = FaceModelManifest.asObject(FaceModelManifest.parseJsonValue(resp));
+            if (root == null) {
+                return false;
+            }
+            Boolean validated = FaceModelManifest.asBoolean(root.get("validated"));
+            return validated != null && validated;
         } catch (Exception ex) {
             return false;
         }
