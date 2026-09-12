@@ -55,6 +55,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * 报告跳过数；只有文件头（魔数/版本）损坏或整体不可读才判定为 {@link Status#CORRUPTED}。
  * 后续一次成功的 add/remove 会重写注册表，顺带清除已跳过的损坏行（自愈）。
  *
+ * <p><b>崩溃恢复（P1-3）</b>：{@link #persistRegistry} 采用
+ * 「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」阶段替换。若在中间阶段进程退出，
+ * 可能出现「主文件缺失/不可读、而 {@code face_registry_v1.dat.bak} 尚存」的窗口；
+ * {@link #loadRegistry} 此时会先尝试把备份恢复为主文件再解析（重命名失败则直接解析备份），
+ * 避免把唯一索引伪装成空库、并在后续写入时被先行删除，导致人员索引永久丢失。
+ *
  * <h2>API &lt; 23 行为</h2>
  * 写操作与需密钥操作（{@link #add}、{@link #remove}、{@link #readTemplate}）返回
  * {@link Status#UNSUPPORTED_PLATFORM} 并附带中文说明；注册表读取（{@link #list}/{@link #get}）
@@ -466,10 +472,42 @@ public final class AndroidEnrollmentRepository {
 
     @NonNull
     private RegistrySnapshot loadRegistry() {
-        File f = registryFile();
-        if (!f.exists()) {
+        File dst = registryFile();
+        File bak = backupFileFor(dst);
+
+        if (!dst.exists()) {
+            if (bak.exists()) {
+                // 崩溃恢复：上次 persistRegistry 在「dst→bak」之后、「tmp→dst」完成前退出，
+                // 主文件缺失但备份仍是唯一完整索引。若此处按空库处理，后续写入会先删掉该备份，
+                // 已注册人员索引将永久丢失（P1-3）。
+                RegistrySnapshot fromBak = parseRegistryFile(bak);
+                if (fromBak.status == Status.OK) {
+                    boolean restored = renameQuietly(bak, dst);
+                    return new RegistrySnapshot(Status.OK, fromBak.entries, fromBak.skippedLineCount,
+                            restored ? "已从备份恢复注册表" : "注册表主文件缺失，已从备份读取");
+                }
+                // 备份也损坏/不可读：如实上报，避免伪装成空库后被一次写入覆盖。
+                return fromBak;
+            }
             return new RegistrySnapshot(Status.OK, new ArrayList<Entry>(), 0, "");
         }
+
+        RegistrySnapshot snap = parseRegistryFile(dst);
+        // 主文件存在但不可读：若备份可解析则从备份恢复，避免「不可读」退化为空库/丢索引。
+        if (snap.status == Status.IO_ERROR && bak.exists()) {
+            RegistrySnapshot fromBak = parseRegistryFile(bak);
+            if (fromBak.status == Status.OK) {
+                renameQuietly(bak, dst);
+                return new RegistrySnapshot(Status.OK, fromBak.entries, fromBak.skippedLineCount,
+                        "注册表主文件不可读，已从备份恢复");
+            }
+        }
+        return snap;
+    }
+
+    /** 解析单个注册表文件；文件不存在或不可读返回 IO_ERROR（缺省语义由调用方处理）。 */
+    @NonNull
+    private static RegistrySnapshot parseRegistryFile(@NonNull File f) {
         List<String> lines = new ArrayList<>();
         try (BufferedReader r = new BufferedReader(
                 new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -504,6 +542,15 @@ public final class AndroidEnrollmentRepository {
         return new RegistrySnapshot(Status.OK, out, skipped, msg);
     }
 
+    /** 静默重命名（用于崩溃恢复）；失败返回 false，由调用方决定后续语义。 */
+    private static boolean renameQuietly(@NonNull File from, @NonNull File to) {
+        try {
+            return from.renameTo(to);
+        } catch (SecurityException ex) {
+            return false;
+        }
+    }
+
     /** 解析单行条目；字段非法或损坏返回 null（由调用方跳过隔离）。 */
     @Nullable
     private static Entry parseEntry(@NonNull String line) {
@@ -527,7 +574,26 @@ public final class AndroidEnrollmentRepository {
         }
     }
 
-    /** 原子落盘注册表：临时文件 + 原子替换（与存储层写入策略一致）。 */
+    /** 注册表备份文件（与主文件同目录）；崩溃恢复依赖该命名。 */
+    @NonNull
+    private static File backupFileFor(@NonNull File registryFile) {
+        return new File(registryFile.getParentFile(), registryFile.getName() + ".bak");
+    }
+
+    /**
+     * 原子落盘注册表：临时文件 + 阶段替换（与存储层写入策略一致）。
+     *
+     * <p>阶段顺序（P1-3 崩溃安全）：
+     * <ol>
+     *   <li><b>恢复基线</b>：若上次崩溃遗留「主文件缺失 + 备份存在」，先把备份改名回主文件，
+     *       否则会先删备份再写，唯一索引在崩溃窗口中丢失。恢复失败则直接报错，不删任何文件。</li>
+     *   <li><b>写 tmp + fsync</b>：新内容先完整落盘。</li>
+     *   <li><b>dst→bak</b>：主文件存在时先挪作备份；此步后即便崩溃，{@link #loadRegistry}
+     *       也能从 bak 恢复。</li>
+     *   <li><b>tmp→dst</b>：新文件就位失败则把 bak 回滚为主文件。</li>
+     *   <li><b>清理 bak</b>：仅在新主文件确认就位后才删旧备份。</li>
+     * </ol>
+     */
     @NonNull
     private Status persistRegistry(@NonNull List<Entry> entries) {
         File dst = registryFile();
@@ -535,6 +601,14 @@ public final class AndroidEnrollmentRepository {
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
             return Status.IO_ERROR;
         }
+        File bak = backupFileFor(dst);
+
+        // 阶段 1：恢复上次崩溃遗留的「主文件缺失 + 备份存在」，确立本轮可回滚基线。
+        // 恢复不了就宁可不写：绝不删掉唯一索引。
+        if (!dst.exists() && bak.exists() && !renameQuietly(bak, dst)) {
+            return Status.IO_ERROR;
+        }
+
         File tmp = new File(parent, dst.getName() + ".tmp");
         StringBuilder sb = new StringBuilder();
         sb.append(REGISTRY_MAGIC).append('\n');
@@ -547,6 +621,7 @@ public final class AndroidEnrollmentRepository {
                     .append(e.ciphertextSha256Hex).append(' ')
                     .append(e.createdAtMs).append('\n');
         }
+        // 阶段 2：写 tmp 并 fsync，确保内容先落盘再谈替换。
         try (FileOutputStream fos = new FileOutputStream(tmp, false)) {
             fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
             fos.flush();
@@ -559,14 +634,18 @@ public final class AndroidEnrollmentRepository {
             return Status.IO_ERROR;
         }
 
-        File bak = new File(parent, dst.getName() + ".bak");
-        if (bak.exists()) {
-            bak.delete();
+        // 阶段 3：dst -> bak。仅当主文件存在时才有此步；此阶段后崩溃可由 loadRegistry 恢复。
+        if (dst.exists()) {
+            if (bak.exists() && !bak.delete()) {
+                tmp.delete();
+                return Status.IO_ERROR;
+            }
+            if (!dst.renameTo(bak)) {
+                tmp.delete();
+                return Status.ATOMIC_RENAME_FAILED;
+            }
         }
-        if (dst.exists() && !dst.renameTo(bak)) {
-            tmp.delete();
-            return Status.ATOMIC_RENAME_FAILED;
-        }
+        // 阶段 4：tmp -> dst。失败则把旧备份回滚为主文件，保证不丢索引。
         if (!tmp.renameTo(dst)) {
             if (bak.exists()) {
                 bak.renameTo(dst);
@@ -574,6 +653,7 @@ public final class AndroidEnrollmentRepository {
             tmp.delete();
             return Status.ATOMIC_RENAME_FAILED;
         }
+        // 阶段 5：新主文件已就位，才允许清理旧备份（清理失败不影响一致性）。
         if (bak.exists()) {
             bak.delete();
         }

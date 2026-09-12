@@ -380,7 +380,120 @@ public class AndroidEnrollmentRepositoryTest {
         assertTrue("注册表以可逆 hex 保存 userId", content.contains("616c696365"));
     }
 
+    // ---------- ⑫ 注册表崩溃恢复（P1-3） ----------
+
+    @Test
+    public void loadRecoversFromBackupWhenMainMissing() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 61), MV, TSV).status);
+
+        File dst = repo.registryFile();
+        File bak = bakFor(repo);
+        // 模拟「dst→bak 完成、tmp→dst 未完成」时进程退出：主文件缺失，仅剩 .bak。
+        assertTrue(dst.renameTo(bak));
+        assertFalse(dst.exists());
+        assertTrue(bak.exists());
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals("主文件缺失不得伪装成空库", AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("应从 .bak 恢复既有条目", 1, list.entries.size());
+        assertEquals("alice", list.entries.get(0).userId);
+        assertTrue("恢复成功后主文件应重新存在", dst.exists());
+    }
+
+    @Test
+    public void staleTmpResidueIsIgnoredWhenMainValid() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 62), MV, TSV).status);
+
+        // 主文件完好，同时残留一个“半成品” tmp（内容为 bob）；loadRegistry 必须只认主文件。
+        File tmpFile = new File(repo.scopeDir(),
+                AndroidEnrollmentRepository.REGISTRY_FILE_NAME + ".tmp");
+        String stale = "FREG1\n" + "626f62 7 2 10 " + repeat('a', 64) + " 1\n";
+        Files.write(tmpFile.toPath(), stale.getBytes(StandardCharsets.UTF_8));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals("残留 tmp 不应使读取失败", AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("残留 tmp 不得干扰主文件条目", 1, list.entries.size());
+        assertEquals("应读取主文件中的 alice", "alice", list.entries.get(0).userId);
+    }
+
+    @Test
+    public void mainRegistryWinsWhenMainAndBackupCoexist() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 63), MV, TSV).status);
+        byte[] aliceOnly = Files.readAllBytes(repo.registryFile().toPath());
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 64), MV, TSV).status);
+
+        // 构造「新主文件已就位、旧备份尚未清理」：bak 为仅含 alice 的旧快照。
+        File bak = bakFor(repo);
+        Files.write(bak.toPath(), aliceOnly);
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("主文件与备份并存时应以主文件为准", 2, list.entries.size());
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("bob").status);
+    }
+
+    @Test
+    public void writeAfterRecoveryDoesNotLoseEntries() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 65), MV, TSV).status);
+
+        // 制造崩溃残留：dst 缺失 + bak 存在（bob 的写入若先删 bak 会永久丢掉 alice）。
+        File dst = repo.registryFile();
+        File bak = bakFor(repo);
+        assertTrue(dst.renameTo(bak));
+
+        assertEquals("恢复后新增应成功", AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 66), MV, TSV).status);
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("恢复后写入不得丢失既有人员", 2, list.entries.size());
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("bob").status);
+        assertFalse("成功写入后不应残留备份", bak.exists());
+    }
+
+    @Test
+    public void unreadableMainRecoversFromBackup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 67), MV, TSV).status);
+        byte[] aliceRegistry = Files.readAllBytes(repo.registryFile().toPath());
+
+        // 主文件存在但不可读：用空目录占位使 FileInputStream 抛 IOException；备份可解析。
+        File dst = repo.registryFile();
+        assertTrue(dst.delete());
+        assertTrue(dst.mkdirs());
+        File bak = bakFor(repo);
+        Files.write(bak.toPath(), aliceRegistry);
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals("主文件不可读时应回退备份", AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals(1, list.entries.size());
+        assertEquals("alice", list.entries.get(0).userId);
+    }
+
     // ---------- 工具 ----------
+
+    /** 注册表备份文件路径；与实现约定的 {@code <主文件名>.bak} 保持一致。 */
+    private static File bakFor(AndroidEnrollmentRepository repo) {
+        return new File(repo.scopeDir(), AndroidEnrollmentRepository.REGISTRY_FILE_NAME + ".bak");
+    }
+
+    private static String repeat(char c, int count) {
+        char[] out = new char[count];
+        java.util.Arrays.fill(out, c);
+        return new String(out);
+    }
 
     private AndroidEnrollmentRepository newRepo() throws Exception {
         return new AndroidEnrollmentRepository(null, tmp.newFolder());
