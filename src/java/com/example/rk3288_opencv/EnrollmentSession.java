@@ -46,6 +46,8 @@ import java.util.List;
  *   <li>姿态配额：正脸 4 / 左脸 2 / 右脸 2（{@link Reason#POSE_QUOTA_EXCEEDED}）。</li>
  *   <li>与已收样本一致性：与任一已收样本 cosine {@code >= 0.75}
  *       （低于则视为不同人/异常帧，{@link Reason#INCONSISTENT_IDENTITY}）。</li>
+ *   <li>现有模板可校验：若开始会话时现有模板快照读取失败（{@link Reason#REPO_UNAVAILABLE}），
+ *       说明无法判断是否重复，直接拒绝本次样本，绝不按“库中无重复”放行。</li>
  *   <li>与现有模板重复阻止：与任一已注册模板 cosine {@code >= 0.55} 即判定为重复人员
  *       （{@link Reason#DUPLICATE_PERSON}），避免同一人被重复注册。</li>
  * </ol>
@@ -126,7 +128,9 @@ public final class EnrollmentSession {
         POSE_UNKNOWN,
         POSE_QUOTA_EXCEEDED,
         INCONSISTENT_IDENTITY,
-        DUPLICATE_PERSON
+        DUPLICATE_PERSON,
+        /** 现有模板仓库不可读，无法校验是否重复；为防重复注册而拒绝本次样本。 */
+        REPO_UNAVAILABLE
     }
 
     /** 人脸检测框（帧像素坐标，右/下为开区间）。 */
@@ -315,7 +319,16 @@ public final class EnrollmentSession {
 
     /** 现有模板来源：遍历已注册人员的已解码 embedding，用于重复阻止。 */
     public interface ExistingTemplateSource {
-        void forEach(@NonNull ExistingTemplateConsumer consumer);
+        /**
+         * 遍历已注册人员的已解码 embedding；失败通道由返回值承载。
+         *
+         * <p>返回 {@code true} 表示已完整、无错误地遍历全部现有模板；返回 {@code false}
+         * 表示来源读取失败、遍历结果不完整（可能漏报重复人员）。调用方<b>必须</b>把 false
+         * 当作“无法校验”，绝不可当作“库中没有模板”放行注册。
+         *
+         * @return 是否完整遍历现有模板
+         */
+        boolean forEach(@NonNull ExistingTemplateConsumer consumer);
     }
 
     /** 现有模板消费回调；{@code embedding} 仅在该回调内有效，调用方不得长期持有。 */
@@ -342,6 +355,11 @@ public final class EnrollmentSession {
     @NonNull private final List<float[]> accepted = new ArrayList<>();
     /** 开始会话时对现有模板的快照；完成/取消/复位后被丢弃。 */
     @NonNull private List<float[]> existingSnapshot = Collections.emptyList();
+    /**
+     * 现有模板快照是否读取失败（不完整）。为 true 时本会话无法可靠判重，
+     * 必须拒绝样本而非按“无重复”放行；开始/快照构建时确定，取消/复位后清除。
+     */
+    private boolean existingLoadFailed;
     @NonNull private final int[] poseCounts = new int[Pose.values().length];
     private int acceptedTotal;
     /** 完成态保留的唯一均值模板（已 L2 归一）。 */
@@ -365,10 +383,11 @@ public final class EnrollmentSession {
     public static ExistingTemplateSource fromRepository(@NonNull final AndroidEnrollmentRepository repo) {
         return new ExistingTemplateSource() {
             @Override
-            public void forEach(@NonNull final ExistingTemplateConsumer consumer) {
+            public boolean forEach(@NonNull final ExistingTemplateConsumer consumer) {
                 AndroidEnrollmentRepository.ListResult list = repo.list();
                 if (!list.isOk()) {
-                    return;
+                    // 清单读取失败：无法枚举既有模板，如实报告失败，不得静默空遍历放行。
+                    return false;
                 }
                 for (final AndroidEnrollmentRepository.Entry entry : list.entries) {
                     final float[][] decoded = new float[1][];
@@ -382,10 +401,14 @@ public final class EnrollmentSession {
                                     }
                                 }
                             });
-                    if (rr.isOk() && decoded[0] != null) {
-                        consumer.accept(entry.userId, decoded[0]);
+                    if (!rr.isOk() || decoded[0] == null) {
+                        // 任一模板读取/解码失败即中止遍历并报告失败：跳过该模板会让本可
+                        // 判重的样本被误放行，必须在判定点整体拒绝本次注册。
+                        return false;
                     }
+                    consumer.accept(entry.userId, decoded[0]);
                 }
+                return true;
             }
         };
     }
@@ -396,10 +419,11 @@ public final class EnrollmentSession {
         final List<NamedTemplate> snapshot = new ArrayList<>(templates);
         return new ExistingTemplateSource() {
             @Override
-            public void forEach(@NonNull ExistingTemplateConsumer consumer) {
+            public boolean forEach(@NonNull ExistingTemplateConsumer consumer) {
                 for (NamedTemplate t : snapshot) {
                     consumer.accept(t.userId, t.embedding);
                 }
+                return true;
             }
         };
     }
@@ -511,6 +535,13 @@ public final class EnrollmentSession {
             }
         }
 
+        // 6.5) 现有模板未能完整读取（仓库不可用）：无法判重时宁可拒绝本次样本，
+        //      绝不可把“无法检查”当作“没有重复人员”而放行注册。
+        if (existingLoadFailed) {
+            return result(false, Reason.REPO_UNAVAILABLE, pose,
+                    "无法校验现有模板，已阻止注册以免重复");
+        }
+
         // 7) 与现有注册模板重复阻止
         for (float[] existing : existingSnapshot) {
             if (ImageMetrics.cosine(existing, sample.embedding) >= DUPLICATE_TEMPLATE_COSINE) {
@@ -599,15 +630,23 @@ public final class EnrollmentSession {
         return accepted.size() + existingSnapshot.size() + (meanTemplate != null ? 1 : 0);
     }
 
+    /** 现有模板快照是否读取失败；仅供测试断言失败标记在 start/cancel/reset 间的生命周期。 */
+    @VisibleForTesting
+    synchronized boolean isExistingLoadFailed() {
+        return existingLoadFailed;
+    }
+
     // ---------------- 内部实现 ----------------
 
     private void snapshotExisting() {
         if (existingSource == null) {
             existingSnapshot = Collections.emptyList();
+            // 无来源即“库中确无既有模板”，是确定的空集而非读取失败。
+            existingLoadFailed = false;
             return;
         }
         final List<float[]> out = new ArrayList<>();
-        existingSource.forEach(new ExistingTemplateConsumer() {
+        boolean loaded = existingSource.forEach(new ExistingTemplateConsumer() {
             @Override
             public void accept(@NonNull String ignoredUserId, @NonNull float[] embedding) {
                 if (embedding.length == EMBEDDING_DIM && ImageMetrics.allFinite(embedding)) {
@@ -616,6 +655,9 @@ public final class EnrollmentSession {
             }
         });
         existingSnapshot = out;
+        // 保留既有快照语义（已收下的照收），但失败标记必须落定：判定点凭它前置拒绝，
+        // 避免不完整快照被当成“库中无重复”。
+        existingLoadFailed = !loaded;
     }
 
     private void finalizeMeanTemplate() {
@@ -659,6 +701,9 @@ public final class EnrollmentSession {
             Arrays.fill(e, 0f);
         }
         existingSnapshot = Collections.emptyList();
+        // 快照被丢弃时同步清除失败标记：cancel()/reset()/重新 start() 后不得残留
+        // “仓库不可用”状态而误拒后续会话。
+        existingLoadFailed = false;
     }
 
     private static boolean isSampleStructurallyValid(@Nullable FrameSample s) {
