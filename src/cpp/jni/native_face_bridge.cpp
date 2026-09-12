@@ -55,7 +55,9 @@ struct GallerySlot {
 struct FaceBridgeState {
     std::mutex mutex;
     rk_core::FaceRuntimeProfile profile;
-    bool profileLoaded = false;
+    // 仅表示 manifest 已通过格式/ABI 校验并暂存，**不代表**推理管线已加载生效。
+    // 真正的「已加载生效」由 Engine 实时快照的 effective/reason 表达（getRuntimeStatus）。
+    bool profileValidated = false;
     FaceSearchLinearIndex gallery;
     bool galleryLoaded = false;
     std::shared_ptr<GallerySlot> gallerySlot = std::make_shared<GallerySlot>();
@@ -218,6 +220,17 @@ bool readDirectEmbedding(JNIEnv* env, jobject buffer, std::vector<float>& out,
 }
 
 // ========== loadProfile ==========
+/**
+ * 校验并暂存 profile（语义澄清，P1-2）：
+ * parseV1 只做格式/ABI/路径/SHA 字段格式校验，**不加载推理管线、不做模型文件存在性校验、
+ * 不跑自检**。因此本方法只返回 validated/staged（effective 恒为 false），绝不谎报「已加载生效」。
+ *
+ * 「加载并生效」的唯一入口是 bridge_activateRuntime；文件级校验由两条正式路径承担：
+ *   - Java FaceModelManager.verifyModelFiles（导入/切换前对稳定目录的存在性 + LFS + SHA-256）；
+ *   - activateRuntime → RealtimeFacePipeline::reload → hooks.verifyFiles
+ *     （= FaceRuntimeManifest::verifyFiles，对真实 baseDir 复核）。
+ * 之所以不给本方法加 baseDir：会与上述两条路径重复，且扩大 JNI 面而不增加安全网。
+ */
 jstring bridge_loadProfile(JNIEnv* env, jclass /* clazz */,
                            jstring manifestJson, jstring currentAbi) {
     try {
@@ -239,12 +252,14 @@ jstring bridge_loadProfile(JNIEnv* env, jclass /* clazz */,
         auto& s = state();
         std::lock_guard<std::mutex> lock(s.mutex);
         s.profile = std::move(profile);
-        s.profileLoaded = true;
+        // 仅置「已校验暂存」位；不放行 effective，避免被解释为管线已生效。
+        s.profileValidated = true;
         // 仅记录 profileId/modelVersion 等非敏感元数据。
-        rklog::logInfo(TAG, __func__, "face runtime profile loaded");
+        rklog::logInfo(TAG, __func__, "face runtime profile validated (staged)");
 
         return toJString(env, okJson(
-            "\"profileId\":\"" + jsonEscape(s.profile.profileId) +
+            "\"validated\":true,\"staged\":true,\"effective\":false"
+            ",\"profileId\":\"" + jsonEscape(s.profile.profileId) +
             "\",\"modelVersion\":\"" + jsonEscape(s.profile.modelVersion) +
             "\",\"embeddingDim\":" + std::to_string(s.profile.embeddingDim)));
     } catch (const std::exception& e) {
@@ -295,7 +310,8 @@ jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifest
         {
             std::lock_guard<std::mutex> lock(s.mutex);
             s.profile = profile;
-            s.profileLoaded = true;
+            // 校验暂存位；是否真正生效仍以 reload.ok（下文的 effective）为准。
+            s.profileValidated = true;
             // 先登记 pending：若 Engine 尚未创建，engine.cpp 创建后据此补激活。
             s.pendingActivation = true;
             s.pendingManifest = manifest;
@@ -571,9 +587,13 @@ jstring bridge_getRuntimeStatus(JNIEnv* env, jclass /* clazz */) {
         const std::size_t galleryCount = s.galleryLoaded ? s.gallery.size() : 0;
         const std::size_t galleryDim = s.galleryLoaded ? s.gallery.dim() : 0;
         return toJString(env, okJson(
-            std::string("\"profileLoaded\":") + boolJson(s.profileLoaded) +
-            ",\"profileId\":\"" + jsonEscape(s.profileLoaded ? s.profile.profileId : std::string()) + "\"" +
-            ",\"embeddingDim\":" + std::to_string(s.profileLoaded ? s.profile.embeddingDim : 0) +
+            // profileValidated：manifest 已校验并暂存（磁盘/格式层面），**不代表**管线已生效；
+            // profileLoaded：仅为旧消费方（MainActivity 兜底）保留的同值别名，语义同 validated。
+            // 是否「已加载生效」只看 effective/reason（来自 Engine 实时快照）。
+            std::string("\"profileValidated\":") + boolJson(s.profileValidated) +
+            ",\"profileLoaded\":" + boolJson(s.profileValidated) +
+            ",\"profileId\":\"" + jsonEscape(s.profileValidated ? s.profile.profileId : std::string()) + "\"" +
+            ",\"embeddingDim\":" + std::to_string(s.profileValidated ? s.profile.embeddingDim : 0) +
             ",\"galleryLoaded\":" + boolJson(s.galleryLoaded) +
             ",\"galleryCount\":" + std::to_string(galleryCount) +
             ",\"galleryDim\":" + std::to_string(galleryDim) +

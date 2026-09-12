@@ -11,7 +11,8 @@ import java.util.Map;
  * <p>本类是模型管理器（{@link FaceModelManager}）对外暴露的<b>只读状态</b>，供 UI 判断：
  * <ul>
  *   <li>首启无内置模型 → {@link State#NOT_IMPORTED}，{@link #message} 为用户引导文案；</li>
- *   <li>已导入并成功激活 → {@link State#READY}，携带 profileId / 版本 / 许可；</li>
+ *   <li>已导入并激活 → {@link State#READY}，携带 profileId / 版本 / 许可（是否已加载生效见
+ *       {@link #nativeProfileActive}）；</li>
  *   <li>已激活但 manifest/文件损坏 → {@link State#ERROR}。</li>
  * </ul>
  *
@@ -32,7 +33,7 @@ public final class FaceRuntimeStatus {
     public enum State {
         /** 未导入任何模型（首启默认态），需引导用户通过 SAF 导入 ZIP。 */
         NOT_IMPORTED,
-        /** 已导入并成功激活（native 自检通过）。 */
+        /** 已导入并激活（manifest 已校验、文件已落盘）。是否已加载生效另见 {@link #nativeProfileActive}。 */
         READY,
         /** 存在激活配置但校验失败（manifest 损坏、文件缺失、native 拒绝）。 */
         ERROR
@@ -49,7 +50,15 @@ public final class FaceRuntimeStatus {
     @NonNull public final String licenseId;
     /** 已导入的 profile 数量（storeDir 下含合法 manifest 的目录数，含未激活者）。 */
     public final int importedProfileCount;
-    /** native 侧 {@code getRuntimeStatus} 报告的 profileLoaded；native 不可用时为 false。 */
+    /**
+     * native 侧 {@code getRuntimeStatus} 报告的 profile 已校验/暂存（{@code profileValidated}，
+     * 兼容旧字段 {@code profileLoaded}）。<b>不代表</b>推理管线已加载生效；native 不可用时为 false。
+     */
+    public final boolean nativeProfileValidated;
+    /**
+     * native 侧是否<b>已加载生效</b>（{@code getRuntimeStatus} 的 {@code effective}
+     * 且 {@code reason} 为 ok）。仅凭 {@link #nativeProfileValidated} 不得判定就绪；native 不可用时为 false。
+     */
     public final boolean nativeProfileActive;
     /** native 侧报告的 embedding 维度；未知时为 0。 */
     public final int nativeEmbeddingDim;
@@ -60,12 +69,21 @@ public final class FaceRuntimeStatus {
                       @NonNull String modelVersion, @NonNull String licenseId,
                       int importedProfileCount, boolean nativeProfileActive, int nativeEmbeddingDim,
                       @NonNull String message) {
+        this(state, profileId, displayName, modelVersion, licenseId, importedProfileCount,
+                false, nativeProfileActive, nativeEmbeddingDim, message);
+    }
+
+    FaceRuntimeStatus(@NonNull State state, @NonNull String profileId, @NonNull String displayName,
+                      @NonNull String modelVersion, @NonNull String licenseId,
+                      int importedProfileCount, boolean nativeProfileValidated,
+                      boolean nativeProfileActive, int nativeEmbeddingDim, @NonNull String message) {
         this.state = state;
         this.profileId = profileId;
         this.displayName = displayName;
         this.modelVersion = modelVersion;
         this.licenseId = licenseId;
         this.importedProfileCount = importedProfileCount;
+        this.nativeProfileValidated = nativeProfileValidated;
         this.nativeProfileActive = nativeProfileActive;
         this.nativeEmbeddingDim = nativeEmbeddingDim;
         this.message = message;
@@ -77,6 +95,14 @@ public final class FaceRuntimeStatus {
 
     public boolean isNotImported() {
         return state == State.NOT_IMPORTED;
+    }
+
+    /**
+     * 推理管线是否已加载生效（native {@code effective}）。与 {@link #nativeProfileValidated}
+     * 区分：manifest 已校验/暂存不等于管线已生效（Engine 未创建或模型运行时装配失败时后者为 false）。
+     */
+    public boolean isRuntimeEffective() {
+        return nativeProfileActive;
     }
 
     /** 是否有用户导入且激活的模型（P1-6 下所有可用模型均为用户导入）。 */
@@ -125,8 +151,12 @@ public final class FaceRuntimeStatus {
     }
 
     /**
-     * 合并 native {@code getRuntimeStatus()} 的 JSON（{@code {"ok":true,"profileLoaded":..}}），
-     * 补全 {@link #nativeProfileActive}/{@link #nativeEmbeddingDim}。
+     * 合并 native {@code getRuntimeStatus()} 的 JSON，补全 {@link #nativeProfileValidated}
+     * 与 {@link #nativeProfileActive}/{@link #nativeEmbeddingDim}。
+     *
+     * <p>语义区分：{@code profileValidated}（兼容旧字段 {@code profileLoaded}）只表示 manifest
+     * 已校验/暂存；{@code effective} 才表示推理管线已加载生效。二者分别映射到
+     * {@link #nativeProfileValidated} 与 {@link #nativeProfileActive}，绝不互相替代。
      *
      * <p>解析失败或 native 不可用时<b>原样返回 this</b>，保证 UI 层拿到稳定状态、不因 native
      * 缺失而崩溃。
@@ -142,16 +172,23 @@ public final class FaceRuntimeStatus {
             if (root == null) {
                 return this;
             }
-            Boolean loaded = FaceModelManifest.asBoolean(root.get("profileLoaded"));
+            Boolean validated = FaceModelManifest.asBoolean(root.get("profileValidated"));
+            if (validated == null) {
+                // 兼容旧 native：无 profileValidated 时回退读 profileLoaded（其历史语义即「已校验」）。
+                validated = FaceModelManifest.asBoolean(root.get("profileLoaded"));
+            }
+            Boolean effective = FaceModelManifest.asBoolean(root.get("effective"));
             Double dim = FaceModelManifest.asNumber(root.get("embeddingDim"));
-            if (loaded == null && dim == null) {
+            if (validated == null && effective == null && dim == null) {
                 // native 返回里没有可合并字段时保持原对象，便于调用方按引用判断「未变化」。
                 return this;
             }
-            boolean active = loaded != null && loaded;
+            boolean validatedFlag = validated != null && validated;
+            // 就绪只看 effective：仅 manifest 校验通过不得被判为「已加载生效」。
+            boolean active = effective != null && effective;
             int d = (dim != null) ? dim.intValue() : 0;
             return new FaceRuntimeStatus(state, profileId, displayName, modelVersion, licenseId,
-                    importedProfileCount, active, d, message);
+                    importedProfileCount, validatedFlag, active, d, message);
         } catch (Exception ex) {
             return this;
         }
@@ -162,6 +199,7 @@ public final class FaceRuntimeStatus {
     public String toString() {
         return "FaceRuntimeStatus{state=" + state + ", profileId='" + profileId
                 + "', imported=" + importedProfileCount
+                + ", nativeValidated=" + nativeProfileValidated
                 + ", nativeActive=" + nativeProfileActive + "}";
     }
 }

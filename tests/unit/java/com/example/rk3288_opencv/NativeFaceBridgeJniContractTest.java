@@ -285,4 +285,35 @@ public class NativeFaceBridgeJniContractTest {
         assertNotNull(cpp);
         assertFalse("实现文件不应为空", read(cpp).trim().isEmpty());
     }
+
+    /**
+     * P1-2：loadProfile 语义必须是「校验并暂存」（validated/staged），不得宣称「已加载生效」；
+     * 生效判据必须走 getRuntimeStatus 的 {@code effective}。本测试为源码层结构守卫。
+     */
+    @Test
+    public void loadProfileSemanticsAreValidateAndStageNotEffective() throws IOException {
+        File root = findRepoRoot();
+        String cpp = read(new File(root, "src/cpp/jni/native_face_bridge.cpp"));
+        String mgr = read(new File(root,
+                "src/java/com/example/rk3288_opencv/FaceModelManager.java"));
+        String status = read(new File(root,
+                "src/java/com/example/rk3288_opencv/FaceRuntimeStatus.java"));
+
+        // C++：loadProfile 返回 validated/staged，内部状态位改名，彻底去除 profileLoaded 状态位。
+        assertTrue("loadProfile 必须返回 validated:true", cpp.contains("\\\"validated\\\":true"));
+        assertTrue("loadProfile 必须返回 staged:true", cpp.contains("\\\"staged\\\":true"));
+        assertTrue("状态位必须为 profileValidated", cpp.contains("profileValidated"));
+        assertFalse("不得再以 profileLoaded 作状态位（仅允许作为兼容别名输出）",
+                cpp.contains("bool profileLoaded"));
+        // getRuntimeStatus 必须同时暴露 validated 与 effective。
+        assertTrue("getRuntimeStatus 必须暴露 profileValidated", cpp.contains("profileValidated"));
+        assertTrue("getRuntimeStatus 必须暴露 effective", cpp.contains("\\\"effective\\\":"));
+
+        // Java：判定必须要求 validated，且就绪必须以 effective 为准。
+        assertTrue("FaceModelManager 必须要求 validated 字段", mgr.contains("isNativeValidated"));
+        assertTrue("FaceRuntimeStatus 必须以 effective 判 nativeProfileActive",
+                status.contains("root.get(\"effective\")"));
+        assertTrue("FaceRuntimeStatus 必须暴露 nativeProfileValidated",
+                status.contains("nativeProfileValidated"));
+    }
 }

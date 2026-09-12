@@ -40,12 +40,19 @@ final class NativeFaceBridge {
     }
 
     /**
-     * 加载模型运行时 profile（manifest v1 JSON 文本），解析成功后缓存在 native 侧。
+     * 校验并<b>暂存</b>模型运行时 profile（manifest v1 JSON 文本）——只做 manifest 格式/ABI/路径/SHA
+     * 字段格式校验，<b>不加载推理管线、不校验模型文件存在性、不跑自检</b>。
+     *
+     * <p>因此本方法的成功（{@code validated:true}）<b>不得</b>被解释为「已加载生效」；真实生效由
+     * {@link #activateRuntime(String, String, String, String)} 的 {@code effective}/{@code reason}
+     * 决定（经 {@link #getRuntimeStatus()} 暴露）。模型文件的存在性/LFS/SHA 由 Java 侧
+     * {@code FaceModelManager.verifyModelFiles} 与 activateRuntime 的管线 reload 承担。
      *
      * @param manifestJson manifest v1 的 JSON 文本（不是文件路径；文件读取与 SHA 校验
      *                     由 Java/资产层 {@code verifyFaceModels} 负责，JNI 不做文件 IO）
      * @param currentAbi   当前设备 ABI，必须出现在 manifest 的 {@code supportedAbis} 中
-     * @return 成功 {@code {"ok":true,"profileId":...,"modelVersion":...,"embeddingDim":...}}；失败返回错误 JSON
+     * @return 成功 {@code {"ok":true,"validated":true,"staged":true,"effective":false,
+     *         "profileId":...,"modelVersion":...,"embeddingDim":...}}；失败返回错误 JSON
      */
     static native String loadProfile(String manifestJson, String currentAbi);
 
@@ -110,9 +117,14 @@ final class NativeFaceBridge {
     static native byte[] takeEnrollmentTemplate();
 
     /**
-     * 运行时聚合状态（profile / gallery / enrollment）。
+     * 运行时聚合状态（profile / gallery / enrollment / 实时管线生效态）。
      *
-     * @return {@code {"ok":true,"profileLoaded":...,"galleryCount":N,"enrollmentState":"..."}}
+     * <p>字段语义区分：{@code profileValidated}（兼容别名 {@code profileLoaded}）仅表示 manifest
+     * 已校验/暂存；{@code effective} 才表示推理管线已加载生效，{@code reason} 为最近一次实时路径
+     * 契约码（未生效时如 {@code pending}/{@code missing_model}）。
+     *
+     * @return {@code {"ok":true,"profileValidated":...,"profileId":...,"embeddingDim":...,
+     *         "galleryCount":N,"enrollmentState":"...","effective":...,"reason":"..."}}
      */
     static native String getRuntimeStatus();
 }

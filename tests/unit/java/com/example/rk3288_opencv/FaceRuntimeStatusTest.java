@@ -51,22 +51,49 @@ public class FaceRuntimeStatusTest {
     }
 
     @Test
-    public void withNativeStatusMergesProfileLoadedAndDim() {
+    public void withNativeStatusMergesValidatedAndEffective() {
         FaceRuntimeStatus base = FaceRuntimeStatus.notImported(1);
         FaceRuntimeStatus merged = base.withNativeStatus(
-                "{\"ok\":true,\"profileLoaded\":true,\"profileId\":\"p1\",\"embeddingDim\":512,"
+                "{\"ok\":true,\"profileValidated\":true,\"effective\":true,\"reason\":\"ok\","
+                        + "\"profileId\":\"p1\",\"embeddingDim\":512,"
                         + "\"galleryLoaded\":false,\"galleryCount\":0,\"enrollmentState\":\"IDLE\"}");
         assertNotSame(base, merged);
-        assertTrue(merged.nativeProfileActive);
+        assertTrue("effective=true 才是已加载生效", merged.nativeProfileActive);
+        assertTrue("profileValidated=true 表示已校验/暂存", merged.nativeProfileValidated);
+        assertTrue(merged.isRuntimeEffective());
         assertEquals(512, merged.nativeEmbeddingDim);
         // 合并只补 native 字段，不改变模型状态语义。
         assertEquals(FaceRuntimeStatus.State.NOT_IMPORTED, merged.state);
     }
 
     @Test
-    public void withNativeStatusReportsFalseWhenNotLoaded() {
+    public void validatedWithoutEffectiveIsNotReportedActive() {
+        // 关键区分：manifest 已校验/暂存（profileValidated=true）但管线未生效（effective=false，
+        // 如 Engine 未创建 pending）——不得判为「已加载生效」。
+        FaceRuntimeStatus merged = FaceRuntimeStatus.ready("p1", "N", "1", "lic", 1, false, 512)
+                .withNativeStatus("{\"ok\":true,\"profileValidated\":true,\"effective\":false,"
+                        + "\"reason\":\"pending\",\"embeddingDim\":512}");
+        assertTrue(merged.nativeProfileValidated);
+        assertFalse("仅校验暂存不得判为已生效", merged.nativeProfileActive);
+        assertFalse(merged.isRuntimeEffective());
+        assertEquals(512, merged.nativeEmbeddingDim);
+    }
+
+    @Test
+    public void legacyProfileLoadedWithoutEffectiveDoesNotImplyActive() {
+        // 兼容旧 native：仅有 profileLoaded 时按「已校验」处理，但绝不据此判为已加载生效。
         FaceRuntimeStatus merged = FaceRuntimeStatus.notImported(0)
-                .withNativeStatus("{\"ok\":true,\"profileLoaded\":false,\"embeddingDim\":0}");
+                .withNativeStatus("{\"ok\":true,\"profileLoaded\":true,\"embeddingDim\":512}");
+        assertTrue(merged.nativeProfileValidated);
+        assertFalse(merged.nativeProfileActive);
+    }
+
+    @Test
+    public void withNativeStatusReportsFalseWhenNotValidated() {
+        FaceRuntimeStatus merged = FaceRuntimeStatus.notImported(0)
+                .withNativeStatus("{\"ok\":true,\"profileValidated\":false,\"effective\":false,"
+                        + "\"embeddingDim\":0}");
+        assertFalse(merged.nativeProfileValidated);
         assertFalse(merged.nativeProfileActive);
         assertEquals(0, merged.nativeEmbeddingDim);
     }
