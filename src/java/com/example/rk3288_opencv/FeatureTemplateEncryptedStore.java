@@ -62,6 +62,53 @@ public final class FeatureTemplateEncryptedStore {
 
     private static final SecureRandom RNG = new SecureRandom();
 
+    /**
+     * 平台密钥提供者（测试接缝）。
+     *
+     * <p>生产实现：API &gt;= 23 时走 AndroidKeyStore（{@link Api23}）。测试可在 JVM 上注入
+     * JCE 内存密钥，从而在无 Android 运行时的情况下验证加解密与清零逻辑。
+     *
+     * <p>红线：AAD 构造与 {@link Api23} 的密钥生成逻辑保持不变，此处仅把“平台是否支持 /
+     * 如何取密钥”改为可注入，不改变生产路径行为。
+     */
+    @androidx.annotation.VisibleForTesting
+    interface PlatformKeyProvider {
+        boolean isSupported();
+
+        SecretKey getOrCreateKeyV1() throws Exception;
+    }
+
+    private static final PlatformKeyProvider DEFAULT_KEY_PROVIDER = new PlatformKeyProvider() {
+        @Override
+        public boolean isSupported() {
+            return Build.VERSION.SDK_INT >= 23;
+        }
+
+        @Override
+        public SecretKey getOrCreateKeyV1() throws Exception {
+            return Api23.getOrCreateKeyV1();
+        }
+    };
+
+    private static volatile PlatformKeyProvider platformKeyProvider = DEFAULT_KEY_PROVIDER;
+
+    /** 仅供测试注入；传 null 恢复默认（AndroidKeyStore）实现。 */
+    @androidx.annotation.VisibleForTesting
+    static void setPlatformKeyProviderForTesting(@Nullable PlatformKeyProvider provider) {
+        platformKeyProvider = (provider != null) ? provider : DEFAULT_KEY_PROVIDER;
+    }
+
+    /** 当前平台是否支持 AES-GCM 落盘（生产等价于 SDK_INT &gt;= 23）。 */
+    @androidx.annotation.VisibleForTesting
+    static boolean isPlatformSupported() {
+        return platformKeyProvider.isSupported();
+    }
+
+    /** 读取回调：明文仅在该回调内有效，回调返回后立即被清零，调用方如需保留必须自行复制。 */
+    public interface PlaintextConsumer {
+        void accept(@NonNull byte[] plaintextTemplate) throws Exception;
+    }
+
     private FeatureTemplateEncryptedStore() {}
 
     @NonNull
@@ -73,7 +120,15 @@ public final class FeatureTemplateEncryptedStore {
 
     @NonNull
     public static File fileForUserId(@NonNull Context ctx, @NonNull String userId) {
-        File dir = defaultDir(ctx);
+        return fileForUserIdInDir(defaultDir(ctx), userId);
+    }
+
+    /**
+     * 通用作用域版本：在调用方指定的目录内计算某 userId 的模板文件名。
+     * 命名语义与 {@link #fileForUserId(Context, String)} 完全一致（userId 的 SHA-256 十六进制）。
+     */
+    @NonNull
+    public static File fileForUserIdInDir(@NonNull File dir, @NonNull String userId) {
         String name = "u_" + toHex(sha256(userId.getBytes(StandardCharsets.UTF_8))) + ".bin";
         return new File(dir, name);
     }
@@ -85,12 +140,12 @@ public final class FeatureTemplateEncryptedStore {
                                     @NonNull byte[] plaintextTemplate,
                                     int modelVersion,
                                     int templateSchemaVersion) {
-        if (Build.VERSION.SDK_INT < 23) {
+        if (!platformKeyProvider.isSupported()) {
             return new WriteResult(Code.UNSUPPORTED_PLATFORM);
         }
 
         try {
-            SecretKey key = Api23.getOrCreateKeyV1();
+            SecretKey key = platformKeyProvider.getOrCreateKeyV1();
             byte[] iv = new byte[IV_LEN];
             RNG.nextBytes(iv);
 
@@ -148,6 +203,10 @@ public final class FeatureTemplateEncryptedStore {
         }
     }
 
+    /**
+     * 低层读取原语：返回的 {@link ReadResult#plaintext} 由调用方负责在使用后清零。
+     * 生产代码请使用 {@link #readAndConsume}，由库保证使用后清零，避免明文长期驻留。
+     */
     @NonNull
     public static ReadResult read(@NonNull Context ctx,
                                   @NonNull File srcFile,
@@ -155,7 +214,7 @@ public final class FeatureTemplateEncryptedStore {
                                   int modelVersion,
                                   int templateSchemaVersion,
                                   boolean quarantineOnCorrupt) {
-        if (Build.VERSION.SDK_INT < 23) {
+        if (!platformKeyProvider.isSupported()) {
             return new ReadResult(Code.UNSUPPORTED_PLATFORM, null);
         }
         if (!srcFile.exists()) {
@@ -181,7 +240,7 @@ public final class FeatureTemplateEncryptedStore {
         }
 
         try {
-            SecretKey key = Api23.getOrCreateKeyV1();
+            SecretKey key = platformKeyProvider.getOrCreateKeyV1();
             byte[] aad = buildAad(userId, modelVersion, templateSchemaVersion);
             if (!Arrays.equals(env.aad, aad)) {
                 if (quarantineOnCorrupt) quarantine(srcFile);
@@ -203,6 +262,41 @@ public final class FeatureTemplateEncryptedStore {
             return new ReadResult(Code.CORRUPTED, null);
         } catch (Exception e) {
             return new ReadResult(mapReadError(e), null);
+        }
+    }
+
+    /**
+     * 读取模板并在使用后清零内存明文（推荐的生产入口）。
+     *
+     * <p>与 {@link #read} 的差异：明文不对外返回，而是交给 {@code consumer} 使用；无论回调
+     * 正常返回还是抛异常，明文缓冲区都会在 finally 中 {@code Arrays.fill(pt, (byte) 0)}。
+     * 这样调用方无法持有长期存活的明文副本，避免模板残留在堆内存。
+     *
+     * <p>注意：本方法复用 {@link #read} 的全部加解密路径，AAD 与 Keystore 逻辑不受影响。
+     *
+     * @return {@code OK} 表示回调已成功执行且明文已清零；其余 code 与 {@link #read} 一致。
+     */
+    @NonNull
+    public static ReadResult readAndConsume(@NonNull Context ctx,
+                                            @NonNull File srcFile,
+                                            @NonNull String userId,
+                                            int modelVersion,
+                                            int templateSchemaVersion,
+                                            boolean quarantineOnCorrupt,
+                                            @NonNull PlaintextConsumer consumer) {
+        ReadResult rr = read(ctx, srcFile, userId, modelVersion, templateSchemaVersion, quarantineOnCorrupt);
+        if (rr.code != Code.OK || rr.plaintext == null) {
+            return new ReadResult(rr.code, null);
+        }
+        try {
+            consumer.accept(rr.plaintext);
+            return new ReadResult(Code.OK, null);
+        } catch (Exception e) {
+            // 回调失败不回传明文，避免泄漏；错误归为解密/消费失败。
+            return new ReadResult(Code.DECRYPT_FAILED, null);
+        } finally {
+            // 明文仅存在于本次调用栈内，使用后立即清零。
+            Arrays.fill(rr.plaintext, (byte) 0);
         }
     }
 
@@ -373,6 +467,12 @@ public final class FeatureTemplateEncryptedStore {
         } catch (java.security.NoSuchAlgorithmException e) {
             throw new IllegalStateException("KEYSTORE_ERROR: SHA-256 algorithm not available", e);
         }
+    }
+
+    /** SHA-256 十六进制摘要（小写）。用于登记密文完整性来源，不涉及模板明文。 */
+    @NonNull
+    public static String sha256Hex(@NonNull byte[] input) {
+        return toHex(sha256(input));
     }
 
     private static String toHex(@NonNull byte[] bytes) {
