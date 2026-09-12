@@ -61,6 +61,9 @@ jboolean engine_nativeInitFile(
          rk_core::VideoManager::sanitizeUriForLog(pathStr).c_str());
     if (!g_engine) {
         g_engine = std::make_unique<rk_core::Engine>();
+        // 若 NativeFaceBridge.activateRuntime 先于 Engine 创建被调用，此处补一次激活
+        // （消费 FaceBridgeState 中暂存的 manifest/baseDir/abi/galleryDir）。
+        applyPendingFaceRuntimeActivation();
     }
 
     g_cancelInit.store(false);
@@ -150,6 +153,9 @@ jboolean engine_nativeInit(
 
     if (!g_engine) {
         g_engine = std::make_unique<rk_core::Engine>();
+        // 若 NativeFaceBridge.activateRuntime 先于 Engine 创建被调用，此处补一次激活
+        // （消费 FaceBridgeState 中暂存的 manifest/baseDir/abi/galleryDir）。
+        applyPendingFaceRuntimeActivation();
     }
 
     g_cancelInit.store(false);

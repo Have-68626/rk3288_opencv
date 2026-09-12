@@ -143,6 +143,12 @@ Java_com_example_rk3288_1opencv_NativeFaceBridge_loadProfile(JNIEnv* env, jclass
     return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
 }
 
+// activateRuntime(String, String, String, String)Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring, jstring, jstring, jstring) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
 // replaceGallery([Ljava/lang/String;[Ljava/nio/ByteBuffer;)Ljava/lang/String; —— 占位失败 JSON
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_rk3288_1opencv_NativeFaceBridge_replaceGallery(JNIEnv* env, jclass /* clazz */, jobjectArray, jobjectArray) {

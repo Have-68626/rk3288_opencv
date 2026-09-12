@@ -45,6 +45,8 @@ public class NativeFaceBridgeJniContractTest {
     static {
         EXPECTED.put("loadProfile",
                 "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        EXPECTED.put("activateRuntime",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
         EXPECTED.put("replaceGallery",
                 "([Ljava/lang/String;[Ljava/nio/ByteBuffer;)Ljava/lang/String;");
         EXPECTED.put("beginEnrollment",
