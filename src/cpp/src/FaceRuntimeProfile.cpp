@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -12,6 +13,10 @@
 namespace rk_core {
 
 namespace {
+
+// anchorsPerPos 每元素上限：真实 SCRFD 每位置 2 anchor，留余量取 8；
+// 防下游 4*N/10*N 通道数溢出与超大 double→int 转换的未定义行为。
+constexpr double kMaxAnchorsPerPos = 8.0;
 
 bool isHex64(const std::string& s) {
     if (s.size() != 64) return false;
@@ -83,9 +88,11 @@ bool parseAnchorsPerPos(const rk_win::JsonValue& o, int out[3], std::string& err
     }
     for (std::size_t i = 0; i < v->a.size(); i++) {
         const rk_win::JsonValue& e = v->a[i];
-        // 先判 >0（NaN 亦为假）再转 int，避免对 NaN/非正数做未定义转换
-        if (!e.isNumber() || !(e.n > 0.0)) {
-            err = "detector.anchorsPerPos 元素非法（须正整数）";
+        // 先判有限且 >0（NaN/Inf/非正均拒）且不超上限，再转 int：
+        // 防超大 double（如 1e100）→int 的未定义行为，以及下游 4*N/10*N 溢出。
+        // 真实 SCRFD 每位置 2 anchor，上限 8 留余量（codex 二次审计 P2）。
+        if (!e.isNumber() || !std::isfinite(e.n) || !(e.n > 0.0) || e.n > kMaxAnchorsPerPos) {
+            err = "detector.anchorsPerPos 元素非法（须 1..8 正整数）";
             return false;
         }
         const int n = static_cast<int>(e.n);

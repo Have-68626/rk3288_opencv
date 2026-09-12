@@ -160,7 +160,7 @@ After the triple refactor (2026-07, PR #427), the three monolithic classes are n
 - **Model binaries are gitignored** (`models/*` excludes `.gitkeep`). Generate locally via the quantize script.
 - **Calibration images**: 172 face images from `deps/WIDER_train/` (not `tests/test_set01/` in practice). Contents of `deps/WIDER_train/` and `deps/insightface/` are gitignored (only `.gitkeep` tracked) — download WIDER Face dataset separately.
 - **Precision tests**: 8 structural tests (`test_int8_*.cpp`) have `fileExists()` skip — pass when models absent. `ncnn_precision_test` (standalone) enables full inference comparison; ArcFace cosine similarity target ≥ 0.90.
-- **CRT**: project default is static CRT (`/MT`). `ncnn_precision_test` also uses static CRT (`MultiThreaded`), matching the global default (no workaround needed).
+- **CRT**: project default is static CRT (`/MT`). The official ncnn `windows-vs2022` prebuilt is **dynamic CRT (`/MD`)** — linking it into the project's `/MT` targets fails with unresolved `__imp_*` symbols (fesetround/roundf/erfcf…). Workaround (verified locally): rebuild ncnn from source with `/MT` (e.g. `D:/ProgramData/NCNN/ncnn-20260113-mt`, `NCNN_VULKAN=OFF`) and point `ncnn_DIR` at it. `ncnn_precision_test` uses the same static CRT.
 - **SCRFD → PNNX note**: ncnn2int8 cannot handle `splitncnn` nodes (multi-scale detection heads). Only PNNX-direct output (optlevel=2) produces clean graphs for INT8 quantization.
 - **Android**: INT8 tests are structural only (fileExists skip). `ncnn_precision_test` is NOT built on Android.
 
