@@ -10,6 +10,7 @@ set(RK_JNI_GATE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/camera.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/engine.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/native_face_bridge.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/preview.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/registry.cpp"
 )
@@ -34,6 +35,7 @@ if(NOT RK_SKIP_OPENCV)
         "src/cpp/jni/engine.cpp"
         "src/cpp/jni/preview.cpp"
         "src/cpp/jni/config.cpp"
+        "src/cpp/jni/native_face_bridge.cpp"
         "src/cpp/jni/registry.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"

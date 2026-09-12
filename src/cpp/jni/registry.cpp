@@ -3,7 +3,7 @@
  * @brief JNI 方法注册中心
  *
  * 汇聚各领域的 JNI 方法，通过 JniMethodRegistry 统一注册到对应 Java 类。
- * 支持多类注册（MainActivity 实例方法 + NativeBridge 静态方法）。
+ * 支持多类注册（MainActivity 实例方法 + NativeBridge/NativeFaceBridge 静态方法）。
  */
 #include <jni.h>
 
@@ -41,5 +41,19 @@ jint registerAllNativeMethods(JNIEnv* env) {
         return JNI_ERR;
     }
 
-    return count + count2;
+    // 注册 NativeFaceBridge 静态方法（人脸运行时 / 注册域，任务13）
+    JniMethodRegistry faceBridgeRegistry;
+    registerFaceBridgeMethods(faceBridgeRegistry);
+
+    jclass faceBridgeClazz = env->FindClass("com/example/rk3288_opencv/NativeFaceBridge");
+    if (!faceBridgeClazz) {
+        return JNI_ERR;
+    }
+    jint count3 = faceBridgeRegistry.registerAll(env, faceBridgeClazz);
+    env->DeleteLocalRef(faceBridgeClazz);
+    if (count3 < 0) {
+        return JNI_ERR;
+    }
+
+    return count + count2 + count3;
 }

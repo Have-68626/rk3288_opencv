@@ -35,6 +35,8 @@ void registerCameraMethods(JniMethodRegistry& registry);
 void registerEngineMethods(JniMethodRegistry& registry);
 void registerPreviewMethods(JniMethodRegistry& registry);
 void registerConfigMethods(JniMethodRegistry& registry);
+// 人脸运行时 / 注册域（NativeFaceBridge 静态方法组，任务13）
+void registerFaceBridgeMethods(JniMethodRegistry& registry);
 
 // ========== 全局注册入口（定义在 jni/registry.cpp） ==========
 jint registerAllNativeMethods(JNIEnv* env);
