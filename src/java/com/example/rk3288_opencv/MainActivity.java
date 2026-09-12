@@ -115,12 +115,22 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final int INFERENCE_INTERVAL_MIN_MS = 80;
     private static final int INFERENCE_INTERVAL_MAX_MS = 2000;
 
+    // 任务15：模型来源与加速能力状态的刷新间隔（低频，避免逐帧查询 JNI）。
+    // FPS/CAP/LAT/CPU/MEM 仍沿用各自的 500ms 节流，不受此常量影响。
+    private static final long RUNTIME_STATUS_REFRESH_INTERVAL_MS = 2000L;
+    // 标准 Gradle 构建在 app/build.gradle 显式传入 -DRK_ENABLE_LIBYUV=OFF，
+    // 因此 libyuv 在编译期即被禁用（compiled=false），不能仅凭 requested 标为生效。
+    private static final boolean LIBYUV_COMPILED_IN_BUILD = false;
+
     private ImageView monitorView;
     private SurfaceView previewSurface;
     private TextView tvFps, tvCpu, tvMemory, tvStatus, tvOverlayStatus;
     private TextView tvLatency;
     private TextView tvCaptureStrategyInfo;
     private TextView tvDiagnostics;
+    // 任务15：模型来源/加速能力状态缓存文本与上次刷新时间（低频刷新，事件驱动 + 2s 节流）。
+    private String runtimeCapabilityText = "";
+    private long lastRuntimeStatusRefreshMs = 0L;
     private View recognitionTitle;
     private Button btnStartStop, btnViewLogs;
     private Button btnNavPlayback, btnNavSettings, btnNavAbout;
@@ -509,23 +519,484 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 }
             }
         }
+        // 任务15：监控状态变更属低频事件，强制刷新一次模型/加速能力状态块。
+        refreshRuntimeStatusIfDue(true);
         updateDiagnosticsText();
     }
 
     // 任务3：构建/相机诊断信息 —— 状态页展示 Git commit/构建时间/ABI/source epoch/
     // flip generation/cameraId，仅在状态渲染时刷新（非逐帧写日志），用于直接判断设备
     // 是否安装旧 APK，并定位频繁切源或配置变更。
+    // 任务15：在其后追加「模型来源 + 每能力 compiled/installed/requested/effective/
+    // reason/evidence + 最近推理耗时或 p95」状态块（数据源见 buildRuntimeCapabilityText）。
     private void updateDiagnosticsText() {
         if (tvDiagnostics == null) return;
         String cam = selectedCameraId != null ? selectedCameraId : "?";
         long srcEpoch = (activeCapture != null) ? activeCapture.currentSourceEpoch() : 0L;
         long flipGen = nativeGetFlipGeneration();
         String abi = Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "?";
+        // 双保险：本方法也会被低频统计循环调用，这里再走一次 2s 节流（非强制）。
+        refreshRuntimeStatusIfDue(false);
         tvDiagnostics.setText(
                 "git=" + BuildConfig.BUILD_GIT_COMMIT +
                 " time=" + BuildConfig.BUILD_TIME +
                 " abi=" + abi +
-                "\ncam=" + cam + " srcEpoch=" + srcEpoch + " flipGen=" + flipGen);
+                "\ncam=" + cam + " srcEpoch=" + srcEpoch + " flipGen=" + flipGen +
+                "\n" + runtimeCapabilityText);
+    }
+
+    /**
+     * 任务15：按需刷新模型/加速能力状态文本。
+     *
+     * <p>刷新策略：事件驱动（监控状态渲染、能力开关变化等）时 {@code force=true} 立即刷新；
+     * 低频统计循环里 {@code force=false}，由 {@link #RUNTIME_STATUS_REFRESH_INTERVAL_MS}
+     * 节流（默认 2s），避免逐帧调用 JNI / 逐帧写 UI。日志不写入任何模板或向量内容。
+     *
+     * @return 本次是否真正刷新了缓存文本
+     */
+    private boolean refreshRuntimeStatusIfDue(boolean force) {
+        long now = SystemClock.elapsedRealtime();
+        if (!force && now - lastRuntimeStatusRefreshMs < RUNTIME_STATUS_REFRESH_INTERVAL_MS) {
+            return false;
+        }
+        lastRuntimeStatusRefreshMs = now;
+        runtimeCapabilityText = buildRuntimeCapabilityText();
+        return true;
+    }
+
+    /**
+     * 任务15：构造模型来源 + 各加速能力的状态行。
+     *
+     * <p>数据来源：
+     * <ul>
+     *   <li>{@code FaceModelManager.status()}（任务14，P1-6）：模型来源标签「用户导入/未导入/
+     *       不可用」、profileId/维度/许可与缺失原因。</li>
+     *   <li>{@code NativeFaceBridge.getRuntimeStatus()} 返回的 JSON（任务11/13）：读取
+     *       顶层 {@code profileLoaded/profileId/embeddingDim/galleryCount/enrollmentState}，
+     *       以及（若 native 侧后续暴露）{@code requested/effective/reason/evidence/
+     *       benchmarkP95Ms} 与嵌套 {@code accelerators.<cap>.{compiled,installed,requested,
+     *       effective,reason,evidence}}。</li>
+     *   <li>Java 侧既有事实：能力开关与偏好（与 initEngine 的 RK_USE_* 一致）、
+     *       {@link BuildConfig} 构建信息、{@link StatsRepository} 最近推理耗时。</li>
+     * </ul>
+     *
+     * <p>规则：compiled/installed 不等于 effective；OpenCL/Qualcomm 即使编译进来，未经
+     * native 明确置 effective=true 一律显示为未生效。模型未导入时显式给出 {@code missing_model}
+     * 缺失原因，绝不静默回退 LBP。native 未暴露的字段以 {@code ?}/“未暴露”如实展示，不臆测。
+     */
+    private String buildRuntimeCapabilityText() {
+        String json = null;
+        try {
+            json = NativeFaceBridge.getRuntimeStatus();
+        } catch (Throwable t) {
+            // 动态注册缺失（jni-sync 未同步）时记下状态不可用，但仍继续展示模型来源
+            // （FaceModelManager 会自行降级），不中断状态区渲染。
+            json = null;
+        }
+        boolean nativeOk = json != null && !json.isEmpty() && jsonGetBool(json, "ok", true);
+        String nativeNote = (json == null || json.isEmpty())
+                ? "native 状态不可用"
+                : (nativeOk ? "" : "native 返回 ok=false");
+
+        boolean profileLoaded = jsonGetBool(json, "profileLoaded", false);
+        String profileId = jsonGetString(json, "profileId", "");
+        long dim = jsonGetLong(json, "embeddingDim", 0);
+        long galleryCount = jsonGetLong(json, "galleryCount", 0);
+        String enrollState = jsonGetString(json, "enrollmentState", "?");
+
+        // 管道级（任务11 快照）字段：native 尚未暴露时为 null/空，下游按保守值回退。
+        // 兼容顶层 flat 与 accelerators 嵌套两种形态。
+        String pipelineReason = jsonGetString(json, "reason", "");
+        String pipelineEvidence = jsonGetString(json, "evidence", "");
+        Boolean pipelineEffective = hasJsonKey(json, "effective")
+                ? jsonGetBool(json, "effective", false) : null;
+        double p95 = jsonGetDouble(json, "benchmarkP95Ms", -1.0);
+
+        // 模型来源（P1-6）：优先使用任务14 的 FaceModelManager 状态（其内部已合并 native
+        // getRuntimeStatus 的 profileLoaded），给出「用户导入/未导入/不可用」；未导入时显式
+        // 展示缺失原因（默认 missing_model），绝不静默回退 LBP。
+        String modelLabel;
+        boolean modelImported;
+        String modelDetail = "";
+        try {
+            FaceRuntimeStatus rs = FaceModelManager.forDefault(getApplicationContext()).status();
+            modelLabel = rs.sourceLabel();
+            modelImported = rs.isUserImported();
+            if (rs.isReady()) {
+                modelDetail = " profile=" + rs.profileId + " dim=" + rs.nativeEmbeddingDim
+                        + (rs.importedProfileCount > 1 ? " imported=" + rs.importedProfileCount : "");
+            } else if (rs.state == FaceRuntimeStatus.State.ERROR) {
+                // 已导入但校验失败：直接展示管理器的中文原因，便于定位高精度路径不兼容。
+                modelDetail = " 缺失原因=" + (rs.message.isEmpty() ? "runtime_init_failed" : rs.message);
+            } else {
+                modelDetail = " 缺失原因=" + jsonGetString(json, "missingReason", "missing_model");
+            }
+        } catch (Throwable t) {
+            // 模型管理器不可用（文件/依赖异常）时退回 native profileLoaded 判定，行为保守。
+            modelImported = jsonGetBool(json, "modelImported", profileLoaded);
+            modelLabel = modelImported ? "用户导入" : "未导入";
+            if (modelImported) {
+                modelDetail = (profileId.isEmpty() ? "" : " profile=" + profileId) + " dim=" + dim;
+            } else {
+                modelDetail = " 缺失原因=" + jsonGetString(json, "missingReason", "missing_model");
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (!nativeNote.isEmpty()) {
+            sb.append(nativeNote).append('\n');
+        }
+        sb.append("模型来源=").append(modelLabel).append(modelDetail);
+        if (!modelImported) {
+            // 无模型时显式给出缺失原因，不静默回退 LBP。
+            sb.append("（不静默回退 LBP）");
+        }
+        sb.append(" gallery=").append(galleryCount).append(" enroll=").append(enrollState);
+
+        // requested 一律取 UI/偏好，与 initEngine 写入的 RK_USE_* 环境变量保持一致。
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        boolean reqOpencl = switchAccelOpenCL != null
+                ? switchAccelOpenCL.isChecked() : prefs.getBoolean(PREF_ACCEL_OPENCL, false);
+        boolean reqMpp = switchAccelMpp != null
+                ? switchAccelMpp.isChecked() : prefs.getBoolean(PREF_ACCEL_MPP, false);
+        boolean reqQualcomm = switchAccelQualcomm != null
+                ? switchAccelQualcomm.isChecked() : prefs.getBoolean(PREF_ACCEL_QUALCOMM, false);
+        // libyuv 无 UI 开关，initEngine 默认按 true 传入 RK_USE_LIBYUV，但编译期已 OFF。
+        boolean reqLibyuv = prefs.getBoolean(PREF_ACCEL_LIBYUV, true);
+
+        // ncnn：主推（首推）检测后端 —— 规则「ncnn 首推才 effective」：仅主推后端可标为生效，
+        // 且只有用户导入模型已激活时才生效。若 native 显式暴露 effective（管道级或 accelerators
+        // 嵌套），则以 native 为准（capLine 内部优先级：嵌套 > 派生）。
+        Boolean ncnnEffective = (pipelineEffective != null) ? pipelineEffective : modelImported;
+        String ncnnReason;
+        if (!modelImported) {
+            ncnnReason = "missing_model";
+        } else if (!pipelineReason.isEmpty()) {
+            ncnnReason = pipelineReason;
+        } else {
+            ncnnReason = "ok";
+        }
+        String ncnnEvidence = !modelImported
+                ? "无用户导入模型"
+                : (pipelineEvidence.isEmpty() ? "首推后端；模型已激活" : pipelineEvidence);
+        sb.append('\n').append(capLine(json, "ncnn", "ncnn", true,
+                null, modelImported, ncnnEffective, ncnnReason, ncnnEvidence));
+        // MPP：仅标注编码文件路径作为 evidence；不因 compiled=true 就标 effective。
+        String mppPath = jsonGetCapString(json, "mpp", "evidence", null);
+        if (mppPath == null || mppPath.isEmpty()) {
+            mppPath = jsonGetCapString(json, "mpp", "encoderFile", null);
+        }
+        sb.append('\n').append(capLine(json, "mpp", "MPP", reqMpp,
+                null, false, null, "missing_dependency",
+                (mppPath == null || mppPath.isEmpty()) ? "编码文件=未暴露" : mppPath));
+        // libyuv：标准 Gradle 构建 -DRK_ENABLE_LIBYUV=OFF，编译期禁用 -> build_disabled。
+        sb.append('\n').append(capLine(json, "libyuv", "libyuv", reqLibyuv,
+                LIBYUV_COMPILED_IN_BUILD, LIBYUV_COMPILED_IN_BUILD, null, "build_disabled",
+                "Gradle -DRK_ENABLE_LIBYUV=OFF"));
+        // OpenCL / Qualcomm：编译进来也不等于生效，默认 missing_dependency。
+        sb.append('\n').append(capLine(json, "opencl", "OpenCL", reqOpencl,
+                null, false, null, "missing_dependency", "未暴露"));
+        sb.append('\n').append(capLine(json, "qualcomm", "Qualcomm", reqQualcomm,
+                null, false, null, "missing_dependency", "未暴露"));
+
+        // 最近推理耗时或 p95：优先 native 基准 p95；缺失时回退 StatsRepository 最近一次延迟。
+        Double recentLatency = null;
+        try {
+            recentLatency = StatsRepository.getInstance().getSnapshot().latencyMs;
+        } catch (Throwable ignored) {
+        }
+        sb.append('\n').append("推理: ");
+        if (p95 >= 0.0) {
+            sb.append(String.format(Locale.US, "p95=%.0fms", p95));
+        } else if (recentLatency != null) {
+            sb.append(String.format(Locale.US, "最近耗时=%.0fms", recentLatency));
+        } else {
+            sb.append("耗时=--");
+        }
+        if (p95 >= 0.0 && recentLatency != null) {
+            sb.append(String.format(Locale.US, " 最近=%.0fms", recentLatency));
+        }
+
+        // 高精度路径不兼容/基准失败：显式给出原因，并说明保留轻量后端。
+        if (modelImported && !pipelineReason.isEmpty() && !"ok".equals(pipelineReason)) {
+            sb.append("\n提示: 高精度路径未生效 reason=").append(pipelineReason)
+              .append("，保留轻量后端");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 生成单条能力状态行。优先采用 JSON 中 {@code accelerators.<cap>.*}（或顶层 cap 对象）字段；
+     * 缺失时用调用方派生的保守值。effective 只在 native 明确置 true（或主推后端派生为 true）时为 Y，
+     * 杜绝“compiled 即 effective”的误报。
+     */
+    private String capLine(String json, String cap, String label, boolean requested,
+                           Boolean compiledDerived, boolean installedDerived,
+                           Boolean effectiveDerived, String reasonDerived, String evidenceDerived) {
+        Boolean compiledJson = jsonGetCapBool(json, cap, "compiled");
+        Boolean installedJson = jsonGetCapBool(json, cap, "installed");
+        Boolean requestedJson = jsonGetCapBool(json, cap, "requested");
+        Boolean effectiveJson = jsonGetCapBool(json, cap, "effective");
+        String reasonJson = jsonGetCapString(json, cap, "reason", null);
+        String evidenceJson = jsonGetCapString(json, cap, "evidence", null);
+
+        boolean req = (requestedJson != null) ? requestedJson : requested;
+        String compiled = (compiledJson != null) ? yn(compiledJson)
+                : (compiledDerived != null ? yn(compiledDerived) : "?");
+        String installed = (installedJson != null) ? yn(installedJson) : yn(installedDerived);
+        boolean eff;
+        if (effectiveJson != null) {
+            eff = effectiveJson;
+        } else {
+            eff = (effectiveDerived != null) && effectiveDerived;
+        }
+        String reason = (reasonJson != null) ? reasonJson : reasonDerived;
+        String evidence = (evidenceJson != null) ? evidenceJson : evidenceDerived;
+        return label + " compiled=" + compiled + " installed=" + installed
+                + " req=" + yn(req) + " eff=" + yn(eff)
+                + " reason=" + reason + " ev=" + sanitizeStatusDetail(evidence);
+    }
+
+    private static String yn(boolean v) {
+        return v ? "Y" : "N";
+    }
+
+    /** 单行化并截断 evidence，避免长文本（含换行）撑爆状态区。 */
+    private static String sanitizeStatusDetail(String s) {
+        if (s == null) return "";
+        String flat = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+        return flat.length() > 96 ? flat.substring(0, 96) + "…" : flat;
+    }
+
+    /** 判断 flat JSON 中是否存在某顶层键。 */
+    private static boolean hasJsonKey(String json, String key) {
+        return jsonExtractRawValue(json, key) != null;
+    }
+
+    // ---------- 轻量 JSON 读取（仅用于解析 getRuntimeStatus 的扁平小对象） ----------
+
+    /** 读取字符串字段；缺失或非法返回 def。非字符串 token 按字面返回。 */
+    private static String jsonGetString(String json, String key, String def) {
+        String raw = jsonExtractRawValue(json, key);
+        if (raw == null) return def;
+        if (raw.length() >= 2 && raw.charAt(0) == '"' && raw.charAt(raw.length() - 1) == '"') {
+            return jsonUnescape(raw.substring(1, raw.length() - 1));
+        }
+        return raw;
+    }
+
+    private static boolean jsonGetBool(String json, String key, boolean def) {
+        String raw = jsonExtractRawValue(json, key);
+        if (raw == null) return def;
+        if (raw.startsWith("true")) return true;
+        if (raw.startsWith("false")) return false;
+        return def;
+    }
+
+    private static long jsonGetLong(String json, String key, long def) {
+        String raw = jsonExtractRawValue(json, key);
+        if (raw == null) return def;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    private static double jsonGetDouble(String json, String key, double def) {
+        String raw = jsonExtractRawValue(json, key);
+        if (raw == null) return def;
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+
+    /** 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）字符串；缺失返回 def。 */
+    private static String jsonGetCapString(String json, String cap, String key, String def) {
+        String sub = capObject(json, cap);
+        return sub == null ? def : jsonGetString(sub, key, def);
+    }
+
+    /** 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）布尔；缺失返回 null（区别于 false）。 */
+    private static Boolean jsonGetCapBool(String json, String cap, String key) {
+        String sub = capObject(json, cap);
+        if (sub == null || jsonExtractRawValue(sub, key) == null) return null;
+        return jsonGetBool(sub, key, false);
+    }
+
+    /** 定位 cap 对应对象：优先 accelerators 下的同名对象，回退顶层同名对象。 */
+    private static String capObject(String json, String cap) {
+        if (json == null) return null;
+        String acc = jsonExtractObject(json, "accelerators");
+        if (acc != null) {
+            String capObj = jsonExtractObject(acc, cap);
+            if (capObj != null) return capObj;
+        }
+        return jsonExtractObject(json, cap);
+    }
+
+    /**
+     * 提取 "key": 后的原始值 token（字符串含引号）；<b>仅匹配顶层对象键</b>，缺失返回 null。
+     *
+     * <p>限定顶层是为了避免误取 {@code accelerators.<cap>.*} 内的同名键（如 effective/reason）：
+     * 嵌套取值必须先 {@link #jsonExtractObject}（{@link #capObject}）缩小到子对象体，
+     * 再对子对象体调用本方法——此时子对象体的键仍处于其自身顶层。
+     */
+    private static String jsonExtractRawValue(String json, String key) {
+        return JsonText.extractRawValue(json, key);
+    }
+
+    /**
+     * 纯文本 JSON 取值工具：不依赖 Activity 实例与 Android API，抽成静态嵌套类以便
+     * JVM 单测直接覆盖（访问嵌套类不会触发 MainActivity 的静态初始化 / native 加载）。
+     */
+    static final class JsonText {
+
+        private JsonText() {
+        }
+
+        /** 提取 {@code "key":} 后的原始值 token（字符串含引号，保留转义）；仅匹配顶层键。 */
+        static String extractRawValue(String json, String key) {
+            if (json == null || key == null) return null;
+            String needle = "\"" + key + "\"";
+            int idx = indexOfTopLevelKey(json, needle);
+            if (idx < 0) return null;
+            int i = idx + needle.length();
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i >= json.length() || json.charAt(i) != ':') return null;
+            i++;
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i >= json.length()) return null;
+            char c = json.charAt(i);
+            if (c == '"') {
+                StringBuilder sb = new StringBuilder();
+                int j = i + 1;
+                while (j < json.length()) {
+                    char ch = json.charAt(j);
+                    if (ch == '\\' && j + 1 < json.length()) {
+                        sb.append(ch).append(json.charAt(j + 1));
+                        j += 2;
+                        continue;
+                    }
+                    if (ch == '"') {
+                        return "\"" + sb + "\"";
+                    }
+                    sb.append(ch);
+                    j++;
+                }
+                return null;  // 引号未闭合
+            }
+            int j = i;
+            while (j < json.length()) {
+                char ch = json.charAt(j);
+                if (ch == ',' || ch == '}' || ch == ']' || Character.isWhitespace(ch)) break;
+                j++;
+            }
+            return j > i ? json.substring(i, j) : null;
+        }
+
+        /**
+         * 只在顶层容器（深度 1）内定位键 token 的起始引号下标；未命中返回 -1。
+         *
+         * <p>顶层键后必须紧跟 {@code ':'}，从而把同名嵌套键（深度 &gt; 1）与字符串值排除在外，
+         * 不会因 {@code indexOf} 的首个命中而误读管道级字段。
+         */
+        private static int indexOfTopLevelKey(String json, String needle) {
+            int depth = 0;
+            boolean inStr = false;
+            boolean esc = false;
+            for (int i = 0; i < json.length(); i++) {
+                char ch = json.charAt(i);
+                if (inStr) {
+                    if (esc) {
+                        esc = false;
+                    } else if (ch == '\\') {
+                        esc = true;
+                    } else if (ch == '"') {
+                        inStr = false;
+                    }
+                    continue;
+                }
+                if (ch == '"') {
+                    if (depth == 1 && json.startsWith(needle, i)) {
+                        int j = i + needle.length();
+                        while (j < json.length() && Character.isWhitespace(json.charAt(j))) j++;
+                        if (j < json.length() && json.charAt(j) == ':') {
+                            return i;
+                        }
+                    }
+                    inStr = true;
+                } else if (ch == '{' || ch == '[') {
+                    depth++;
+                } else if (ch == '}' || ch == ']') {
+                    depth--;
+                    if (depth <= 0) {
+                        return -1;  // 顶层容器已闭合仍未命中
+                    }
+                }
+            }
+            return -1;
+        }
+    }
+
+    /** 提取 "obj":{...} 的对象子串（按花括号配平，忽略字符串内的括号）；缺失返回 null。 */
+    private static String jsonExtractObject(String json, String obj) {
+        if (json == null || obj == null) return null;
+        String needle = "\"" + obj + "\"";
+        int idx = json.indexOf(needle);
+        if (idx < 0) return null;
+        int open = json.indexOf('{', idx + needle.length());
+        if (open < 0) return null;
+        int depth = 0;
+        boolean inStr = false;
+        boolean esc = false;
+        for (int j = open; j < json.length(); j++) {
+            char ch = json.charAt(j);
+            if (inStr) {
+                if (esc) {
+                    esc = false;
+                } else if (ch == '\\') {
+                    esc = true;
+                } else if (ch == '"') {
+                    inStr = false;
+                }
+                continue;
+            }
+            if (ch == '"') {
+                inStr = true;
+            } else if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0) return json.substring(open, j + 1);
+            }
+        }
+        return null;
+    }
+
+    /** 解转义（与 native jsonEscape 对齐，仅处理常用控制字符）。 */
+    private static String jsonUnescape(String s) {
+        if (s.indexOf('\\') < 0) return s;
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != '\\' || i + 1 >= s.length()) {
+                out.append(c);
+                continue;
+            }
+            char n = s.charAt(++i);
+            switch (n) {
+                case 'n': out.append('\n'); break;
+                case 'r': out.append('\r'); break;
+                case 't': out.append('\t'); break;
+                case '"': out.append('"'); break;
+                case '\\': out.append('\\'); break;
+                default: out.append(n); break;
+            }
+        }
+        return out.toString();
     }
 
     private MonitoringCoordinator.Decision applyMonitoringEffects(@NonNull MonitoringCoordinator.Decision d) {
@@ -1361,6 +1832,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     } else {
                         tvLatency.setText(String.format(Locale.US, "LAT: %.0fms", s.latencyMs));
                     }
+                }
+                // 任务15：沿用本循环 500ms 节奏，但能力状态只按 2s 节流刷新（p95/最近耗时保持新鲜，
+                // 又不逐帧查询 JNI）；FPS/CAP/LAT/CPU/MEM 的既有节流不变。
+                if (refreshRuntimeStatusIfDue(false)) {
+                    updateDiagnosticsText();
                 }
                 handler.postDelayed(this, 500);
             }
