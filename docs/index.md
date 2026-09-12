@@ -43,6 +43,9 @@
 | `int8-quantization-design.md` | INT8 量化工具链架构设计 |
 | `int8-quantization-plan.md` | INT8 量化实现计划（任务级） |
 | `personnel-enrollment-design.md` | 人员注册与权限系统顶层设计 |
+| `android-enrollment-design.md` | Android 端人员注册设计（目标 vs 已落地，任务 17/18 边界） |
+| `model-acquisition-import.md` | 模型获取与导入流程（APK 不内置模型、ZIP 校验链、`missing_model` 降级） |
+| `rk3288-device-acceptance.md` | RK3288 Android 设备验收清单（人工执行） |
 
 ## bsp/
 | 文件 | 说明 |
@@ -63,6 +66,7 @@
 | `README.md` | 项目简介与快速开始 |
 | `REMOTE_BRANCH_AUDIT.md` | 19→3 远程分支审计与清理 |
 | `RK3288_CONSTRAINTS.md` | RK3288 目标设备画像与约束清单 |
+| `capability-matrix.md` | 终端能力矩阵（Android/Windows/Web/旧 Win32 UI + 5 个 CLI 的产物、能力、限制） |
 
 > 以下研究与审计附录位于 `docs/research/` 下的独立文件（2026-07-05 从 [DEVELOP.md](../DEVELOP.md) 附录拆分为独立文档，DEVELOP.md 中仅保留指向这些文件的锚点）：
 > - 附录 B：[加速方案可行性分析与实现状态](research/appendix-b.md)
