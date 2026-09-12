@@ -41,11 +41,12 @@ import java.util.zip.ZipInputStream;
  *   <li>对 manifest 引用的 param/bin 逐个校验：存在、非 Git LFS pointer、SHA-256 与引脚一致。</li>
  *   <li><b>native 校验/暂存</b>：把 manifest 原文交给 {@link NativeRuntime#loadProfile} 做格式/ABI
  *       校验（<b>只校验暂存，不等于加载生效</b>），非 validated 立即失败，此时旧目录与激活指针完全未被触碰。</li>
- *   <li><b>原子启用</b>：把基目录 rename 到 {@code <storeDir>/<profileId>}（旧目录先 rename 为 .bak），
- *       再原子写激活指针 {@code active_profile}；指针写失败则回滚目录。全程同盘 rename，保证原子性。</li>
- *   <li><b>激活并生效</b>：目录稳定后调 {@link NativeRuntime#activateRuntime} 绑定实时管线；是否真正
- *       加载生效由 activateRuntime 返回的 {@code effective}/{@code reason}（并经 {@code getRuntimeStatus} 暴露）
- *       决定，导入状态本身不据此失败（模型文件与激活指针此时均已有效）。</li>
+ *   <li><b>原子启用目录</b>：把基目录 rename 到 {@code <storeDir>/<profileId>}（旧目录先 rename 为 .bak），
+ *       <b>暂不</b>写激活指针。全程同盘 rename，保证原子性。</li>
+ *   <li><b>激活并落定</b>：目录稳定后调 {@link NativeRuntime#activateRuntime} 绑定实时管线；仅当 native
+ *       返回 {@code ok:true} 才原子落定激活指针 {@code active_profile}。激活失败时保留新目录但不切指针
+ *       （旧配置继续生效），返回 {@link Status#RUNTIME_ACTIVATE_FAILED}，绝不静默报成功；指针落定失败则
+ *       回滚目录到导入前状态。</li>
  * </ol>
  *
  * <h2>切换 profile</h2>
@@ -165,6 +166,8 @@ public final class FaceModelManager {
         ABI_MISMATCH,
         /** native manifest 校验/暂存（loadProfile）失败；不代表加载生效判定。 */
         NATIVE_CHECK_FAILED,
+        /** 实时管线激活失败（native reload 未通过）：激活指针保留旧值，旧配置继续生效。 */
+        RUNTIME_ACTIVATE_FAILED,
         IO_ERROR,
         ATOMIC_RENAME_FAILED,
         /** 切换目标 profile 未导入。 */
@@ -328,12 +331,34 @@ public final class FaceModelManager {
                 // ⑥ native 校验/暂存：只判 manifest 格式/ABI，失败时磁盘/指针未被改动。
                 nativeValidateProfile(manifestJson, currentAbi);
 
-                // ⑦ 原子启用（rename 基目录 + 原子写激活指针）。
-                enableProfile(base, tmpDir, profile.profileId);
+                // 记录旧激活指针：激活/落定失败时保留旧配置。
+                String previousActive = readActive();
+
+                // ⑦ 目录原子替换（rename 基目录到 <profileId>），但**先不写激活指针**：
+                //    只有实时管线激活成功才落定指针（#2）。
+                ProfileSwap swap = swapInProfileDirs(base, profile.profileId);
 
                 // ⑧ 激活实时管线：目录已稳定，用最终 profileId 目录绑定（临时目录随后被清理）。
-                //    是否真正生效由本次 activateRuntime 的 effective/reason 决定，并经 status() 暴露。
-                nativeActivateRuntime(manifestJson, profileDir(profile.profileId), currentAbi);
+                //    native 侧候选管线先 reload、成功才提交，失败时旧管线原样保留。
+                ActivateOutcome ao = nativeActivateRuntime(manifestJson, swap.target, currentAbi);
+                if (!ao.accepted()) {
+                    // 激活失败：保留新目录（已导入），但不切指针 -> 旧配置继续生效。
+                    deleteRecursivelyQuietly(swap.bak);
+                    return new Result(Status.RUNTIME_ACTIVATE_FAILED, buildStatus(nativeStatusOrNull()),
+                            "模型已导入，但实时管线激活失败：" + ao.reason + "，已保留原配置");
+                }
+                // ⑨ 生效后才原子落定激活指针；落定失败则回滚目录到导入前状态。
+                if (!persistActive(profile.profileId)) {
+                    boolean restored = rollbackProfileSwap(swap);
+                    if (!restored) {
+                        return fail(Status.ATOMIC_RENAME_FAILED,
+                                "激活指针写入失败，且旧配置回滚失败（旧目录滞留于 "
+                                        + swap.bak.getName() + "）");
+                    }
+                    bestEffortReactivate(previousActive, currentAbi);
+                    return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已回滚配置");
+                }
+                deleteRecursivelyQuietly(swap.bak);
 
                 return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
@@ -348,8 +373,8 @@ public final class FaceModelManager {
     }
 
     /**
-     * 切换当前 profile：对已导入目录重新做 manifest/文件/native 校验，成功后原子改写激活指针。
-     * 任一步失败都保持原激活配置不变。
+     * 切换当前 profile：对已导入目录重新做 manifest/文件/native 校验，先绑定实时管线，
+     * 仅当激活成功才原子改写激活指针；任一步失败都保持原激活配置不变。
      */
     @NonNull
     public Result activate(@NonNull String profileId, @NonNull String currentAbi,
@@ -366,6 +391,8 @@ public final class FaceModelManager {
             }
             File dir = profileDir(profileId);
             File manifestFile = new File(dir, MANIFEST_FILE_NAME);
+            // #3 崩溃恢复：目录替换窗口崩溃后（target 缺失 + .bak_<id> 存在）先恢复就位。
+            recoverProfileDirIfNeeded(profileId);
             if (!dir.isDirectory() || !manifestFile.isFile()) {
                 return fail(Status.PROFILE_NOT_FOUND, "该配置尚未导入：" + profileId);
             }
@@ -374,13 +401,21 @@ public final class FaceModelManager {
                 FaceModelManifest.Profile profile = validateManifest(manifestJson, currentAbi);
                 verifyModelFiles(dir, profile);
                 nativeValidateProfile(manifestJson, currentAbi);
+
+                String previousActive = readActive();
+
+                // #2：先激活实时管线（native 候选管线先 reload、成功才提交 -> 失败时旧管线保留）；
+                // 未成功前绝不动激活指针，因此旧配置完整保留。
+                ActivateOutcome ao = nativeActivateRuntime(manifestJson, dir, currentAbi);
+                if (!ao.accepted()) {
+                    return new Result(Status.RUNTIME_ACTIVATE_FAILED, buildStatus(nativeStatusOrNull()),
+                            "实时管线激活失败：" + ao.reason + "，已保留原配置");
+                }
+                // 生效后才落定指针；落定失败则 best-effort 把运行态回滚到旧 profile。
                 if (!persistActive(profile.profileId)) {
-                    // 指针未改动 -> 原配置保留。
+                    bestEffortReactivate(previousActive, currentAbi);
                     return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已保留原配置");
                 }
-                // 切换成功后重绑实时管线到该 profile 的稳定目录（best-effort）；
-                // 是否真正生效由 activateRuntime 的 effective/reason（经 status()）暴露。
-                nativeActivateRuntime(manifestJson, dir, currentAbi);
                 return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
                 return fail(f.status, f.getMessage());
@@ -487,24 +522,98 @@ public final class FaceModelManager {
     }
 
     /**
-     * 绑定实时管线（best-effort）：{@link #nativeValidateProfile} 已校验/暂存后，把 manifest 与<b>稳定的</b>
-     * 模型基目录交给 native {@code activateRuntime}，使识别真正生效（否则 Android 端恒
-     * {@code missing_model}，仅预览不识别）。
+     * 绑定实时管线并返回结果：把 manifest 与<b>稳定的</b>模型基目录交给 native
+     * {@code activateRuntime}，使识别真正生效（否则 Android 端恒 {@code missing_model}，仅预览不识别）。
      *
-     * <p>调用时机有意放在目录原子启用<b>之后</b>（用最终 profileId 目录而非临时目录）：临时目录
-     * 导入成功后会被清理，若以临时目录绑定，运行时快照将指向已消失的路径。
+     * <p>调用时机：目录原子就位之后、激活指针落定<b>之前</b>（#2）。native 侧采用「候选管线先
+     * reload、成功才提交替换」，故本方法返回 {@code ok:false} 时旧管线与旧配置均原样保留，调用方
+     * 必须据此保留/回滚指针，绝不静默报成功。
      *
-     * <p><b>唯一「加载生效」判据</b>是本次返回的 {@code effective}/{@code reason}（并存于 native
-     * {@code getRuntimeStatus}，映射到 {@link FaceRuntimeStatus#nativeProfileActive}）。导入/切换状态本身
-     * 不据此失败：模型文件与激活指针均已有效，Engine 尚未创建时会返回 {@code pending:true}，
-     * 由 UI 依 {@code effective=false} 显示「已校验未生效」，绝不误报就绪。
+     * <p>{@code ok:true} 表示 native 已接受激活；Engine 尚未创建时会返回 {@code pending:true}
+     * （{@code effective:false}），属正常的「稍后补激活」，不算失败。
+     *
+     * @return native 激活结果（ok/effective/reason）；native 不可用或返回非法时 ok=false。
      */
-    private void nativeActivateRuntime(@NonNull String manifestJson, @NonNull File baseDir,
-                                       @NonNull String currentAbi) {
+    @NonNull
+    private ActivateOutcome nativeActivateRuntime(@NonNull String manifestJson, @NonNull File baseDir,
+                                                  @NonNull String currentAbi) {
+        String resp;
         try {
-            runtime.activateRuntime(manifestJson, baseDir.getAbsolutePath(), currentAbi, galleryDirPath());
+            resp = runtime.activateRuntime(manifestJson, baseDir.getAbsolutePath(), currentAbi,
+                    galleryDirPath());
         } catch (Throwable t) {
-            // native 库缺失/不可用：保留导入结果，状态区显示 not-ready。
+            // native 库缺失/不可用：按激活失败处理（调用方保留旧配置），绝不静默成功。
+            return new ActivateOutcome(false, false, "native_unavailable");
+        }
+        return parseActivateOutcome(resp);
+    }
+
+    /** native {@code activateRuntime} 结果的状态视图（仅状态元数据，无模型内容）。 */
+    @VisibleForTesting
+    static final class ActivateOutcome {
+        final boolean ok;
+        final boolean effective;
+        @NonNull final String reason;
+
+        ActivateOutcome(boolean ok, boolean effective, @NonNull String reason) {
+            this.ok = ok;
+            this.effective = effective;
+            this.reason = reason;
+        }
+
+        /**
+         * 是否接受为激活成功：{@code ok:true} 且（已生效 或 属正常的 {@code pending}
+         * 延后激活——Engine 尚未创建时由 nativeInit 补激活）。仅 {@code ok} 为真、
+         * 又非 pending 的「未生效」不得视为成功，避免谎报已激活。
+         */
+        boolean accepted() {
+            return ok && (effective || "pending".equals(reason));
+        }
+    }
+
+    /** 解析 activateRuntime 返回 JSON 的 {@code ok}/{@code effective}/{@code reason}；解析失败即失败。 */
+    @NonNull
+    private static ActivateOutcome parseActivateOutcome(@Nullable String resp) {
+        if (resp == null || resp.isEmpty()) {
+            return new ActivateOutcome(false, false, "empty_response");
+        }
+        try {
+            Map<String, Object> root = FaceModelManifest.asObject(
+                    FaceModelManifest.parseJsonValue(resp));
+            if (root == null) {
+                return new ActivateOutcome(false, false, "bad_response");
+            }
+            Boolean ok = FaceModelManifest.asBoolean(root.get("ok"));
+            Boolean effective = FaceModelManifest.asBoolean(root.get("effective"));
+            String reason = FaceModelManifest.asString(root.get("reason"));
+            if (reason == null || reason.isEmpty()) {
+                reason = "unknown";
+            }
+            return new ActivateOutcome(ok != null && ok, effective != null && effective, reason);
+        } catch (Exception ex) {
+            return new ActivateOutcome(false, false, "bad_response");
+        }
+    }
+
+    /**
+     * best-effort：把实时管线重新绑定到旧激活 profile（仅当旧目录仍完整）。
+     * 用于「新 profile 已生效但激活指针落定失败」时，避免内存运行态与磁盘指针不一致。
+     * 失败静默：调用方已在上报指针写入失败，此处仅尽量恢复。
+     */
+    private void bestEffortReactivate(@Nullable String previousProfileId, @NonNull String currentAbi) {
+        if (previousProfileId == null) {
+            return;
+        }
+        File dir = profileDir(previousProfileId);
+        File mf = new File(dir, MANIFEST_FILE_NAME);
+        if (!dir.isDirectory() || !mf.isFile()) {
+            return;
+        }
+        try {
+            String oldManifest = readTextFile(mf, limits.maxManifestBytes);
+            runtime.activateRuntime(oldManifest, dir.getAbsolutePath(), currentAbi, galleryDirPath());
+        } catch (Throwable ignored) {
+            // 回滚为尽力而为；失败不影响已上报的失败状态。
         }
     }
 
@@ -640,13 +749,27 @@ public final class FaceModelManager {
     // ---------------- 原子启用 ----------------
 
     /**
-     * 把已验证的 {@code base} 目录 rename 为 {@code <storeDir>/<profileId>}，再原子写激活指针。
-     * 指针写失败则回滚目录，保证「失败保留原配置」。
+     * 目录原子替换：把已验证的 {@code base} 目录 rename 为 {@code <storeDir>/<profileId>}。
+     *
+     * <p>本方法<b>不</b>写激活指针（#2：只有实时管线激活成功才落定指针）；旧目录先 rename 为
+     * {@code .bak_<profileId>} 并保留在句柄中，供指针落定成功时清理、失败时回滚。
+     *
+     * <p>#3 崩溃恢复：若检测到上次替换在「target→bak 之后、base→target 之前」崩溃
+     * （target 缺失但 {@code .bak_<id>} 存在），先把备份恢复回 target；恢复失败即中止，
+     * 绝不删除唯一完整副本。
      */
-    private void enableProfile(@NonNull File base, @NonNull File tmpDir, @NonNull String profileId)
+    @NonNull
+    private ProfileSwap swapInProfileDirs(@NonNull File base, @NonNull String profileId)
             throws ImportFailure {
         File target = profileDir(profileId);
         File bak = new File(storeDir, ".bak_" + profileId);
+        if (!target.exists() && bak.exists()) {
+            // 崩溃恢复：旧目录是唯一完整副本，恢复失败不能继续（否则下一步会删掉它）。
+            if (!renameQuietly(bak, target)) {
+                throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
+                        "检测到上次替换残留（" + bak.getName() + "），恢复失败，已中止以保留旧配置");
+            }
+        }
         deleteRecursivelyQuietly(bak);
         boolean hadOld = target.exists();
         if (hadOld && !target.renameTo(bak)) {
@@ -662,17 +785,26 @@ public final class FaceModelManager {
             }
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "临时目录无法原子重命名");
         }
-        if (!persistActive(profileId)) {
-            // 指针写失败：撤销本次目录替换，回到导入前状态。
-            deleteRecursivelyQuietly(target);
-            boolean restored = !hadOld || bak.renameTo(target);
-            if (!restored) {
-                throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
-                        "激活指针写入失败，且旧配置回滚失败（旧目录滞留于 " + bak.getName() + "）");
-            }
-            throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已回滚配置");
+        return new ProfileSwap(target, bak, hadOld);
+    }
+
+    /** 目录替换句柄：记录旧目录备份，供激活指针落定成功时清理、失败时回滚。 */
+    private static final class ProfileSwap {
+        final File target;
+        final File bak;
+        final boolean hadOld;
+
+        ProfileSwap(File target, File bak, boolean hadOld) {
+            this.target = target;
+            this.bak = bak;
+            this.hadOld = hadOld;
         }
-        deleteRecursivelyQuietly(bak);
+    }
+
+    /** 指针落定失败：删除新目录并把旧目录恢复就位；返回 false 表示旧目录回滚失败（滞留于 bak）。 */
+    private boolean rollbackProfileSwap(@NonNull ProfileSwap swap) {
+        deleteRecursivelyQuietly(swap.target);
+        return !swap.hadOld || swap.bak.renameTo(swap.target);
     }
 
     /** 原子写激活指针：tmp + bak 替换（与注册表落盘同策略）。 */
@@ -680,6 +812,12 @@ public final class FaceModelManager {
         File dst = new File(storeDir, ACTIVE_POINTER_FILE);
         File tmp = new File(storeDir, ACTIVE_POINTER_FILE + ".tmp");
         File bak = new File(storeDir, ACTIVE_POINTER_FILE + ".bak");
+        // 阶段 1：#3 崩溃恢复——上次写入在「dst→bak」之后、「tmp→dst」完成前退出时主指针缺失、
+        // 备份尚在；先把备份恢复为可回滚基线，否则下面会先删备份再写，指针在崩溃窗口中丢失。
+        // 恢复失败则宁可不写（绝不删除唯一副本）。
+        if (!dst.exists() && bak.exists() && !renameQuietly(bak, dst)) {
+            return false;
+        }
         try (FileOutputStream fos = new FileOutputStream(tmp, false)) {
             fos.write(profileId.getBytes(StandardCharsets.UTF_8));
             fos.flush();
@@ -711,17 +849,68 @@ public final class FaceModelManager {
         return true;
     }
 
+    /**
+     * 读取当前激活指针；#3 崩溃恢复：主指针缺失/不可读时回退 {@code active_profile.bak}
+     * 并把备份 rename 回主指针（复用 {@link AndroidEnrollmentRepository} 的 .bak 恢复模式）。
+     * 主指针与备份都不可用时返回 null（未导入）。
+     */
     @Nullable
     private String readActive() {
-        File f = new File(storeDir, ACTIVE_POINTER_FILE);
-        if (!f.isFile()) {
+        File dst = new File(storeDir, ACTIVE_POINTER_FILE);
+        File bak = new File(storeDir, ACTIVE_POINTER_FILE + ".bak");
+        if (!dst.isFile()) {
+            if (bak.isFile()) {
+                // 崩溃恢复：主指针缺失但备份是唯一完整副本，先解析备份再 rename 回主。
+                String id = parseActiveFile(bak);
+                if (id != null) {
+                    renameQuietly(bak, dst);
+                    return id;
+                }
+            }
             return null;
         }
+        String id = parseActiveFile(dst);
+        if (id == null && bak.isFile()) {
+            // 主指针存在但不可读/非法：从备份恢复，避免退化为「未导入」丢失激活。
+            String fromBak = parseActiveFile(bak);
+            if (fromBak != null) {
+                renameQuietly(bak, dst);
+                return fromBak;
+            }
+        }
+        return id;
+    }
+
+    /** 解析指针文件内容为安全 profileId；缺失/不可读/非法返回 null。 */
+    @Nullable
+    private static String parseActiveFile(@NonNull File f) {
         try {
             String id = readTextFile(f, 4096).trim();
             return FaceModelManifest.isSafeDirName(id) ? id : null;
         } catch (Exception ex) {
             return null;
+        }
+    }
+
+    /** 静默重命名（崩溃恢复用）；失败返回 false，由调用方决定后续语义。 */
+    private static boolean renameQuietly(@NonNull File from, @NonNull File to) {
+        try {
+            return from.renameTo(to);
+        } catch (SecurityException ex) {
+            return false;
+        }
+    }
+
+    /**
+     * #3 崩溃恢复：激活目录缺失但存在 {@code .bak_<id>} 时把备份恢复就位
+     * （上次目录替换在 target→bak 之后、base→target 之前崩溃）。恢复为静默 best-effort，
+     * 失败仍由 {@link #buildStatus} 报「目录缺失」，绝不误报就绪。
+     */
+    private void recoverProfileDirIfNeeded(@NonNull String profileId) {
+        File target = profileDir(profileId);
+        File bak = new File(storeDir, ".bak_" + profileId);
+        if (!target.exists() && bak.exists()) {
+            renameQuietly(bak, target);
         }
     }
 
@@ -735,6 +924,8 @@ public final class FaceModelManager {
         if (active == null) {
             base = FaceRuntimeStatus.notImported(count);
         } else {
+            // #3 崩溃恢复：目录替换窗口崩溃留下的 .bak_<id> 先恢复就位，再判状态。
+            recoverProfileDirIfNeeded(active);
             File dir = profileDir(active);
             File mf = new File(dir, MANIFEST_FILE_NAME);
             if (!dir.isDirectory() || !mf.isFile()) {

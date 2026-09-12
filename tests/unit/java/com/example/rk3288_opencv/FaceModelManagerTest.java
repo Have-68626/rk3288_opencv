@@ -345,6 +345,13 @@ public class FaceModelManagerTest {
                 return "{\"ok\":true,\"profileValidated\":true,\"effective\":false,"
                         + "\"reason\":\"pending\",\"embeddingDim\":512}";
             }
+
+            @Override
+            public String activateRuntime(String manifestJson, String baseDir, String currentAbi,
+                                          String galleryDir) {
+                // Engine 尚未创建：pending（ok=true/effective=false），导入本身应成功。
+                return "{\"ok\":true,\"pending\":true,\"effective\":false,\"reason\":\"pending\"}";
+            }
         };
         FaceModelManager m = new FaceModelManager(tmp.newFolder(), rt);
         Map<String, byte[]> files = defaultFiles("v1");
@@ -506,6 +513,143 @@ public class FaceModelManagerTest {
                 m.importZip(stream(new byte[0]), "", true).status);
     }
 
+    // ---------- ⑫ 第二波 #2：激活失败不丢旧配置、不谎报成功 ----------
+
+    /** 第二波 #2：切换时 activateRuntime 失败 -> 指针回滚/不变、旧配置保留、返回失败。 */
+    @Test
+    public void activateRuntimeFailureKeepsPreviousProfileAndReportsFailure() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        FaceModelManager m = manager(rt);
+        Map<String, byte[]> a = defaultFiles("A");
+        Map<String, byte[]> b = defaultFiles("B");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", a, "lic"), a)), ABI, true).isOk());
+        assertTrue(m.importZip(stream(zip("", manifest("pB", "[\"arm64-v8a\"]", b, "lic"), b)), ABI, true).isOk());
+        assertEquals("pB", m.activeProfileId());
+
+        // 切换 pA 时 native reload 失败。
+        rt.activateOk = false;
+        rt.activateReason = "missing_model";
+        FaceModelManager.Result r = m.activate("pA", ABI, true);
+        assertEquals(FaceModelManager.Status.RUNTIME_ACTIVATE_FAILED, r.status);
+        assertFalse("激活失败不得报成功", r.isOk());
+        assertEquals("激活失败必须保留原激活 profile", "pB", m.activeProfileId());
+        assertEquals("旧配置应继续就绪", "pB", m.status().profileId);
+        assertTrue(m.status().isReady());
+    }
+
+    /** 第二波 #2：新导入激活失败 -> 保留新目录但不切指针，返回明确失败状态。 */
+    @Test
+    public void importZipActivationFailureKeepsDirButDoesNotSwitchPointer() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        rt.activateOk = false;
+        rt.activateReason = "missing_model";
+        Map<String, byte[]> files = defaultFiles("v1");
+        String manifest = manifest("p1", "[\"arm64-v8a\"]", files, "lic");
+        FaceModelManager.Result r = m.importZip(stream(zip("", manifest, files)), ABI, true);
+        assertEquals(FaceModelManager.Status.RUNTIME_ACTIVATE_FAILED, r.status);
+        assertNull("激活失败不得切指针", m.activeProfileId());
+        assertTrue("新目录应保留（已导入）", m.profileDir("p1").isDirectory());
+        assertTrue(m.listProfiles().contains("p1"));
+        assertNoTempArtifacts(dir);
+    }
+
+    // ---------- ⑬ 第二波 #3：持久化崩溃恢复 ----------
+
+    /** 第二波 #3：激活指针主文件缺失 + .bak 存在 -> status() 恢复主指针并 READY。 */
+    @Test
+    public void statusRecoversActivePointerFromBackup() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", files, "lic"), files)), ABI, true).isOk());
+
+        File pointer = new File(dir, FaceModelManager.ACTIVE_POINTER_FILE);
+        File bak = new File(dir, FaceModelManager.ACTIVE_POINTER_FILE + ".bak");
+        // 模拟 persistActive 在 dst→bak 之后、tmp→dst 完成前崩溃。
+        assertTrue(pointer.renameTo(bak));
+        assertFalse(pointer.exists());
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue("应从 .bak 恢复激活指针", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertTrue("恢复后主指针应就位", pointer.isFile());
+        assertFalse("恢复后备份应被消费", bak.exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /** 第二波 #3：激活目录缺失 + .bak_<id> 存在 -> 恢复目录就位并 READY。 */
+    @Test
+    public void statusRecoversActiveDirFromSwapBackup() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", files, "lic"), files)), ABI, true).isOk());
+
+        File profileDir = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        // 模拟 swapInProfileDirs 在 target→bak 之后、base→target 之前崩溃。
+        assertTrue(profileDir.renameTo(bak));
+        assertFalse(profileDir.exists());
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue("应从 .bak_p1 恢复激活目录", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertTrue("恢复后目录应就位", profileDir.isDirectory());
+        assertTrue(new File(profileDir, FaceModelManager.MANIFEST_FILE_NAME).isFile());
+        assertFalse(bak.exists());
+    }
+
+    /** 第二波 #3：过渡残留（active_profile.tmp / .tmp_*）不得影响指针与 profile 列表。 */
+    @Test
+    public void strayTempArtifactsAreIgnored() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", files, "lic"), files)), ABI, true).isOk());
+
+        File pointerTmp = new File(dir, FaceModelManager.ACTIVE_POINTER_FILE + ".tmp");
+        writeText(pointerTmp, "bogus");
+        File strayTmp = new File(dir, ".tmp_stray");
+        assertTrue(strayTmp.mkdirs());
+        assertTrue(new File(strayTmp, FaceModelManager.MANIFEST_FILE_NAME).createNewFile());
+
+        assertEquals("残留 .tmp 不得被当作激活指针", "p1", m.activeProfileId());
+        assertTrue(m.status().isReady());
+        assertFalse("点号开头的过渡目录不得计入 profile 列表",
+                m.listProfiles().contains(".tmp_stray"));
+        assertEquals(1, m.listProfiles().size());
+    }
+
+    /** 第二波 #3：目录替换窗口崩溃恢复后，activate 不得丢失已恢复的配置。 */
+    @Test
+    public void activateAfterDirBackupRecoveryKeepsConfig() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> a = defaultFiles("A");
+        Map<String, byte[]> b = defaultFiles("B");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", a, "lic"), a)), ABI, true).isOk());
+        assertTrue(m.importZip(stream(zip("", manifest("pB", "[\"arm64-v8a\"]", b, "lic"), b)), ABI, true).isOk());
+        assertEquals("pB", m.activeProfileId());
+
+        // 制造 pA 目录替换窗口崩溃现场：pA 缺失 + .bak_pA 存在。
+        File dirA = m.profileDir("pA");
+        assertTrue(dirA.renameTo(new File(dir, ".bak_pA")));
+
+        // activate 内部走恢复路径，切换回 pA 且不丢配置。
+        FaceModelManager.Result r = m.activate("pA", ABI, true);
+        assertTrue(r.message, r.isOk());
+        assertEquals("pA", m.activeProfileId());
+        assertTrue("恢复后的 pA 应可用", m.status().isReady());
+        assertEquals("pA", m.status().profileId);
+        assertEquals(2, m.listProfiles().size());
+    }
+
     // ---------- 夹具 ----------
 
     private FaceModelManager manager(FakeRuntime rt) throws IOException {
@@ -597,6 +741,12 @@ public class FaceModelManagerTest {
         }
     }
 
+    private static void writeText(File f, String s) throws IOException {
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
+            fos.write(s.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
     private static void deleteRecursively(File f) {
         if (f.isDirectory()) {
             File[] ch = f.listFiles();
@@ -628,6 +778,12 @@ public class FaceModelManagerTest {
     private static final class FakeRuntime implements FaceModelManager.NativeRuntime {
         boolean ok = true;
         boolean validated = true;
+        /** activateRuntime 成败开关（#2：失败时调用方须保留/回滚指针）。 */
+        boolean activateOk = true;
+        boolean activateEffective = true;
+        String activateReason = "ok";
+        int activateCalls = 0;
+        String lastBaseDir;
         String lastManifest;
         String runtimeJson = "{\"ok\":true,\"profileValidated\":true,\"profileLoaded\":true,"
                 + "\"effective\":true,\"reason\":\"ok\",\"embeddingDim\":512,"
@@ -647,6 +803,20 @@ public class FaceModelManagerTest {
         @Override
         public String getRuntimeStatus() {
             return runtimeJson;
+        }
+
+        @Override
+        public String activateRuntime(String manifestJson, String baseDir, String currentAbi,
+                                      String galleryDir) {
+            activateCalls++;
+            lastBaseDir = baseDir;
+            if (activateOk) {
+                return "{\"ok\":true,\"pending\":false,\"effective\":" + activateEffective
+                        + ",\"reason\":\"" + activateReason + "\",\"generation\":1}";
+            }
+            return "{\"ok\":false,\"pending\":false,\"effective\":false,\"reason\":\""
+                    + activateReason + "\",\"generation\":0,\"error\":{"
+                    + "\"code\":\"FACE_RUNTIME_ACTIVATE_FAILED\",\"message\":\"reload failed\"}}";
         }
     }
 
