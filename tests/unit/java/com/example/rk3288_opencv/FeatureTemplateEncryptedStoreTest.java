@@ -1,13 +1,81 @@
 package com.example.rk3288_opencv;
 
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
 
 public class FeatureTemplateEncryptedStoreTest {
+
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
+
+    @Before
+    public void setUp() throws Exception {
+        KeyGenerator kg = KeyGenerator.getInstance("AES");
+        kg.init(128);
+        final SecretKey key = kg.generateKey();
+        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(
+                new FeatureTemplateEncryptedStore.PlatformKeyProvider() {
+                    @Override
+                    public boolean isSupported() {
+                        return true;
+                    }
+
+                    @Override
+                    public SecretKey getOrCreateKeyV1() {
+                        return key;
+                    }
+                });
+    }
+
+    @After
+    public void tearDown() {
+        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
+    }
+
+    // 内存模板清零：readAndConsume 回调返回后，同一明文数组必须被就地清零。
+    @Test
+    public void readAndConsumeZeroesPlaintextAfterCallback() throws Exception {
+        File dir = tmp.newFolder();
+        File dst = new File(dir, "u_test.bin");
+        byte[] template = new byte[32];
+        new SecureRandom(new byte[]{42}).nextBytes(template);
+
+        // ctx 在 write/read 中不参与加解密，JVM 单元测试可传 null。
+        assertEquals(FeatureTemplateEncryptedStore.Code.OK,
+                FeatureTemplateEncryptedStore.write(null, dst, "user-1", template, 3, 1).code);
+
+        final byte[][] seen = new byte[1][];
+        FeatureTemplateEncryptedStore.ReadResult rr = FeatureTemplateEncryptedStore.readAndConsume(
+                null, dst, "user-1", 3, 1, true,
+                new FeatureTemplateEncryptedStore.PlaintextConsumer() {
+                    @Override
+                    public void accept(byte[] plaintextTemplate) {
+                        seen[0] = plaintextTemplate;
+                        assertArrayEquals("回调内应拿到原始模板", template, plaintextTemplate);
+                    }
+                });
+        assertEquals(FeatureTemplateEncryptedStore.Code.OK, rr.code);
+        assertNull("readAndConsume 不向调用方返回明文", rr.plaintext);
+        assertNotNull(seen[0]);
+        for (byte b : seen[0]) {
+            assertEquals("回调返回后明文必须被清零", 0, b);
+        }
+    }
 
     @Test
     public void testSha256Determinism() {
