@@ -4,6 +4,7 @@
 
 #include <opencv2/core.hpp>  // cv::Mat（mock 亦可，便于 RK_SKIP_OPENCV 的 core_unit_tests 编译）
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -35,6 +36,12 @@ struct RealtimeFaceBox {
     float width = 0.0f;
     float height = 0.0f;
     float score = 0.0f;
+
+    // #1 注册采集：检测器提供的 5 点关键点（x0,y0,...,x4,y4），次序与 ArcFace 参考
+    // 一致（左眼、右眼、鼻、左嘴角、右嘴角）。hasKeypoints=false 时 keypoints 无效。
+    // 同样刻意避免 cv::Point2f，保持 mock OpenCV 可编译。
+    bool hasKeypoints = false;
+    std::array<float, 10> keypoints{};
 };
 
 class IRealtimeDetector {

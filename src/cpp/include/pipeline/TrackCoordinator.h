@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -11,6 +12,13 @@ struct DetectedFace {
     std::string identityId;
     float confidence = 0.0f;
     bool isAuthenticated = false;
+
+    // #1 注册采集：5 点关键点（x0,y0,...,x4,y4，统一变换后帧像素坐标）。
+    // hasKeypoints=false 时 keypoints 无效。跟踪匹配不读取该字段，仅在注册采集的
+    // 人脸对齐（关键点优先）与姿态分类时使用。刻意用纯 float 数组而非 cv::Point2f，
+    // 使本头文件仍可被 RK_SKIP_OPENCV 的 core_unit_tests（mock OpenCV）编译。
+    bool hasKeypoints = false;
+    std::array<float, 10> keypoints{};
 };
 
 struct TrackView {
