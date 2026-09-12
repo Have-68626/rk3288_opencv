@@ -146,6 +146,10 @@ bool test_face_infer_outcome_json_full() {
     if (!contains(json, "\"id\":\"person_1\"")) { std::cout << "id person_1 failed: " << json << std::endl; return false; }
     if (!contains(json, "\"index\":0")) { std::cout << "index 0 failed: " << json << std::endl; return false; }
     if (!contains(json, "\"score\":0.88")) { std::cout << "score 0.88 failed: " << json << std::endl; return false; }
+    // 身份字段：personId 透传 gallery 条目 id；displayName 无 native 来源，
+    // 未知时省略该字段（不输出空串，避免下游误当权威值）。
+    if (!contains(json, "\"personId\":\"person_1\"")) { std::cout << "personId person_1 failed: " << json << std::endl; return false; }
+    if (contains(json, "\"displayName\"")) { std::cout << "displayName should be omitted: " << json << std::endl; return false; }
 
     // decision
     if (!contains(json, "\"decision\":{\"threshold\":0.8")) { std::cout << "decision threshold failed: " << json << std::endl; return false; }
@@ -175,6 +179,43 @@ bool test_face_infer_outcome_json_no_face() {
     std::string json = buildOutcomeJson(in);
 
     if (!contains(json, "\"face\":{\"hasFace\":false}")) return false;
+
+    return true;
+}
+
+// 身份字段（personId/displayName）的边界：空 id 与需要 JSON 转义的 id。
+bool test_face_infer_outcome_json_hit_identity_edges() {
+    FaceInferOutcome out;
+    FaceInferRequest req;
+    FaceInferContext ctx;
+
+    FaceSearchHit emptyHit;
+    emptyHit.id = "";
+    emptyHit.index = 3;
+    emptyHit.score = 0.5f;
+    ctx.hits.push_back(emptyHit);
+
+    FaceSearchHit weirdHit;
+    weirdHit.id = "a\"b\\c";  // 含双引号与反斜杠，验证既有 jsonEscape 风格
+    weirdHit.index = 4;
+    weirdHit.score = 0.4f;
+    ctx.hits.push_back(weirdHit);
+
+    ThresholdDecisionResult decision;
+    FaceInferMetrics metrics;
+
+    FaceInferOutcomeJsonInput in{out, req, &ctx, &decision, &metrics, 12345};
+    std::string json = buildOutcomeJson(in);
+
+    // 空 id：personId 同样为空字符串；displayName 无 native 来源，所有命中一律省略该字段。
+    if (!contains(json, "\"personId\":\"\"")) { std::cout << "empty personId failed: " << json << std::endl; return false; }
+    if (contains(json, "\"displayName\"")) { std::cout << "displayName should be omitted: " << json << std::endl; return false; }
+    // 转义：id = a"b\c → JSON 中为 a\"b\\c
+    if (!contains(json, "\"personId\":\"a\\\"b\\\\c\"")) { std::cout << "escaped personId failed: " << json << std::endl; return false; }
+    // 既有字段顺序/名称不受影响
+    if (!contains(json, "\"id\":\"a\\\"b\\\\c\"")) return false;
+    if (!contains(json, "\"index\":4")) return false;
+    if (!contains(json, "\"rank\":2")) return false;
 
     return true;
 }
