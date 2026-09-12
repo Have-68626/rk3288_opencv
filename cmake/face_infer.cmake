@@ -16,6 +16,7 @@ set(RK_FACE_INFER_CORE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/Engine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FrameTransform.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/ModelRegistry.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/RealtimeFacePipeline.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/VideoManager.cpp
 )
 
