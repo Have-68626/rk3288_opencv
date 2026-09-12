@@ -276,12 +276,42 @@ tasks.register('stageFaceModels') {
     }
 }
 
-// 任务10：RK_BUNDLE_FACE_MODELS=true 时把模型打包挂到 preBuild（A1-Med 修复）。
-// 默认关闭（CI Debug 不下载模型）：仅显式开启时在构建 APK 前先 verify + stage，
-// 避免「开启打包却忘记 stage → APK 缺模型」。
+// 任务10：RK_BUNDLE_FACE_MODELS=true 时把模型挂到 preBuild 先 verify + stage（开发期本地验证）。
+// 发布产物隔离（codex 二次审计 P2）：模型**不随 APK 分发**（P1-6 路线），默认关闭时
+// preBuild 清理可能残留的 staged 模型——防「开启打包后又关闭开关」时旧权重仍进 APK。
+tasks.register('cleanStagedFaceModels') {
+    doLast {
+        def dir = file('src/main/assets/face_models')
+        if (dir.exists()) {
+            delete dir
+            println "[cleanStagedFaceModels] 已清理 ${dir}（发布产物隔离，模型不随 APK 分发）"
+        }
+    }
+}
 if (bundleFaceModels) {
-    tasks.named('preBuild').configure {
-        dependsOn tasks.named('stageFaceModels')
+    tasks.named('preBuild').configure { dependsOn tasks.named('stageFaceModels') }
+} else {
+    tasks.named('preBuild').configure { dependsOn tasks.named('cleanStagedFaceModels') }
+}
+
+// 发布产物守门（codex 二次审计 P2）：构建后检查 APK 内确无模型权重（不随 APK 分发）。
+// 用法：gradlew :app:checkApkFaceModels（会先 assembleDebug）。发现 assets/face_models 条目即失败。
+tasks.register('checkApkFaceModels') {
+    dependsOn 'assembleDebug'
+    doLast {
+        def apk = file("$buildDir/outputs/apk/debug/app-debug.apk")
+        if (!apk.isFile()) {
+            println "[checkApkFaceModels] APK 不存在，跳过: ${apk}"
+            return
+        }
+        def hits = []
+        new java.util.zip.ZipFile(apk).withCloseable { zf ->
+            zf.entries().each { e -> if (e.name.startsWith('assets/face_models/')) hits.add(e.name) }
+        }
+        if (!hits.isEmpty()) {
+            throw new GradleException("APK 含模型权重（应不随 APK 分发）：\n  " + hits.take(8).join('\n  '))
+        }
+        println "[checkApkFaceModels] OK：APK 内无 assets/face_models 条目"
     }
 }
 
