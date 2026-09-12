@@ -19,16 +19,43 @@
 #include "pipeline/ResultPublisher.h"
 #include "pipeline/PerfReporter.h"
 #include "pipeline/RealtimeFacePipeline.h"  // 任务12：实时 SCRFD/ArcFace 管线接入
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <string>
 #include <memory>
 #include <functional>
+#include <condition_variable>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 
 namespace rk_core {
+
+/**
+ * #1 注册采集逐帧样本。
+ *
+ * 仅当注册采集模式开启时由实时路径（run()/processFrameOnce 线程）对每个检测脸产出；
+ * 承载 Java EnrollmentSession.FrameSample 所需的全部数值字段。
+ *
+ * 安全红线：embedding 仅经内存/回调传递，**严禁**写入日志或任何字符串；调用方用毕应清零。
+ */
+struct EnrollmentCaptureSample {
+    std::vector<float> embedding;   // 512 维（来自实时管线 IRealtimeEmbedder）
+    cv::Rect bbox;                  // 统一变换后帧坐标（右/下为开区间）
+    int frameWidth = 0;
+    int frameHeight = 0;
+    float detScore = 0.0f;          // 检测置信度
+    int faceCount = 0;              // 本帧后处理后检测脸总数（>=1）
+    float grayMean = 0.0f;          // 对齐人脸灰度均值（0..255）
+    float grayStd = 0.0f;           // 对齐人脸灰度总体标准差
+    float laplacianVariance = 0.0f;  // Laplacian(4 邻域) 响应方差（清晰度）
+    float areaRatio = 0.0f;         // 人脸框面积 / 帧面积
+    bool hasLandmarks = false;
+    std::array<float, 10> landmarks{};  // 5 点 (x,y) 扁平：左眼、右眼、鼻、左嘴角、右嘴角
+};
+
+using EnrollmentCaptureCallback = std::function<void(const EnrollmentCaptureSample&)>;
 
 class Engine {
 public:
@@ -181,6 +208,40 @@ public:
      */
     std::vector<pipeline::TrackView> getTrackViews() const;
 
+    // ── #1 注册采集模式（逐帧 embedding + 质量指标回调） ──
+
+    /**
+     * @brief 开启/关闭注册采集模式（无锁快速分支）。
+     *
+     * 关闭时会等待**其他线程**的在途回调返回后才返回（见 enrollmentCaptureCv_），调用方
+     * 可据此安全释放在回调中使用的资源（如 JNI 全局引用）。若本线程正身处回调内
+     * （回调同步重入关闭），不会自等——自等必然死锁；此时该回调返回后不再触达被释放资源。
+     * 线程安全：可与 run() 并发调用。
+     */
+    void setEnrollmentCapture(bool enabled);
+
+    /** 是否处于注册采集模式（原子读）。 */
+    bool isEnrollmentCapture() const { return enrollmentCaptureEnabled_.load(); }
+
+    /**
+     * @brief 注册逐帧采集回调（可传 nullptr 清除）。
+     *
+     * 回调由 run()/processFrameOnce 线程在采集模式开启时逐脸调用；实现须线程安全且
+     * 快速返回（阻塞会拖慢实时帧）。回调在**锁外**调用（锁内仅复制快照），故回调内
+     * 同步重入 setEnrollmentCapture 不会造成同线程自死锁。严禁在回调内记录 embedding。
+     */
+    void setEnrollmentCaptureCallback(EnrollmentCaptureCallback callback);
+
+    /**
+     * @brief 灰度/清晰度质量指标（纯函数，语义对齐 EnrollmentSession.ImageMetrics）。
+     * @param faceBgr 对齐后人脸图（BGR 或单通道灰度均可）
+     * @param[out] grayMean 灰度均值；grayStd 总体标准差；laplacianVariance 4 邻域响应方差
+     * @return 输入非空且为 8U/连续可计算时为 true；否则输出清零并返回 false
+     * 只读输入，不修改；Laplacian 仅统计内部像素（与 Java 侧完全一致的公式）。
+     */
+    static bool computeEnrollmentQuality(const cv::Mat& faceBgr, float& grayMean,
+                                         float& grayStd, float& laplacianVariance);
+
     /**
      * @brief 同步处理单帧：流程与 run() 内部单帧一致（预处理→检测/识别→跟踪→渲染）。
      *
@@ -253,6 +314,12 @@ private:
                                   const RealtimePipelineSnapshot& snap);
     void setRealtimeReason(const std::string& reason);
 
+    // #1 注册采集：对每个已后处理检测脸对齐→嵌入→算质量指标→逐个回调。
+    // 仅在采集模式开启时由 runRealtimeDetect 调用；关闭时零调用。
+    void captureEnrollmentFaces(const cv::Mat& frame,
+                                const std::vector<pipeline::DetectedFace>& faces,
+                                const RealtimePipelineSnapshot& snap);
+
     // === 管线组件 ===
     std::unique_ptr<VideoManager> videoManager_;
     std::unique_ptr<MotionDetector> motionDetector_;
@@ -274,6 +341,16 @@ private:
     // 独立锁，避免与 realtimeMu_ 的注入路径互相阻塞。
     std::shared_ptr<const FaceSearchLinearIndex> realtimeGallery_;
     mutable std::mutex realtimeGalleryMu_;
+
+    // #1 注册采集：enabled 为原子快速分支；回调在锁内复制快照、锁外调用，避免回调同步重入
+    // setEnrollmentCapture 时同线程二次加锁自死锁。关闭时经 enrollmentCaptureCv_ 等待其他
+    // 线程在途回调归零，故跨线程 setEnrollmentCapture(false) 返回后保证不再有在途回调，
+    // 调用方（JNI 侧）可安全释放回调使用的全局引用。
+    std::atomic<bool> enrollmentCaptureEnabled_{false};
+    EnrollmentCaptureCallback enrollmentCaptureCb_;
+    mutable std::mutex enrollmentCaptureMu_;
+    std::condition_variable enrollmentCaptureCv_;
+    std::size_t enrollmentCaptureInFlight_ = 0;  // 在途回调计数，受 enrollmentCaptureMu_ 保护
 
     // External frame input
     std::unique_ptr<FrameInputChannel> externalInput_;

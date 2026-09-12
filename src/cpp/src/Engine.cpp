@@ -8,9 +8,10 @@
 #include "Storage.h"
 #include "NativeLog.h"
 #include "rk_checked_arith.h"
-#include "FaceAlign.h"    // 任务12：实时路径身份匹配的人脸对齐（bbox fallback 112×112）
+#include "FaceAlign.h"    // 任务12：实时路径人脸对齐（关键点优先，无关键点回退 bbox 112×112）
 #include "FaceSearch.h"   // 任务12：图库检索 searchTopK
 #include "pipeline/FacePostProcessor.h"  // 任务12：实时检测框统一后处理（NMS/包含抑制）
+#include <opencv2/imgproc.hpp>  // #1 注册采集：cvtColor 灰度化
 #include <cctype>
 #include <cmath>
 #include <cstring>
@@ -37,6 +38,13 @@
 using namespace rk_core;
 
 namespace {
+// #1 注册采集：ArcFace/MobileFaceNet 模板维度，与 NativeFaceBridge.EMBEDDING_DIM 保持一致。
+constexpr std::size_t kEmbeddingDim = 512;
+
+// #1 标记本线程正身处注册采集回调内。回调同步重入 setEnrollmentCapture(false) 时据此
+// 跳过「等待本线程在途回调」——自等必然死锁；跨线程关闭仍照常等待。
+thread_local bool t_inEnrollmentCaptureCallback = false;
+
 static bool getEnvBool(const char* envName);
 static const char* throttleModeName(InferenceThrottleMode mode);
 
@@ -805,6 +813,193 @@ void Engine::updateRealtimeGallery(std::shared_ptr<const FaceSearchLinearIndex> 
     rklog::logInfo("Engine", __func__, "实时图库覆盖已更新 count=" + std::to_string(count));
 }
 
+// ── #1 注册采集模式 ──
+
+void Engine::setEnrollmentCapture(bool enabled) {
+    // 持锁切换 enabled；关闭时等待在途回调归零，保证返回即无跨线程在途回调，
+    // JNI 侧据此安全释放回调中使用的全局引用/缓冲区。
+    std::unique_lock<std::mutex> lock(enrollmentCaptureMu_);
+    enrollmentCaptureEnabled_.store(enabled);
+    if (enabled) return;
+    if (t_inEnrollmentCaptureCallback) {
+        // 本线程正身处回调内（回调同步重入关闭）：不能等待自身，否则死锁。
+        // 该回调返回后不会再触达已释放资源，故直接放行。
+        return;
+    }
+    enrollmentCaptureCv_.wait(lock, [this] { return enrollmentCaptureInFlight_ == 0; });
+}
+
+void Engine::setEnrollmentCaptureCallback(EnrollmentCaptureCallback callback) {
+    std::lock_guard<std::mutex> lock(enrollmentCaptureMu_);
+    enrollmentCaptureCb_ = std::move(callback);
+}
+
+bool Engine::computeEnrollmentQuality(const cv::Mat& faceBgr, float& grayMean,
+                                      float& grayStd, float& laplacianVariance) {
+    grayMean = 0.0f;
+    grayStd = 0.0f;
+    laplacianVariance = 0.0f;
+    if (faceBgr.empty()) return false;
+
+    cv::Mat gray;
+    if (faceBgr.channels() == 3) {
+        cv::cvtColor(faceBgr, gray, cv::COLOR_BGR2GRAY);
+    } else if (faceBgr.channels() == 4) {
+        cv::cvtColor(faceBgr, gray, cv::COLOR_BGRA2GRAY);
+    } else if (faceBgr.channels() == 1) {
+        gray = faceBgr;
+    } else {
+        return false;
+    }
+    if (gray.empty() || gray.type() != CV_8U) return false;
+    if (!gray.isContinuous()) gray = gray.clone();
+
+    const int w = gray.cols;
+    const int h = gray.rows;
+    if (w <= 0 || h <= 0) return false;
+
+    // 灰度总体统计（与 EnrollmentSession.ImageMetrics 一致：按无符号字节解释）。
+    double sum = 0.0;
+    double sumSq = 0.0;
+    for (int y = 0; y < h; ++y) {
+        const std::uint8_t* row = gray.ptr<std::uint8_t>(y);
+        for (int x = 0; x < w; ++x) {
+            const double v = static_cast<double>(row[x]);
+            sum += v;
+            sumSq += v * v;
+        }
+    }
+    const double n = static_cast<double>(w) * static_cast<double>(h);
+    const double mean = sum / n;
+    grayMean = static_cast<float>(mean);
+    grayStd = static_cast<float>(std::sqrt(std::max(0.0, sumSq / n - mean * mean)));
+
+    // Laplacian 4 邻域（[0 1 0; 1 -4 1; 0 1 0]）响应方差：仅内部像素，
+    // 公式与 EnrollmentSession.ImageMetrics.laplacianVariance 逐项一致，确保阈值语义对齐。
+    if (w < 3 || h < 3) {
+        laplacianVariance = 0.0f;
+        return true;
+    }
+    double lsum = 0.0;
+    double lsumSq = 0.0;
+    long long count = 0;
+    for (int y = 1; y < h - 1; ++y) {
+        const std::uint8_t* up = gray.ptr<std::uint8_t>(y - 1);
+        const std::uint8_t* mid = gray.ptr<std::uint8_t>(y);
+        const std::uint8_t* down = gray.ptr<std::uint8_t>(y + 1);
+        for (int x = 1; x < w - 1; ++x) {
+            const int lap = 4 * static_cast<int>(mid[x]) - static_cast<int>(mid[x - 1]) -
+                            static_cast<int>(mid[x + 1]) - static_cast<int>(up[x]) -
+                            static_cast<int>(down[x]);
+            lsum += static_cast<double>(lap);
+            lsumSq += static_cast<double>(lap) * static_cast<double>(lap);
+            ++count;
+        }
+    }
+    if (count == 0) {
+        laplacianVariance = 0.0f;
+        return true;
+    }
+    const double lmean = lsum / static_cast<double>(count);
+    laplacianVariance =
+        static_cast<float>(std::max(0.0, lsumSq / static_cast<double>(count) - lmean * lmean));
+    return true;
+}
+
+void Engine::captureEnrollmentFaces(const cv::Mat& frame,
+                                    const std::vector<pipeline::DetectedFace>& faces,
+                                    const RealtimePipelineSnapshot& snap) {
+    if (!snap.embedder || frame.empty() || faces.empty()) return;
+
+    // 采集模型与匹配共用同一 embedder；输入尺寸取 profile 契约（默认 112）。
+    FaceAlignOptions alignOpt;
+    alignOpt.outW = snap.profile.embedderInputW > 0 ? snap.profile.embedderInputW : 112;
+    alignOpt.outH = snap.profile.embedderInputH > 0 ? snap.profile.embedderInputH : 112;
+
+    const float frameArea = static_cast<float>(frame.cols) * static_cast<float>(frame.rows);
+    const int faceCount = static_cast<int>(faces.size());
+
+    for (const pipeline::DetectedFace& df : faces) {
+        FaceDetection det;
+        det.bbox = cv::Rect2f(static_cast<float>(df.bbox.x), static_cast<float>(df.bbox.y),
+                              static_cast<float>(df.bbox.width),
+                              static_cast<float>(df.bbox.height));
+        det.score = df.confidence;
+        // 有 5 点关键点时优先关键点仿射对齐；否则 bbox fallback（与身份匹配同策略）。
+        if (df.hasKeypoints) {
+            std::array<cv::Point2f, 5> kp;
+            for (std::size_t i = 0; i < 5; ++i) {
+                kp[i] = cv::Point2f(df.keypoints[i * 2], df.keypoints[i * 2 + 1]);
+            }
+            det.keypoints5 = kp;
+        }
+        const FaceAlignResult ar = alignFaceForArcFace112(frame, det, alignOpt);
+        if (ar.alignedBgr.empty()) continue;
+
+        std::vector<float> emb;
+        std::string eerr;
+        if (!snap.embedder->embed(ar.alignedBgr, emb, eerr)) {
+            // 失败也可能已写入部分明文，丢弃前清零（模板红线）。
+            std::fill(emb.begin(), emb.end(), 0.0f);
+            continue;
+        }
+        // 维度不符（如 profile 与 embedder 漂移）时拒绝该脸，避免向 Java 喂入非法样本；
+        // 该向量同样可能含部分明文，丢弃前清零。
+        if (emb.size() != static_cast<std::size_t>(kEmbeddingDim)) {
+            std::fill(emb.begin(), emb.end(), 0.0f);
+            continue;
+        }
+
+        EnrollmentCaptureSample sample;
+        sample.embedding = std::move(emb);
+        sample.bbox = df.bbox;
+        sample.frameWidth = frame.cols;
+        sample.frameHeight = frame.rows;
+        sample.detScore = df.confidence;
+        sample.faceCount = faceCount;
+        sample.areaRatio = frameArea > 0.0f
+                               ? (static_cast<float>(df.bbox.area()) / frameArea)
+                               : 0.0f;
+        sample.hasLandmarks = df.hasKeypoints;
+        sample.landmarks = df.keypoints;
+        float gm = 0.0f;
+        float gs = 0.0f;
+        float lv = 0.0f;
+        if (computeEnrollmentQuality(ar.alignedBgr, gm, gs, lv)) {
+            sample.grayMean = gm;
+            sample.grayStd = gs;
+            sample.laplacianVariance = lv;
+        }
+
+        // 锁内复制回调快照并登记在途，锁外调用：回调同步重入 stop/start 时不会在同线程
+        // 二次加锁自死锁（参考 ResultPublisher::publish 的 cbMu_ 快照模式）。关闭路径经
+        // enrollmentCaptureCv_ 等待在途计数归零，故跨线程关闭返回即无在途回调。
+        EnrollmentCaptureCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(enrollmentCaptureMu_);
+            if (enrollmentCaptureEnabled_.load() && enrollmentCaptureCb_) {
+                cb = enrollmentCaptureCb_;
+                ++enrollmentCaptureInFlight_;
+            }
+        }
+        if (cb) {
+            t_inEnrollmentCaptureCallback = true;
+            try {
+                cb(sample);
+            } catch (...) {
+                // 回调异常不得穿透实时帧循环，也不得破坏在途计数：吞掉后照常收尾。
+            }
+            t_inEnrollmentCaptureCallback = false;
+            {
+                std::lock_guard<std::mutex> lock(enrollmentCaptureMu_);
+                if (--enrollmentCaptureInFlight_ == 0) enrollmentCaptureCv_.notify_all();
+            }
+        }
+        // 模板红线：局部队列用毕立即清零，不留明文。
+        std::fill(sample.embedding.begin(), sample.embedding.end(), 0.0f);
+    }
+}
+
 bool Engine::getRealtimeEffective() const {
     std::shared_ptr<RealtimeFacePipeline> pipe;
     {
@@ -875,6 +1070,12 @@ bool Engine::runRealtimeDetect(const cv::Mat& frame,
     // 任务5 规则让旧框在连续缺失 2 次后消失（区别于模型缺失的跳过语义）。
     detectionRan = true;
     outFaces = postProcessRealtimeBoxes(frame, boxes, snap->profile.nmsIou);
+    // #1 注册采集：仅采集模式开启时逐脸产出样本（关闭时快速分支零开销）。
+    // 必须在身份匹配之前调用——assignRealtimeIdentities 命中时会把 confidence 覆盖为
+    // 相似度，而采集样本的 detScore 必须是原始检测分。身份匹配与采集相互独立，无顺序依赖。
+    if (enrollmentCaptureEnabled_.load()) {
+        captureEnrollmentFaces(frame, outFaces, *snap);
+    }
     assignRealtimeIdentities(frame, outFaces, *snap);
     setRealtimeReason("ok");
     return true;
@@ -904,6 +1105,9 @@ std::vector<pipeline::DetectedFace> Engine::postProcessRealtimeBoxes(
         df.confidence = b.score;  // 检测置信度；身份命中后覆盖为相似度
         df.identityId = "Unknown";
         df.isAuthenticated = false;
+        // #1 注册采集：把检测关键点透传到后处理结果（NMS/包含抑制按分数保留的框携带自身关键点）。
+        df.hasKeypoints = b.hasKeypoints;
+        df.keypoints = b.keypoints;
         raw.push_back(std::move(df));
     }
 
@@ -930,7 +1134,11 @@ void Engine::assignRealtimeIdentities(const cv::Mat& frame,
     // 正常空结果，不是 LBPH 回退）。
     if (!snap.embedder || !gallery || gallery->size() == 0) return;
 
-    FaceAlignOptions alignOpt;  // 检测契约无关键点 → alignFaceForArcFace112 走 bbox fallback
+    // #1 对齐一致性：身份匹配与注册采集必须走同一对齐策略。DetectedFace 现已携带
+    // 关键点（hasKeypoints/keypoints），故此处与 captureEnrollmentFaces 完全对齐：
+    // 有 5 点关键点时优先关键点仿射对齐，无关键点时才回退 bbox。否则注册模板与查库
+    // probe 来自不同对齐，同一人脸 cosine 可能跌破 identitySimilarity → 注册后识别不到。
+    FaceAlignOptions alignOpt;
     alignOpt.outW = snap.profile.embedderInputW > 0 ? snap.profile.embedderInputW : 112;
     alignOpt.outH = snap.profile.embedderInputH > 0 ? snap.profile.embedderInputH : 112;
 
@@ -938,6 +1146,15 @@ void Engine::assignRealtimeIdentities(const cv::Mat& frame,
         FaceDetection det;
         det.bbox = cv::Rect2f(static_cast<float>(df.bbox.x), static_cast<float>(df.bbox.y),
                               static_cast<float>(df.bbox.width), static_cast<float>(df.bbox.height));
+        // 与 captureEnrollmentFaces 同构：仅在 hasKeypoints 时填充关键点，保证两侧
+        // alignFaceForArcFace112 选择同一分支（关键点仿射 vs bbox fallback）。
+        if (df.hasKeypoints) {
+            std::array<cv::Point2f, 5> kp;
+            for (std::size_t i = 0; i < 5; ++i) {
+                kp[i] = cv::Point2f(df.keypoints[i * 2], df.keypoints[i * 2 + 1]);
+            }
+            det.keypoints5 = kp;
+        }
         const FaceAlignResult ar = alignFaceForArcFace112(frame, det, alignOpt);
         if (ar.alignedBgr.empty()) continue;
 

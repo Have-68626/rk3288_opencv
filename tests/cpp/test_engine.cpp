@@ -9,6 +9,7 @@
 #include <atomic>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -87,17 +88,52 @@ public:
     const char* name() const override { return "const"; }
 };
 
+// 内容感知嵌入：对对齐图按固定步长采样成 512 维向量，并记录每次收到的对齐输入（clone）。
+// 同一帧 + 同检测走同一对齐时向量逐元素相同；bbox 与关键点两种对齐则显著不同。
+// 仅依赖 cv::Mat 数据指针（不引入 imgproc），使「对齐一致性」可观测。
+class ContentRecordingEmbedder : public IRealtimeEmbedder {
+public:
+    std::mutex mu;
+    std::vector<cv::Mat> alignedInputs;
+
+    bool embed(const cv::Mat& in, std::vector<float>& out, std::string&) override {
+        if (in.empty() || in.cols <= 0 || in.rows <= 0) return false;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            alignedInputs.push_back(in.clone());
+        }
+        const int total = in.rows * in.cols;
+        std::vector<float> v(static_cast<std::size_t>(512), 0.0f);
+        const std::size_t esz = in.elemSize();
+        for (int i = 0; i < 512; ++i) {
+            const int idx = (i * total) / 512;
+            const int y = idx / in.cols;
+            const int x = idx % in.cols;
+            const unsigned char* p = in.ptr<unsigned char>(y) + static_cast<std::size_t>(x) * esz;
+            v[static_cast<std::size_t>(i)] = static_cast<float>(p[0]);
+        }
+        out = std::move(v);
+        return true;
+    }
+    int embeddingDim() const override { return 512; }
+    const char* name() const override { return "content_rec"; }
+};
+
 // 构造注入用实时管线；reload=false 时故意不发布快照（模拟模型未加载）。
+// embedder 非空时用其替换默认 ConstantEmbedder，供对齐一致性用例复用同一实例。
 std::shared_ptr<RealtimeFacePipeline> makeRtPipeline(
     std::shared_ptr<IRealtimeDetector> det,
     std::shared_ptr<const FaceSearchLinearIndex> gallery = nullptr,
-    bool reload = true) {
+    bool reload = true,
+    std::shared_ptr<IRealtimeEmbedder> embedder = nullptr) {
     RealtimePipelineHooks h;
     h.verifyFiles = [](const FaceRuntimeProfile&, const std::string&, std::string&) { return true; };
     h.loadDetector = [det](const FaceRuntimeProfile&, const std::string&, std::string&)
         -> std::shared_ptr<IRealtimeDetector> { return det; };
-    h.loadEmbedder = [](const FaceRuntimeProfile&, const std::string&, std::string&)
-        -> std::shared_ptr<IRealtimeEmbedder> { return std::make_shared<ConstantEmbedder>(); };
+    h.loadEmbedder = [embedder](const FaceRuntimeProfile&, const std::string&, std::string&)
+        -> std::shared_ptr<IRealtimeEmbedder> {
+        return embedder ? embedder : std::make_shared<ConstantEmbedder>();
+    };
     h.loadGallery = [gallery](const FaceRuntimeProfile&, const std::string&, std::string&)
         -> std::shared_ptr<const FaceSearchLinearIndex> { return gallery; };
     h.selfCheck = [](const RealtimePipelineSnapshot&, std::string&) { return true; };
@@ -380,4 +416,178 @@ TEST(EngineTest, RealtimeGalleryMatchAssignsIdentity) {
     const auto tracks = engine.getTrackViews();
     ASSERT_EQ(tracks.size(), 1u);
     EXPECT_EQ(tracks[0].stableId, "alice");
+}
+
+// ── #1 注册采集接缝回归 ──
+
+// 采集模式关闭时零回调；开启后对每个检测脸回调一次，且 embedding/bbox/关键点/质量/faceCount
+// 字段正确透传（这是 EnrollmentSession 唯一的逐帧特征源）。
+TEST(EngineTest, EnrollmentCaptureCallbacksOnlyWhenEnabled) {
+    Engine engine;
+    auto det = std::make_shared<ScriptedDetector>();
+    RealtimeFaceBox b = boxOf(cv::Rect(200, 150, 160, 200), 0.9f);
+    b.hasKeypoints = true;
+    b.keypoints = {120.f, 140.f, 240.f, 140.f, 180.f, 180.f, 150.f, 220.f, 210.f, 220.f};
+    det->boxes = {b};
+    engine.setRealtimePipeline(makeRtPipeline(det));
+
+    std::atomic<int> count{0};
+    EnrollmentCaptureSample got;
+    std::mutex mu;
+    engine.setEnrollmentCaptureCallback([&](const EnrollmentCaptureSample& s) {
+        std::lock_guard<std::mutex> lock(mu);
+        got = s;
+        count.fetch_add(1);
+    });
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(90, 90, 90));
+
+    // 关闭：无回调
+    EXPECT_FALSE(engine.isEnrollmentCapture());
+    engine.setEnrollmentCapture(false);
+    engine.processFrameOnce(frame);
+    EXPECT_EQ(count.load(), 0);
+
+    // 开启：逐脸回调一次，字段正确
+    engine.setEnrollmentCapture(true);
+    EXPECT_TRUE(engine.isEnrollmentCapture());
+    engine.processFrameOnce(frame);
+    EXPECT_EQ(count.load(), 1);
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        EXPECT_EQ(got.embedding.size(), static_cast<std::size_t>(512));
+        EXPECT_FLOAT_EQ(got.embedding[0], 1.0f);  // ConstantEmbedder 全 1
+        EXPECT_EQ(got.bbox, cv::Rect(200, 150, 160, 200));
+        EXPECT_EQ(got.faceCount, 1);
+        EXPECT_FLOAT_EQ(got.detScore, 0.9f);
+        EXPECT_EQ(got.frameWidth, rk_core::config::FRAME_WIDTH);
+        EXPECT_EQ(got.frameHeight, rk_core::config::FRAME_HEIGHT);
+        EXPECT_GT(got.areaRatio, 0.0f);
+        EXPECT_TRUE(got.hasLandmarks);
+        EXPECT_FLOAT_EQ(got.landmarks[0], 120.f);
+        EXPECT_FLOAT_EQ(got.landmarks[9], 220.f);
+        // 常量灰度图：均值=90，Laplacian 方差=0
+        EXPECT_FLOAT_EQ(got.grayMean, 90.0f);
+        EXPECT_FLOAT_EQ(got.laplacianVariance, 0.0f);
+        // 模板红线：调用方持有的副本可显式擦除
+        std::fill(got.embedding.begin(), got.embedding.end(), 0.0f);
+        EXPECT_FLOAT_EQ(got.embedding[0], 0.0f);
+    }
+
+    // 再次关闭后不再回调
+    engine.setEnrollmentCapture(false);
+    engine.processFrameOnce(frame);
+    EXPECT_EQ(count.load(), 1);
+}
+
+// 模型未生效（无快照）时实时路径根本不检测：采集不得产出任何样本。
+TEST(EngineTest, EnrollmentCaptureNotTriggeredWhenModelMissing) {
+    Engine engine;
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    engine.setRealtimePipeline(makeRtPipeline(det, nullptr, /*reload=*/false));
+
+    std::atomic<int> count{0};
+    engine.setEnrollmentCaptureCallback(
+        [&](const EnrollmentCaptureSample&) { count.fetch_add(1); });
+    engine.setEnrollmentCapture(true);
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(10, 10, 10));
+    engine.processFrameOnce(frame);
+    EXPECT_EQ(count.load(), 0);
+    EXPECT_EQ(engine.getRealtimeReason(), "missing_model");
+}
+
+// 质量指标纯函数：常量图 Laplacian 方差为 0；中心亮点响应方差 > 0。
+TEST(EngineTest, ComputeEnrollmentQualityMatchesJavaSemantics) {
+    cv::Mat flat(4, 4, CV_8UC1, cv::Scalar(100));
+    float m = 0.f;
+    float s = 0.f;
+    float v = 0.f;
+    ASSERT_TRUE(Engine::computeEnrollmentQuality(flat, m, s, v));
+    EXPECT_FLOAT_EQ(m, 100.0f);
+    EXPECT_FLOAT_EQ(s, 0.0f);
+    EXPECT_FLOAT_EQ(v, 0.0f);
+
+    // 5x5：内部像素 3x3=9 个，中心亮点在 4 邻域上产生 1 个 400 与 4 个 -100 的响应，
+    // 总体方差 = (400^2 + 4*100^2)/9 > 0。注意 3x3 图内部仅 1 个像素，单值总体方差
+    // 恒等于 0（旧用例即因此误判为 0），故必须用能容纳多个内部像素的尺寸。
+    cv::Mat edge(5, 5, CV_8UC1, cv::Scalar(0));
+    edge.at<unsigned char>(2, 2) = 100;
+    ASSERT_TRUE(Engine::computeEnrollmentQuality(edge, m, s, v));
+    EXPECT_GT(v, 0.0f);
+
+    cv::Mat empty;
+    EXPECT_FALSE(Engine::computeEnrollmentQuality(empty, m, s, v));
+}
+
+// #1 对齐一致性回归：同一帧、同一检测（含 5 关键点）下，注册采集与身份匹配必须走同一
+// 关键点仿射对齐。修复前身份路径强制 bbox fallback，注册模板与查库 probe 来自不同对齐，
+// 同一人脸 cosine 可能跌破 identitySimilarity → 注册后识别不到（本用例会 RED）。
+// 断言两层：① 身份路径产出的对齐输入与注册路径逐字节相同；② 用注册模板建库后能命中。
+TEST(EngineTest, IdentityPathUsesKeypointAlignmentLikeEnrollment) {
+    auto det = std::make_shared<ScriptedDetector>();
+    RealtimeFaceBox b = boxOf(cv::Rect(200, 150, 160, 200), 0.9f);
+    b.hasKeypoints = true;
+    // 相对 bbox 倾斜的关键点：关键点仿射（相似变换）与 bbox 裁剪/resize 几何不同，
+    // 使两种对齐在结构纹理上产生可区分的采样向量。
+    b.keypoints = {140.f, 180.f, 250.f, 170.f, 200.f, 220.f, 160.f, 270.f, 230.f, 275.f};
+    det->boxes = {b};
+
+    auto emb = std::make_shared<ContentRecordingEmbedder>();
+
+    // 棋盘纹理帧：任何对齐差异都会改变采样相位，避免常量图掩盖两种对齐的差异。
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH, CV_8UC3);
+    for (int y = 0; y < frame.rows; ++y) {
+        cv::Vec3b* row = frame.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < frame.cols; ++x) {
+            const unsigned char v =
+                static_cast<unsigned char>(60 + (((x / 6) + (y / 6)) % 2) * 150);
+            row[x] = cv::Vec3b(v, v, v);
+        }
+    }
+
+    // ① 注册采集：关键点对齐产出模板 E。
+    EnrollmentCaptureSample enrolled;
+    std::mutex mu;
+    std::atomic<int> count{0};
+    {
+        Engine e1;
+        e1.setRealtimePipeline(makeRtPipeline(det, nullptr, /*reload=*/true, emb));
+        e1.setEnrollmentCaptureCallback([&](const EnrollmentCaptureSample& s) {
+            std::lock_guard<std::mutex> lock(mu);
+            enrolled = s;
+            count.fetch_add(1);
+        });
+        e1.setEnrollmentCapture(true);
+        e1.processFrameOnce(frame);
+    }
+    ASSERT_EQ(count.load(), 1);
+    ASSERT_EQ(enrolled.embedding.size(), 512u);
+
+    // ② 识别：以注册模板建库，身份路径跑满 stableFrames=3 帧。
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    std::vector<FaceSearchEntry> entries = {{"alice", enrolled.embedding}};
+    ASSERT_TRUE(index->reset(std::move(entries), 512, err)) << err;
+
+    {
+        Engine e2;
+        e2.setRealtimePipeline(makeRtPipeline(det, index, /*reload=*/true, emb));
+        for (int i = 0; i < 3; ++i) e2.processFrameOnce(frame);
+        const auto tracks = e2.getTrackViews();
+        ASSERT_EQ(tracks.size(), 1u);
+        EXPECT_EQ(tracks[0].stableId, "alice");
+    }
+
+    // ③ 核心断言：注册 1 次 + 身份 3 次对齐输入，必须全部逐字节相同（同一对齐）。
+    std::lock_guard<std::mutex> lock(emb->mu);
+    ASSERT_EQ(emb->alignedInputs.size(), 4u);
+    for (std::size_t i = 1; i < emb->alignedInputs.size(); ++i) {
+        ASSERT_EQ(emb->alignedInputs[i].size(), emb->alignedInputs[0].size());
+        ASSERT_EQ(emb->alignedInputs[i].type(), emb->alignedInputs[0].type());
+        EXPECT_DOUBLE_EQ(cv::norm(emb->alignedInputs[i], emb->alignedInputs[0], cv::NORM_INF), 0.0);
+    }
 }
