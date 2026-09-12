@@ -18,6 +18,7 @@
 #include "pipeline/TrackCoordinator.h"
 #include "pipeline/ResultPublisher.h"
 #include "pipeline/PerfReporter.h"
+#include "pipeline/RealtimeFacePipeline.h"  // 任务12：实时 SCRFD/ArcFace 管线接入
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -131,6 +132,76 @@ public:
      */
     static void drawTracks(cv::Mat& frame, const std::vector<pipeline::TrackView>& tracks);
 
+    // ── 任务12：实时路径（RealtimeFacePipeline）接入 ──
+
+    /**
+     * @brief 注入实时推理管线（SCRFD 检测 + ArcFace 识别 + 图库检索）。
+     *
+     * 语义：
+     * - 注入非空即启用实时路径，此后 processFrame 不再调用 BioAuth::verifyMulti；
+     * - 注入 nullptr 恢复 BioAuth 兼容路径（Windows/旧 CLI/兼容测试）；
+     * - Android 平台在构造时默认创建并启用（见 Engine::Engine），宿主可再次注入
+     *   带真实 manifest 图库的管线替换之。
+     * 线程安全：可与 run() 并发调用（内部加锁取共享指针）。
+     */
+    void setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline);
+
+    /** 是否处于实时路径（已注入/启用管线）。 */
+    bool hasRealtimePipeline() const { return realtimeEnabled_.load(); }
+
+    /** 实时管线当前快照代次（无管线为 0），供状态展示。 */
+    uint64_t getRealtimeGeneration() const;
+
+    /**
+     * @brief 最近一次实时路径结果 reason（契约码；成功为 "ok"）。
+     * 模型缺失时为 "missing_model"（显式暴露，禁止静默回退 LBPH）。
+     */
+    std::string getRealtimeReason() const;
+
+    /**
+     * @brief 运行时更新实时图库（图库变化时由 JNI bridge_replaceGallery 调用）。
+     *
+     * WHY 独立接缝：RealtimePipelineSnapshot 为不可变对象，且其替换 API 不对 Engine 暴露，
+     * 故由 Engine 持有一份「图库覆盖」不可变快照，身份匹配时优先于快照自带 gallery——
+     * 等价于在 Engine 侧重建了快照的图库字段，避免为图库变更触发整条 reload（含基准）。
+     * 传入 nullptr 表示清除覆盖，回退到快照自带图库。
+     * 线程安全：可与 run() 并发调用（内部加锁取共享指针；传入对象为 const，读侧无数据竞争）。
+     */
+    void updateRealtimeGallery(std::shared_ptr<const FaceSearchLinearIndex> gallery);
+
+    /**
+     * @brief 当前实时快照是否 effective（模型/自检/基准全部通过）。
+     * 供 JNI getRuntimeStatus 暴露 effective 字段，避免 UI 仅凭 profileLoaded 误报就绪。
+     */
+    bool getRealtimeEffective() const;
+
+    /**
+     * @brief 当前对外跟踪视图（已确认轨迹）的线程安全快照。
+     * 与发布渲染帧同源，供 JNI 状态展示与单元测试断言。
+     */
+    std::vector<pipeline::TrackView> getTrackViews() const;
+
+    /**
+     * @brief 同步处理单帧：流程与 run() 内部单帧一致（预处理→检测/识别→跟踪→渲染）。
+     *
+     * 供宿主同步驱动与单元测试；不可与 run() 并发调用（会并发写
+     * processedFrame_/currentTracks_ 等非线程安全状态）。
+     */
+    bool processFrameOnce(const cv::Mat& rawFrame, double decodeMs = 0.0);
+
+    /**
+     * @brief 实时检测框统一后处理（纯函数，任务12 可测接缝）。
+     *
+     * 入参 frame 已是「统一变换后」的图像，boxes 即该坐标系检测框（解码器已完成
+     * letterbox 反算）；返回后处理后的 DetectedFace：丢弃非法框、裁剪到画面、
+     * IoU NMS + 包含框抑制。关键：包含框抑制确保同一张脸的局部/嵌套框只保留一个，
+     * 避免下游 TrackCoordinator 因两个框各建轨迹而产生「第二身份」。
+     * 不修改 frame（只读 cols/rows）。
+     */
+    static std::vector<pipeline::DetectedFace> postProcessRealtimeBoxes(
+        const cv::Mat& frame, const std::vector<RealtimeFaceBox>& boxes,
+        float nmsIouThreshold = 0.40f);
+
     /**
      * @brief 运行时更新推理节流参数（通常由 JNI/配置线程调用）。
      *
@@ -166,9 +237,21 @@ private:
     // === processFrame 子方法（P2.1）===
     bool processFrame(const cv::Mat& rawFrame, double decodeMs);
     bool preprocessFrame(const cv::Mat& frame);
-    void trackFaces(const std::vector<pipeline::DetectedFace>& faces);
+    void trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool detectionRan);
     void renderResults();
     void collectStats();
+
+    // === 任务12 实时路径子方法 ===
+    // 实时路径单帧：检测→（可选身份）→跟踪→渲染。processedFrame_ 已统一变换。
+    bool processFrameRealtime(double decodeMs);
+    // 实时检测：成功 true 且 detectionRan=true；模型/管线不可用 false（reason 已记录）。
+    bool runRealtimeDetect(const cv::Mat& frame, std::vector<pipeline::DetectedFace>& outFaces,
+                           bool& detectionRan);
+    // 身份匹配（可选增强）：快照含 gallery+embedder 时对齐→嵌入→检索并回填身份。
+    void assignRealtimeIdentities(const cv::Mat& frame,
+                                  std::vector<pipeline::DetectedFace>& faces,
+                                  const RealtimePipelineSnapshot& snap);
+    void setRealtimeReason(const std::string& reason);
 
     // === 管线组件 ===
     std::unique_ptr<VideoManager> videoManager_;
@@ -178,6 +261,19 @@ private:
     std::unique_ptr<pipeline::TrackCoordinator> trackCoordinator_;
     std::unique_ptr<pipeline::ResultPublisher> publisher_;
     std::unique_ptr<pipeline::PerfReporter> perfReporter_;
+
+    // 任务12：注入式实时管线（Android 默认创建；nullptr = 走 BioAuth 兼容路径）。
+    // realtimeMu_ 保护共享指针的注入/读取；realtimeEnabled_ 为无锁快速分支判断。
+    std::shared_ptr<RealtimeFacePipeline> realtimePipeline_;
+    mutable std::mutex realtimeMu_;
+    std::atomic<bool> realtimeEnabled_{false};
+    std::string realtimeReason_;
+    mutable std::mutex realtimeReasonMu_;
+
+    // 图库覆盖快照：replaceGallery 成功后的不可变索引，身份匹配优先于快照自带 gallery。
+    // 独立锁，避免与 realtimeMu_ 的注入路径互相阻塞。
+    std::shared_ptr<const FaceSearchLinearIndex> realtimeGallery_;
+    mutable std::mutex realtimeGalleryMu_;
 
     // External frame input
     std::unique_ptr<FrameInputChannel> externalInput_;
@@ -208,6 +304,8 @@ private:
 
     // === processFrame 子方法间共享状态 ===
     cv::Mat processedFrame_;
+    // currentTracks_ 由推理线程写、getTrackViews()/渲染读，统一由 tracksMu_ 保护
+    mutable std::mutex tracksMu_;
     std::vector<pipeline::TrackView> currentTracks_;
     pipeline::PerfStats currentStats_;
 
