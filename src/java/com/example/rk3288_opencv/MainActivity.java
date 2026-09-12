@@ -29,6 +29,7 @@ import android.provider.Settings;
 import android.animation.ValueAnimator;
 import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.Surface;
@@ -52,6 +53,7 @@ import android.database.Cursor;
 import android.provider.OpenableColumns;
 import android.app.ProgressDialog;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -69,11 +71,15 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 
 import androidx.lifecycle.ViewModelProvider;
 
@@ -102,6 +108,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_DETECTION_INTERVAL_MS = "pref_detection_interval_ms";
     private static final String PREF_INFERENCE_THROTTLE_MODE = "pref_inference_throttle_mode";
     private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
+    /** 任务18：personId -> displayName 的本地展示名映射前缀（仓库不存储展示名，仅存 userId）。 */
+    private static final String PREF_PERSON_NAME_PREFIX = "pref_person_name_";
     private static final String TAG = "MainActivity";
 
     /** Sentinel: no real camera device, external frame input only */
@@ -160,6 +168,32 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Button btnPushRtmp;
     private Button btnStopRtmp;
     private final FfmpegRtmpPusher rtmpPusher = new FfmpegRtmpPusher();
+
+    // 任务18 / #1：模型管理与人员注册接入（视图在 settings 面板中，直接 findViewById 绑定，
+    // 不经过 MainScreenBinder，避免改动该绑定类的既有契约）。
+    private Button btnRegisterFace;
+    private Button btnImportModel;
+    private Button btnSwitchModel;
+    private Button btnManagePersons;
+    private TextView tvModelManagement;
+    private FaceModelManager faceModelManager;
+    private AndroidEnrollmentRepository enrollmentRepository;
+    /** 执行中的注册会话；native 采集线程会读取，故 volatile 保证可见性。 */
+    private volatile EnrollmentSession enrollmentSession;
+    /** #1 注册采集：复用的 direct ByteBuffer（512×4 字节 LE float32），由 native 逐帧写入。 */
+    private ByteBuffer enrollmentCaptureBuffer;
+    private AlertDialog enrollmentDialog;
+    private EditText regPersonIdInput;
+    private EditText regDisplayNameInput;
+    private TextView regStatusText;
+    private Button regStartButton;
+    private Button regCancelButton;
+    private Runnable enrollmentPoller;
+    private volatile boolean enrollmentInProgress = false;
+    /** 注册准备/轮询代次：对话框关闭或取消时递增，使未完成的准备回调整体作废。 */
+    private int enrollmentGeneration = 0;
+    /** 最近一次采样被拒原因（仅在喂入样本时更新）；不含任何模板/向量内容。 */
+    private volatile String lastEnrollmentRejectReason = "";
 
     // Delegate helpers (preliminary split P1.7)
     private CameraFragment cameraFragment;
@@ -477,6 +511,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (switchFlipY != null) switchFlipY.setOnCheckedChangeListener(flipYSwitchListener);
         refreshFlipFromPrefs(false);
         syncMonitoringUiAfterRebind();
+        bindModelManagementUi();
     }
 
     private MonitoringCoordinator.Inputs snapshotMonitoringInputs() {
@@ -1627,6 +1662,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private static final int REQUEST_CODE_PICK_MEDIA = 2001;
     private static final int REQUEST_CODE_TAKE_PHOTO = 1003;
+    /** 任务18：SAF 选择模型 ZIP 包。 */
+    private static final int REQUEST_CODE_IMPORT_MODEL = 2003;
+    /** 注册模板的模型版本 / schema 版本（仓库元数据字段，落盘一致性由仓库保证）。 */
+    private static final int ENROLL_MODEL_VERSION = 1;
+    private static final int ENROLL_TEMPLATE_SCHEMA_VERSION = 1;
+    /** 注册进度轮询间隔：250ms，仅刷新 UI，不在 UI 线程做重 IO。 */
+    private static final long ENROLLMENT_POLL_INTERVAL_MS = 250L;
     private String mockFilePath = null;
     private String currentPhotoPath;
     // 拍照输出 URI：授予跨 UID 相机后，消费完成须及时撤销（Q-CQ-B07-009）
@@ -1842,6 +1884,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
         };
         handler.post(statsUpdater);
+
+        // #1（第二波审查）：启动恢复已导入并激活的模型 profile，使实时管线在重启后生效。
+        // 全程后台线程执行、失败不阻塞启动；结果只更新状态区文本。
+        restoreActiveProfileOnStartup();
     }
 
     @Override
@@ -1954,6 +2000,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             revokePhotoUriPermission();
         } else if (requestCode == 1002) {
             syncOverlaySwitchState();
+        } else if (requestCode == REQUEST_CODE_IMPORT_MODEL && resultCode == RESULT_OK) {
+            // 任务18 / #1：SAF 选择模型 ZIP 包 -> 后台导入（不在 UI 线程做重 IO）。
+            if (data != null && data.getData() != null) {
+                importModelZip(data.getData());
+            }
         }
     }
 
@@ -3121,13 +3172,95 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     public void onNativeResult(@NonNull String result) {
+        final String display = formatRecognitionResult(result);
         runOnUiThread(() -> {
             if (recognitionEventAdapter == null) return;
-            recognitionEventAdapter.prepend(new RecognitionEvent(System.currentTimeMillis(), result));
+            recognitionEventAdapter.prepend(new RecognitionEvent(System.currentTimeMillis(), display));
             if (rvRecognitionEvents != null) {
                 rvRecognitionEvents.scrollToPosition(0);
             }
         });
+    }
+
+    /**
+     * 任务18：把原生识别结果格式化为可读文本并回填 displayName。
+     *
+     * <p>兼容两种契约：
+     * <ul>
+     *   <li>实时路径纯文本（{@code ResultPublisher}）：{@code VERIFIED <personId> <pct>%} /
+     *       {@code AUTH_FAIL Unknown} / {@code NO_FACE} / {@code FACES n ...}。</li>
+     *   <li>JSON 结果（FaceInferOutcomeJson 契约，含 {@code TopK.hits[].personId/displayName}）：
+     *       优先取 hits 的 displayName，缺失时用 personId 映射本地展示名。</li>
+     * </ul>
+     * 无法识别时原样返回，绝不臆造身份。展示名映射仅存于 SharedPreferences，不含模板。
+     */
+    @NonNull
+    private String formatRecognitionResult(@Nullable String raw) {
+        if (raw == null) return "";
+        String s = raw.trim();
+        if (s.isEmpty()) return s;
+
+        if (s.charAt(0) == '{') {
+            // JSON 契约：displayName 优先（native 可能留空），否则按 personId 映射本地展示名。
+            // #6：容忍字段缺失——native 未知时省略 personId/displayName，jsonFirstStringField 返回空串，
+            // 两者皆缺则原样返回不再臆造身份；personId 缺失时仅展示 displayName，不拼接 id 后缀。
+            String personId = jsonFirstStringField(s, "personId");
+            String displayName = jsonFirstStringField(s, "displayName");
+            if (personId.isEmpty() && displayName.isEmpty()) {
+                return s;
+            }
+            String shown = !displayName.isEmpty() ? displayName
+                    : (personId.isEmpty() ? "" : displayNameFor(personId));
+            if (shown.isEmpty()) return s;
+            return "识别: " + shown + (personId.isEmpty() ? "" : ("（" + personId + "）"));
+        }
+
+        if (s.startsWith("VERIFIED ")) {
+            String[] t = s.split("\\s+");
+            if (t.length >= 2 && !t[1].isEmpty()) {
+                String suffix = (t.length >= 3) ? (" " + t[2]) : "";
+                return "识别: " + displayNameFor(t[1]) + suffix;
+            }
+            return s;
+        }
+        if (s.startsWith("AUTH_FAIL")) return "未识别（Unknown）";
+        if ("NO_FACE".equals(s)) return "无人脸";
+        if (s.startsWith("FACES ")) {
+            return "多人脸（" + s.substring(6).trim() + "）";
+        }
+        return s;
+    }
+
+    /**
+     * 在 JSON 文本中查找首个任意深度的 {@code "key":"value"} 字符串字段；缺失/非法返回空串。
+     * 仅用于读取状态型小对象（结果 JSON），不构造对象、不依赖字段顺序。
+     */
+    @NonNull
+    private static String jsonFirstStringField(@Nullable String json, @NonNull String key) {
+        if (json == null || key.isEmpty()) return "";
+        String needle = "\"" + key + "\"";
+        int idx = json.indexOf(needle);
+        if (idx < 0) return "";
+        int i = idx + needle.length();
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        if (i >= json.length() || json.charAt(i) != ':') return "";
+        i++;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        if (i >= json.length() || json.charAt(i) != '"') return "";
+        StringBuilder sb = new StringBuilder();
+        int j = i + 1;
+        while (j < json.length()) {
+            char c = json.charAt(j);
+            if (c == '\\' && j + 1 < json.length()) {
+                sb.append(json.charAt(j + 1));
+                j += 2;
+                continue;
+            }
+            if (c == '"') break;
+            sb.append(c);
+            j++;
+        }
+        return sb.toString();
     }
 
     private void toggleRecognitionPanel() {
@@ -3324,6 +3457,820 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             if (monitorView != null) monitorView.setScaleType(ImageView.ScaleType.FIT_CENTER);
         }
     }
+
+    // ==================== 任务18 / #1：模型管理与人员注册 ====================
+    //
+    // 设计要点：
+    // - 所有模型/仓库 IO（导入、状态、模板读写、图库替换）一律在后台线程执行，UI 线程只做展示，
+    //   与 FaceModelManager.status() 的 2s 节流策略一致，绝不在 UI 线程做重 IO。
+    // - 注册模板与向量绝不写日志；展示名映射仅存 SharedPreferences（不含任何模板内容）。
+    // - 图库替换失败时绝不覆盖运行中图库（refreshGalleryFromRepository 的失败语义）。
+
+    /** 当前设备首选 ABI（manifest 校验与 native 自检使用）。 */
+    @NonNull
+    private String currentAbi() {
+        String[] abis = Build.SUPPORTED_ABIS;
+        if (abis != null && abis.length > 0 && abis[0] != null && !abis[0].isEmpty()) {
+            return abis[0];
+        }
+        return Build.CPU_ABI == null ? "" : Build.CPU_ABI;
+    }
+
+    @NonNull
+    private FaceModelManager modelManager() {
+        if (faceModelManager == null) {
+            faceModelManager = FaceModelManager.forDefault(getApplicationContext());
+        }
+        return faceModelManager;
+    }
+
+    @NonNull
+    private AndroidEnrollmentRepository enrollmentRepository() {
+        if (enrollmentRepository == null) {
+            enrollmentRepository = AndroidEnrollmentRepository.forDefaultGallery(getApplicationContext());
+        }
+        return enrollmentRepository;
+    }
+
+    /** 绑定 settings 面板中的模型/人员管理控件（直接 findViewById，不改动 MainScreenBinder 契约）。 */
+    private void bindModelManagementUi() {
+        btnImportModel = findViewById(R.id.btn_import_model);
+        btnSwitchModel = findViewById(R.id.btn_switch_model);
+        btnManagePersons = findViewById(R.id.btn_manage_persons);
+        tvModelManagement = findViewById(R.id.tv_model_management);
+        btnRegisterFace = findViewById(R.id.btn_register_face);
+
+        if (btnImportModel != null) btnImportModel.setOnClickListener(v -> confirmLicenseThenPickModelZip());
+        if (btnSwitchModel != null) btnSwitchModel.setOnClickListener(v -> showSwitchModelDialog());
+        if (btnManagePersons != null) btnManagePersons.setOnClickListener(v -> showPersonManagementDialog());
+        if (btnRegisterFace != null) btnRegisterFace.setOnClickListener(v -> showFaceRegisterDialog());
+
+        refreshModelManagementStatus();
+    }
+
+    /** 后台读取模型状态并刷新状态文本（事件驱动，不在 UI 线程做文件 IO）。 */
+    private void refreshModelManagementStatus() {
+        final TextView target = tvModelManagement;
+        if (target == null) return;
+        new Thread(() -> {
+            String text;
+            try {
+                FaceRuntimeStatus s = modelManager().status();
+                text = "模型: " + s.sourceLabel()
+                        + (s.isUserImported() ? (" profile=" + s.profileId) : "")
+                        + " 已导入=" + s.importedProfileCount
+                        + (s.isRuntimeEffective() ? " 已生效" : " 未生效")
+                        + ((s.message == null || s.message.isEmpty()) ? "" : ("\n" + s.message));
+            } catch (Throwable t) {
+                text = "模型状态不可用";
+            }
+            // lambda 捕获要求 effectively final：先求值到 text，再转 final 供 UI 线程使用
+            final String summary = text;
+            runOnUiThread(() -> {
+                // #2：Activity 已销毁时丢弃陈旧 UI 回调，避免窗口 token 失效。
+                if (isFinishing() || isDestroyed()) return;
+                if (tvModelManagement == target) {
+                    target.setText(summary);
+                }
+            });
+        }, "FaceModelStatus").start();
+    }
+
+    /** 向用户展示模型操作结果（失败时 Toast；文本写入模型状态区）。 */
+    private void showModelStatusToUser(@NonNull String message, boolean error) {
+        if (tvModelManagement != null) {
+            tvModelManagement.setText(message);
+        }
+        if (error) {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * #1（第二波审查 P1）+ 任务18 冷启动恢复：恢复模型激活态与已注册图库。
+     *
+     * <p>此前生产 Java 零 {@code activate} 调用，导致「导入过的模型重启后不生效（恒 missing_model
+     * 仅预览）」；同时重启后内存图库为空，已注册人员无法被识别。此处：
+     * <ol>
+     *   <li>先从加密仓库重建内存图库并 {@code replaceGallery}（喂入 native gallery 槽）；</li>
+     *   <li>读取 {@code active_profile}，存在则调用 {@code activate(activeProfileId, currentAbi, true)}
+     *       绑定实时管线（Engine 未创建时 native 侧登记待激活，创建后自动补激活）。</li>
+     * </ol>
+     * 全程后台线程执行、失败不阻塞启动；结果只更新状态区文本，reason 如实展示。
+     */
+    private void restoreActiveProfileOnStartup() {
+        final String abi = currentAbi();
+        new Thread(() -> {
+            // 步骤 1：重建图库（先于 activate，使 native reload 的 loadGallery 钩子能取到该快照）。
+            final boolean galleryOk = refreshGalleryFromRepository();
+
+            final String active;
+            try {
+                active = modelManager().activeProfileId();
+            } catch (Throwable t) {
+                runOnUiThread(() -> {
+                    showModelStatusToUser(buildRestoreNote("模型启动恢复失败：状态读取异常", galleryOk), true);
+                });
+                return;
+            }
+            if (active == null) {
+                // 未导入：保持未导入态，交由「导入模型」入口引导。
+                runOnUiThread(() -> {
+                    refreshModelManagementStatus();
+                    if (!galleryOk) {
+                        showModelStatusToUser("已注册图库恢复失败（重启后可能无法识别已注册人员）", true);
+                    }
+                });
+                return;
+            }
+            FaceModelManager.Result result = null;
+            try {
+                result = modelManager().activate(active, abi, true);
+            } catch (Throwable ignored) {
+                // 恢复失败不阻塞启动：下面按失败展示 reason。
+            }
+            final FaceModelManager.Result r = result;
+            runOnUiThread(() -> {
+                if (r == null) {
+                    showModelStatusToUser(buildRestoreNote("模型启动恢复失败：管理器不可用", galleryOk), true);
+                } else if (r.isOk()) {
+                    // 成功不打扰用户，仅刷新状态区。
+                    refreshModelManagementStatus();
+                    if (!galleryOk) {
+                        showModelStatusToUser("已注册图库恢复失败（重启后可能无法识别已注册人员）", true);
+                    }
+                } else {
+                    showModelStatusToUser(buildRestoreNote(
+                            "模型启动恢复未生效（" + r.status + "）："
+                                    + (r.message == null ? "" : r.message), galleryOk), true);
+                }
+                refreshRuntimeStatusIfDue(true);
+                updateDiagnosticsText();
+            });
+        }, "FaceModelRestore").start();
+    }
+
+    /** 启动恢复提示：合并模型恢复失败原因与图库恢复失败原因（均为非敏感状态文本）。 */
+    @NonNull
+    private static String buildRestoreNote(@NonNull String modelNote, boolean galleryOk) {
+        if (galleryOk) return modelNote;
+        return modelNote + "\n已注册图库恢复失败（重启后可能无法识别已注册人员）";
+    }
+
+    /** 模型许可确认 -> SAF 选择 ZIP 包（P1-6：APK 不内置权重，用户显式导入）。 */
+    private void confirmLicenseThenPickModelZip() {
+        new AlertDialog.Builder(this)
+                .setTitle("模型许可确认")
+                .setMessage("导入前请确认：你已阅读并同意所选模型包的许可条款。"
+                        + "模型权重不随 APK 分发，导入后仅保存在本机。")
+                .setPositiveButton("我已知晓并继续", (d, w) -> pickModelZip())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** SAF 选择模型 ZIP：ACTION_OPEN_DOCUMENT（不申请存储权限）。 */
+    private void pickModelZip() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        // 部分 SAF provider 不按 zip MIME 上报，故放开类型并靠内容（manifest.json）校验。
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/octet-stream"});
+        try {
+            startActivityForResult(intent, REQUEST_CODE_IMPORT_MODEL);
+        } catch (Throwable t) {
+            Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** 后台导入 ZIP（FaceModelManager.importZip 内部完成安全校验、原子启用与实时管线激活）。 */
+    private void importModelZip(@NonNull final Uri uri) {
+        final ProgressDialog dialog = new ProgressDialog(this);
+        dialog.setMessage("正在导入模型…");
+        dialog.setCancelable(false);
+        try {
+            dialog.show();
+        } catch (Throwable ignored) {
+        }
+        final String abi = currentAbi();
+        new Thread(() -> {
+            FaceModelManager.Result result = null;
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) {
+                    throw new IOException("无法打开所选文件");
+                }
+                result = modelManager().importZip(in, abi, true);
+            } catch (Throwable ignored) {
+                // 统一按失败展示，不泄露底层路径/内容。
+            }
+            final FaceModelManager.Result r = result;
+            runOnUiThread(() -> {
+                try { dialog.dismiss(); } catch (Throwable ignored) {}
+                // #2：Activity 已销毁时不再更新状态区/弹 Toast（进度框仍需先关闭）。
+                if (isFinishing() || isDestroyed()) return;
+                if (r == null) {
+                    showModelStatusToUser("模型导入失败：文件读取异常", true);
+                } else if (r.isOk()) {
+                    showModelStatusToUser("模型导入并已激活", false);
+                    Toast.makeText(this, "模型导入成功", Toast.LENGTH_LONG).show();
+                } else {
+                    showModelStatusToUser("模型导入失败（" + r.status + "）："
+                            + (r.message == null ? "" : r.message), true);
+                }
+                refreshModelManagementStatus();
+                refreshRuntimeStatusIfDue(true);
+                updateDiagnosticsText();
+            });
+        }, "FaceModelImport").start();
+    }
+
+    /** 列出已导入 profile，供用户切换（切换即重新校验并激活实时管线）。 */
+    private void showSwitchModelDialog() {
+        new Thread(() -> {
+            final List<String> profiles;
+            final String active;
+            try {
+                profiles = modelManager().listProfiles();
+                active = modelManager().activeProfileId();
+            } catch (Throwable t) {
+                runOnUiThread(() -> Toast.makeText(this, "读取模型列表失败", Toast.LENGTH_SHORT).show());
+                return;
+            }
+            runOnUiThread(() -> {
+                // #2：Activity 已销毁时不再弹窗，避免窗口 token 失效（BadTokenException）。
+                if (isFinishing() || isDestroyed()) return;
+                if (profiles.isEmpty()) {
+                    Toast.makeText(this, "暂无已导入模型，请先导入 ZIP", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                String[] items = new String[profiles.size()];
+                for (int i = 0; i < profiles.size(); i++) {
+                    String id = profiles.get(i);
+                    items[i] = id + (id.equals(active) ? "（当前）" : "");
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("切换模型")
+                        .setItems(items, (d, which) -> activateProfile(profiles.get(which)))
+                        .setNegativeButton("取消", null)
+                        .show();
+            });
+        }, "FaceModelList").start();
+    }
+
+    /** 后台切换 profile；失败保留原配置并在状态区显示 reason。 */
+    private void activateProfile(@NonNull final String profileId) {
+        final String abi = currentAbi();
+        new Thread(() -> {
+            FaceModelManager.Result result = null;
+            try {
+                result = modelManager().activate(profileId, abi, true);
+            } catch (Throwable ignored) {
+            }
+            final FaceModelManager.Result r = result;
+            runOnUiThread(() -> {
+                if (r == null) {
+                    showModelStatusToUser("切换模型失败：管理器不可用", true);
+                } else if (r.isOk()) {
+                    showModelStatusToUser("已切换到模型：" + profileId, false);
+                } else {
+                    showModelStatusToUser("切换模型未生效（" + r.status + "）："
+                            + (r.message == null ? "" : r.message), true);
+                }
+                refreshModelManagementStatus();
+                refreshRuntimeStatusIfDue(true);
+                updateDiagnosticsText();
+            });
+        }, "FaceModelSwitch").start();
+    }
+
+    /**
+     * 注册入口：弹出注册对话框（personId/displayName 输入 + 采样进度/拒绝原因 + 取消）。
+     * 不允许在既有采集进行中重复打开。
+     */
+    private void showFaceRegisterDialog() {
+        if (isFinishing() || isDestroyed()) return;
+        if (enrollmentInProgress) {
+            Toast.makeText(this, "注册采集进行中", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        View content = LayoutInflater.from(this).inflate(R.layout.dialog_face_register, null, false);
+        regPersonIdInput = content.findViewById(R.id.et_register_person_id);
+        regDisplayNameInput = content.findViewById(R.id.et_register_display_name);
+        regStatusText = content.findViewById(R.id.tv_register_status);
+        regStartButton = content.findViewById(R.id.btn_register_start);
+        regCancelButton = content.findViewById(R.id.btn_register_cancel);
+        if (regStatusText != null) {
+            regStatusText.setText(R.string.ui_register_status_idle);
+        }
+        if (regStartButton != null) regStartButton.setOnClickListener(v -> startEnrollment());
+        if (regCancelButton != null) regCancelButton.setOnClickListener(v -> {
+            // 取消会作废尚未完成的准备回调（代次门）。
+            enrollmentGeneration++;
+            if (enrollmentInProgress) {
+                cancelEnrollmentInternal();
+            } else {
+                updateEnrollmentStatusText("已取消准备");
+            }
+        });
+        enrollmentDialog = new AlertDialog.Builder(this)
+                .setTitle("人脸注册（8 样本）")
+                .setView(content)
+                .setNegativeButton("关闭", null)
+                .setOnDismissListener(d -> {
+                    // 关闭对话框即作废未完成的准备/轮询；仅当仍在采集时才清理会话。
+                    enrollmentGeneration++;
+                    if (enrollmentInProgress) cancelEnrollmentInternal();
+                })
+                .create();
+        enrollmentDialog.show();
+    }
+
+    /** 校验输入 -> 后台准备 8 样本会话 -> 250ms 轮询进度。 */
+    private void startEnrollment() {
+        if (regPersonIdInput == null || regStatusText == null || enrollmentInProgress) return;
+        final String personId = regPersonIdInput.getText() == null ? "" : regPersonIdInput.getText().toString().trim();
+        final String displayName = regDisplayNameInput == null || regDisplayNameInput.getText() == null
+                ? "" : regDisplayNameInput.getText().toString().trim();
+
+        // 纯字符串校验（无 IO），在 UI 线程完成。
+        if (personId.isEmpty()) {
+            regStatusText.setText("校验失败：人员标识不能为空");
+            return;
+        }
+        if (!isValidPersonId(personId)) {
+            regStatusText.setText("校验失败：人员标识仅允许字母/数字/._-（含中文等 Unicode），长度 1..64");
+            return;
+        }
+
+        // 先禁用交互；注册表读取与现有模板快照解密（可能在 Keystore 上）放到后台线程，避免 UI 卡顿。
+        regStatusText.setText("校验并准备采集会话…");
+        regPersonIdInput.setEnabled(false);
+        if (regDisplayNameInput != null) regDisplayNameInput.setEnabled(false);
+        if (regStartButton != null) regStartButton.setEnabled(false);
+
+        final AndroidEnrollmentRepository repo = enrollmentRepository();
+        final int gen = ++enrollmentGeneration;
+        new Thread(() -> {
+            String error = null;
+            EnrollmentSession prepared = null;
+            try {
+                if (!repo.isEnrollmentEnabled()) {
+                    error = repo.unsupportedReason();
+                } else if (repo.get(personId).isOk()) {
+                    error = "该人员已注册，请先删除或更换标识";
+                } else {
+                    prepared = new EnrollmentSession(personId, EnrollmentSession.fromRepository(repo));
+                    if (!prepared.start()) {
+                        error = "无法开始采集会话";
+                    }
+                }
+            } catch (Throwable t) {
+                error = "采集会话准备失败";
+            }
+            final String err = error;
+            final EnrollmentSession session = prepared;
+            runOnUiThread(() -> {
+                // 代次门：准备期间对话框被关闭/取消则丢弃结果，不复活已关闭的会话。
+                if (gen != enrollmentGeneration) {
+                    if (session != null) session.cancel();
+                    return;
+                }
+                if (err != null) {
+                    regStatusText.setText("校验失败：" + err);
+                    if (regPersonIdInput != null) regPersonIdInput.setEnabled(true);
+                    if (regDisplayNameInput != null) regDisplayNameInput.setEnabled(true);
+                    if (regStartButton != null) regStartButton.setEnabled(true);
+                    return;
+                }
+                persistDisplayName(personId, displayName);
+                lastEnrollmentRejectReason = "";
+                enrollmentSession = session;
+                enrollmentInProgress = true;
+                // #1 打通注册闭环：接通 native 逐帧特征源（开启失败不阻断会话，仅提示等待）。
+                startNativeEnrollmentCapture();
+                regStatusText.setText("采集中 0/8\n（请正对摄像头，按提示缓慢转头采集正/左/右脸）");
+                startEnrollmentPoller();
+            });
+        }, "FaceEnrollPrepare").start();
+    }
+
+    /** personId 会作为展示/映射键并进入模板文件名哈希，限制为安全字符集与长度。 */
+    private static boolean isValidPersonId(@NonNull String personId) {
+        if (personId.isEmpty() || personId.length() > 64) return false;
+        for (int i = 0; i < personId.length(); i++) {
+            char c = personId.charAt(i);
+            // #7a：放宽为任意 Unicode 字母/数字（含中文、全角、带重音拉丁、假名、谚文等），
+            // 与提示文案「中英文/数字」对齐。模板文件名是 userId 的 SHA-256、注册表用 hex 编码，
+            // 更广的字符集不会进入原始路径，故无路径穿越风险。
+            boolean ok = Character.isLetterOrDigit(c) || c == '.' || c == '_' || c == '-';
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    /** 250ms 轮询会话状态；仅在 COMPLETED 时执行「单取模板 -> 加密写入 -> 原子替换图库」。 */
+    private void startEnrollmentPoller() {
+        stopEnrollmentPoller();
+        final Runnable poller = new Runnable() {
+            @Override
+            public void run() {
+                EnrollmentSession session = enrollmentSession;
+                if (session == null || !enrollmentInProgress) return;
+                EnrollmentSession.State st = session.state();
+                if (st == EnrollmentSession.State.COMPLETED) {
+                    EnrollmentSession.SessionStatus status = session.status();
+                    updateEnrollmentStatusText("已完成 " + status.acceptedCount + "/" + status.target);
+                    completeEnrollment();
+                    return;
+                }
+                if (st == EnrollmentSession.State.CANCELLED || st == EnrollmentSession.State.IDLE) {
+                    enrollmentInProgress = false;
+                    updateEnrollmentStatusText("已取消");
+                    return;
+                }
+                updateEnrollmentStatusText(buildEnrollmentProgressText(session.status()));
+                handler.postDelayed(this, ENROLLMENT_POLL_INTERVAL_MS);
+            }
+        };
+        enrollmentPoller = poller;
+        handler.post(poller);
+    }
+
+    @NonNull
+    private String buildEnrollmentProgressText(@NonNull EnrollmentSession.SessionStatus st) {
+        String text = "采集中 " + st.acceptedCount + "/" + st.target
+                + "（正脸 " + st.frontCount + "/" + EnrollmentSession.QUOTA_FRONT
+                + "，左 " + st.leftCount + "/" + EnrollmentSession.QUOTA_LEFT
+                + "，右 " + st.rightCount + "/" + EnrollmentSession.QUOTA_RIGHT + "）";
+        if (!lastEnrollmentRejectReason.isEmpty()) {
+            text += "\n最近拒绝：" + lastEnrollmentRejectReason;
+        }
+        return text;
+    }
+
+    /**
+     * #1 开启 native 注册采集：分配/复用 direct ByteBuffer，注册帧监听器并调用
+     * {@link NativeFaceBridge#startEnrollmentCapture(ByteBuffer)}。
+     * 开启失败不阻断会话（进度区会持续显示 0/8，由用户可见）。
+     */
+    private void startNativeEnrollmentCapture() {
+        try {
+            if (enrollmentCaptureBuffer == null
+                    || enrollmentCaptureBuffer.capacity() != NativeFaceBridge.EMBEDDING_BYTES) {
+                enrollmentCaptureBuffer = ByteBuffer.allocateDirect(NativeFaceBridge.EMBEDDING_BYTES);
+                enrollmentCaptureBuffer.order(ByteOrder.LITTLE_ENDIAN);
+            } else {
+                enrollmentCaptureBuffer.clear();
+            }
+            NativeFaceBridge.setEnrollmentFrameListener(this::onEnrollmentFrameFromNative);
+            String resp = NativeFaceBridge.startEnrollmentCapture(enrollmentCaptureBuffer);
+            if (!jsonGetBool(resp, "ok", false)) {
+                // 采集源未接通：清除监听器，绝不用占位/合成向量冒充真实样本。
+                NativeFaceBridge.setEnrollmentFrameListener(null);
+                AppLog.w("MainActivity", "startNativeEnrollmentCapture", "native 采集未开启");
+            }
+        } catch (Throwable t) {
+            NativeFaceBridge.setEnrollmentFrameListener(null);
+            AppLog.w("MainActivity", "startNativeEnrollmentCapture", "native 采集开启异常");
+        }
+    }
+
+    /** #1 停止 native 注册采集并清除监听器/缓冲；幂等（取消/完成/销毁共用）。 */
+    private void stopNativeEnrollmentCapture() {
+        try {
+            NativeFaceBridge.setEnrollmentFrameListener(null);
+            NativeFaceBridge.stopEnrollmentCapture();
+        } catch (Throwable t) {
+            AppLog.w("MainActivity", "stopNativeEnrollmentCapture", "native 采集停止异常");
+        } finally {
+            // #5 模板红线：丢弃 direct ByteBuffer 前写零，避免原生内存残留最后一帧模板至 GC。
+            zeroDirectBuffer(enrollmentCaptureBuffer);
+            enrollmentCaptureBuffer = null;
+        }
+    }
+
+    /**
+     * #5 把 direct ByteBuffer 的底层原生内存整体写零后再交还/丢弃。
+     *
+     * <p>仅置 {@code null} 不会清零 direct buffer 的原生内存，最后写入的 512 维模板会一直
+     * 驻留到 GC 回收该 DirectByteBuffer 为止；故释放引用前必须先清零。幂等，失败不影响流程。
+     */
+    private static void zeroDirectBuffer(@Nullable ByteBuffer buffer) {
+        if (buffer == null || !buffer.isDirect()) return;
+        try {
+            final int floats = buffer.capacity() / Float.BYTES;
+            if (floats <= 0) return;
+            buffer.rewind();
+            FloatBuffer fb = buffer.asFloatBuffer();
+            fb.put(new float[floats]);
+            fb.rewind();
+            buffer.rewind();
+        } catch (Throwable t) {
+            // 清零失败不阻断停止流程：引用随后即被置空丢弃。
+        }
+    }
+
+    /**
+     * #1 native 帧回调（运行在 native 引擎线程）：把打包指标组为
+     * {@link EnrollmentSession.FrameSample} 并喂入会话。
+     *
+     * <p>约束：绝不触碰 UI；embedding 仅内存传递，局部副本用毕清零（模板红线）。
+     */
+    void onEnrollmentFrameFromNative(@Nullable ByteBuffer embedding, @Nullable float[] metrics) {
+        EnrollmentSession session = enrollmentSession;
+        if (session == null || !enrollmentInProgress) return;
+        if (embedding == null || metrics == null
+                || metrics.length < NativeFaceBridge.ENROLL_METRICS_LEN) {
+            return;
+        }
+        float[] emb = new float[NativeFaceBridge.EMBEDDING_DIM];
+        try {
+            FloatBuffer fb = embedding.asFloatBuffer();
+            fb.rewind();
+            fb.get(emb);
+        } catch (Throwable t) {
+            Arrays.fill(emb, 0f);
+            return;
+        }
+        // 无关键点（native 以 NaN 占位）时 landmarks=null，由姿态判定拒收该帧。
+        float[] landmarks = new float[10];
+        boolean landmarksOk = true;
+        for (int i = 0; i < 10; i++) {
+            float v = metrics[12 + i];
+            if (Float.isNaN(v) || Float.isInfinite(v)) {
+                landmarksOk = false;
+                break;
+            }
+            landmarks[i] = v;
+        }
+        EnrollmentSession.FrameSample sample = EnrollmentSession.FrameSample.builder(emb)
+                .box(metrics[8], metrics[9], metrics[10], metrics[11])
+                .frame((int) metrics[0], (int) metrics[1])
+                .quality(metrics[4], metrics[5], metrics[6])
+                .detection(metrics[2], (int) metrics[3])
+                .landmarks(landmarksOk ? landmarks : null)
+                .build();
+        // builder 已 clone embedding，本地副本立即清零。
+        Arrays.fill(emb, 0f);
+        feedEnrollmentSample(sample);
+    }
+
+    /**
+     * 集成接缝：向进行中的注册会话喂入一帧样本并记录拒绝原因。
+     *
+     * <p>逐帧特征源为 #1 新增的 native 注册采集回调（{@link NativeFaceBridge#startEnrollmentCapture}）：
+     * 由 {@link #onEnrollmentFrameFromNative(ByteBuffer, float[])} 组 FrameSample 后调用本方法。
+     * 绝不使用占位/合成向量冒充真实样本。
+     */
+    void feedEnrollmentSample(@Nullable EnrollmentSession.FrameSample sample) {
+        EnrollmentSession session = enrollmentSession;
+        if (session == null || !enrollmentInProgress) return;
+        EnrollmentSession.FeedResult r = session.feed(sample);
+        if (!r.accepted) {
+            lastEnrollmentRejectReason = (r.message == null || r.message.isEmpty())
+                    ? r.reason.name() : r.message;
+        } else {
+            lastEnrollmentRejectReason = "";
+        }
+    }
+
+    /** 完成提交：单取均值模板 -> 加密写入仓库 -> 用仓库重建并原子替换运行中图库。 */
+    private void completeEnrollment() {
+        final EnrollmentSession session = enrollmentSession;
+        if (session == null) return;
+        enrollmentInProgress = false;
+        stopEnrollmentPoller();
+        stopNativeEnrollmentCapture();  // #1 先断开 native 特征源，再取模板
+        final String personId = session.userId();
+        // 单取模板（一次性；LE float32 2048 字节）。返回的是副本，会话随后可安全取消。
+        final byte[] template = session.meanTemplateLe();
+        if (regStartButton != null) regStartButton.setEnabled(false);
+        updateEnrollmentStatusText("模板生成完成，正在加密写入…");
+        new Thread(() -> {
+            String error = null;
+            try {
+                if (template == null || template.length != NativeFaceBridge.EMBEDDING_BYTES) {
+                    error = "模板生成失败（维度不符）";
+                } else {
+                    AndroidEnrollmentRepository.Result add = enrollmentRepository().add(
+                            personId, template, ENROLL_MODEL_VERSION, ENROLL_TEMPLATE_SCHEMA_VERSION);
+                    if (!add.isOk()) {
+                        error = "加密写入失败（" + add.status + "）：" + add.message;
+                    } else if (!refreshGalleryFromRepository()) {
+                        // 失败不更新运行中 gallery：数据已加密落盘，但内存图库保持旧状态。
+                        error = "已加密写入本地，但运行中图库替换失败（未更新）";
+                    }
+                }
+            } catch (Throwable t) {
+                error = "注册提交异常";
+            } finally {
+                if (template != null) {
+                    Arrays.fill(template, (byte) 0);
+                }
+            }
+            final String err = error;
+            runOnUiThread(() -> {
+                if (err == null) {
+                    updateEnrollmentStatusText("注册成功：" + personId + "（8 样本均值模板已加密写入并生效）");
+                    Toast.makeText(this, "注册成功", Toast.LENGTH_LONG).show();
+                    if (enrollmentDialog != null) {
+                        try { enrollmentDialog.dismiss(); } catch (Throwable ignored) {}
+                    }
+                } else {
+                    updateEnrollmentStatusText("注册失败：" + err);
+                    if (regStartButton != null) regStartButton.setEnabled(true);
+                    if (regPersonIdInput != null) regPersonIdInput.setEnabled(true);
+                    if (regDisplayNameInput != null) regDisplayNameInput.setEnabled(true);
+                }
+                refreshModelManagementStatus();
+                refreshRuntimeStatusIfDue(true);
+                updateDiagnosticsText();
+            });
+        }, "FaceEnrollCommit").start();
+    }
+
+    /** 取消采集：停止轮询、清零会话向量、恢复输入控件。 */
+    private void cancelEnrollmentInternal() {
+        stopEnrollmentPoller();
+        stopNativeEnrollmentCapture();  // #1 断开 native 特征源
+        enrollmentInProgress = false;
+        EnrollmentSession session = enrollmentSession;
+        if (session != null) {
+            session.cancel();
+        }
+        if (regStartButton != null) regStartButton.setEnabled(true);
+        if (regPersonIdInput != null) regPersonIdInput.setEnabled(true);
+        if (regDisplayNameInput != null) regDisplayNameInput.setEnabled(true);
+        updateEnrollmentStatusText("已取消");
+    }
+
+    private void stopEnrollmentPoller() {
+        if (enrollmentPoller != null) {
+            handler.removeCallbacks(enrollmentPoller);
+            enrollmentPoller = null;
+        }
+    }
+
+    private void updateEnrollmentStatusText(@NonNull String text) {
+        if (regStatusText != null) {
+            regStatusText.setText(text);
+        }
+    }
+
+    /**
+     * 用加密仓库重建内存图库并原子替换（{@link NativeFaceBridge#replaceGallery}）。
+     *
+     * <p>失败语义（#5 逐条隔离）：单条密文损坏/单键失效只跳过该条（计入 skipped），
+     * 只要还有 ≥1 条成功就用成功子集 replaceGallery；仅当仓库本有人员条目却全部读取失败
+     * 时返回 false 且<b>不调用</b> replaceGallery。既能避免单条损坏让全部健康人员不可识别，
+     * 也绝不用空图库覆盖运行中图库。仓库本就没有人员时按空图库替换（保持既有语义）。
+     */
+    private boolean refreshGalleryFromRepository() {
+        try {
+            AndroidEnrollmentRepository.ListResult list = enrollmentRepository().list();
+            if (!list.isOk()) return false;
+            List<String> ids = new ArrayList<>();
+            List<ByteBuffer> embeddings = new ArrayList<>();
+            int skipped = 0;
+            for (final AndroidEnrollmentRepository.Entry e : list.entries) {
+                final float[][] decoded = new float[1][];
+                AndroidEnrollmentRepository.Result rr;
+                try {
+                    rr = enrollmentRepository().readTemplate(e.userId, pt -> {
+                        float[] emb = EnrollmentSession.decodeLe(pt);
+                        if (emb != null) {
+                            decoded[0] = emb;
+                        }
+                    });
+                } catch (Throwable t) {
+                    rr = null;  // 单条读取抛异常视同该条失败，逐条隔离、不拖垮整体。
+                }
+                if (rr == null || !rr.isOk() || decoded[0] == null
+                        || decoded[0].length != NativeFaceBridge.EMBEDDING_DIM) {
+                    skipped++;
+                    continue;
+                }
+                ByteBuffer bb = ByteBuffer.allocateDirect(NativeFaceBridge.EMBEDDING_BYTES);
+                bb.order(ByteOrder.LITTLE_ENDIAN);
+                bb.asFloatBuffer().put(decoded[0]);
+                bb.rewind();
+                ids.add(e.userId);
+                embeddings.add(bb);
+            }
+            // 「全失败」判定：仓库本有人员条目，却没有任何一条成功 —— 不替换运行中图库。
+            if (ids.isEmpty() && skipped > 0) {
+                AppLog.w("MainActivity", "refreshGalleryFromRepository",
+                        "图库重建全部失败：skipped=" + skipped + "，保持运行中图库不变");
+                return false;
+            }
+            String resp = NativeFaceBridge.replaceGallery(
+                    ids.toArray(new String[0]), embeddings.toArray(new ByteBuffer[0]));
+            boolean ok = jsonGetBool(resp, "ok", false);
+            if (skipped > 0) {
+                AppLog.w("MainActivity", "refreshGalleryFromRepository",
+                        "图库重建跳过损坏条目 skipped=" + skipped + "（成功 " + ids.size() + " 条）");
+            }
+            return ok;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 本地人员列表；点击人员进入删除二次确认。 */
+    private void showPersonManagementDialog() {
+        new Thread(() -> {
+            final AndroidEnrollmentRepository.ListResult list;
+            try {
+                list = enrollmentRepository().list();
+            } catch (Throwable t) {
+                runOnUiThread(() -> Toast.makeText(this, "人员列表读取失败", Toast.LENGTH_SHORT).show());
+                return;
+            }
+            runOnUiThread(() -> {
+                // #2：Activity 已销毁时不再弹窗，避免窗口 token 失效（BadTokenException）。
+                if (isFinishing() || isDestroyed()) return;
+                if (!list.isOk()) {
+                    Toast.makeText(this, "人员列表读取失败：" + list.message, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (list.entries.isEmpty()) {
+                    Toast.makeText(this, "暂无已注册人员", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                final List<AndroidEnrollmentRepository.Entry> entries = list.entries;
+                String[] items = new String[entries.size()];
+                for (int i = 0; i < entries.size(); i++) {
+                    AndroidEnrollmentRepository.Entry e = entries.get(i);
+                    String name = displayNameFor(e.userId);
+                    items[i] = (name.equals(e.userId) ? e.userId : (name + "（" + e.userId + "）"))
+                            + "  模板 " + e.ciphertextSize + "B";
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("人员列表（点击删除，需二次确认）")
+                        .setItems(items, (d, which) -> confirmDeletePerson(entries.get(which)))
+                        .setNegativeButton("关闭", null)
+                        .show();
+            });
+        }, "FacePersonList").start();
+    }
+
+    /** 删除二次确认（不可逆操作必须显式确认）。 */
+    private void confirmDeletePerson(@NonNull final AndroidEnrollmentRepository.Entry entry) {
+        new AlertDialog.Builder(this)
+                .setTitle("删除人员")
+                .setMessage("确认删除「" + displayNameFor(entry.userId) + "」及其加密模板？\n"
+                        + "删除后运行中图库会同步移除该人员，此操作不可恢复。")
+                .setPositiveButton("确认删除", (d, w) -> deletePerson(entry.userId))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 后台删除人员；成功后同步从其重建图库（失败不更新运行中图库）。 */
+    private void deletePerson(@NonNull final String userId) {
+        new Thread(() -> {
+            AndroidEnrollmentRepository.Result result = enrollmentRepository().remove(userId);
+            boolean galleryOk = false;
+            if (result.isOk()) {
+                removeDisplayName(userId);
+                galleryOk = refreshGalleryFromRepository();
+            }
+            final AndroidEnrollmentRepository.Result r = result;
+            final boolean gOk = galleryOk;
+            runOnUiThread(() -> {
+                if (!r.isOk()) {
+                    Toast.makeText(this, "删除失败（" + r.status + "）：" + r.message, Toast.LENGTH_LONG).show();
+                } else if (!gOk) {
+                    Toast.makeText(this, "已删除本地模板，但运行中图库未更新", Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(this, "已删除：" + userId, Toast.LENGTH_SHORT).show();
+                }
+                refreshModelManagementStatus();
+            });
+        }, "FacePersonDelete").start();
+    }
+
+    /** 展示名映射（仅 SharedPreferences，不含模板）；缺失时回退 personId。 */
+    @NonNull
+    private String displayNameFor(@Nullable String personId) {
+        if (personId == null || personId.isEmpty()) return "";
+        String name = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(PREF_PERSON_NAME_PREFIX + personId, "");
+        return (name == null || name.isEmpty()) ? personId : name;
+    }
+
+    private void persistDisplayName(@NonNull String personId, @Nullable String displayName) {
+        String name = displayName == null ? "" : displayName.trim();
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putString(PREF_PERSON_NAME_PREFIX + personId, name)
+                .apply();
+    }
+
+    private void removeDisplayName(@NonNull String personId) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .remove(PREF_PERSON_NAME_PREFIX + personId)
+                .apply();
+    }
+
+    // ==================== 任务18 / #1 结束 ====================
 
     private void onPermissionStateChanged(@NonNull PermissionStateMachine.State state, @NonNull List<String> missingRuntimePermissions) {
         AppLog.enter("MainActivity", "onPermissionStateChanged");
@@ -3528,6 +4475,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (inferenceAutoUpdater != null) {
             handler.removeCallbacks(inferenceAutoUpdater);
             inferenceAutoUpdater = null;
+        }
+        // 任务18：销毁时停止注册轮询并清零会话保留的向量（模板红线：释放前必须清零）。
+        stopEnrollmentPoller();
+        stopNativeEnrollmentCapture();  // #1 断开 native 特征源并释放采集缓冲
+        enrollmentInProgress = false;
+        if (enrollmentSession != null) {
+            enrollmentSession.cancel();
+            enrollmentSession = null;
+        }
+        // #4：销毁时若注册对话框仍可见则关闭，避免窗口泄漏与陈旧回调。
+        // 此时 enrollmentInProgress 已置 false，onDismiss 监听只会作废代次、不会复活会话。
+        if (enrollmentDialog != null) {
+            try { enrollmentDialog.dismiss(); } catch (Throwable ignored) {}
+            enrollmentDialog = null;
         }
         try {
             unregisterReceiver(usbReceiver);

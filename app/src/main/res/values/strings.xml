@@ -54,4 +54,17 @@
     <string name="ui_view_logs">查看日志</string>
     <string name="ui_status_idle">状态: 空闲</string>
     <string name="ui_latency">延迟: --ms</string>
+
+    <!-- 任务18 / #1：模型管理与人员注册 UI 文案 -->
+    <string name="ui_model_management_title">模型管理</string>
+    <string name="ui_model_import">导入模型 (ZIP)</string>
+    <string name="ui_model_switch">切换已有模型</string>
+    <string name="ui_model_status_placeholder">模型状态：--</string>
+    <string name="ui_person_management_title">人员管理</string>
+    <string name="ui_person_manage">人员列表 / 删除</string>
+    <string name="ui_register_person_id_hint">人员标识 (personId)</string>
+    <string name="ui_register_display_name_hint">显示名 (displayName)</string>
+    <string name="ui_register_start">开始采集（8 样本）</string>
+    <string name="ui_register_cancel">取消采集</string>
+    <string name="ui_register_status_idle">未开始：请输入人员标识后点击开始采集</string>
 </resources>
