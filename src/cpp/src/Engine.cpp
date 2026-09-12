@@ -8,7 +8,11 @@
 #include "Storage.h"
 #include "NativeLog.h"
 #include "rk_checked_arith.h"
+#include "FaceAlign.h"    // 任务12：实时路径身份匹配的人脸对齐（bbox fallback 112×112）
+#include "FaceSearch.h"   // 任务12：图库检索 searchTopK
+#include "pipeline/FacePostProcessor.h"  // 任务12：实时检测框统一后处理（NMS/包含抑制）
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -435,6 +439,15 @@ Engine::Engine(std::unique_ptr<VideoManager> vm,
     trackCoordinator_ = std::make_unique<pipeline::TrackCoordinator>();
     publisher_ = std::make_unique<pipeline::ResultPublisher>();
     perfReporter_ = std::make_unique<pipeline::PerfReporter>();
+
+#if defined(__ANDROID__)
+    // 任务12：Android 实时路径默认走 RealtimeFacePipeline（SCRFD 检测 + ArcFace 识别），
+    // 不再调用 BioAuth::verifyMulti（LBPH）。模型尚未加载时仅预览并显式 missing_model，
+    // 绝不静默回退 LBPH（见 runRealtimeDetect）。宿主可在加载 manifest 后经
+    // setRealtimePipeline 替换为带真实图库的管线。
+    realtimePipeline_ = std::make_shared<RealtimeFacePipeline>();
+    realtimeEnabled_.store(true);
+#endif
 }
 
 Engine::~Engine() {
@@ -690,10 +703,20 @@ void Engine::run() {
 }
 
 bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
-    // 3. 预处理：resize + flip
+    // 3. 预处理：resize + 统一变换（FrameTransform::applyImage，仅此一次）。
+    // 变换后的 processedFrame_ 同时作为「推理输入」与「渲染输出」，检测框天然处于
+    // 同一坐标系，无需二次映射（任务1 统一变换语义）。
     if (!preprocessFrame(rawFrame)) return false;
 
-    // 4. 检测 + 识别（委托 BioAuth）
+    // 4. 分支：启用实时路径后（Android 默认 / 已注入管线），检测/识别/跟踪由
+    //    RealtimeFacePipeline 产出；否则保持 BioAuth::verifyMulti 兼容路径。
+    //    关键：分支依据是「是否启用实时模式」而非「是否有可用快照」——模型缺失时
+    //    仍留在实时路径并显式 missing_model，绝不在运行时静默回退 LBPH（任务12 约束）。
+    if (realtimeEnabled_.load()) {
+        return processFrameRealtime(decodeMs);
+    }
+
+    // 兼容路径：检测 + 识别（委托 BioAuth，LBPH）
     std::vector<BioAuth::FaceAuthResult> results;
     bioAuth_->verifyMulti(processedFrame_, results, 4, true);
 
@@ -708,13 +731,229 @@ bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
         df.isAuthenticated = r.identity.isAuthenticated;
         faces.push_back(df);
     }
-    trackFaces(faces);
+    // 兼容路径每帧都实际执行了 BioAuth 检测，故 detectionRan=true（任务5 消失规则生效）
+    trackFaces(faces, true);
 
     // 6-7. 渲染 + 性能统计
     currentStats_.decodeMs = decodeMs;
     renderResults();
     collectStats();
     return true;
+}
+
+void Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline) {
+    bool enabled = false;
+    {
+        std::lock_guard<std::mutex> lock(realtimeMu_);
+        realtimePipeline_ = std::move(pipeline);
+        enabled = (realtimePipeline_ != nullptr);
+    }
+    realtimeEnabled_.store(enabled);
+    {
+        // 重置图库覆盖：新管线经 loadGallery 钩子提供自身图库，旧覆盖必须丢弃，
+        // 否则换管线后会继续用上一套图库做身份匹配（陈旧身份）。
+        std::lock_guard<std::mutex> lock(realtimeGalleryMu_);
+        realtimeGallery_.reset();
+    }
+    if (!enabled) {
+        // 切回兼容路径时清空实时 reason，避免状态区展示过期原因
+        std::lock_guard<std::mutex> lock(realtimeReasonMu_);
+        realtimeReason_.clear();
+    }
+    rklog::logInfo("Engine", __func__,
+                   std::string("实时推理管线") + (enabled ? "已注入/启用" : "已清除，回退兼容路径"));
+}
+
+uint64_t Engine::getRealtimeGeneration() const {
+    std::shared_ptr<RealtimeFacePipeline> pipe;
+    {
+        std::lock_guard<std::mutex> lock(realtimeMu_);
+        pipe = realtimePipeline_;
+    }
+    return pipe ? pipe->generation() : 0;
+}
+
+std::string Engine::getRealtimeReason() const {
+    std::lock_guard<std::mutex> lock(realtimeReasonMu_);
+    return realtimeReason_;
+}
+
+void Engine::setRealtimeReason(const std::string& reason) {
+    std::string prev;
+    {
+        std::lock_guard<std::mutex> lock(realtimeReasonMu_);
+        if (realtimeReason_ == reason) return;  // 未变化则不重复记录（避免逐帧日志风暴）
+        prev = realtimeReason_;
+        realtimeReason_ = reason;
+    }
+    // 仅在状态变化时记录：模型缺失等失败 reason 显式可观测（任务12 禁止静默）。
+    if (!reason.empty() && reason != "ok") {
+        rklog::logWarn("Engine", __func__, "实时路径 reason=" + reason);
+    } else if (reason == "ok" && !prev.empty()) {
+        rklog::logInfo("Engine", __func__, "实时路径恢复 ok（此前 reason=" + prev + "）");
+    }
+}
+
+void Engine::updateRealtimeGallery(std::shared_ptr<const FaceSearchLinearIndex> gallery) {
+    std::size_t count = 0;
+    {
+        std::lock_guard<std::mutex> lock(realtimeGalleryMu_);
+        realtimeGallery_ = std::move(gallery);
+        count = realtimeGallery_ ? realtimeGallery_->size() : 0;
+    }
+    // 仅记录条目数等非敏感元数据，绝不记录向量/模板内容（安全红线）。
+    rklog::logInfo("Engine", __func__, "实时图库覆盖已更新 count=" + std::to_string(count));
+}
+
+bool Engine::getRealtimeEffective() const {
+    std::shared_ptr<RealtimeFacePipeline> pipe;
+    {
+        std::lock_guard<std::mutex> lock(realtimeMu_);
+        pipe = realtimePipeline_;
+    }
+    if (!pipe) return false;
+    const std::shared_ptr<const RealtimePipelineSnapshot> snap = pipe->snapshot();
+    return snap && snap->effective;
+}
+
+std::vector<pipeline::TrackView> Engine::getTrackViews() const {    std::lock_guard<std::mutex> lock(tracksMu_);
+    return currentTracks_;
+}
+
+bool Engine::processFrameOnce(const cv::Mat& rawFrame, double decodeMs) {
+    return processFrame(rawFrame, decodeMs);
+}
+
+bool Engine::processFrameRealtime(double decodeMs) {
+    std::vector<pipeline::DetectedFace> faces;
+    bool detectionRan = false;
+    if (runRealtimeDetect(processedFrame_, faces, detectionRan)) {
+        trackFaces(faces, detectionRan);
+    } else {
+        // 模型/管线不可用：继续预览（发布当前帧）但显式 reason（missing_model 等），
+        // 清空对外轨迹以避免展示过期身份；不调用 BioAuth（禁止回退），也不新建/删除轨迹。
+        std::lock_guard<std::mutex> lock(tracksMu_);
+        currentTracks_.clear();
+    }
+    currentStats_.decodeMs = decodeMs;
+    renderResults();
+    collectStats();
+    return true;
+}
+
+bool Engine::runRealtimeDetect(const cv::Mat& frame,
+                               std::vector<pipeline::DetectedFace>& outFaces,
+                               bool& detectionRan) {
+    outFaces.clear();
+    detectionRan = false;
+
+    std::shared_ptr<RealtimeFacePipeline> pipe;
+    {
+        std::lock_guard<std::mutex> lock(realtimeMu_);
+        pipe = realtimePipeline_;
+    }
+    if (!pipe) {
+        setRealtimeReason("runtime_init_failed");
+        return false;
+    }
+
+    // 快照不可用（模型未加载/装配失败）→ 显式 reason，继续预览，不进入 BioAuth。
+    const std::shared_ptr<const RealtimePipelineSnapshot> snap = pipe->snapshot();
+    if (!snap || !snap->effective || !snap->detector) {
+        setRealtimeReason((snap && !snap->reason.empty()) ? snap->reason : std::string("missing_model"));
+        return false;
+    }
+
+    std::vector<RealtimeFaceBox> boxes;
+    std::string err;
+    if (!pipe->detect(frame, boxes, err)) {
+        setRealtimeReason(err.empty() ? "runtime_init_failed" : err);
+        return false;
+    }
+
+    // 真实检测已执行：即使 boxes 为空也置 detectionRan=true，使「实际空检测」按
+    // 任务5 规则让旧框在连续缺失 2 次后消失（区别于模型缺失的跳过语义）。
+    detectionRan = true;
+    outFaces = postProcessRealtimeBoxes(frame, boxes, snap->profile.nmsIou);
+    assignRealtimeIdentities(frame, outFaces, *snap);
+    setRealtimeReason("ok");
+    return true;
+}
+
+std::vector<pipeline::DetectedFace> Engine::postProcessRealtimeBoxes(
+    const cv::Mat& frame, const std::vector<RealtimeFaceBox>& boxes, float nmsIouThreshold) {
+    std::vector<pipeline::DetectedFace> raw;
+    raw.reserve(boxes.size());
+    for (const RealtimeFaceBox& b : boxes) {
+        // 丢弃 NaN/Inf：整数化前显式校验，避免 float→int 未定义行为（FacePostProcessor
+        // 的 NaN 检查针对 confidence，此处负责几何字段）。
+        if (!std::isfinite(b.x) || !std::isfinite(b.y) ||
+            !std::isfinite(b.width) || !std::isfinite(b.height)) {
+            continue;
+        }
+        // 半开区间取整：下界 floor，上界 ceil，保证 x2-x1 覆盖原始浮点范围（与任务1
+        // mapRect 半开区间语义一致，避免边缘框的 1px 漂移）。
+        const float x1f = std::floor(b.x);
+        const float y1f = std::floor(b.y);
+        const float x2f = std::ceil(b.x + b.width);
+        const float y2f = std::ceil(b.y + b.height);
+        pipeline::DetectedFace df;
+        df.bbox = cv::Rect(static_cast<int>(x1f), static_cast<int>(y1f),
+                           std::max(0, static_cast<int>(x2f - x1f)),
+                           std::max(0, static_cast<int>(y2f - y1f)));
+        df.confidence = b.score;  // 检测置信度；身份命中后覆盖为相似度
+        df.identityId = "Unknown";
+        df.isAuthenticated = false;
+        raw.push_back(std::move(df));
+    }
+
+    pipeline::FacePostProcessOptions opt;
+    opt.nmsIouThreshold = nmsIouThreshold;
+    // 关键：IoU NMS + 包含框抑制，确保同一张脸的局部/嵌套框只保留一个，
+    // 避免下游 TrackCoordinator 因多个框各建轨迹而产生「第二身份」。
+    return pipeline::FacePostProcessor::process(std::move(raw), frame.cols, frame.rows, opt);
+}
+
+void Engine::assignRealtimeIdentities(const cv::Mat& frame,
+                                      std::vector<pipeline::DetectedFace>& faces,
+                                      const RealtimePipelineSnapshot& snap) {
+    // 图库来源：优先运行时覆盖快照（replaceGallery 后的最新不可变索引），否则用快照自带
+    // gallery。覆盖接缝见 updateRealtimeGallery（等价于在 Engine 侧重建设置快照 gallery 字段）。
+    std::shared_ptr<const FaceSearchLinearIndex> gallery;
+    {
+        std::lock_guard<std::mutex> lock(realtimeGalleryMu_);
+        gallery = realtimeGallery_;
+    }
+    if (!gallery) gallery = snap.gallery;
+
+    // 身份识别为增强项：空图库/无 embedder 合法，身份保持 Unknown（这是实时路径的
+    // 正常空结果，不是 LBPH 回退）。
+    if (!snap.embedder || !gallery || gallery->size() == 0) return;
+
+    FaceAlignOptions alignOpt;  // 检测契约无关键点 → alignFaceForArcFace112 走 bbox fallback
+    alignOpt.outW = snap.profile.embedderInputW > 0 ? snap.profile.embedderInputW : 112;
+    alignOpt.outH = snap.profile.embedderInputH > 0 ? snap.profile.embedderInputH : 112;
+
+    for (auto& df : faces) {
+        FaceDetection det;
+        det.bbox = cv::Rect2f(static_cast<float>(df.bbox.x), static_cast<float>(df.bbox.y),
+                              static_cast<float>(df.bbox.width), static_cast<float>(df.bbox.height));
+        const FaceAlignResult ar = alignFaceForArcFace112(frame, det, alignOpt);
+        if (ar.alignedBgr.empty()) continue;
+
+        std::vector<float> emb;
+        std::string eerr;
+        if (!snap.embedder->embed(ar.alignedBgr, emb, eerr)) continue;
+
+        std::string serr;
+        const std::vector<FaceSearchHit> hits =
+            gallery->searchTopK(emb, 1, FaceSearchOptions{}, serr);
+        if (!hits.empty() && hits[0].score >= snap.profile.identitySimilarity) {
+            df.identityId = hits[0].id;
+            df.confidence = hits[0].score;
+            df.isAuthenticated = true;
+        }
+    }
 }
 
 bool Engine::preprocessFrame(const cv::Mat& frame) {
@@ -736,23 +975,29 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
     return !processedFrame_.empty();
 }
 
-void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces) {
-    // 任务5：detectionRan = 本次是否实际执行检测。当前 Android processFrame 每帧调用
-    // verifyMulti（恒有真实检测结果），跳过检测的调度语义由任务12 RealtimeFacePipeline 接入后按节流传参。
-    currentTracks_ = trackCoordinator_->update(faces, nowMs(), true);
+void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool detectionRan) {
+    // 任务5/12：detectionRan = 本次是否实际执行检测。实时路径成功检测时恒为 true
+    //（含空结果，使旧框按连续缺失规则消失）；模型缺失跳过检测时为 false。
+    const std::vector<pipeline::TrackView> views =
+        trackCoordinator_->update(faces, nowMs(), detectionRan);
+    std::lock_guard<std::mutex> lock(tracksMu_);
+    currentTracks_ = views;
 }
 
 void Engine::renderResults() {
     pipeline::FrameOutcome outcome;
-    outcome.tracks = currentTracks_;
-    if (!currentTracks_.empty()) {
+    {
+        std::lock_guard<std::mutex> lock(tracksMu_);
+        outcome.tracks = currentTracks_;
+    }
+    if (!outcome.tracks.empty()) {
         // 绘制前断开与输入帧的共享：无 flip 时 processedFrame_ 别名输入帧（浅拷贝），
         // 就地画框会写共享缓冲，与渲染线程 copyTo 并发撕裂（A1/A2 审计）；仅有人脸帧
         // 才 clone，无脸路径保持零拷贝
         processedFrame_ = processedFrame_.clone();
         // 在发布帧上绘制人脸检测框（认证绿框/未认证红框 + 标签）——
         // 三层重构（029e43f）删除内联绘制后运行时无任何检测框，此处恢复
-        drawTracks(processedFrame_, currentTracks_);
+        drawTracks(processedFrame_, outcome.tracks);
     }
     outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
