@@ -72,3 +72,25 @@ int ArcFaceAdapter::embeddingDim() const {
 const char* ArcFaceAdapter::name() const {
     return currentName_.c_str();
 }
+
+void ArcFaceAdapter::setNodeNames(const std::string& input, const std::string& output) {
+    // 空串忽略：调用方未提供节点名（理论上 manifest parser 已给默认）时不清空既有值，
+    // 从而保留 ArcFaceEmbedderConfig 的默认 data/output（或此前一次注入的值）。
+    if (!input.empty()) {
+        cfg_.ncnnInput = input;
+        cfg_.opencvInput = input;
+    }
+    if (!output.empty()) {
+        cfg_.ncnnOutput = output;
+        cfg_.opencvOutput = output;
+    }
+}
+
+const std::string& ArcFaceAdapter::inputNodeName() const {
+    // ncnn 与 opencv 节点名由 setNodeNames 同步写入，取其一即可代表当前注入值。
+    return cfg_.ncnnInput;
+}
+
+const std::string& ArcFaceAdapter::outputNodeName() const {
+    return cfg_.ncnnOutput;
+}
