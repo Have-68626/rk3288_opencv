@@ -52,6 +52,7 @@ bool test_face_infer_outcome_json_missing_decision();
 bool test_face_infer_outcome_json_missing_metrics();
 bool test_face_infer_outcome_json_full();
 bool test_face_infer_outcome_json_no_face();
+bool test_face_infer_outcome_json_hit_identity_edges();
 
 bool test_video_manager_is_url_source_valid_urls();
 bool test_video_manager_is_url_source_local_paths();
@@ -118,6 +119,7 @@ int main() {
         {"face_infer_outcome_json_missing_metrics", test_face_infer_outcome_json_missing_metrics},
         {"face_infer_outcome_json_full", test_face_infer_outcome_json_full},
         {"face_infer_outcome_json_no_face", test_face_infer_outcome_json_no_face},
+        {"face_infer_outcome_json_hit_identity_edges", test_face_infer_outcome_json_hit_identity_edges},
         {"int8_yolo_face_registered", test_int8_yolo_face_registered},
         {"int8_arcface_registered", test_int8_arcface_registered},
         {"int8_mobilefacenet_registered", test_int8_mobilefacenet_registered},

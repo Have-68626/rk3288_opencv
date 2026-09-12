@@ -361,6 +361,13 @@ std::string buildOutcomeJson(const FaceInferOutcomeJsonInput& in) {
         j.number(static_cast<long long>(in.ctx->hits[i].index));
         j.key("score");
         j.number(static_cast<double>(in.ctx->hits[i].score));
+        // 身份回填：gallery 条目 id 即人员标识 personId（JNI 侧以 personIds 数组建库，
+        // Windows 侧 LBPH 标签同为 personId），此处从其透传，id 字段保持原样以便向后兼容。
+        j.key("personId");
+        j.string(in.ctx->hits[i].id);
+        // native 核心层无人员 displayName 来源（FaceRuntimeProfile/ModelRegistry 的
+        // displayName 是模型/档案名，与人员无关），未知时**省略该字段**而非输出空串，
+        // 避免下游 JSON 消费方把空串误当权威值；由 Java 侧按 personId 映射补充。
         j.endObject();
     }
     j.endArray();
