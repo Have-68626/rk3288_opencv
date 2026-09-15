@@ -25,6 +25,10 @@ const {
   isPlaceholderText,
   findDefconfigPath,
   findKernelConfigSnapshotPath,
+  findRequiredSections,
+  fixMarkdown,
+  classifyLinkResult,
+  linkDefectMessage,
   VERSION_LAG_THRESHOLD_DAYS,
 } = require("../../scripts/docs-sync-audit.js");
 
@@ -412,4 +416,86 @@ test("parseKernelConfigPolicyFromConstraints 只有 FORBIDDEN 时 enabled 为 tr
   assert.equal(p.enabled, true);
   assert.deepEqual(p.must, []);
   assert.equal(Math.max(1, p.must.length), 1);
+});
+
+// ── content：必需章节检查（此前无测试覆盖） ────────────────────────────────
+
+test("findRequiredSections 命中 anyOf 中任一关键字即视为存在", () => {
+  const md = ["# T", "## 项目简介", "## Quick Start", "## Dependencies", ""].join("\n");
+  const required = [
+    { name: "简介", anyOf: ["项目简介", "简介", "Overview"] },
+    { name: "快速开始", anyOf: ["快速开始", "Quick Start"] },
+    { name: "许可证", anyOf: ["许可证", "License"] },
+  ];
+  const r = findRequiredSections(md, required);
+  assert.deepEqual(r.missing, ["许可证"]);
+  assert.deepEqual(r.headings, ["T", "项目简介", "Quick Start", "Dependencies"]);
+});
+
+test("findRequiredSections 的关键字是子串正则，会被无关标题误放行（记录现状）", () => {
+  // anyOf 含 "test" 时 `## Contest` 也会通过「测试命令」检查 —— 这是已知的过宽匹配。
+  // 此处锁定现状，避免日后误以为该检查是严格的。
+  const r = findRequiredSections("# T\n## Contest\n", [{ name: "测试", anyOf: ["test"] }]);
+  assert.deepEqual(r.missing, []);
+});
+
+// ── --fix：Markdown 自动修复的 4 条规则（此前无测试覆盖） ──────────────────
+
+test("fixMarkdown 为未声明语言的围栏补语言", () => {
+  const defects = [];
+  const out = fixMarkdown(["# T", "```", '{"a": 1}', "```", ""].join("\n"), defects);
+  assert.match(out, /```\s*json/, "JSON 内容应被推断为 json");
+  assert.ok(defects.some((d) => d.rule === "code_fence_lang"));
+});
+
+test("fixMarkdown 对无法识别的内容回退为 bash（锁定启发式现状）", () => {
+  const defects = [];
+  const out = fixMarkdown(["# T", "```", "cmake -S . -B build", "```", ""].join("\n"), defects);
+  assert.match(out, /```\s*bash/);
+});
+
+test("fixMarkdown 为重复标题追加后缀并插入锚点", () => {
+  const defects = [];
+  const out = fixMarkdown(["# T", "## 说明", "正文", "## 说明", ""].join("\n"), defects);
+  assert.match(out, /## 说明（2）/);
+  assert.match(out, /<a id="[^"]+-2"><\/a>/);
+  assert.ok(defects.some((d) => d.rule === "MD024"));
+});
+
+test("fixMarkdown 把裸露 URL 包裹为尖括号，已包裹的不重复处理", () => {
+  const defects = [];
+  const out = fixMarkdown("见 https://example.com/a 与 <https://example.com/b>\n", defects);
+  assert.match(out, /<https:\/\/example\.com\/a>/, "裸露 URL 应被包裹");
+  assert.equal(defects.filter((d) => d.rule === "MD034").length, 1);
+});
+
+test("fixMarkdown 不折行表格行、列表行与标题行", () => {
+  const long = "x".repeat(200);
+  const md = ["# T", `| ${long} |`, `- ${long}`, `## ${long}`, ""].join("\n");
+  const defects = [];
+  assert.equal(fixMarkdown(md, defects).split("\n").length, md.split("\n").length);
+  assert.equal(defects.filter((d) => d.rule === "MD013").length, 0);
+});
+
+// ── link：外部链接的三档严重级别（此前无测试覆盖） ────────────────────────
+
+test("classifyLinkResult 只对确凿失效报 medium", () => {
+  assert.equal(classifyLinkResult({ ok: true }), null, "成功链接不产生缺陷");
+  assert.equal(classifyLinkResult({ ok: false, unverifiable: true, method: "WORKER" }), "low");
+  assert.equal(classifyLinkResult({ ok: false, method: "CACHE", status: 404 }), "low");
+  assert.equal(classifyLinkResult({ ok: false, method: "HEAD", status: 404 }), "medium");
+  assert.equal(classifyLinkResult({ ok: false, method: "HEAD", status: 500 }), "medium");
+});
+
+test("link 的 low 不阻断门禁，medium 阻断", () => {
+  // 网络抖动导致的请求失败若阻断，CI 会随机变红
+  assert.equal(isGatePassed({ high: 0, medium: 0, low: 5 }), true);
+  assert.equal(isGatePassed({ high: 0, medium: 1, low: 0 }), false);
+});
+
+test("linkDefectMessage 按档位给出可区分的文案", () => {
+  const u = "https://example.com/x";
+  assert.match(linkDefectMessage({ url: u, method: "WORKER", finalUrl: u, unverifiable: true }, "low"), /无法验证/);
+  assert.match(linkDefectMessage({ url: u, method: "CACHE", status: 404 }, "low"), /缓存/);
+  assert.match(linkDefectMessage({ url: u, method: "HEAD", status: 404, finalUrl: u }, "medium"), /失效链接/);
 });
