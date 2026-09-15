@@ -327,6 +327,11 @@ if(NOT ANDROID)
         target_compile_definitions(core_gtest_tests PRIVATE
             NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_MPP=0)
     endif()
+    # 测试接缝编译期开关（第四轮审查 M3）：仅本 target 需要——它编译 test_engine.cpp 的
+    # BarrierEngine（覆写 Engine::onBeforeRenderPublish）且在同一 target 内编译 Engine.cpp，
+    # 宏对二者一致故无 ODR/布局不一致；生产构建不定义 → Engine 无虚函数、无 vptr（ABI 稳定）。
+    # 不全局定义：core_unit_tests 等 target 不编译 test_engine.cpp/Engine.cpp，无需该宏。
+    target_compile_definitions(core_gtest_tests PRIVATE RK_ENABLE_TEST_SEAMS)
     target_link_libraries(core_gtest_tests GTest::gtest_main ${RK_OPENCV_FULL_LIBS})
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
