@@ -33,7 +33,7 @@ stateDiagram-v2
 - **`MonitoringMode`**（`Types.h`）：`CONTINUOUS` / `MOTION_TRIGGERED`
 - **`InferenceThrottleMode`**（`InferenceThrottle.h`）：`Off` / `Manual` / `Auto`
 
-Engine 主循环（`Engine::run()`，`Engine.cpp:559-645`）：
+Engine 主循环（`Engine::run()`，位于 `src/cpp/src/Engine.cpp`）：
 
 ```mermaid
 flowchart TD

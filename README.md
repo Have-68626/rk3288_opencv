@@ -54,7 +54,7 @@ rk3288_opencv/
 
 ## 依赖
 
-**必需**：OpenCV 4.10.0（源码构建）、Android NDK 27.0、CMake 3.22.1+、Gradle 9.0-milestone-1、Node.js 22.x、pnpm
+**必需**：OpenCV 4.10.0（源码构建）、Android NDK 27.0、CMake 3.22.1+、Gradle 9.0、Node.js 22.x、pnpm
 
 **可选**：ncnn（推理加速）、RK MPP（硬解码）、Qualcomm SNPE、libyuv
 
@@ -109,16 +109,17 @@ pnpm -C web e2e:run     # Cypress E2E
 
 ## CI 流水线
 
-`.github/workflows/ci.yml` — 6 个 job：
+`.github/workflows/ci.yml` — 7 个 job（另有独立 workflow `.github/workflows/docs-audit.yml`）：
 
 | Job | 触发 | 内容 |
 |:----|:----:|:-----|
-| repo-hygiene | PR/push → master | 仓库垃圾文件扫描 |
-| unit-tests | PR/push → master | CMake + Ninja, `RK_SKIP_OPENCV=ON` |
-| docs-audit | PR/push → master | 文档同步状态审计 |
-| web | PR/push → master | `pnpm install` → `lint` → `build` → `e2e:run:coverage` |
-| android | PR/push → master | `assembleDebug` + `testDebugUnitTest` + `lintDebug` |
-| windows | push only | 完整 OpenCV 源码构建 + ctest + INT8 精度测试 |
+| changes | PR/push → master | 变更分类，输出 `docs_only`（纯 docs 变更时其余 job 跳过） |
+| repo-hygiene | PR/push → master，非纯 docs | 仓库垃圾文件扫描 + `tests/scripts/*.test.js` |
+| unit-tests | PR/push → master，非纯 docs | CMake + Ninja, `RK_SKIP_OPENCV=ON` |
+| docs-audit | PR/push → master，**含纯 docs** | 文档同步门禁（high=0 且 medium=0） |
+| web | PR/push → master，非纯 docs | `pnpm install` → `lint` → `build` → `e2e:run:coverage` |
+| android | PR/push → master，非纯 docs | `assembleDebug` + `testDebugUnitTest` + `lintDebug` |
+| windows | PR/push → master，非纯 docs；`workflow_dispatch` 时跳过 | 完整 OpenCV 源码构建 + ctest + INT8 精度测试 |
 
 ## 治理进度
 
