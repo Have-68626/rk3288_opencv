@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=plan
+status=snapshot
+as_of=2026-07-21
+-->
+
 # Agent Guide Audit Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

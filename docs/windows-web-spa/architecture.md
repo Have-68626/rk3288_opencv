@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=design
+status=living
+as_of=2026-07-21
+-->
+
 ﻿# 架构迁移说明（Win32 UI → 本地服务 + Web SPA）
 
-**更新日期**: 2026-07-21
 
 
 ## 目标形态

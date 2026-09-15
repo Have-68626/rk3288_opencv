@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=guide
+status=living
+as_of=2026-09-15
+-->
+
 # RK3288 机器视觉引擎 (AI Engine)
 
-**更新日期**: 2026-07-06
 
 ![Platform](https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue)
 ![Language](https://img.shields.io/badge/Language-C%2B%2B17-green)
@@ -33,16 +38,22 @@ rk3288_opencv/
 │   └── java/                     # Android Java 源码
 ├── web/                          # Web SPA 前端
 ├── cmake/                        # 模块化 CMake（5 模块）
-├── docs/
-│   ├── architecture/             # 架构契约（ARCHITECTURE.md）
-│   └── superpowers/              # 设计文档 + 实施计划
+├── docs/                         # 文档规范见 docs/DOC_STANDARD.md
+│   ├── index.md                  # 文档索引（全量文档入口）
+│   ├── architecture/             # 架构契约
+│   ├── designs/ plans/ specs/    # 设计、实施计划、设计规格
+│   ├── guides/                   # 使用与运维说明、验收清单
+│   ├── audits/ research/ security/   # 审计、研究、安全
+│   └── bsp/                      # 板级支持包
 ├── tests/                        # 单元测试 + 集成测试
 └── scripts/                      # 构建/测试/验证脚本
 ```
 
 ## 架构契约
 
-项目遵循 5 条跨子系统架构契约（详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)）：
+项目定义了 5 条跨子系统架构契约（详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)）：
+
+> ⚠️ 这 5 条是**目标契约**，尚未全部落地——该文档的合规总表当前把 5 条**全部**标为「待修复」。
 
 | 契约 | 规则 |
 |------|------|
@@ -97,15 +108,9 @@ pnpm -C web e2e:run     # Cypress E2E
 
 ## 测试框架
 
-| 测试套件 | 框架 | 位置 | 依赖 |
-|----------|------|------|------|
-| core_unit_tests | GTest | `tests/cpp/` | 无（使用 OpenCV mock stubs） |
-| face_infer_unit_tests | GTest | `tests/cpp/` | 需 OpenCV |
-| win_unit_tests | GTest | `tests/win/` | 需 OpenCV |
-| core_gtest_tests | GTest | `tests/cpp/` | 需 OpenCV |
-| ncnn_precision_test | GTest | `tests/cpp/` | 需 ncnn + OpenCV |
-| Web 单元测试 | Vitest | `web/src/` | 无 |
-| Web E2E | Cypress | `web/cypress/` | 需后端运行 |
+项目**同时**使用 GoogleTest 与自定义 `bool` 测试，各测试 target 的框架归属不同（例如 `win_unit_tests` 是二者混用的 target）。
+
+完整对照表见 [DEVELOP.md](DEVELOP.md) 的「测试框架」一节（按其为准，本页不再重复）。
 
 ## CI 流水线
 
@@ -160,7 +165,7 @@ MIT License
 
 - [全项目审计报告](docs/audits/archive/AUDIT_REPORT.md) — 综合评分 2.9/5
 - [架构契约](docs/architecture/ARCHITECTURE.md) — 5 条跨子系统规则
-- [架构治理设计](docs/superpowers/specs/2026-07-06-architecture-governance-design.md)
-- [架构治理实施计划](docs/superpowers/plans/2026-07-06-architecture-governance-plan.md)
+- [架构治理设计](docs/specs/2026-07-06-architecture-governance-design.md)
+- [架构治理实施计划](docs/plans/2026-07-06-architecture-governance-plan.md)
 - [远程分支审计](docs/audits/archive/REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
 - [文档审计报告](docs/audits/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题

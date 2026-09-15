@@ -1,12 +1,17 @@
+<!-- DOCSYNC_DOC
+type=runbook
+status=living
+as_of=2026-09-15
+-->
+
 # RK3288 Android 设备验收清单（人工执行）
 
-**更新日期**: 2026-09-12
 
 **执行状态**: **待真机执行**。本文是手工验收清单，步骤存在不等于场景已通过；无论断结果不得标记为“已通过”。
 
 **适用对象**: RK3288（`armeabi-v7a`）与 ARM64 高精度机型；Android App 主链路。
 
-**自动化边界**: 数据采集可用 `scripts/run-android-face-regression.ps1`（私有媒体回归，仅聚合并匿名化报告）；**判定与留档仍由人工完成**。性能口径亦可参考 `docs/windows-web-spa/performance.md` 的留档要求。
+**自动化边界**: 数据采集可用 `scripts/run-android-face-regression.ps1`（私有媒体回归，仅聚合并匿名化报告）；**判定与留档仍由人工完成**。性能口径亦可参考 `docs/guides/windows-service/performance.md` 的留档要求。
 
 ## 0. 前置条件
 

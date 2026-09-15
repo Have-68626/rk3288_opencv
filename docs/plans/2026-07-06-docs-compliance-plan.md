@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=plan
+status=snapshot
+as_of=2026-07-06
+-->
+
 # 文档合规推进计划
 
-**日期**: 2026-07-06
 **前置**: 已合入 PR #447（README.md 全面修订）
 
 ---

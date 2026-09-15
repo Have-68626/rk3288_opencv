@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=research
+status=snapshot
+as_of=2026-09-15
+-->
+
 # 日志分析报告：evidence_20170115_035627
 
 ## 文档信息

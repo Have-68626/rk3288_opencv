@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=reference
+status=living
+as_of=2026-09-06
+-->
+
 # 致谢与许可证（CREDITS）
 
-**更新日期**: 2026-07-06
 
 本文件用于记录本项目使用的第三方依赖、来源与许可证信息，便于审计与合规。
 

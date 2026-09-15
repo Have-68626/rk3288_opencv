@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=guide
+status=living
+as_of=2026-06-23
+-->
+
 ﻿# 配置说明（config.json）
 
-**更新日期**: 2026-07-21
 
 
 ## 文件位置

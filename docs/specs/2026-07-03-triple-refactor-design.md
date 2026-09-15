@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=design
+status=snapshot
+as_of=2026-07-03
+-->
+
 # 三层重构设计：FramePipeline · HttpFacesServer · Engine
 
-**日期**: 2026-07-03
 **状态**: 设计已批准
 **关联文档**: 重构洞察-FramePipeline职责耦合问题.md, 重构洞察-Http接口路由耦合问题.md, 重构洞察-Engine帧处理管线耦合.md
 

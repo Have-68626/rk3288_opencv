@@ -1,7 +1,12 @@
+<!-- DOCSYNC_DOC
+type=audit
+status=frozen
+as_of=2026-07-05
+-->
+
 # GitHub 安全与质量扫描审计
 
 **扫描工具**: CodeQL + Dependabot
-**日期**: 2026-07-05
 
 ---
 

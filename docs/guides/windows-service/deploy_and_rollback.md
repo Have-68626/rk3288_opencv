@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=runbook
+status=living
+as_of=2026-06-23
+-->
+
 ﻿# 部署与回滚指南（Windows 本地服务 + 浏览器 SPA）
 
-**更新日期**: 2026-07-21
 
 
 ## 运行方式（推荐）

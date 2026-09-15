@@ -29,6 +29,10 @@ const {
   fixMarkdown,
   classifyLinkResult,
   linkDefectMessage,
+  parseDocMeta,
+  auditDocMeta,
+  requiresDocMeta,
+  isLivingDoc,
   VERSION_LAG_THRESHOLD_DAYS,
 } = require("../../scripts/docs-sync-audit.js");
 
@@ -498,4 +502,65 @@ test("linkDefectMessage 按档位给出可区分的文案", () => {
   assert.match(linkDefectMessage({ url: u, method: "WORKER", finalUrl: u, unverifiable: true }, "low"), /无法验证/);
   assert.match(linkDefectMessage({ url: u, method: "CACHE", status: 404 }, "low"), /缓存/);
   assert.match(linkDefectMessage({ url: u, method: "HEAD", status: 404, finalUrl: u }, "medium"), /失效链接/);
+});
+
+// ── 文档元数据与豁免语义（docs/DOC_STANDARD.md） ──────────────────────────
+
+test("parseDocMeta 解析元数据块，无块时返回 null", () => {
+  const meta = parseDocMeta("<!-- DOCSYNC_DOC\ntype=design\nstatus=living\nas_of=2026-09-15\n-->\n\n# T\n");
+  assert.deepEqual(meta, { type: "design", status: "living", as_of: "2026-09-15" });
+  assert.equal(parseDocMeta("# 无块\n"), null);
+  assert.equal(parseDocMeta("<!-- DOCSYNC_DOC\ntype=design\n"), null, "块未闭合时返回 null");
+});
+
+test("isLivingDoc 只在 status=living 或缺失元数据时为真", () => {
+  const mk = (s) => `<!-- DOCSYNC_DOC\ntype=plan\nstatus=${s}\nas_of=2026-01-01\n-->`;
+  // 时点快照不是活文档——这是「豁免靠自述而非目录」的核心语义
+  assert.equal(isLivingDoc(mk("snapshot")), false);
+  assert.equal(isLivingDoc(mk("frozen")), false);
+  assert.equal(isLivingDoc(mk("placeholder")), false);
+  assert.equal(isLivingDoc(mk("living")), true);
+  // 缺块时保守按 living 处理（缺失本身由 doc-meta 报错），
+  // 避免一个坏掉的块顺带关掉 version 与 refpath 两条检查
+  assert.equal(isLivingDoc("# 无块"), true);
+});
+
+test("requiresDocMeta 只豁免第三方内容与工具配置", () => {
+  assert.equal(requiresDocMeta("docs/designs/a.md"), true);
+  assert.equal(requiresDocMeta("docs/research/appendix-b.md"), true, "研究附录仍是项目文档，只是 status=snapshot");
+  assert.equal(requiresDocMeta("deps/rk_mpp/README.md"), false);
+  assert.equal(requiresDocMeta(".claude/agents/win.md"), false);
+  assert.equal(requiresDocMeta("src/win/third_party/civetweb/LICENSE.md"), false);
+  assert.equal(requiresDocMeta("src/win/third_party/civetweb/LEDGER.md"), true, "本仓自撰台账，需元数据");
+});
+
+test("auditDocMeta 报告缺失与非法取值", () => {
+  const missing = auditDocMeta("a.md", "# 无块");
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].message, /缺少 DOCSYNC_DOC/);
+  assert.equal(missing[0].severity, "high");
+  const bad = auditDocMeta("a.md", "<!-- DOCSYNC_DOC\ntype=nope\nstatus=zzz\nas_of=2026/01/01\n-->");
+  assert.equal(bad.length, 3, "type / status / as_of 三项都应报错");
+  assert.equal(auditDocMeta("a.md", "<!-- DOCSYNC_DOC\ntype=design\nstatus=living\nas_of=2026-01-01\n-->").length, 0);
+});
+
+test("豁免不再由目录决定：目录不产生豁免，声明才产生", () => {
+  // 回归点：旧实现按目录豁免（TIMEPOINT_DOC_PATTERNS），把文档挪进 docs/research/
+  // 即可同时免检 version 与 refpath，是实际生效的后门。现改由 status 自述决定。
+  assert.equal(requiresDocMeta("docs/research/appendix-b.md"), true);
+  assert.equal(isLivingDoc("<!-- DOCSYNC_DOC\ntype=research\nstatus=living\nas_of=2026-01-01\n-->"), true);
+  assert.equal(isLivingDoc("<!-- DOCSYNC_DOC\ntype=design\nstatus=snapshot\nas_of=2026-01-01\n-->"), false);
+});
+
+test("CI 命令行不得传入整体关闭检查的参数", () => {
+  // --skip-check-paths 是整体替换而非追加，会同时关闭 version 与 refpath。
+  // 此前没有任何测试守护 CI 命令行，一行参数即可让全仓检查静默失效。
+  const repoRoot = path.join(__dirname, "..", "..");
+  for (const wf of ["ci.yml", "docs-audit.yml"]) {
+    const p = path.join(repoRoot, ".github", "workflows", wf);
+    if (!fs.existsSync(p)) continue;
+    const yml = fs.readFileSync(p, "utf8");
+    assert.ok(!yml.includes("--skip-check-paths"), `${wf} 不得传入 --skip-check-paths`);
+    assert.ok(!yml.includes("--skip-version-paths"), `${wf} 不得传入已废弃的 --skip-version-paths`);
+  }
 });

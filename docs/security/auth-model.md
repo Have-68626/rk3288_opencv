@@ -1,6 +1,13 @@
+<!-- DOCSYNC_DOC
+type=security
+status=living
+as_of=2026-08-13
+-->
+
 # HTTP 认证授权模型（S-SEC-B09-001）
 
-> 状态：**已冻结（frozen）**。本文档是 Windows 本地服务 REST API 认证授权的事实源。
+> 规格状态：**已锁定**。本文档是 Windows 本地服务 REST API 认证授权的事实源；
+> 正文跟随实现更新（元数据 `status=living`），但规格条款未经批准不得变更。
 > 任何机制/边界变更必须先更新本文档并同步实现与测试。
 > 治理回退：仅允许撤回本项 auth patch；认证模型冻结后不得在未重新冻结前继续扩展。
 

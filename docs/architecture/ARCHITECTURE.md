@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=architecture
+status=living
+as_of=2026-07-06
+-->
+
 # RK3288 OpenCV 架构契约
 
 ## 背景
@@ -157,5 +163,5 @@ std::unique_ptr<IRecognizer> CreateArcFaceRecognizer(const RecognizerConfig&);
 
 ---
 
-*本文件依据 `docs/superpowers/specs/2026-07-06-architecture-governance-design.md` 生成。*
+*本文件依据 `docs/specs/2026-07-06-architecture-governance-design.md` 生成。*
 *检查脚本: `scripts/check-raii-violations.sh`*

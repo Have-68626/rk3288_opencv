@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=research
+status=snapshot
+as_of=2026-08-13
+-->
+
 ## 附录 B. 加速方案可行性分析与实现状态
 
 

@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=reference
+status=living
+as_of=2026-07-21
+-->
+
 # Kernel config 快照目录
 
 本目录保存从目标设备导出的运行态内核配置快照。当前 `kernel.config` 的文件头标识为 `Linux/arm 4.4.143 Kernel Configuration`，包含 `CONFIG_ARCH_ROCKCHIP=y`、`CONFIG_CPU_RK3288=y`、`CONFIG_IKCONFIG=y` 与 `CONFIG_IKCONFIG_PROC=y`。

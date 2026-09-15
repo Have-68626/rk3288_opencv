@@ -304,7 +304,7 @@ $summary = [ordered]@{
         "设备序列号仅以 SHA-256 截断哈希出现。",
         "缺 RK_PRIVATE_MEDIA_ROOT 时脚本直接退出，不扫描用户目录。",
         "设备侧采集依赖 App 日志指标（fps/lat_ms/effective_ms/p95），脚本不向设备推送媒体。",
-        "本报告只做采集与聚合；验收判定由人工依据 docs/designs/rk3288-device-acceptance.md 完成。"
+        "本报告只做采集与聚合；验收判定由人工依据 docs/guides/rk3288-device-acceptance.md 完成。"
     )
     artifacts             = [ordered]@{
         metrics_csv = $csvPath

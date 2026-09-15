@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=plan
+status=snapshot
+as_of=2026-06-23
+-->
+
 # INT8 量化工具链 Implementation Plan
 
-> **最后复核**: 2026-07-21
 >
 > **状态**: 历史任务记录。原任务曾按 `yolo_face` 路径完成；当前量化脚本和 CI 已转向 SCRFD，但 C++ 运行时与测试尚未完成同名迁移，不能再视为端到端全部完成。
 

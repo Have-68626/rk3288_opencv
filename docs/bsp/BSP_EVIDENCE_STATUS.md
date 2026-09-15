@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=reference
+status=living
+as_of=2026-04-02
+-->
+
 # BSP 证据登记与 Release Note 状态
 
 ## 当前结论

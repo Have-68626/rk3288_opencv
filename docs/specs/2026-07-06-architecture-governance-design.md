@@ -1,8 +1,12 @@
+<!-- DOCSYNC_DOC
+type=design
+status=snapshot
+as_of=2026-07-06
+-->
+
 # 架构治理设计文档
 
 **版本**: v1.0
-**日期**: 2026-07-06
-**最后更新：2026-08-10**
 **状态**: 已落地 — 五条契约与三层实施路径由 ARCHITECTURE.md 及治理执行记录验证
 
 ---
@@ -64,8 +68,8 @@ Core Engine / Windows Service / Android JNI 三侧 C++ 代码的架构风格。
 
 | 文档 | 角色 |
 |:-----|:-----|
-| [docs/architecture/ARCHITECTURE.md](../../architecture/ARCHITECTURE.md) | 5 条契约的落地产物（依据本设计生成） |
-| [docs/superpowers/plans/2026-07-06-architecture-governance-plan.md](../../superpowers/plans/2026-07-06-architecture-governance-plan.md) | 本设计的实施计划（9 个 Task 按 Phase 执行） |
+| [docs/architecture/ARCHITECTURE.md](../architecture/ARCHITECTURE.md) | 5 条契约的落地产物（依据本设计生成） |
+| [docs/plans/2026-07-06-architecture-governance-plan.md](../plans/2026-07-06-architecture-governance-plan.md) | 本设计的实施计划（9 个 Task 按 Phase 执行） |
 | `GOVERNANCE_VERIFICATION.md` | 治理落地验证报告（42/42 项通过） |
 
 ## 5. 验收标准

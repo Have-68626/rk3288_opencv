@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-09-15
+-->
+
 # Loop Configuration — rk3288_opencv（Minimal Triage）
 
 ## Active Loops

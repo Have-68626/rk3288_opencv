@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=security
+status=living
+as_of=2026-08-13
+-->
+
 # 外部二进制来源账本（Supply Chain Ledger）
 
 治理任务 **SEC-15（S-SEC-B10-006）**：外部二进制缺少完整来源、许可证、摘要与受控发布链。本账本为字段级台账，保证外部二进制/模型**来源可追溯、摘要可复算、发布链受控**。
