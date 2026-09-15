@@ -872,6 +872,15 @@ void Engine::revokeTrackIdentitiesLocked(const std::vector<std::string>& keepIds
     // 变更对外原子可见。仅在确有对外撤销入口调用时递增（applyGalleryUpdate /
     // setRealtimePipeline），trackFaces 的正常逐帧提交不递增。
     identityVersion_.fetch_add(1, std::memory_order_release);
+    // 与事件发射握手（第五轮审查 P1）：先递增版本（使**尚未进入**发射临界区的在途帧在最终校验时
+    // 必然看见新版本并清身份），再取发射门、等待**已经进入**发射的帧结束才返回。二者合起来才保证
+    // 「本函数返回后不会再发出已撤销身份的 VERIFIED」——只递增不等、或只等不递增，都会留下窗口。
+    // 本函数已持 tracksMu_；锁序 tracksMu_ → identityEmitMu_ 与 renderResults 一致（后者取发射门
+    // 之前已释放 tracksMu_），故无环。等待期间引擎线程正在 publish 内，其不再取 tracksMu_，必定能完成。
+    {
+        std::lock_guard<std::mutex> emitGate(identityEmitMu_);
+        (void)emitGate;  // 仅以「取得并释放」表达与在途发射的互斥/等待语义
+    }
 }
 
 // ── #1 注册采集模式 ──
@@ -1332,12 +1341,21 @@ void Engine::renderResults() {
     }
     outcome.renderFrame = processedFrame_;
     outcome.stats = currentStats_;
-    // 发布前校验②（绘制后、publish 前）：覆盖 drawTracks 执行期间发生的撤销；不一致则再次清空
-    // 身份，确保本帧**不发出**旧 VERIFIED 事件（事件由 published tracks 派生）。
-    if (snapshotIdentityVer != identityVersion_.load(std::memory_order_acquire)) {
-        clearStableIdentities(outcome.tracks);
+    // 发布前校验② + 事件发射（第五轮审查 P1）：二者必须在**同一 identityEmitMu_ 临界区**内完成。
+    // 此前只做「检后再发」，JNI 线程可插在检查与 publish 之间完成 applyGalleryUpdate 并**返回**，
+    // 本帧仍按旧副本发出已撤销身份的 VERIFIED。现在：撤销要么等本临界区结束才返回，要么先递增
+    // 版本使本处校验失败→先清身份再发布。两条路径都不会在撤销返回后发出旧 VERIFIED。
+    {
+        std::lock_guard<std::mutex> emitGate(identityEmitMu_);
+#if defined(RK_ENABLE_TEST_SEAMS)
+        // 测试接缝：钉在发射临界区内（见 onBeforePublishLocked 注释）。
+        onBeforePublishLocked();
+#endif
+        if (snapshotIdentityVer != identityVersion_.load(std::memory_order_acquire)) {
+            clearStableIdentities(outcome.tracks);
+        }
+        publisher_->publish(std::move(outcome));
     }
-    publisher_->publish(std::move(outcome));
 }
 
 void Engine::collectStats() {
