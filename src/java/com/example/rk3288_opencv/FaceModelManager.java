@@ -374,21 +374,22 @@ public final class FaceModelManager {
                         // 第五轮审查 P1：两种失败现场都必须可被启动恢复覆盖——target 已删除（缺目标）
                         // 与 target 删不掉（回滚时已写入 .rollback_<id> 意图标记），故「将由启动恢复」
                         // 现在是可兑现的承诺，而不再是空头支票。
-                        if (!rollbackProfileSwap(swap)) {
+                        RollbackOutcome ro = rollbackProfileSwap(swap);
+                        if (ro != RollbackOutcome.RESTORED) {
                             FaceRuntimeStatus st = buildStatus(nativeStatusOrNull());
-                            // 按**落盘后状态**而非仅标记存在性给出如实文案（外部审计：writeRollbackMarker
-                            // 的失败被静默忽略，故极端 I/O 下不得承诺可自动恢复）：
-                            // · 备份已被消费 → 回滚其实已就位（buildStatus 可能刚就地完成回滚）；
-                            // · 备份仍在且有标记 → 可启动恢复；
-                            // · 备份仍在但**无标记** → 标记写入失败，绝不承诺「将由启动恢复」。
+                            // 文案按**回滚返回值**（而非磁盘反推）与落盘后状态生成：
+                            // · 备份已被消费 → 回滚其实已就位（buildStatus 的 recover 可能刚就地完成）；
+                            // · FAILED_RECORDED → 已留意图标记，启动恢复可收尾；
+                            // · FAILED_UNRECORDED → 已尝试回滚但未成功、且未能记录意图，绝不承诺自动恢复。
+                            // 注意：文案直接呈现给用户，不得混入 Markdown 强调符号。
                             String detail;
                             if (!swap.bak.exists()) {
                                 detail = "，旧配置已回滚就位";
-                            } else if (rollbackMarkerOf(swap.profileId).exists()) {
+                            } else if (ro == RollbackOutcome.FAILED_RECORDED) {
                                 detail = "且旧配置回滚失败（旧目录滞留于 " + swap.bak.getName() + "，将由启动恢复）";
                             } else {
                                 detail = "且旧配置回滚失败，且未能记录恢复意图（旧目录滞留于 "
-                                        + swap.bak.getName() + "）——请排除文件占用后重试导入，或重启应用";
+                                        + swap.bak.getName() + "）——请排除磁盘/权限问题后重试导入";
                             }
                             return new Result(Status.ATOMIC_RENAME_FAILED, st,
                                     "模型已导入，但实时管线激活失败：" + ao.reason + "，" + detail);
@@ -406,11 +407,16 @@ public final class FaceModelManager {
                 }
                 // ⑨ 生效后才原子落定激活指针；落定失败则回滚目录到导入前状态。
                 if (!persistActive(profile.profileId)) {
-                    boolean restored = rollbackProfileSwap(swap);
-                    if (!restored) {
+                    RollbackOutcome ro = rollbackProfileSwap(swap);
+                    if (ro != RollbackOutcome.RESTORED) {
+                        // 与 importZip 分支同口径：区分「已留意图标记，启动可收尾」与「未能记录意图」。
+                        // 不承诺自动恢复，也不谎称已回滚。注意文案直接呈现给用户，不得含 Markdown 强调符号。
+                        String tail = (ro == RollbackOutcome.FAILED_RECORDED)
+                                ? "，将由启动恢复"
+                                : "，且未能记录恢复意图（请排除磁盘/权限问题后重试）";
                         return fail(Status.ATOMIC_RENAME_FAILED,
                                 "激活指针写入失败，且旧配置回滚失败（旧目录滞留于 "
-                                        + swap.bak.getName() + "）");
+                                        + swap.bak.getName() + tail + "）");
                     }
                     bestEffortReactivate(previousActive, currentAbi);
                     return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已回滚配置");
@@ -906,34 +912,43 @@ public final class FaceModelManager {
         }
     }
 
+    /** 回滚结局：区分「已还原」「失败但已记录可恢复意图」「失败且无法自动恢复」。 */
+    private enum RollbackOutcome { RESTORED, FAILED_RECORDED, FAILED_UNRECORDED }
+
     /**
      * 目录回滚：删除激活失败的新目录，并把旧目录（{@code .bak_<id>}）还原就位。
      *
-     * <p><b>返回 false 有两种现场，恢复逻辑都必须能覆盖（第五轮审查 P1）：</b>
+     * <p><b>意图标记是「尽力而为」，不是「前置条件」</b>（第六轮双代理审计 A1-P2 / A2-High 纠正）：
+     * 早先的实现「标记写不成功就不动手」，结果是**更差**——枚举「标记写失败」前提下的组合：
      * <ul>
-     *   <li>新目录已删掉、仅改名还原失败 → target 缺失、bak 仍在（崩溃窗口语义，直接还原）。</li>
-     *   <li>新目录**没删掉**（文件被占用等）→ target 与 bak **同时存在**。此时
-     *       {@code bak.renameTo(target)} 对非空目录必然失败，而恢复逻辑原判据是「target 缺失」，
-     *       永远不会触发——旧模型永久滞留，激活指针却指向那个激活失败的新包。</li>
+     *   <li>删除成功 + 改名成功：照旧做能把旧模型**真正还原**（本实现）；停手则 target 仍是那个
+     *       激活失败的新包，且无标记 → 状态报 ready(新包)、旧模型滞留 .bak（**更差**）。</li>
+     *   <li>删除成功 + 改名失败：照旧做会留下「target 缺失」→ 崩溃窗口恢复能还原旧模型（**更差**）。</li>
+     *   <li>删除失败：两者结局相同（target + bak 并存）。</li>
      * </ul>
+     * 即「停手」把可自动还原的两种组合一并牺牲，却并未换来任何改善；而它想避免的
+     * 「target 在 + bak 在 + 无标记」现场，恰恰是「什么都不做」的必然结果。
+     * 故标记只用于**失败后能否由启动恢复兜底**，不得成为放弃还原的理由。
      *
-     * <p>故改为 <b>intent-first</b>：先写 {@code .rollback_<id>} 意图标记，再执行删除+还原，成功才清标记。
-     * 这样不仅覆盖「删除失败」，也覆盖「删除过程中进程崩溃」（留半删除目录）——恢复逻辑据标记完成收尾。
+     * <p><b>返回值区分三种结局</b>，调用方据此选文案（不得再从磁盘反推——标记路径可能被占用成
+     * 目录等，{@code marker.exists()} 与「是否已记录意图」并不等价）。
      */
-    private boolean rollbackProfileSwap(@NonNull ProfileSwap swap) {
+    @NonNull
+    private RollbackOutcome rollbackProfileSwap(@NonNull ProfileSwap swap) {
         if (!swap.hadOld) {
             // 首次导入无旧配置可还原：删掉新目录即完成回滚。删除失败不影响对外语义——
             // 该目录从未被激活指针引用，最坏只是磁盘残留。
             deleteRecursivelyQuietly(swap.target);
-            return true;
+            return RollbackOutcome.RESTORED;
         }
-        writeRollbackMarker(swap);
+        // 尽力记录回滚意图：它能覆盖「删除过程中崩溃」等窄窗口，但记录失败不应阻止还原。
+        final boolean recorded = writeRollbackMarker(swap);
         deleteRecursivelyQuietly(swap.target);
         if (!swap.target.exists() && swap.bak.renameTo(swap.target)) {
             clearRollbackMarker(swap.profileId);  // 回滚完整完成，意图标记使命结束
-            return true;
+            return RollbackOutcome.RESTORED;
         }
-        return false;
+        return recorded ? RollbackOutcome.FAILED_RECORDED : RollbackOutcome.FAILED_UNRECORDED;
     }
 
     /** 回滚意图标记文件路径：{@code <storeDir>/.rollback_<profileId>}。 */
@@ -951,9 +966,12 @@ public final class FaceModelManager {
     /**
      * 写入回滚意图标记（存在性即语义；内容仅供诊断）。
      *
-     * <p>写入失败不改返回值语义：调用方已按「回滚失败」上报，此处仅是让启动恢复有机会补救。
+     * <p><b>返回值必须被检查</b>：恢复逻辑只能靠该标记识别「target 在 + bak 在」这一回滚失败现场，
+     * 因此标记写不出来时**绝不可继续做破坏性删除**（见 {@link #rollbackProfileSwap}）。
+     *
+     * @return 标记是否确实落盘
      */
-    private void writeRollbackMarker(@NonNull ProfileSwap swap) {
+    private boolean writeRollbackMarker(@NonNull ProfileSwap swap) {
         try (FileOutputStream fos = new FileOutputStream(rollbackMarkerOf(swap.profileId), false)) {
             fos.write(("target=" + swap.target.getName() + "\n").getBytes(StandardCharsets.UTF_8));
             fos.flush();
@@ -961,7 +979,9 @@ public final class FaceModelManager {
                 fos.getFD().sync();
             } catch (Exception ignored) {
             }
+            return true;
         } catch (Exception ignored) {
+            return false;
         }
     }
 

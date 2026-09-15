@@ -949,6 +949,59 @@ public class FaceModelManagerTest {
         assertNoTempArtifacts(dir);
     }
 
+    /**
+     * 第六轮双代理审计（A1-P2 / A2-High）**回归护栏**：意图标记写不出去时，回滚**仍须尽力完成**。
+     *
+     * <p>背景：曾经把「标记写失败」当作**停手条件**（写不成功就不动磁盘）。双代理各自独立枚举
+     * 「标记写失败」前提下的组合后一致判定该做法**更差**——它牺牲了两种本可自动还原的组合
+     * （删除+改名都成功；或删除成功但改名失败 → target 缺失可由崩溃窗口恢复），却未换来任何改善；
+     * 而它想避免的「target 在 + bak 在 + 无标记」现场，恰恰是「什么都不做」的必然结果。
+     * 故标记只决定「失败后能否由启动恢复兜底」，**不得成为放弃还原的理由**。
+     *
+     * <p><b>可移植的构造</b>：把标记路径预建成**非空目录**，则 {@code new FileOutputStream(dir)}
+     * 在 Windows 与 Linux 上**都**会抛异常（不像文件锁那样依赖平台语义）。此时删除与改名本可成功，
+     * 故端状态必须是：**旧模型已还原到激活位**、返回 {@code RUNTIME_ACTIVATE_FAILED}（已回滚到原模型）。
+     *
+     * <p><b>判别力（如实界定）</b>：若有人重新引入「写失败即停手」，回滚不再执行 → 返回
+     * {@code ATOMIC_RENAME_FAILED}，**唯有状态码断言会失败**——因为调用方的 {@code buildStatus}
+     * 仍会经 {@code recoverProfileDirIfNeeded} 就地完成还原（本构造下标记目录 {@code exists()==true}，
+     * 恰使恢复生效），故**内容断言会通过**。此点经第三代理实测确认，勿再声称「内容断言也会失败」。
+     * <b>不能判别什么</b>：「删除成功但改名失败 → 崩溃窗口恢复」那条组合无法在纯 JVM 下稳定构造
+     *（需 target 不可删）；真实「无标记」场景（标记文件建不出来而非被占成目录）的端状态亦与之不同。
+     */
+    @Test
+    public void rollbackStillCompletesWhenMarkerCannotBeWritten() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+        // 让标记必然写不进去：预建非空目录（它同时充当 recovery 的标记，故还原路径通畅）。
+        File marker = new File(dir, ".rollback_p1");
+        assertTrue(marker.mkdirs());
+        assertTrue(new File(marker, "keep").createNewFile());
+
+        // 同名覆盖 + 激活失败 → 进入 rollbackProfileSwap。
+        rt.activateOk = false;
+        rt.activateReason = "runtime_init_failed";
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        FaceModelManager.Result r =
+                m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+        // 关键：记录失败不得阻止还原——必须走到「已回滚到原模型」而非「回滚失败」。
+        assertEquals(FaceModelManager.Status.RUNTIME_ACTIVATE_FAILED, r.status);
+        assertFalse(r.isOk());
+        assertTrue("文案应说明已回滚到原模型，实际=" + r.message, r.message.contains("已回滚到原模型"));
+        File target = m.profileDir("p1");
+        assertTrue("旧模型必须已还原到激活位", target.isDirectory());
+        assertTrue("激活位必须是旧模型内容，而非激活失败的新包",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        // 清理人造标记目录，避免污染后续断言。
+        deleteRecursively(marker);
+    }
+
     // ---------- 夹具 ----------
 
     /** 按 flat 布局把 manifest 与模型文件写入目录（供构造磁盘现场使用）。 */
