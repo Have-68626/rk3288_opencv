@@ -5,7 +5,7 @@
 | 项目 | 内容 |
 |------|------|
 | 分析日期 | 2026-05-18 |
-| 证据目录 | `ErrorLog/evidence_20170115_035627/` |
+| 证据目录 | `ErrorLog/evidence_20170115_035627/`（分析时路径；该目录未被 git 跟踪，现已不在工作区中） |
 | 分析依据文件 | manifest.txt, device_info.txt, last_preflight.txt, logcat_snapshot.txt, logcat_20170115_035423.log, rk3288_20170115_035040.log |
 
 ---

@@ -1,8 +1,17 @@
 # 文档索引
 
-> 索引快照说明：本索引反映 2026-07 三层重构（Engine/FramePipeline/HttpFacesServer）后的文档基线，
-> 覆盖 windows-web-spa、架构、治理设计/计划、人员注册设计等模块；最近更新 2026-08-10（Q4 治理轮）。
-> 新增文档或模块结构变更后请同步维护本表，避免与 docs/ 实际内容脱节。
+**更新日期**: 2026-09-15
+
+> 本索引覆盖 `docs/` 与仓库根目录下的全部文档。新增文档或模块结构变更后请同步维护本表，
+> 避免与 `docs/` 实际内容脱节（`docs-sync-audit` 门禁会校验本文件的路径引用是否存在）。
+> 表内路径相对于本文件所在目录（`docs/`）；仓库根目录文件以 `../` 前缀标注。
+
+## docs/ 根级
+| 文件 | 说明 |
+|------|------|
+| `RK3288_CONSTRAINTS.md` | RK3288 目标设备画像与工程硬约束清单 |
+| `capability-matrix.md` | 终端能力矩阵（Android/Windows/Web/旧 Win32 UI + 5 个 CLI 的产物、能力、限制） |
+| `safety.md` | 安全与高风险路径清单（loop 人工门禁引用） |
 
 ## windows-web-spa/
 | 文件 | 说明 |
@@ -23,6 +32,39 @@
 | `android-layer.md` | Android 层架构说明 |
 | `cpp-engine.md` | C++ 核心引擎架构说明 |
 
+## security/
+| 文件 | 说明 |
+|------|------|
+| `auth-model.md` | HTTP 认证模型（Bearer 令牌） |
+| `civetweb-ssl-note.md` | CivetWeb SSL 相关说明 |
+| `enablement-plan.md` | 安全能力启用计划与状态表 |
+| `face-db-encryption.md` | 人脸库加密（DPAPI + AES-256-GCM 版本化迁移） |
+| `supply-chain-ledger.md` | 外部二进制来源账本（版本/许可证/摘要） |
+
+## designs/
+| 文件 | 说明 |
+|------|------|
+| `int8-quantization-design.md` | INT8 量化工具链架构设计 |
+| `int8-quantization-plan.md` | INT8 量化实现计划（任务级） |
+| `personnel-enrollment-design.md` | 人员注册与权限系统顶层设计 |
+| `android-enrollment-design.md` | Android 端人员注册设计（目标 vs 已落地，任务 17/18 边界） |
+| `model-acquisition-import.md` | 模型获取与导入流程（APK 不内置模型、ZIP 校验链、`missing_model` 降级） |
+| `rk3288-device-acceptance.md` | RK3288 Android 设备验收清单（人工执行） |
+
+## patterns/
+| 文件 | 说明 |
+|------|------|
+| `daily-triage.md` | 每日分诊 loop 模式定义 |
+| `loop-design-checklist.md` | loop 设计检查清单 |
+
+## bsp/
+| 文件 | 说明 |
+|------|------|
+| `BSP_RELEASE_NOTES.md` | BSP 发布说明（占位模板） |
+| `kernel-config/README.md` | 内核配置说明 |
+| `kernel-config/kernel.config` | 设备运行态内核配置快照 |
+| `defconfig/rk3288_defconfig` | 内核基准配置 |
+
 ## superpowers/specs/
 | 文件 | 说明 |
 |------|------|
@@ -36,43 +78,57 @@
 | `2026-07-03-triple-refactor-plan.md` | 三层重构实施计划 |
 | `2026-07-04-governance-plan.md` | 全项目治理实施计划 |
 | `2026-07-06-architecture-governance-plan.md` | 架构治理实施计划 |
+| `2026-07-06-docs-compliance-plan.md` | 文档合规推进计划 |
+| `2026-07-18-win-ci-optimization-audit.md` | Windows CI 优化审计 |
+| `2026-07-18-win-ci-speedup.md` | Windows CI 提速实施计划 |
+| `2026-07-21-agent-guide-audit.md` | 助手指南（AGENTS.md/CLAUDE.md）审计与镜像治理 |
 
-## designs/
+## research/
+拆分自 [DEVELOP.md](../DEVELOP.md) 附录（2026-07-05），DEVELOP.md 中仅保留指向这些文件的锚点。
+
 | 文件 | 说明 |
 |------|------|
-| `int8-quantization-design.md` | INT8 量化工具链架构设计 |
-| `int8-quantization-plan.md` | INT8 量化实现计划（任务级） |
-| `personnel-enrollment-design.md` | 人员注册与权限系统顶层设计 |
-| `android-enrollment-design.md` | Android 端人员注册设计（目标 vs 已落地，任务 17/18 边界） |
-| `model-acquisition-import.md` | 模型获取与导入流程（APK 不内置模型、ZIP 校验链、`missing_model` 降级） |
-| `rk3288-device-acceptance.md` | RK3288 Android 设备验收清单（人工执行） |
+| `appendix-b.md` | 加速方案可行性分析与实现状态 |
+| `appendix-c.md` | Android 摄像头调用机制研究 |
+| `appendix-d.md` | 人脸识别技术实现方案研究 |
+| `appendix-e.md` | 性能优化与故障排障研究 |
+| `appendix-f.md` | 证据日志分析报告 |
+| `appendix-g.md` | 稳定性治理审计修复计划 |
+| `appendix-h.md` | 稳定性治理分阶段执行报告（占位文档，内容未填充） |
 
-## bsp/
+## audits/
 | 文件 | 说明 |
 |------|------|
-| `BSP_RELEASE_NOTES.md` | BSP 发布说明（占位模板） |
-| `kernel-config/README.md` | 内核配置说明 |
-| `kernel-config/kernel.config` | 设备运行态内核配置快照 |
-| `defconfig/rk3288_defconfig` | 内核基准配置 |
+| `2026-09-15-documentation-audit.md` | 全项目文档审计报告（门禁基准失效根因、真实错误清单、门禁改造与遗留问题） |
 
-## 根目录
+## 仓库根目录
 | 文件 | 说明 |
 |------|------|
-| `AUDIT_REPORT.md` | 全项目审计报告（综合评分 2.9/5） |
-| `CREDITS.md` | 完整依赖清单与模型台账 |
-| `DEVELOP.md` | 系统架构、构建、测试、工作流规范 |
-| `GITHUB_SCAN_AUDIT.md` | GitHub 安全与质量扫描审计 |
-| `GOVERNANCE_VERIFICATION.md` | 架构治理落地验证报告 |
-| `README.md` | 项目简介与快速开始 |
-| `REMOTE_BRANCH_AUDIT.md` | 19→3 远程分支审计与清理 |
-| `RK3288_CONSTRAINTS.md` | RK3288 目标设备画像与约束清单 |
-| `capability-matrix.md` | 终端能力矩阵（Android/Windows/Web/旧 Win32 UI + 5 个 CLI 的产物、能力、限制） |
+| `../README.md` | 项目简介与快速开始 |
+| `../DEVELOP.md` | 系统架构、构建、测试、工作流规范 |
+| `../CREDITS.md` | 完整依赖清单与模型台账 |
+| `../SECURITY.md` | 安全策略与漏洞报告渠道 |
+| `../CHANGELOG.md` | 变更记录（Keep a Changelog 格式） |
+| `../AGENTS.md` | AI 助手指南（事实源，机器可读事实块） |
+| `../CLAUDE.md` | AI 助手指南镜像（与 AGENTS.md 共享区间校验一致） |
+| `../AUDIT_REPORT.md` | 全项目审计报告（审计日期 2026-07-04，综合评分 2.9/5） |
+| `../AUDIT_RESULT.md` | 针对《重构洞察.txt》的逐条验证结果 |
+| `../GITHUB_SCAN_AUDIT.md` | GitHub 安全与质量扫描审计（CodeQL + Dependabot） |
+| `../GOVERNANCE_VERIFICATION.md` | 架构治理落地验证报告（2026-07-05） |
+| `../GOVERNANCE_EXECUTION_AUDIT.md` | 治理执行审计（基准 master@4b4e0e2，2026-07-19） |
+| `../REMOTE_BRANCH_AUDIT.md` | 远程分支审计与清理记录 |
 
-> 以下研究与审计附录位于 `docs/research/` 下的独立文件（2026-07-05 从 [DEVELOP.md](../DEVELOP.md) 附录拆分为独立文档，DEVELOP.md 中仅保留指向这些文件的锚点）：
-> - 附录 B：[加速方案可行性分析与实现状态](research/appendix-b.md)
-> - 附录 C：[Android 摄像头调用机制研究](research/appendix-c.md)
-> - 附录 D：[人脸识别技术实现方案研究](research/appendix-d.md)
-> - 附录 E：[性能优化与故障排障研究](research/appendix-e.md)
-> - 附录 F：[证据日志分析报告](research/appendix-f.md)
-> - 附录 G：[稳定性治理审计修复计划](research/appendix-g.md)
-> - 附录 H：[稳定性治理分阶段执行报告](research/appendix-h.md)（占位文档，内容未填充）
+## 根目录 loop 脚手架
+由 `loop-init` 生成，供 `/loop` 调度框架使用。
+
+| 文件 | 说明 |
+|------|------|
+| `../LOOP.md` | loop 配置（Daily Triage 1d / L1 report-only） |
+| `../loop-constraints.md` | loop 绑定约束（每次运行前必读） |
+| `../loop-budget.md` | loop 预算上限与超额处置 |
+| `../loop-run-log.md` | loop 运行记录（按 run 追加） |
+| `../STATE.md` | loop 运行时状态快照 |
+
+> 注：根目录另有 `FULL_PROJECT_AUDIT_2026-07-22.md` 与
+> `CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md` 两份大型工作文档，
+> 其文件头自述不进入版本控制，因此**未被 git 跟踪**，也不受 `docs-sync-audit` 门禁约束。

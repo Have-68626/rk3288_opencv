@@ -3,7 +3,7 @@
 ## 1. 背景与目标
 
 - 计划日期：2026-05-19
-- 范围：`README.md` 中“### 1. [P0] 核心稳定性治理 (Stability & Bug Fixes)”
+- 范围：`README.md` 中“### 1. [P0] 核心稳定性治理 (Stability & Bug Fixes)”（该章节此后已随 README 改版移除，本条为计划当时的基线）
 - 审计基线：
   - 代码现状核查（Android 生命周期、Mock 三阶段防护、Engine 异常事件节流）
   - 流水线执行结果（C++/Android/Web/docs-sync-audit）
