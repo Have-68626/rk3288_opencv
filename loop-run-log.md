@@ -1,4 +1,4 @@
-# Loop Run Log — YOUR_PROJECT
+# Loop Run Log — rk3288_opencv
 
 Append one entry per run. Prune entries older than 30 days.
 
