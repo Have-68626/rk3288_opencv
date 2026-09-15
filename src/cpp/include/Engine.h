@@ -334,6 +334,17 @@ protected:
      * 调用时**不持任何锁**，覆写实现内可安全调用 applyGalleryUpdate 等会取 tracksMu_ 的公共 API。
      */
     virtual void onBeforeRenderPublish() {}
+
+    /**
+     * @brief 事件发射前钩子（测试接缝，默认空实现）：在**持有 identityEmitMu_** 的发射临界区内、
+     * publisher_->publish 之前调用。
+     *
+     * WHY（第五轮审查 P1）：需要一个**确定性**窗口来验证「撤销无法插在最终校验与事件发射之间」。
+     * 测试把引擎线程钉在此处（此时必已持 identityEmitMu_），再令另一线程调用 applyGalleryUpdate，
+     * 断言其**在放行前无法返回**——缺该门时 applyGalleryUpdate 会立即返回（RED）。
+     * 注意：本钩子在持锁状态下调用，覆写实现**不得**再取 identityEmitMu_ 或调用会取该门的 API。
+     */
+    virtual void onBeforePublishLocked() {}
 #endif
 
 private:
@@ -418,6 +429,30 @@ private:
     //（trackFaces 内比对），前者闭合「拷贝 → 绘制 → 发布」窗口（renderResults 内比对）。
     // 单调递增，仅在外部撤销身份时变化。
     std::atomic<uint64_t> identityVersion_{0};
+
+    // 事件发射门（第五轮审查 P1）：序列化「身份撤销**返回**」与「事件发射」，补齐版本号单独
+    // 无法闭合的最后一段窗口。
+    //
+    // 缺陷：renderResults 的最终版本校验与其后的 publisher_->publish() 之间仍有缝隙——JNI 线程可在
+    // 缝隙内完成 applyGalleryUpdate 并**返回**，此后本帧仍按旧副本发出 VERIFIED <已删除的人>。
+    // 仅靠「检后再发」无法闭合：检查与发射不是原子的。
+    //
+    // 规则（两侧缺一不可）：
+    //   · renderResults 在**持本门**的临界区内完成「最终校验 + publish」；
+    //   · revokeTrackIdentitiesLocked 先递增 identityVersion_（使在途帧的最终校验能看见），
+    //     再取本门**等待在途发射结束**才返回（见其实现）。
+    // 于是二者二选一：发射先入门 → 撤销等它结束才返回；撤销先递增 → 发射入门时校验必已失败、
+    // 先清身份再发布。两条路径都保证「撤销返回后不再发出旧身份」。
+    //
+    // 锁序：撤销路径 tracksMu_ → identityEmitMu_；renderResults 取本门之前**已释放** tracksMu_，
+    // 且持门期间不再取 tracksMu_（clearStableIdentities 为纯函数、publish 不触达 Engine 状态）
+    // → 无环、无死锁。
+    //
+    // 门内会经 publish 调用结果回调（Android 侧为 JNI 上行调用）。当前 onNativeResult 仅
+    // runOnUiThread 投递后立即返回，**不同步回入 Engine**。若将来回调改为同步调用任何取 tracksMu_
+    // 的 API（如 replaceGallery/applyGalleryUpdate），将与撤销路径构成 ABBA 死锁——回调实现处必须
+    // 保持「只投递、不回调」的约定。
+    mutable std::mutex identityEmitMu_;
 
     // #1 注册采集：enabled 为原子快速分支；回调在锁内复制快照、锁外调用，避免回调同步重入
     // setEnrollmentCapture 时同线程二次加锁自死锁。关闭时经 enrollmentCaptureCv_ 等待其他

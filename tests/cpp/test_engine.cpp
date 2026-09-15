@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace rk_core;
@@ -248,6 +249,12 @@ public:
     bool entered = false;  // 已进入发布前窗口并阻塞（测试据此判定已钉住）
     bool release = false;  // 测试线程置 true 放行
 
+    // 第五轮审查 P1：第二个屏障，钉在**发射临界区内**（onBeforePublishLocked，此时已持 identityEmitMu_）。
+    // 与上面的发布前屏障相互独立：用于验证「撤销无法插在最终校验与事件发射之间」。
+    bool emitArmed = false;
+    bool emitEntered = false;
+    bool emitRelease = false;
+
 protected:
     void onBeforeRenderPublish() override {
         std::unique_lock<std::mutex> lock(mu);
@@ -256,6 +263,14 @@ protected:
         cv.notify_all();
         // 有界等待：测试线程未及时放行（如前置断言失败提前退出）时超时返回，绝不永久钉死引擎线程。
         cv.wait_for(lock, kInterleaveWait, [&] { return release; });
+    }
+
+    void onBeforePublishLocked() override {
+        std::unique_lock<std::mutex> lock(mu);
+        if (!emitArmed) return;  // 未启用：等价空钩子
+        emitEntered = true;
+        cv.notify_all();
+        cv.wait_for(lock, kInterleaveWait, [&] { return emitRelease; });
     }
 };
 
@@ -1005,4 +1020,109 @@ TEST(EngineTest, RevocationBetweenSnapshotAndPublishDropsStaleVerified) {
     const cv::Vec3b border = published.at<cv::Vec3b>(sy, sx);
     EXPECT_GT(static_cast<int>(border[2]), 200) << "已撤销身份不应以认证绿框发布";
     EXPECT_LT(static_cast<int>(border[1]), 100);
+}
+
+// 第五轮审查 P1（发布路径**最终**窗口）：撤销不得插在「最终身份版本校验」与「事件发射」之间。
+//
+// 缺陷：修复前 renderResults 的最终校验与其后的 publisher_->publish() 之间仍有缝隙——JNI 线程可在
+// 缝隙内完成 applyGalleryUpdate 并**返回**，此后本帧仍按旧副本发出 VERIFIED <已删除的人>。
+// 「检后再发」不足以闭合，因为检查与发射不是原子的。
+//
+// 本用例用 onBeforePublishLocked 把引擎线程钉在**发射临界区内**（此时已持 identityEmitMu_），
+// 另一线程随即调用 applyGalleryUpdate：修复后它必须等到临界区结束才能返回，故放行前 revokeDone
+// 必为 false（**缺该门时 applyGalleryUpdate 立即返回 → RED**）。放行并 join 后，再逐条检查回调：
+// 「撤销返回之后」发出的任何事件都不得含该身份。
+TEST(EngineTest, RevocationCannotReturnBetweenFinalCheckAndEmit) {
+    auto aliceIdx = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(aliceIdx->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err)) << err;
+
+    BarrierEngine engine;
+    std::atomic<bool> revokeDone{false};
+    std::mutex logMu;
+    std::vector<std::pair<bool, std::string>> events;  // first = 「撤销返回之后」才发出
+    engine.setOnResultCallback([&](const std::string& s) {
+        std::lock_guard<std::mutex> lk(logMu);
+        events.emplace_back(revokeDone.load(), s);
+    });
+
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    engine.setRealtimePipeline(makeRtPipeline(det, aliceIdx));
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH, CV_8UC3,
+                  cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) engine.processFrameOnce(frame);  // 确认 alice
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "alice");
+
+    auto emptyIdx = std::make_shared<FaceSearchLinearIndex>();
+    std::string e2;
+    ASSERT_TRUE(emptyIdx->reset({}, 512, e2)) << e2;
+
+    {
+        std::lock_guard<std::mutex> lock(engine.mu);
+        engine.emitArmed = true;  // 仅对受测帧启用「发射临界区」屏障
+    }
+
+    std::thread framer([&] { engine.processFrameOnce(frame); });
+    bool enteredOk = false;
+    {
+        std::unique_lock<std::mutex> lock(engine.mu);
+        enteredOk = engine.cv.wait_for(lock, kInterleaveWait, [&] { return engine.emitEntered; });
+    }
+
+    std::atomic<bool> revokeStarted{false};
+    std::thread revoker([&] {
+        revokeStarted.store(true);
+        if (enteredOk) engine.applyGalleryUpdate(emptyIdx, {});
+        revokeDone.store(true);
+    });
+
+    bool blockedWhilePinned = false;
+    if (enteredOk) {
+        // 先等 revoker **真正开始执行**（有界），否则慢机器上它可能尚未被调度、revokeDone 恒为 false
+        // ——那样「未加门」也会通过（false pass，A2' Med / A3' δ3）。此后 200ms 足以让「未加门」的
+        // 实现（立即返回）暴露；加了门则必然阻塞，等待只会令本断言更可靠。
+        const auto deadline = std::chrono::steady_clock::now() + kInterleaveWait;
+        while (!revokeStarted.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        blockedWhilePinned = !revokeDone.load();
+    }
+
+    // 统一放行（enteredOk=false 时也放行，保证 framer/revoker 必定退出，避免 join 阻塞）。
+    {
+        std::lock_guard<std::mutex> lock(engine.mu);
+        engine.emitRelease = true;
+    }
+    engine.cv.notify_all();
+    framer.join();
+    revoker.join();
+
+    ASSERT_TRUE(enteredOk) << "引擎线程未在超时内进入发射临界区";
+    EXPECT_TRUE(blockedWhilePinned)
+            << "撤销在发射临界区结束前即已返回：最终校验与事件发射未被同一门序列化";
+
+    ASSERT_TRUE(revokeDone.load());
+    // 撤销返回后**再驱动一帧**，并用**确定性**断言锁住「该身份不会回来」。此前这里是一条恒空转的
+    // 「承重断言」（A2' Med / A3' δ2 实测 AFTER_REVOKE_CHECKED=0）——revoker 被门阻塞到 framer
+    // 结束才置 revokeDone，events 中不存在 first==true 的元素，循环体零执行；既不判别也不可靠。
+    engine.processFrameOnce(frame);
+    const auto afterRevoke = engine.getTrackViews();
+    ASSERT_EQ(afterRevoke.size(), 1u);
+    EXPECT_EQ(afterRevoke[0].stableId, "Unknown") << "撤销返回后不得再恢复旧身份";
+
+    // 事件侧补充检查：撤销返回后记录到的**任何**事件都不得含该身份。**若**为空说明节流期内未产出
+    // 文本（正常），故此处刻意不要求「至少一条」——强求会造成抖动，见上。
+    {
+        std::lock_guard<std::mutex> lk(logMu);
+        for (const auto& ev : events) {
+            if (ev.first) {
+                EXPECT_EQ(ev.second.find("VERIFIED alice"), std::string::npos)
+                        << "撤销返回后仍发出旧身份事件: " << ev.second;
+            }
+        }
+    }
 }
