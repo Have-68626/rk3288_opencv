@@ -706,6 +706,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         // 绝不在 UI 线程调用持目录锁的 status()（导入/切换持锁期间会整段阻塞 -> ANR）。
         String modelLabel;
         boolean modelImported;
+        // #3-Low-1（第三波审查）：状态快照尚未产出（LOADING）时置 true，用于抑制「未导入/缺失模型」
+        // 结论，避免能力行与「正在读取模型状态…」自相矛盾（待状态读取完成后再判定缺失模型）。
+        boolean modelLoading = false;
         String modelDetail = "";
         try {
             FaceRuntimeStatus rs = modelManager().statusSnapshot();
@@ -721,6 +724,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 // #3-Low-1（第三波审查）：首帧占位（后台快照尚未产出）显式标「加载中」，
                 // 绝不臆测为「未导入」——否则冷启动最多 2s 会误显「模型来源=未导入」。
                 modelDetail = " 正在读取模型状态…";
+                modelLoading = true;
             } else {
                 modelDetail = " 缺失原因=" + jsonGetString(json, "missingReason", "missing_model");
             }
@@ -740,8 +744,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             sb.append(nativeNote).append('\n');
         }
         sb.append("模型来源=").append(modelLabel).append(modelDetail);
-        if (!modelImported) {
-            // 无模型时显式给出缺失原因，不静默回退 LBP。
+        if (!modelImported && !modelLoading) {
+            // 无模型时显式给出缺失原因，不静默回退 LBP；加载中不臆断缺失（见上）。
             sb.append("（不静默回退 LBP）");
         }
         sb.append(" gallery=").append(galleryCount).append(" enroll=").append(enrollState);
@@ -760,20 +764,32 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         // ncnn：主推（首推）检测后端 —— 规则「ncnn 首推才 effective」：仅主推后端可标为生效，
         // 且只有用户导入模型已激活时才生效。若 native 显式暴露 effective（管道级或 accelerators
         // 嵌套），则以 native 为准（capLine 内部优先级：嵌套 > 派生）。
-        Boolean ncnnEffective = (pipelineEffective != null) ? pipelineEffective : modelImported;
+        // #3-Low-1（第三波审查）：后台状态快照尚未产出（modelLoading）时不能断言「无用户导入模型」，
+        // 否则与「模型来源=加载中」自相矛盾；此时 installed 标 ?、reason=loading，待状态读取完成再判定。
+        Boolean ncnnEffective;
         String ncnnReason;
-        if (!modelImported) {
-            ncnnReason = "missing_model";
-        } else if (!pipelineReason.isEmpty()) {
-            ncnnReason = pipelineReason;
+        String ncnnEvidence;
+        if (modelLoading) {
+            // native 若已显式报告管道级 effective 仍以其为准；否则保持未知（不派生）。
+            ncnnEffective = pipelineEffective;
+            ncnnReason = "loading";
+            ncnnEvidence = "模型状态加载中";
         } else {
-            ncnnReason = "ok";
+            ncnnEffective = (pipelineEffective != null) ? pipelineEffective : modelImported;
+            if (!modelImported) {
+                ncnnReason = "missing_model";
+            } else if (!pipelineReason.isEmpty()) {
+                ncnnReason = pipelineReason;
+            } else {
+                ncnnReason = "ok";
+            }
+            ncnnEvidence = !modelImported
+                    ? "无用户导入模型"
+                    : (pipelineEvidence.isEmpty() ? "首推后端；模型已激活" : pipelineEvidence);
         }
-        String ncnnEvidence = !modelImported
-                ? "无用户导入模型"
-                : (pipelineEvidence.isEmpty() ? "首推后端；模型已激活" : pipelineEvidence);
         sb.append('\n').append(capLine(json, "ncnn", "ncnn", true,
-                null, modelImported, ncnnEffective, ncnnReason, ncnnEvidence));
+                null, modelLoading ? null : Boolean.valueOf(modelImported),
+                ncnnEffective, ncnnReason, ncnnEvidence));
         // MPP：仅标注编码文件路径作为 evidence；不因 compiled=true 就标 effective。
         String mppPath = jsonGetCapString(json, "mpp", "evidence", null);
         if (mppPath == null || mppPath.isEmpty()) {
@@ -821,10 +837,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     /**
      * 生成单条能力状态行。优先采用 JSON 中 {@code accelerators.<cap>.*}（或顶层 cap 对象）字段；
      * 缺失时用调用方派生的保守值。effective 只在 native 明确置 true（或主推后端派生为 true）时为 Y，
-     * 杜绝“compiled 即 effective”的误报。
+     * 杜绝“compiled 即 effective”的误报。{@code installedDerived} 允许传 {@code null} 表示「未知」
+     * （如模型状态仍在加载），此时 installed 渲染为 {@code ?}，绝不臆断为未安装。
      */
     private String capLine(String json, String cap, String label, boolean requested,
-                           Boolean compiledDerived, boolean installedDerived,
+                           Boolean compiledDerived, Boolean installedDerived,
                            Boolean effectiveDerived, String reasonDerived, String evidenceDerived) {
         Boolean compiledJson = jsonGetCapBool(json, cap, "compiled");
         Boolean installedJson = jsonGetCapBool(json, cap, "installed");
@@ -836,7 +853,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         boolean req = (requestedJson != null) ? requestedJson : requested;
         String compiled = (compiledJson != null) ? yn(compiledJson)
                 : (compiledDerived != null ? yn(compiledDerived) : "?");
-        String installed = (installedJson != null) ? yn(installedJson) : yn(installedDerived);
+        String installed = (installedJson != null) ? yn(installedJson)
+                : (installedDerived != null ? yn(installedDerived) : "?");
         boolean eff;
         if (effectiveJson != null) {
             eff = effectiveJson;
@@ -3590,32 +3608,51 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         refreshModelManagementStatus();
     }
 
-    /** 后台读取模型状态并刷新状态文本（事件驱动，不在 UI 线程做文件 IO）。 */
+    /**
+     * 后台读取模型状态并刷新状态文本（事件驱动，不在 UI 线程做文件 IO）。
+     *
+     * <p>#2（第三波审查）：与周期/事件快照刷新 {@link #requestModelStatusSnapshotRefresh()} 共用同一
+     * {@link #modelStatusRefreshInFlight} 门。二者恒在导入/切换/启动恢复的完成回调里成对触发，且都会
+     * {@code new Thread} 调用持目录锁、含文件 IO/native 的 {@code modelManager().status()}；不合并则同
+     * 一次事件里并发堆叠两个 status() 线程（正是本门要消除的堆叠）。合并后任一时刻至多 1 个刷新线程：
+     * 拿到门者执行 status()——其副作用亦刷新 volatile 快照，故被跳过的快照刷新不会漏刷；未拿到门者直接
+     * 跳过（本次操作结果已由 {@link #showModelStatusToUser} 写入状态区，模型文本随下次事件/周期刷新收敛）。
+     */
     private void refreshModelManagementStatus() {
         final TextView target = tvModelManagement;
         if (target == null) return;
-        new Thread(() -> {
-            String text;
-            try {
-                FaceRuntimeStatus s = modelManager().status();
-                text = "模型: " + s.sourceLabel()
-                        + (s.isUserImported() ? (" profile=" + s.profileId) : "")
-                        + " 已导入=" + s.importedProfileCount
-                        + (s.isRuntimeEffective() ? " 已生效" : " 未生效")
-                        + ((s.message == null || s.message.isEmpty()) ? "" : ("\n" + s.message));
-            } catch (Throwable t) {
-                text = "模型状态不可用";
-            }
-            // lambda 捕获要求 effectively final：先求值到 text，再转 final 供 UI 线程使用
-            final String summary = text;
-            runOnUiThread(() -> {
-                // #2：Activity 已销毁时丢弃陈旧 UI 回调，避免窗口 token 失效。
-                if (isFinishing() || isDestroyed()) return;
-                if (tvModelManagement == target) {
-                    target.setText(summary);
+        if (!modelStatusRefreshInFlight.compareAndSet(false, true)) {
+            return;  // 已有刷新在途：不再并发 status()，避免线程堆叠
+        }
+        try {
+            new Thread(() -> {
+                String text;
+                try {
+                    FaceRuntimeStatus s = modelManager().status();
+                    text = "模型: " + s.sourceLabel()
+                            + (s.isUserImported() ? (" profile=" + s.profileId) : "")
+                            + " 已导入=" + s.importedProfileCount
+                            + (s.isRuntimeEffective() ? " 已生效" : " 未生效")
+                            + ((s.message == null || s.message.isEmpty()) ? "" : ("\n" + s.message));
+                } catch (Throwable t) {
+                    text = "模型状态不可用";
+                } finally {
+                    modelStatusRefreshInFlight.set(false);
                 }
-            });
-        }, "FaceModelStatus").start();
+                // lambda 捕获要求 effectively final：先求值到 text，再转 final 供 UI 线程使用
+                final String summary = text;
+                runOnUiThread(() -> {
+                    // #2：Activity 已销毁时丢弃陈旧 UI 回调，避免窗口 token 失效。
+                    if (isFinishing() || isDestroyed()) return;
+                    if (tvModelManagement == target) {
+                        target.setText(summary);
+                    }
+                });
+            }, "FaceModelStatus").start();
+        } catch (Throwable t) {
+            // 线程创建/启动失败（极端 OOM 等）：复位在途标志，避免刷新永久停摆。
+            modelStatusRefreshInFlight.set(false);
+        }
     }
 
     /** 向用户展示模型操作结果（失败时 Toast；文本写入模型状态区）。 */
