@@ -552,6 +552,10 @@ public class FaceModelManagerTest {
         assertNull("激活失败不得切指针", m.activeProfileId());
         assertTrue("新目录应保留（已导入）", m.profileDir("p1").isDirectory());
         assertTrue(m.listProfiles().contains("p1"));
+        // #1-Low-2：首次导入失败无旧配置，文案不得误报「已保留原配置」。
+        assertFalse("首次导入失败不得谎称保留原配置", r.message.contains("已保留原配置"));
+        assertTrue("首次导入失败文案应说明已保留新目录但未激活",
+                r.message.contains("已保留新导入的模型目录但未激活"));
         assertNoTempArtifacts(dir);
     }
 
@@ -648,6 +652,76 @@ public class FaceModelManagerTest {
         assertTrue("恢复后的 pA 应可用", m.status().isReady());
         assertEquals("pA", m.status().profileId);
         assertEquals(2, m.listProfiles().size());
+    }
+
+    // ---------- ⑭ 第三波审查 #1：同名覆盖激活失败必须回滚旧模型 ----------
+
+    /**
+     * 第三波 #1：同名 profileId 重新导入 + activateRuntime 失败 -> 旧目录内容保留、active_profile 未变、
+     * 返回失败、无 .bak_&lt;id&gt; 残留。与 {@link #reimportSameProfileReplacesContentAtomically}（成功改名）
+     * 形成「成功改名 / 失败回滚」对称覆盖。
+     */
+    @Test
+    public void reimportSameProfileActivationFailureRollsBackToOldModel() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+        assertEquals("p1", m.activeProfileId());
+
+        // 同名覆盖：native 实时管线激活失败。
+        rt.activateOk = false;
+        rt.activateReason = "missing_model";
+        Map<String, byte[]> v2 = defaultFiles("v2-different");
+        FaceModelManager.Result r =
+                m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+        assertEquals(FaceModelManager.Status.RUNTIME_ACTIVATE_FAILED, r.status);
+        assertFalse("激活失败不得报成功", r.isOk());
+        assertEquals("同名覆盖失败必须保留原激活 profile", "p1", m.activeProfileId());
+        assertTrue("旧目录必须回滚就位", m.profileDir("p1").isDirectory());
+        assertTrue("同名覆盖失败必须保留旧模型内容（不得删除旧目录）",
+                java.util.Arrays.equals(oldBin, readFile(new File(m.profileDir("p1"), DET_BIN))));
+        // #1-Low-2：同名覆盖失败有旧配置，文案应明确「已回滚到原模型」。
+        assertTrue("同名覆盖失败文案应说明已回滚到原模型",
+                r.message.contains("已回滚到原模型"));
+        assertFalse("不得滞留 .bak_p1", new File(dir, ".bak_p1").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    // ---------- ⑮ 第三波审查 #3：statusSnapshot() 无锁读缓存 ----------
+
+    /**
+     * 第三波 #3：{@code statusSnapshot()} 不加目录锁、纯读缓存；首帧无缓存返回「加载中」占位
+     * （#3-Low-1：专用 LOADING 态，不得被当作「未导入」），后台 {@code status()} 刷新后快照应反映最新状态。
+     */
+    @Test
+    public void statusSnapshotIsLockFreeCacheWithLoadingPlaceholder() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", files, "lic"), files)), ABI, true).isOk());
+
+        // 首次读取：尚无后台快照 -> 加载中占位（绝不触发文件 IO/加锁）。
+        FaceRuntimeStatus snap0 = m.statusSnapshot();
+        assertNotNull(snap0);
+        assertFalse("首帧占位不得报就绪", snap0.isReady());
+        // #3-Low-1：占位必须是 LOADING（而非 NOT_IMPORTED），否则冷启动会误显「模型来源=未导入」。
+        assertTrue("首帧占位应为加载中态", snap0.isLoading());
+        assertEquals(FaceRuntimeStatus.State.LOADING, snap0.state);
+        assertFalse("加载中不得被当作未导入", snap0.isNotImported());
+        assertFalse("加载中不得被判为用户已导入", snap0.isUserImported());
+        assertEquals("加载中", snap0.sourceLabel());
+        assertTrue("占位文案应提示正在加载", snap0.message.contains("加载"));
+
+        // 后台刷新（status() 写快照）后，快照反映最新状态。
+        FaceRuntimeStatus fresh = m.status();
+        assertTrue(fresh.isReady());
+        FaceRuntimeStatus snap1 = m.statusSnapshot();
+        assertTrue("快照应反映上次 status() 结果", snap1.isReady());
+        assertEquals("p1", snap1.profileId);
     }
 
     // ---------- 夹具 ----------

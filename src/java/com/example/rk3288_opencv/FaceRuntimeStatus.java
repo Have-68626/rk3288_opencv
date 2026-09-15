@@ -13,7 +13,8 @@ import java.util.Map;
  *   <li>首启无内置模型 → {@link State#NOT_IMPORTED}，{@link #message} 为用户引导文案；</li>
  *   <li>已导入并激活 → {@link State#READY}，携带 profileId / 版本 / 许可（是否已加载生效见
  *       {@link #nativeProfileActive}）；</li>
- *   <li>已激活但 manifest/文件损坏 → {@link State#ERROR}。</li>
+ *   <li>已激活但 manifest/文件损坏 → {@link State#ERROR}；</li>
+ *   <li>后台状态快照尚未产出（首帧占位）→ {@link State#LOADING}（#3-Low-1，不等于「未导入」）。</li>
  * </ul>
  *
  * <h2>模型来源信号（供「模型与加速状态」界面使用）</h2>
@@ -33,6 +34,11 @@ public final class FaceRuntimeStatus {
     public enum State {
         /** 未导入任何模型（首启默认态），需引导用户通过 SAF 导入 ZIP。 */
         NOT_IMPORTED,
+        /**
+         * #3-Low-1（第三波审查）加载中占位：后台尚未产出状态快照时的首帧态，
+         * <b>不等于</b>「未导入」结论，UI 必须显式区分，避免冷启动误显「模型来源=未导入」。
+         */
+        LOADING,
         /** 已导入并激活（manifest 已校验、文件已落盘）。是否已加载生效另见 {@link #nativeProfileActive}。 */
         READY,
         /** 存在激活配置但校验失败（manifest 损坏、文件缺失、native 拒绝）。 */
@@ -98,6 +104,14 @@ public final class FaceRuntimeStatus {
     }
 
     /**
+     * #3-Low-1（第三波审查）：是否为「加载中」占位态（后台快照尚未产出）。
+     * UI 应优先判本状态并展示「加载中」，<b>不得</b>当作「未导入」渲染。
+     */
+    public boolean isLoading() {
+        return state == State.LOADING;
+    }
+
+    /**
      * 推理管线是否已加载生效（native {@code effective}）。与 {@link #nativeProfileValidated}
      * 区分：manifest 已校验/暂存不等于管线已生效（Engine 未创建或模型运行时装配失败时后者为 false）。
      */
@@ -118,9 +132,23 @@ public final class FaceRuntimeStatus {
                 return "用户导入";
             case NOT_IMPORTED:
                 return "未导入";
+            case LOADING:
+                // #3-Low-1：占位态显式标「加载中」，避免被误读为「未导入」结论。
+                return "加载中";
             default:
                 return "不可用";
         }
+    }
+
+    /**
+     * #3-Low-1（第三波审查）加载中占位工厂：后台快照尚未产出时的首帧态，
+     * {@link #message} 为「正在加载」，{@link #state} 为 {@link State#LOADING}，
+     * 供 UI 区分「加载中」与「真未导入」。
+     */
+    @NonNull
+    public static FaceRuntimeStatus loading() {
+        return new FaceRuntimeStatus(State.LOADING, "", "", "", "",
+                0, false, 0, "正在加载模型状态…");
     }
 
     /** 首启未导入态工厂，携带 SAF 导入引导文案。 */

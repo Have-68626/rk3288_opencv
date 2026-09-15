@@ -25,6 +25,21 @@ public class FaceRuntimeStatusTest {
         assertTrue("引导文案应提示导入 ZIP", s.message.contains("导入"));
         assertTrue("引导文案应说明 APK 不内置权重", s.message.contains("不内置"));
         assertTrue(s.profileId.isEmpty());
+        assertFalse("真未导入态不得判为加载中", s.isLoading());
+    }
+
+    /** #3-Low-1：加载中占位是独立状态，必须与「未导入」区分，且来源标签为「加载中」。 */
+    @Test
+    public void loadingIsDistinctFromNotImported() {
+        FaceRuntimeStatus s = FaceRuntimeStatus.loading();
+        assertEquals(FaceRuntimeStatus.State.LOADING, s.state);
+        assertTrue(s.isLoading());
+        assertFalse("加载中不得被当作未导入", s.isNotImported());
+        assertFalse("加载中不得报就绪", s.isReady());
+        assertFalse("加载中不得判为用户已导入", s.isUserImported());
+        assertEquals("加载中", s.sourceLabel());
+        assertTrue("占位文案应提示正在加载", s.message.contains("加载"));
+        assertTrue(s.profileId.isEmpty());
     }
 
     @Test

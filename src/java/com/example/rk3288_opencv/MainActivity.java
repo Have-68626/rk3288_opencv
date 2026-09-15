@@ -77,6 +77,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -139,6 +140,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     // 任务15：模型来源/加速能力状态缓存文本与上次刷新时间（低频刷新，事件驱动 + 2s 节流）。
     private String runtimeCapabilityText = "";
     private long lastRuntimeStatusRefreshMs = 0L;
+    /**
+     * Med（第三波审查）：模型状态快照刷新的在途标志，合并并发刷新请求。
+     *
+     * <p>此前每次刷新都 {@code new Thread}，导入/切换持目录锁期间（含 native 自检与基准推理）
+     * 多个刷新线程会在锁上堆叠。本标志保证任一时刻至多 1 个刷新线程在途：在途期间的请求直接
+     * 跳过——在途线程解锁后即产出最新快照，且 UI 侧仍有 2s 周期刷新兜底，不会漏刷。
+     */
+    private final AtomicBoolean modelStatusRefreshInFlight = new AtomicBoolean(false);
     private View recognitionTitle;
     private Button btnStartStop, btnViewLogs;
     private Button btnNavPlayback, btnNavSettings, btnNavAbout;
@@ -176,8 +185,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Button btnSwitchModel;
     private Button btnManagePersons;
     private TextView tvModelManagement;
-    private FaceModelManager faceModelManager;
-    private AndroidEnrollmentRepository enrollmentRepository;
+    /**
+     * #3-High（第三波审查）：UI 线程（{@code statusSnapshot()}）与后台刷新线程（{@code status()}）
+     * 首次会几乎同时调用 {@link #modelManager()}。字段必须 volatile 配合双检锁，保证二者共享
+     * <b>同一</b>实例——否则会各建一个 {@link FaceModelManager}、各自独立的 statusCache，UI 侧
+     * 实例从未被调用 status() 时其 statusSnapshot() 将永久返回占位「未导入」。
+     */
+    private volatile FaceModelManager faceModelManager;
+    /** 同类懒加载（UI/后台线程并发首次调用），按同一策略一并加固为 volatile + 双检锁。 */
+    private volatile AndroidEnrollmentRepository enrollmentRepository;
     /** 执行中的注册会话；native 采集线程会读取，故 volatile 保证可见性。 */
     private volatile EnrollmentSession enrollmentSession;
     /** #1 注册采集：复用的 direct ByteBuffer（512×4 字节 LE float32），由 native 逐帧写入。 */
@@ -587,7 +603,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * 低频统计循环里 {@code force=false}，由 {@link #RUNTIME_STATUS_REFRESH_INTERVAL_MS}
      * 节流（默认 2s），避免逐帧调用 JNI / 逐帧写 UI。日志不写入任何模板或向量内容。
      *
-     * @return 本次是否真正刷新了缓存文本
+     * <p>#3（第三波审查）：本方法自身在主线程执行，只做「触发后台刷新 + 读无锁快照组装文本」，
+     * 绝不在此调用 {@link FaceModelManager#status()}（其持目录锁并含文件 IO/native，导入/切换
+     * 持锁期间会整段阻塞 UI -> ANR）。快照由后台线程刷新，展示文本可能落后一个刷新周期。
+     *
+     * @return 本次是否真正刷新了展示文本
      */
     private boolean refreshRuntimeStatusIfDue(boolean force) {
         long now = SystemClock.elapsedRealtime();
@@ -595,8 +615,40 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             return false;
         }
         lastRuntimeStatusRefreshMs = now;
+        // 触发后台刷新模型状态快照（renderMonitoringUi 等事件驱动点由此落到后台线程）。
+        requestModelStatusSnapshotRefresh();
         runtimeCapabilityText = buildRuntimeCapabilityText();
         return true;
+    }
+
+    /**
+     * #3（第三波审查）：在后台线程刷新 {@link FaceModelManager} 的状态快照。
+     *
+     * <p>{@code status()} 持目录锁且内部做文件 IO 与 native {@code getRuntimeStatus}；导入/切换在持锁
+     * 期间还会执行 native 自检与基准推理，故绝不能在 UI 线程调用。此处在后台线程调用 {@code status()}，
+     * 其内部把结果写入 volatile 快照，UI 线程随后经 {@link FaceModelManager#statusSnapshot()} 无锁读取。
+     * 失败静默：UI 继续显示上一帧快照或首帧占位。
+     */
+    private void requestModelStatusSnapshotRefresh() {
+        // Med（第三波审查）：合并并发刷新——已有刷新在途时直接跳过，避免导入/切换持锁期线程堆叠。
+        if (!modelStatusRefreshInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            new Thread(() -> {
+                try {
+                    // 副作用：刷新 FaceModelManager 内部 volatile 快照；返回值此处不需要。
+                    modelManager().status();
+                } catch (Throwable ignored) {
+                    // 快照刷新失败不阻断 UI：保持上一帧快照/占位。
+                } finally {
+                    modelStatusRefreshInFlight.set(false);
+                }
+            }, "FaceModelStatus").start();
+        } catch (Throwable t) {
+            // 线程创建/启动失败（极端 OOM 等）：复位在途标志，避免刷新永久停摆。
+            modelStatusRefreshInFlight.set(false);
+        }
     }
 
     /**
@@ -650,11 +702,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         // 模型来源（P1-6）：优先使用任务14 的 FaceModelManager 状态（其内部已合并 native
         // getRuntimeStatus 的 profileLoaded），给出「用户导入/未导入/不可用」；未导入时显式
         // 展示缺失原因（默认 missing_model），绝不静默回退 LBP。
+        // #3（第三波审查）：此处为 UI 线程调用点，改用无锁的 statusSnapshot() 读取后台快照，
+        // 绝不在 UI 线程调用持目录锁的 status()（导入/切换持锁期间会整段阻塞 -> ANR）。
         String modelLabel;
         boolean modelImported;
         String modelDetail = "";
         try {
-            FaceRuntimeStatus rs = FaceModelManager.forDefault(getApplicationContext()).status();
+            FaceRuntimeStatus rs = modelManager().statusSnapshot();
             modelLabel = rs.sourceLabel();
             modelImported = rs.isUserImported();
             if (rs.isReady()) {
@@ -663,6 +717,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             } else if (rs.state == FaceRuntimeStatus.State.ERROR) {
                 // 已导入但校验失败：直接展示管理器的中文原因，便于定位高精度路径不兼容。
                 modelDetail = " 缺失原因=" + (rs.message.isEmpty() ? "runtime_init_failed" : rs.message);
+            } else if (rs.isLoading()) {
+                // #3-Low-1（第三波审查）：首帧占位（后台快照尚未产出）显式标「加载中」，
+                // 绝不臆测为「未导入」——否则冷启动最多 2s 会误显「模型来源=未导入」。
+                modelDetail = " 正在读取模型状态…";
             } else {
                 modelDetail = " 缺失原因=" + jsonGetString(json, "missingReason", "missing_model");
             }
@@ -3476,20 +3534,44 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         return Build.CPU_ABI == null ? "" : Build.CPU_ABI;
     }
 
+    /**
+     * #3-High（第三波审查）：线程安全的懒加载单例（volatile 字段 + 双检锁）。
+     *
+     * <p>UI 线程（{@code buildRuntimeCapabilityText} 读 {@code statusSnapshot()}）与后台刷新线程
+     * （{@code status()}）会在首帧几乎同时进入本方法；若不加锁，两次「判空-赋值」会竞态各建一个
+     * {@link FaceModelManager}。UI 侧持有的实例若从未被调用 {@code status()}，其 statusCache 恒为
+     * null，{@code statusSnapshot()} 便永久返回占位，模型状态永不刷新（#3 回归）。本地双检锁保证
+     * 全进程仅创建一个实例、两条路径共用同一 statusCache。
+     */
     @NonNull
     private FaceModelManager modelManager() {
-        if (faceModelManager == null) {
-            faceModelManager = FaceModelManager.forDefault(getApplicationContext());
+        FaceModelManager mgr = faceModelManager;
+        if (mgr == null) {
+            synchronized (this) {
+                mgr = faceModelManager;
+                if (mgr == null) {
+                    mgr = FaceModelManager.forDefault(getApplicationContext());
+                    faceModelManager = mgr;
+                }
+            }
         }
-        return faceModelManager;
+        return mgr;
     }
 
+    /** 与 {@link #modelManager()} 同一策略：volatile + 双检锁，避免并发首次调用各建实例。 */
     @NonNull
     private AndroidEnrollmentRepository enrollmentRepository() {
-        if (enrollmentRepository == null) {
-            enrollmentRepository = AndroidEnrollmentRepository.forDefaultGallery(getApplicationContext());
+        AndroidEnrollmentRepository repo = enrollmentRepository;
+        if (repo == null) {
+            synchronized (this) {
+                repo = enrollmentRepository;
+                if (repo == null) {
+                    repo = AndroidEnrollmentRepository.forDefaultGallery(getApplicationContext());
+                    enrollmentRepository = repo;
+                }
+            }
         }
-        return enrollmentRepository;
+        return repo;
     }
 
     /** 绑定 settings 面板中的模型/人员管理控件（直接 findViewById，不改动 MainScreenBinder 契约）。 */
