@@ -101,6 +101,19 @@
 |------|------|
 | `2026-09-15-documentation-audit.md` | 全项目文档审计报告（门禁基准失效根因、真实错误清单、门禁改造与遗留问题） |
 
+### audits/archive/
+历史审计快照，保留原始内容不再更新。原位于仓库根目录，2026-09-15 归档至此
+（归档说明见 `2026-09-15-documentation-audit.md` 第 5 节）。
+
+| 文件 | 说明 |
+|------|------|
+| `archive/AUDIT_REPORT.md` | 全项目审计报告（审计日期 2026-07-04，综合评分 2.9/5，38 项发现） |
+| `archive/AUDIT_RESULT.md` | 针对《重构洞察.txt》的逐条验证结果 |
+| `archive/GITHUB_SCAN_AUDIT.md` | GitHub 安全与质量扫描审计（CodeQL + Dependabot，2026-07-05） |
+| `archive/GOVERNANCE_VERIFICATION.md` | 架构治理落地验证报告（2026-07-05） |
+| `archive/GOVERNANCE_EXECUTION_AUDIT.md` | 治理执行审计（基准 master@4b4e0e2，2026-07-19） |
+| `archive/REMOTE_BRANCH_AUDIT.md` | 远程分支审计与清理记录（2026-07-06） |
+
 ## 仓库根目录
 | 文件 | 说明 |
 |------|------|
@@ -111,12 +124,6 @@
 | `../CHANGELOG.md` | 变更记录（Keep a Changelog 格式） |
 | `../AGENTS.md` | AI 助手指南（事实源，机器可读事实块） |
 | `../CLAUDE.md` | AI 助手指南镜像（与 AGENTS.md 共享区间校验一致） |
-| `../AUDIT_REPORT.md` | 全项目审计报告（审计日期 2026-07-04，综合评分 2.9/5） |
-| `../AUDIT_RESULT.md` | 针对《重构洞察.txt》的逐条验证结果 |
-| `../GITHUB_SCAN_AUDIT.md` | GitHub 安全与质量扫描审计（CodeQL + Dependabot） |
-| `../GOVERNANCE_VERIFICATION.md` | 架构治理落地验证报告（2026-07-05） |
-| `../GOVERNANCE_EXECUTION_AUDIT.md` | 治理执行审计（基准 master@4b4e0e2，2026-07-19） |
-| `../REMOTE_BRANCH_AUDIT.md` | 远程分支审计与清理记录 |
 
 ## 根目录 loop 脚手架
 由 `loop-init` 生成，供 `/loop` 调度框架使用。

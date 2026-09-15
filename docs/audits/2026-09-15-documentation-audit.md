@@ -17,8 +17,8 @@
 | medium 缺陷 | 0 | 0 |
 | low 缺陷（复核清单） | 0 | 37 |
 | 头部时间戳被正确识别的文档 | 3 | **22** |
-| `docs-sync-audit` 相关测试数 | 12 | **47** |
-| `tests/scripts/` 全量测试数 | 59 | **93** |
+| `docs-sync-audit` 相关测试数 | 12 | **57** |
+| `tests/scripts/` 全量测试数 | 59 | **103** |
 
 **核心判断**：时间戳类检查无法证明文档内容陈旧，不应当阻断门禁；门禁应当只拦截**可证伪的事实错误**（链接失效、必需章节缺失、BSP 配置不一致、口径冲突）。
 
@@ -80,7 +80,7 @@
 | 格式检查形同虚设 | `scanTextConventions` 结果只写进 `formatInfo`，**从不产生缺陷**；且把正常中文全角标点误判为问题（全仓 5086 行） | 拆分计数：仅「全角字母数字 + 全角空格 U+3000」记为 low 缺陷 |
 | 死代码 | `const sampleText = ...` 计算后从未使用 | 移除 |
 | 豁免匹配越界 | 子串匹配会把 `docs/bsp/kernel-config-notes.md` 连带豁免；裸 `rel.includes("")` 恒真，会让豁免清单静默失效 | 改为段匹配并拒绝空模式 |
-| 测试盲区 | `version`/lagDays、全部 `bsp`、`content`、`--fix`、`link`、xref 的 medium 分支**零覆盖**；`docs-audit.yml` 只点名一个测试文件，而 `ci.yml` 的 `repo-hygiene` job 带 `docs_only != 'true'` 条件 → **docs-only PR 上两个测试文件均不执行** | 本轮补齐 lagDays/基准、路径引用、全角分类、BSP 解析与 3% 容差边界、FORBIDDEN 阻断；新增 selfcheck 断言真实仓库门禁为绿；workflow 改用 glob |
+| 测试盲区 | `version`/lagDays、全部 `bsp`、`content`、`--fix`、`link`、xref 的 medium 分支**零覆盖**；`docs-audit.yml` 只点名一个测试文件，而 `ci.yml` 的 `repo-hygiene` job 带 `docs_only != 'true'` 条件 → **docs-only PR 上两个测试文件均不执行** | 本轮补齐 lagDays/基准、路径引用、全角分类、BSP 解析与 3% 容差边界、FORBIDDEN 阻断、`content`、`--fix` 四条规则与 `link` 三档严重级别；新增 selfcheck 断言真实仓库门禁为绿；workflow 改用 glob |
 
 ---
 
@@ -146,11 +146,44 @@
 
 ## 5. 遗留问题
 
-以下问题已识别但**不在本轮范围**，需单独决策：
+### 5.1 已处理（2026-09-15 追加）
+
+**原第 3 项 —— 零测试覆盖的规则：已补齐**
+
+新增 10 个用例，覆盖此前完全无测试的三组规则：
+
+| 规则 | 覆盖内容 |
+|---|---|
+| `content` | `findRequiredSections` 的 anyOf 命中语义；并**锁定其过宽匹配的现状** —— anyOf 含 `"test"` 时 `## Contest` 也会通过「测试命令」检查，避免日后误以为该检查是严格的 |
+| `--fix` | 四条规则各一例：围栏补语言（含无法识别时回退 `bash` 的启发式现状）、重复标题追加后缀并插入锚点、裸露 URL 包裹为 `<>`、表格/列表/标题行不折行 |
+| `link` | 真实探测依赖网络，无法在测试中稳定复现三档分支，故把映射抽为纯函数 `classifyLinkResult` 并导出；覆盖 `null`（成功）/ `low`（不可校验、缓存失效）/ `medium`（真实 4xx-5xx）三档，以及「low 不阻断、medium 阻断」的门禁语义 |
+
+**原第 4 项 —— markdownlint 是否纳入：决定不纳入**
+
+实测依据（2026-09-15，83 个文件，markdownlint-cli2 默认规则集）：
+
+| 规则 | 违规数 | 性质 |
+|---|---|---|
+| MD060 表格管道紧凑样式 | 2194 | 风格偏好，与仓库既有表格写法冲突 |
+| MD013 行长 80 | 2173 | 风格偏好，中文长行是既有惯例 |
+| MD050/032/022/031/058 等其余规则 | 约 1500 | 结构性风格 |
+| **合计** | **约 5900** | 启用前需先禁用 28 条规则中的 22 条 |
+
+同时评估了「把脚本内置的四条规则改为报告模式」：实测会新增 362 条 low（MD013 197 / MD024 127），同样以风格偏好为主。
+
+**结论**：不纳入 CI，也**不**启用内置规则的报告模式。项目已有更克制的等价机制 —— `--fix` 按需修复这四条规则。判断依据已写入 `scripts/docs-sync-audit.js` 中 `runMarkdownlintCli2` 的注释，避免后人重复调查；`--markdownlint-cli2` 开关保留供手工排查。
+
+**原第 5 项 —— 根目录审计快照归档：已归档**
+
+6 份历史快照（合计 1580 行）经 `git mv` 移入 `docs/audits/archive/`，git 记录为 rename、历史保留：
+
+`AUDIT_REPORT.md`、`AUDIT_RESULT.md`、`GITHUB_SCAN_AUDIT.md`、`GOVERNANCE_VERIFICATION.md`、`GOVERNANCE_EXECUTION_AUDIT.md`、`REMOTE_BRANCH_AUDIT.md`
+
+同步更新引用：`README.md`（2 处 markdown 链接）、`DEVELOP.md`（1 处）、`docs/index.md`（新增 `audits/archive/` 小节并从「仓库根目录」移出）；`TIMEPOINT_DOC_PATTERNS` 中 6 个已失效的根级条目改由 `docs/audits/` 通配覆盖。仓库根目录的 `.md` 由 19 份降至 13 份，门禁仍为绿。
+
+### 5.2 仍然遗留
 
 1. **被 gitignore 的文档完全不受审计**：`.claude/skills/**`、`.agents/skills/**`（同一内容的**两份副本，均不入库**）、`.remember/**`、`.Jules/**`。
-2. **两份未跟踪的大型工作文档**（`FULL_PROJECT_AUDIT_2026-07-22.md` 230 KB、`CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md` 151 KB）：文件头自述不进入版本控制，但**未被 gitignore**，导致 `git status` 长期有噪音，且因未跟踪而完全绕过门禁。
-3. **CI 之外仍零测试覆盖的规则**：`content` 的过宽正则（`anyOf` 含 `"test"`，`## Contest` 也能通过）、`--fix` 的 4 条规则、`link` 的三档严重级别 —— 本轮未补（`bsp` 已于本轮覆盖）。
-4. **`--markdownlint-cli2` 从未启用且仓库无配置文件**：是否纳入需决策。
-5. **根目录 6 份审计快照互相覆盖**：`GOVERNANCE_VERIFICATION.md`（2026-07-05）已被 `GOVERNANCE_EXECUTION_AUDIT.md`（2026-07-19）覆盖；是否归档到 `docs/audits/archive/` 需决策。
-6. **`ErrorLog/README.md` 引用的 `docs/runbooks/rk3288-android-uvc-camera2-camerax-acceptance.md` 不存在**，且 `ErrorLog/` 整体未被 git 跟踪 —— 超出审计范围。
+2. **两份未跟踪的大型工作文档**（`FULL_PROJECT_AUDIT_2026-07-22.md` 230 KB、`CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md` 151 KB）：文件头自述不进入版本控制，但**未被 gitignore**，导致 `git status` 长期有噪音，且因未跟踪而完全绕过门禁（现已加入 `TIMEPOINT_DOC_PATTERNS` 以免产生噪声，但**未解决根本问题**：要么纳入版本控制，要么加 ignore 规则）。
+3. **`ErrorLog/README.md` 引用的 `docs/runbooks/rk3288-android-uvc-camera2-camerax-acceptance.md` 不存在**，且 `ErrorLog/` 整体未被 git 跟踪 —— 超出审计范围。
+
