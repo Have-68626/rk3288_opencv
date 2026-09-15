@@ -78,6 +78,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -148,6 +149,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * 跳过——在途线程解锁后即产出最新快照，且 UI 侧仍有 2s 周期刷新兜底，不会漏刷。
      */
     private final AtomicBoolean modelStatusRefreshInFlight = new AtomicBoolean(false);
+
+    /**
+     * 模型状态刷新的单调序号（第五轮审查 P2）：只允许**最新**一次刷新的结果写入状态区。
+     *
+     * <p>{@link #modelStatusRefreshInFlight} 门在投递 UI 之前就已释放，旧线程可能在更新的一次刷新
+     * 落地之后才投递，从而把状态区覆盖回过期文本。序号使迟到的旧结果被丢弃。
+     */
+    private final AtomicLong modelStatusRefreshSeq = new AtomicLong();
     private View recognitionTitle;
     private Button btnStartStop, btnViewLogs;
     private Button btnNavPlayback, btnNavSettings, btnNavAbout;
@@ -3624,6 +3633,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (!modelStatusRefreshInFlight.compareAndSet(false, true)) {
             return;  // 已有刷新在途：不再并发 status()，避免线程堆叠
         }
+        // 在门内取号：序号严格随刷新顺序递增（门保证同一时刻只有一个刷新线程）。
+        final long refreshSeq = modelStatusRefreshSeq.incrementAndGet();
         try {
             new Thread(() -> {
                 String text;
@@ -3644,6 +3655,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 runOnUiThread(() -> {
                     // #2：Activity 已销毁时丢弃陈旧 UI 回调，避免窗口 token 失效。
                     if (isFinishing() || isDestroyed()) return;
+                    // 第五轮审查 P2：门在上方 finally 中先于本投递释放，此后可能有更新的一次刷新
+                    // 完成并抢先投递；序号比对丢弃迟到的旧结果，避免过期状态覆盖新状态。
+                    if (refreshSeq != modelStatusRefreshSeq.get()) return;
                     if (tvModelManagement == target) {
                         target.setText(summary);
                     }
@@ -3658,6 +3672,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     /** 向用户展示模型操作结果（失败时 Toast；文本写入模型状态区）。 */
     private void showModelStatusToUser(@NonNull String message, boolean error) {
         if (tvModelManagement != null) {
+            // 第五轮审查（A2' Low）：操作结果文本也必须**纳入号序**。否则一个更早启动、序号更低的
+            // 在途刷新回调会因「序号未变」而被放行，把刚写入的操作结果覆盖回旧文本。取号即令其作废。
+            modelStatusRefreshSeq.incrementAndGet();
             tvModelManagement.setText(message);
         }
         if (error) {
