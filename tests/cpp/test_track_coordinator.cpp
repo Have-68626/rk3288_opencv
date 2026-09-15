@@ -229,3 +229,37 @@ TEST(TrackCoordinator, ResetIdentitiesExceptEmptyClearsAllButKeepsBoxes) {
     ASSERT_EQ(views.size(), 2u);
     for (const auto& v : views) EXPECT_EQ(v.stableId, "Unknown");
 }
+
+// ── 阈值验收（第六轮 Codex 建议补的两类缺口）──────────────────────────────
+//
+// 缺口一：既有 CenterDistanceFallbackMatchesMovedFace 先用 **3 帧静止**建立已确认轨迹、之后才
+// 移动，因此它证明的是「**已确认**轨迹在大位移下不丢」，**不能**证明「**持续移动**的目标能完成
+// **首次**确认」。本用例补上：目标自首帧起每帧位移 79px（IoU≈0.12 强制走中心距离回退），
+// 逐步中心偏移 79 ≤ kCenterMaxRatio*100 = 80 → 应连续命中并在第 3 帧确认、对外输出。
+TEST(TrackCoordinator, ContinuouslyMovingTargetCompletesInitialConfirmation) {
+    pipeline::TrackCoordinator tc;
+    // 帧 1：首现即未确认轨迹（confirmFrames=1）
+    EXPECT_TRUE(tc.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    // 帧 2：位移 79px → IoU 不足，中心偏移 79 ≤ 80 → 回退匹配
+    EXPECT_TRUE(tc.update({face(79, 0, 100, 100)}, 1100, true).empty());
+    // 帧 3：再位移 79px → 第 3 次命中，确认并输出
+    const auto t3 = tc.update({face(158, 0, 100, 100)}, 1200, true);
+    ASSERT_EQ(t3.size(), 1u) << "持续移动的目标应能完成首次确认（0.8 阈值内）";
+    EXPECT_EQ(t3[0].trackId, 1);
+    EXPECT_EQ(t3[0].bbox.x, 158);
+}
+
+// 缺口二：阈值**边界**的可执行界定。单帧位移 81px（中心偏移 81 > 0.8*100=80）时，IoU 与中心
+// 距离回退**双双失配**，每帧新建轨迹且下一帧即因「未确认 + 一次实际缺失」被删，故**永无确认**、
+// 对外恒不显示。这给出「0.8 在多大单帧位移下失效」的判据，供录像回放调参时对照。
+// 注：这是**条件性结果**（取决于单帧位移与框尺寸之比），不是所有大位移场景的必然结局——
+// 相邻用例已证明 79px/帧可持续确认。
+TEST(TrackCoordinator, DisplacementBeyondFallbackRatioNeverConfirms) {
+    pipeline::TrackCoordinator tc;
+    for (int i = 0; i < 6; ++i) {
+        EXPECT_TRUE(tc.update({face(i * 81, 0, 100, 100)}, 1000 + i * 100, true).empty())
+                << "位移超出回退上限时不应有轨迹被确认（第 " << i << " 帧）";
+    }
+    // 逐帧新建 + 下一帧即删，故存续轨迹数不超过 1。
+    EXPECT_LE(tc.trackCount(), 1) << "超出回退上限应无法复用同一条轨迹";
+}
