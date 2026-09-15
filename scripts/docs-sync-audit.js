@@ -110,12 +110,9 @@ const TIMEPOINT_DOC_PATTERNS = [
   "deps/",
   "src/win/third_party/",
   "CHANGELOG.md",
-  "AUDIT_REPORT.md",
-  "AUDIT_RESULT.md",
-  "GITHUB_SCAN_AUDIT.md",
-  "GOVERNANCE_VERIFICATION.md",
-  "GOVERNANCE_EXECUTION_AUDIT.md",
-  "REMOTE_BRANCH_AUDIT.md",
+  // 根级审计快照已归档到 docs/audits/archive/（由上面的 docs/audits/ 覆盖），
+  // 不再逐个列名。以下两项仍留在根目录且未被 git 跟踪 —— 它们是工作台账，
+  // 引用大量「计划中的路径」，不适用路径存在性检查。
   "FULL_PROJECT_AUDIT_2026-07-22.md",
   "CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md",
 ];
@@ -645,6 +642,13 @@ function scanTextConventions(md, sampleLimit) {
   return { zhEnNoSpace, fullwidthAscii, fullwidthProblem, samples, problemSamples };
 }
 
+// 外部 markdownlint-cli2 默认规则集与本仓库的既有排版惯例冲突严重，故不纳入 CI。
+// 实测（2026-09-15，83 个文件）：共约 5900 条违规，其中 MD060（表格管道紧凑样式）
+// 2194 条、MD013（行长 80）2173 条 —— 中文长行与紧凑表格是本仓库的既有风格，不是缺陷。
+// 启用前需先禁用 28 条规则中的 22 条，代价与收益不成比例。
+// 等价的克制方案已内置：`--fix` 覆盖 MD040/MD024/MD034/MD013(120) 四条规则。
+// 若要把这四条改为「报告模式」，实测会新增 362 条 low（MD013 197 / MD024 127），
+// 同样以风格偏好为主，故亦不启用。本开关保留供按需手工排查。
 function runMarkdownlintCli2(files, repoRoot) {
   const bin = "npx --yes markdownlint-cli2";
   const quoted = files.map((f) => `"${toPosix(path.relative(repoRoot, f))}"`).join(" ");
@@ -995,6 +999,27 @@ function auditRefPaths(refs, repoRoot, fromFile) {
     });
   }
   return defects;
+}
+
+// 链接检查结果的严重级别映射。独立成纯函数以便单测 —— 真实探测依赖网络，
+// 无法在测试中稳定复现「不可校验 / 缓存失效 / 真实 4xx」三档分支。
+// 只有确凿的失效（真实非 2xx-3xx 响应）才阻断门禁；网络抖动导致的请求失败
+// 与缓存中的历史失效都不阻断，否则 CI 会因外网抖动而随机变红。
+function classifyLinkResult(r) {
+  if (r.ok) return null;
+  if (r.unverifiable) return "low";
+  if (r.method === "CACHE") return "low";
+  return "medium";
+}
+
+function linkDefectMessage(r, severity) {
+  if (severity === "low" && r.unverifiable) {
+    return `链接无法验证（网络/证书/代理等导致请求失败）：${r.url}（${r.method} final=${r.finalUrl}${r.error ? ` err=${r.error}` : ""}）`;
+  }
+  if (severity === "low") {
+    return `链接上次检查已失效（缓存）：${r.url}（status=${r.status || 0}）`;
+  }
+  return `失效链接：${r.url}（${r.method} status=${r.status || 0} final=${r.finalUrl}${r.error ? ` err=${r.error}` : ""}）`;
 }
 
 async function main() {
@@ -1423,32 +1448,14 @@ async function main() {
   }
   report.linkChecks = linkResults;
   for (const r of linkResults) {
-    if (!r.ok) {
-      if (r.unverifiable) {
-        report.defects.push({
-          type: "link",
-          severity: "low",
-          file: "N/A",
-          message: `链接无法验证（网络/证书/代理等导致请求失败）：${r.url}（${r.method} final=${r.finalUrl}${r.error ? ` err=${r.error}` : ""}）`,
-        });
-        continue;
-      }
-      if (r.method === "CACHE") {
-        report.defects.push({
-          type: "link",
-          severity: "low",
-          file: "N/A",
-          message: `链接上次检查已失效（缓存）：${r.url}（status=${r.status || 0}）`,
-        });
-        continue;
-      }
-      report.defects.push({
-        type: "link",
-        severity: "medium",
-        file: "N/A",
-        message: `失效链接：${r.url}（${r.method} status=${r.status || 0} final=${r.finalUrl}${r.error ? ` err=${r.error}` : ""}）`,
-      });
-    }
+    const severity = classifyLinkResult(r);
+    if (!severity) continue;
+    report.defects.push({
+      type: "link",
+      severity,
+      file: "N/A",
+      message: linkDefectMessage(r, severity),
+    });
   }
 
   report.summary.defectCount = report.defects.length;
@@ -1542,6 +1549,8 @@ module.exports = {
   auditRefPaths,
   fixMarkdown,
   findRequiredSections,
+  classifyLinkResult,
+  linkDefectMessage,
   parseKernelConfigMap,
   parseKernelConfigPolicyFromConstraints,
   parseConfigItems,
