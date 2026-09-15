@@ -152,3 +152,29 @@ TEST(TrackCoordinator, TtlStillCullsTracksAsFallback) {
     // 超 TTL 后即使跳过检测也清理（TTL 兜底）
     EXPECT_TRUE(tc.update({}, 1200 + 2000, false).empty());
 }
+
+// 第三波审查 #2：reset() 清空全部内部轨迹（撤销稳定身份），但保留 nextTrackId_ 不回退，
+// 使新轨迹不复用已发布过的 trackId（避免同 ID 先后指向不同目标）。
+TEST(TrackCoordinator, ResetClearsTracksButKeepsIdCounter) {
+    pipeline::TrackCoordinator tc;
+    // 建立并确认一条已认证轨迹（trackId 从 1 起）
+    EXPECT_TRUE(tc.update({face(10, 20, 100, 150, true, "alice", 0.90f)}, 1000, true).empty());
+    EXPECT_TRUE(tc.update({face(10, 20, 100, 150, true, "alice", 0.90f)}, 1100, true).empty());
+    auto confirmed = tc.update({face(10, 20, 100, 150, true, "alice", 0.90f)}, 1200, true);
+    ASSERT_EQ(confirmed.size(), 1u);
+    ASSERT_EQ(confirmed[0].trackId, 1);
+    ASSERT_EQ(confirmed[0].stableId, "alice");
+    EXPECT_EQ(tc.trackCount(), 1);
+
+    // reset 后内部轨迹清空，对外不再输出任何轨迹（旧身份 alice 作废）
+    tc.reset();
+    EXPECT_EQ(tc.trackCount(), 0);
+    EXPECT_TRUE(tc.update({face(10, 20, 100, 150, true, "alice", 0.90f)}, 1300, true).empty());
+    EXPECT_TRUE(tc.update({face(10, 20, 100, 150, true, "alice", 0.90f)}, 1400, true).empty());
+
+    // reset 后再次确认的新轨迹使用全新 trackId（2，而非复用 1），且身份须重新确认后才输出
+    auto rebuilt = tc.update({face(10, 20, 100, 150, true, "alice", 0.90f)}, 1500, true);
+    ASSERT_EQ(rebuilt.size(), 1u);
+    EXPECT_EQ(rebuilt[0].trackId, 2);
+    EXPECT_EQ(rebuilt[0].stableId, "alice");
+}

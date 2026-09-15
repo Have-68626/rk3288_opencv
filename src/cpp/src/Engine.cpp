@@ -813,6 +813,21 @@ void Engine::updateRealtimeGallery(std::shared_ptr<const FaceSearchLinearIndex> 
     rklog::logInfo("Engine", __func__, "实时图库覆盖已更新 count=" + std::to_string(count));
 }
 
+void Engine::resetTrackIdentities() {
+    // 取证：跟踪身份的真相持有者是 trackCoordinator_ 内部的 tracks_（InternalTrack.view.stableId）；
+    // currentTracks_ 仅是逐帧由 coordinator 派生并发布的对外快照（见 trackFaces）。故此处清
+    // 真正那份（coordinator），并一并清 currentTracks_ 使对外视图立即失效，二者缺一不可：
+    // 只清 currentTracks_ 的话，下一帧 coordinator 仍会携旧 stableId 重新产出 VERIFIED。
+    // 线程安全：本接口由 JNI（bridge_replaceGallery）线程调用，与 run() 引擎线程的
+    // trackFaces()->trackCoordinator_->update() 并发；trackFaces 已改为在 tracksMu_ 下调用
+    // update()，故 reset() 与 update() 互斥，避免对 coordinator 内部 tracks_ 的数据竞争。
+    std::lock_guard<std::mutex> lock(tracksMu_);
+    if (trackCoordinator_) trackCoordinator_->reset();
+    currentTracks_.clear();
+    // 仅记录事件，不含任何身份/模板内容（安全红线）。
+    rklog::logInfo("Engine", __func__, "已重置跟踪身份（图库变更后旧轨迹身份作废）");
+}
+
 // ── #1 注册采集模式 ──
 
 void Engine::setEnrollmentCapture(bool enabled) {
@@ -1195,9 +1210,12 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
 void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool detectionRan) {
     // 任务5/12：detectionRan = 本次是否实际执行检测。实时路径成功检测时恒为 true
     //（含空结果，使旧框按连续缺失规则消失）；模型缺失跳过检测时为 false。
+    // 持 tracksMu_ 覆盖 trackCoordinator_->update 与 currentTracks_ 的更新：update 读写
+    // coordinator 内部轨迹，而 resetTrackIdentities()（JNI 线程）会在同一把锁下清空轨迹，
+    // 二者必须互斥，否则对 tracks_ 形成数据竞争（第三波审查 #2）。
+    std::lock_guard<std::mutex> lock(tracksMu_);
     const std::vector<pipeline::TrackView> views =
         trackCoordinator_->update(faces, nowMs(), detectionRan);
-    std::lock_guard<std::mutex> lock(tracksMu_);
     currentTracks_ = views;
 }
 
