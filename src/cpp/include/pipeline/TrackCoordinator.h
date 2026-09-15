@@ -52,9 +52,11 @@ public:
         long long timestampMs,
         bool detectionRan);
 
-    // 清空全部内部轨迹（撤销所有稳定身份）。人员删除 / 图库重建后由
-    // Engine::resetTrackIdentities() 调用：被删除的人不应因旧轨迹仍持有其 stableId
-    // 而持续被判为 VERIFIED（第三波审查 #2）。
+    // 清空全部内部轨迹（撤销所有稳定身份）。作为 TrackCoordinator 公共原语保留，
+    // 供需要「硬清空」（连同轨迹本体与 bbox 一并丢弃）的场景或单测直接调用：
+    // 被删除的人不应因旧轨迹仍持有其 stableId 而持续被判为 VERIFIED（第三波审查 #2）。
+    // 注：Engine 侧图库变更统一走 applyGalleryUpdate→resetIdentitiesExcept（精准撤销、
+    // 不丢框），不再经本全清路径。
     // **保留 nextTrackId_**：不回退计数器，避免新轨迹复用已对外发布过的 trackId，
     // 造成旧帧回调/日志中的 trackId 指向不同目标的复用歧义。
     // 线程安全：本方法非线程安全；调用方（Engine）须保证与 update() 互斥

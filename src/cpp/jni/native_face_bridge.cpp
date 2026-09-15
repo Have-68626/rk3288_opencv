@@ -172,7 +172,7 @@ rk_core::RealtimePipelineHooks makeActivatedHooks(const std::shared_ptr<GalleryS
 // 把当前图库快照注入 Engine 的图库覆盖接缝（Engine 未创建时为空操作）。
 //
 // 语义修正（上轮未覆盖项 B）：改用**原子提交** applyGalleryUpdate（换库 + 按新库有效身份
-// 精准撤销身份），取代只换库、不撤销身份的 updateRealtimeGallery。原因：activateRuntime 换
+// 精准撤销身份），取代此前只换库、不撤销身份的单向接口。原因：activateRuntime 换
 // 模型后，旧模型轨迹的 stableId 若不撤销会被持续保留——而新旧模型嵌入空间不同，残留 id 在新库
 // 并无对应，表现为「换模型后持续 VERIFIED <旧id>」直至该人离开画面 2 帧。keepIds 取新库全部
 // personId（FaceSearchLinearIndex::entries() 的 e.id，与 bridge_replaceGallery 同法），未命中者
@@ -552,7 +552,7 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
             // 删除人员 / 注册提交均经本 replaceGallery 路径。**原子提交（第三波审查 #4 残留竞态
             // 闭合）**：改由 applyGalleryUpdate 在**单一 tracksMu_ 临界区**内一次性完成
             //「换图库覆盖 + 按新库有效身份 keepIds 精准撤销跟踪身份」。
-            // 因果：此前是 resetTrackIdentitiesExcept(keepIds) 与 updateRealtimeGallery(snap)
+            // 因果：此前是「精准撤销(keepIds)」与「换图库(snap)」
             // **两次独立持锁调用**，二者之间的缝隙内引擎线程可用**旧图库**跑完一帧——该帧检测
             // 已认证（旧库含被删者）会把身份重新写入轨迹，随后新库（已无此人）生效却被持久保留，
             // 等同 #2 复发。合并为单次调用后，「换库」与「撤销」之间不存在可观测中间态：任何
