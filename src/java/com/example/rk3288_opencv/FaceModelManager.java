@@ -44,9 +44,10 @@ import java.util.zip.ZipInputStream;
  *   <li><b>原子启用目录</b>：把基目录 rename 到 {@code <storeDir>/<profileId>}（旧目录先 rename 为 .bak），
  *       <b>暂不</b>写激活指针。全程同盘 rename，保证原子性。</li>
  *   <li><b>激活并落定</b>：目录稳定后调 {@link NativeRuntime#activateRuntime} 绑定实时管线；仅当 native
- *       返回 {@code ok:true} 才原子落定激活指针 {@code active_profile}。激活失败时保留新目录但不切指针
- *       （旧配置继续生效），返回 {@link Status#RUNTIME_ACTIVATE_FAILED}，绝不静默报成功；指针落定失败则
- *       回滚目录到导入前状态。</li>
+ *       返回 {@code ok:true} 才原子落定激活指针 {@code active_profile}。激活失败时<b>同名覆盖</b>回滚目录到
+ *       旧版本（{@code .bak_<id>} → {@code <id>}，与 {@link #activate} 路径语义一致）、<b>首次导入</b>保留
+ *       新目录但不切指针（旧配置继续生效），均返回 {@link Status#RUNTIME_ACTIVATE_FAILED}，绝不静默报成功；
+ *       指针落定失败则回滚目录到导入前状态。</li>
  * </ol>
  *
  * <h2>切换 profile</h2>
@@ -223,6 +224,13 @@ public final class FaceModelManager {
     @NonNull private final NativeRuntime runtime;
     @NonNull private final Limits limits;
 
+    /**
+     * #3（第三波审查）状态快照缓存：<b>仅</b>由后台线程经 {@link #status()} 写入，UI 线程经
+     * {@link #statusSnapshot()} 无锁读取。<b>不</b>与 {@link #dirLock()} 关联——否则 UI 线程会在
+     * 导入/切换持锁（其间含 native 自检与基准推理）时被整段阻塞而 ANR。volatile 保证跨线程可见性。
+     */
+    @Nullable private volatile FaceRuntimeStatus statusCache;
+
     public FaceModelManager(@NonNull File storeDir, @NonNull NativeRuntime runtime) {
         this(storeDir, runtime, Limits.defaults());
     }
@@ -342,10 +350,26 @@ public final class FaceModelManager {
                 //    native 侧候选管线先 reload、成功才提交，失败时旧管线原样保留。
                 ActivateOutcome ao = nativeActivateRuntime(manifestJson, swap.target, currentAbi);
                 if (!ao.accepted()) {
-                    // 激活失败：保留新目录（已导入），但不切指针 -> 旧配置继续生效。
-                    deleteRecursivelyQuietly(swap.bak);
+                    // 激活失败（native 候选管线未提交，旧管线/旧配置原样保留）：
+                    // - #1（第三波审查）同名覆盖：旧目录此刻位于 swap.bak（.bak_<id>），必须回滚就位，
+                    //   否则删掉旧目录、而 active_profile 仍指同名 <profileId>（其内容已被新包覆盖）
+                    //   -> 旧模型永久丢失；重启后 readActive 只判目录存在性 -> 谎报 ready 再激活失败。
+                    //   回滚后与 activate 路径（不删文件、保留原配置）语义一致。
+                    // - 首次导入：新目录是唯一副本，保留之（不切指针 -> 仍为未导入引导态）。
+                    if (swap.hadOld) {
+                        // 回滚失败不改变对外失败语义：旧目录会滞留 .bak_<id>，随后的
+                        // buildStatus()/readActive()/activate() 崩溃恢复路径会把它还原就位，旧模型不丢。
+                        rollbackProfileSwap(swap);
+                    } else {
+                        deleteRecursivelyQuietly(swap.bak);
+                    }
+                    // #1-Low-2（第三波审查）：按是否有旧同名配置区分失败文案，避免首次导入也误报
+                    // 「已保留原配置」（此时并无旧配置）。
+                    String tail = swap.hadOld
+                            ? "已回滚到原模型"
+                            : "已保留新导入的模型目录但未激活";
                     return new Result(Status.RUNTIME_ACTIVATE_FAILED, buildStatus(nativeStatusOrNull()),
-                            "模型已导入，但实时管线激活失败：" + ao.reason + "，已保留原配置");
+                            "模型已导入，但实时管线激活失败：" + ao.reason + "，" + tail);
                 }
                 // ⑨ 生效后才原子落定激活指针；落定失败则回滚目录到导入前状态。
                 if (!persistActive(profile.profileId)) {
@@ -428,12 +452,45 @@ public final class FaceModelManager {
     /**
      * 当前运行时状态快照（含 native {@code getRuntimeStatus} 叠加）。
      * 首启无模型返回 {@link FaceRuntimeStatus.State#NOT_IMPORTED} 及引导文案。
+     *
+     * <p>本方法持 {@link #dirLock()} 并做文件 IO 与 native 调用，<b>只允许后台线程调用</b>；
+     * UI 线程请改用 {@link #statusSnapshot()}（无锁读缓存），以免被导入/切换的持锁段阻塞。
      */
     @NonNull
     public FaceRuntimeStatus status() {
+        FaceRuntimeStatus s;
         synchronized (dirLock()) {
-            return buildStatus(nativeStatusOrNull());
+            s = buildStatus(nativeStatusOrNull());
         }
+        // #3：发布快照供 UI 线程无锁读取（volatile 写保证可见性）。仅后台线程到达此处。
+        statusCache = s;
+        return s;
+    }
+
+    /**
+     * #3（第三波审查）：纯读状态快照，<b>不加目录锁、不做任何文件 IO / native 调用</b>，
+     * 可在 UI 线程安全调用而不阻塞。
+     *
+     * <p>后台刷新线程（如 MainActivity 的 FaceModelStatus 线程）调用 {@link #status()} 会把结果写入
+     * volatile 快照；本方法仅读该缓存，因此最多落后一个刷新周期。首帧（后台尚未产出快照）返回
+     * 「加载中/未就绪」占位，绝不阻塞、绝不臆测为就绪。
+     */
+    @NonNull
+    public FaceRuntimeStatus statusSnapshot() {
+        FaceRuntimeStatus s = statusCache;
+        return s != null ? s : loadingPlaceholder();
+    }
+
+    /**
+     * 首帧占位：后台尚未产出状态快照时返回的「加载中/未就绪」态，<b>不</b>触发任何 IO/加锁。
+     *
+     * <p>#3-Low-1（第三波审查）：改用 {@link FaceRuntimeStatus.State#LOADING} 专用态（而非复用
+     * {@code NOT_IMPORTED}），使 UI 渲染路径能区分「加载中」与「真未导入」，避免冷启动最多 2s
+     * 误显「模型来源=未导入」。占位消息为「正在加载」，绝不臆测为未导入结论。
+     */
+    @NonNull
+    private static FaceRuntimeStatus loadingPlaceholder() {
+        return FaceRuntimeStatus.loading();
     }
 
     /** 校验用辅助：目录锁（与 AndroidEnrollmentRepository 同策略，便于单测断言共享）。 */
