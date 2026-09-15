@@ -158,8 +158,9 @@ MIT License
 
 ## 审计与设计文档
 
-- [全项目审计报告](AUDIT_REPORT.md) — 综合评分 2.9/5
+- [全项目审计报告](docs/audits/archive/AUDIT_REPORT.md) — 综合评分 2.9/5
 - [架构契约](docs/architecture/ARCHITECTURE.md) — 5 条跨子系统规则
 - [架构治理设计](docs/superpowers/specs/2026-07-06-architecture-governance-design.md)
 - [架构治理实施计划](docs/superpowers/plans/2026-07-06-architecture-governance-plan.md)
-- [远程分支审计](REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
+- [远程分支审计](docs/audits/archive/REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
+- [文档审计报告](docs/audits/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题

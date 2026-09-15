@@ -200,7 +200,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 - **架构契约**：[docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) — 5 条跨子系统规则
 - **架构治理设计**：[docs/superpowers/specs/2026-07-06-architecture-governance-design.md](docs/superpowers/specs/2026-07-06-architecture-governance-design.md)
 - **架构治理实施计划**：[docs/superpowers/plans/2026-07-06-architecture-governance-plan.md](docs/superpowers/plans/2026-07-06-architecture-governance-plan.md)
-- **全项目审计报告**：[AUDIT_REPORT.md](AUDIT_REPORT.md)
+- **全项目审计报告**：[AUDIT_REPORT.md](docs/audits/archive/AUDIT_REPORT.md)
 
 以下内容已内嵌到本文件的附录中：
 
