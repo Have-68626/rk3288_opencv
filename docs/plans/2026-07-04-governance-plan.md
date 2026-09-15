@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=plan
+status=snapshot
+as_of=2026-07-04
+-->
+
 # rk3288_opencv 项目治理计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -48,7 +54,7 @@ Batch 5 (测试覆盖) ────────── 依赖 Batch 2 + Batch 3
 ## 项目治理计划
 
 > 基于 2026-07-04 全项目审计报告 ([AUDIT_REPORT.md](AUDIT_REPORT.md))，按模块分批次渐进治理。
-> 设计文档: [governance-plan-design.md](docs/superpowers/specs/2026-07-04-governance-plan-design.md)
+> 设计文档: [governance-plan-design.md](docs/specs/2026-07-04-governance-plan-design.md)
 
 ### 进度总览
 

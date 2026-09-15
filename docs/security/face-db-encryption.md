@@ -1,6 +1,13 @@
+<!-- DOCSYNC_DOC
+type=security
+status=living
+as_of=2026-08-13
+-->
+
 # FaceDatabase 加密安全规格（S-SEC-B09-002）
 
-> 状态：**已冻结**（密钥边界与迁移方案在实现前书面锁定，未经批准不越界）。
+> 规格状态：**已锁定**（密钥边界与迁移方案在实现前书面锁定，未经批准不越界）；
+> 正文跟随实现更新（元数据 `status=living`）。
 > 关联任务：治理队列 S-SEC-B09-002（FaceDatabase 加密）。前置先例：`WinJsonConfig` 敏感字段
 > AES-256-GCM + DPAPI（`src/win/src/WinJsonConfig.cpp`）。
 

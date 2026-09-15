@@ -1,7 +1,12 @@
+<!-- DOCSYNC_DOC
+type=design
+status=snapshot
+as_of=2026-07-04
+-->
+
 # rk3288_opencv 项目治理计划设计
 
 **版本**: v1.0
-**日期**: 2026-07-04
 **依据**: AUDIT_REPORT.md 全面审计报告
 
 ---

@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=architecture
+status=living
+as_of=2026-09-15
+-->
+
 # C++ 引擎架构文档
 
 > 本文档描述 RK3288 AI Engine 核心 C++ 层的架构设计，涵盖状态机、数据流、模块依赖、工厂模式及命名空间层级。

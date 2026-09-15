@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=research
+status=snapshot
+as_of=2026-08-13
+-->
+
 ## 附录 D. 人脸识别技术实现方案研究
 
 

@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-08-13
+-->
+
 # Pattern：Daily Triage（每日巡检）
 
-**最后更新：2026-08-10**
 **所属系统**: Claude Code Loop（ralph-loop）
 
 ---

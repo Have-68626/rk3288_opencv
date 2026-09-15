@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=audit
+status=frozen
+as_of=2026-07-05
+-->
+
 # 治理落地深度审计报告
 
-**审计日期**: 2026-07-05
 **验证方法**: 6 路并行 agent，逐条 grep/ls 深度扫描
 
 ---

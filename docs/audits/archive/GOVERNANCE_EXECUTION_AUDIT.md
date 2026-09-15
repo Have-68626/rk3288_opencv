@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=audit
+status=frozen
+as_of=2026-07-19
+-->
+
 # 重构洞察执行落地审计报告（基于 master 分支）
 
 **审计基准**: `master` branch @ `4b4e0e2` (2026-07-19)

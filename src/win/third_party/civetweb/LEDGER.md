@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=security
+status=living
+as_of=2026-08-14
+-->
+
 # CivetWeb 来源账本（Source Provenance Ledger）
 
 治理任务 **SEC-17（S-SEC-B10-008）**。本目录为 CivetWeb 第三方源码与许可证归档快照，**未编入当前构建目标**（Windows 本地服务使用自有的 `HttpFacesServer` 实现，不引用本目录；仅作归档与许可证合规保留，见 `CREDITS.md`）。

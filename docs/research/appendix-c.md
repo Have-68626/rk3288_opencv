@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=research
+status=snapshot
+as_of=2026-08-13
+-->
+
 ## 附录 C. Android 摄像头调用机制研究
 
 

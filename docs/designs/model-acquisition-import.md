@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=design
+status=living
+as_of=2026-09-12
+-->
+
 # 模型获取与导入流程（Android 端）
 
-**更新日期**: 2026-09-12
 
 **状态**: 已落地。承接 P1-6：模型不随 APK 分发，由用户自行获取并经 ZIP 导入，`FaceModelManager` 负责校验与原子启用。
 

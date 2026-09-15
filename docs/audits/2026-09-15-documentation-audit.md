@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=audit
+status=snapshot
+as_of=2026-09-15
+-->
+
 # 文档审计报告（全项目）
 
-**更新日期**: 2026-09-15
 **审计范围**: 仓库中全部被 git 跟踪的 `.md`（74 份）+ 2 份未跟踪的根级工作文档，共 76 份
 **审计工具**: `scripts/docs-sync-audit.js`
 

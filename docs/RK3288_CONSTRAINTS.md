@@ -1,7 +1,12 @@
+<!-- DOCSYNC_DOC
+type=reference
+status=living
+as_of=2026-07-21
+-->
+
 # RK3288 目标设备画像与约束清单
 
 **版本**: v0.2
-**更新日期**: 2026-07-21
 
 本文用于把“目标设备画像（可复现）”与“工程硬约束（不可突破）”固化为统一口径，供选型、实现与验收使用。
 
@@ -15,7 +20,7 @@
 |---|---|---|
 | `docs/bsp/kernel-config/kernel.config` | 有内容，显示 Linux/arm 4.4.143；来源元数据缺失 | 可用于配置项静态比对，不可作为目标设备身份凭据 |
 | `docs/bsp/defconfig/rk3288_defconfig` | 临时基准，由运行态快照摘录 | 不等同于厂商 BSP 原始 defconfig |
-| `docs/bsp/BSP_RELEASE_NOTES.md` | 占位，版本、交付编号与补丁摘要未填写 | 不得据此断言 BSP 版本或驱动修复状态 |
+| `docs/bsp/BSP_EVIDENCE_STATUS.md` | 占位，版本、交付编号与补丁摘要未填写 | 不得据此断言 BSP 版本或驱动修复状态 |
 | 真机画像（Android、内存、存储、相机、GPU） | 尚未在仓库固化完整采集结果 | 下列数值均按目标输入管理，最终以第 2 节采集结果为准 |
 
 ### 0.1 硬件（目标输入，待真机溯源）
@@ -192,7 +197,7 @@ grep -E "^CONFIG_" docs/bsp/kernel-config/kernel.config | head -n 20
 ## 3. BSP 同步性检查输入（必须固化）
 本节用于声明“本约束文档当前同步的 BSP 输入”，使审计脚本可以量化判断是否同步。
 
-- BSP Release Note: `docs/bsp/BSP_RELEASE_NOTES.md`
+- BSP Release Note: `docs/bsp/BSP_EVIDENCE_STATUS.md`
 - defconfig（对齐基准）: `docs/bsp/defconfig/rk3288_defconfig`
 - Kernel Config Snapshot（运行态快照）: `docs/bsp/kernel-config/kernel.config`
 

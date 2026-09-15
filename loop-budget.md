@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-09-15
+-->
+
 # Loop Budget — rk3288_opencv
 
 > Primary loop: **Daily Triage**（配置见 `LOOP.md`，约束见 `loop-constraints.md`）

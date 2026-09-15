@@ -12,6 +12,9 @@ const test = require("node:test");
 
 const SCRIPT_SRC = path.join(__dirname, "..", "..", "scripts", "docs-sync-audit.js");
 
+// 少数规则无法在无 git 的夹具里端到端验证，改为直接调用导出的纯函数（见文末 doc-index 一组）
+const { auditDocIndex } = require("../../scripts/docs-sync-audit.js");
+
 const AGENT_FACTS = [
   "gradle_wrapper=unknown",
   "android_ci_java=unknown",
@@ -27,8 +30,17 @@ function write(root, relativePath, text) {
   fs.writeFileSync(target, text, "utf8");
 }
 
+// 文档元数据块（docs/DOC_STANDARD.md §1）。夹具里每份需要守卫的 .md 都必须带，
+// 否则 doc-meta 规则会让「干净对照」失败，连带影响所有依赖它的用例。
+function docMeta(type, status, asOf = "2026-01-01") {
+  return `<!-- DOCSYNC_DOC\ntype=${type}\nstatus=${status}\nas_of=${asOf}\n-->\n\n`;
+}
+
 function guide(shared, facts = AGENT_FACTS) {
-  return `<!-- DOCSYNC_AGENT_GUIDE_FACTS\n${facts}\n-->\n<!-- DOCSYNC_SHARED_GUIDE_START -->\n${shared}\n<!-- DOCSYNC_SHARED_GUIDE_END -->\n`;
+  return (
+    docMeta("process", "living") +
+    `<!-- DOCSYNC_AGENT_GUIDE_FACTS\n${facts}\n-->\n<!-- DOCSYNC_SHARED_GUIDE_START -->\n${shared}\n<!-- DOCSYNC_SHARED_GUIDE_END -->\n`
+  );
 }
 
 // 构造“其余全部通过门禁”的干净夹具：唯一可注入的缺陷是缺失目标 / markdownlint 非零。
@@ -39,7 +51,7 @@ function createCleanFixture() {
   write(root, "AGENTS.md", guide("共享规则"));
   write(root, "CLAUDE.md", guide("共享规则"));
 
-  write(root, "README.md", [
+  write(root, "README.md", docMeta("guide", "living") + [
     "# README",
     "",
     "## 项目简介",
@@ -57,7 +69,7 @@ function createCleanFixture() {
     "",
   ].join("\n"));
 
-  write(root, "DEVELOP.md", [
+  write(root, "DEVELOP.md", docMeta("guide", "living") + [
     "# DEVELOP",
     "",
     "## 环境搭建",
@@ -79,7 +91,7 @@ function createCleanFixture() {
     "",
   ].join("\n"));
 
-  write(root, "docs/RK3288_CONSTRAINTS.md", [
+  write(root, "docs/RK3288_CONSTRAINTS.md", docMeta("reference", "living") + [
     "# RK3288 约束文档",
     "",
     "## 硬件限制",
@@ -96,7 +108,7 @@ function createCleanFixture() {
     "CONFIG_Z",
     "```",
     "",
-    "BSP Release Note: docs/bsp/BSP_RELEASE_NOTES.md",
+    "BSP Release Note: docs/bsp/BSP_EVIDENCE_STATUS.md",
     "## 驱动补丁",
     "摄像头驱动补丁。",
     "## 已知缺陷",
@@ -106,7 +118,23 @@ function createCleanFixture() {
 
   write(root, "configs/rockchip_defconfig", "CONFIG_X=y\nCONFIG_W=n\n");
   write(root, "docs/bsp/kernel-config/kernel_cfg", "CONFIG_X=y\n");
-  write(root, "docs/bsp/BSP_RELEASE_NOTES.md", "# BSP Release Notes\nv1.0.0：RK3288 平台初始发布。\n");
+  write(root, "docs/bsp/BSP_EVIDENCE_STATUS.md", docMeta("reference", "living") + "# BSP Release Notes\nv1.0.0：RK3288 平台初始发布。\n");
+
+  // 索引：doc-index 规则要求每份需要守卫的文档都登记在此。遗漏任一条都会阻断门禁。
+  write(root, "docs/index.md", docMeta("reference", "living") + [
+    "# 索引",
+    "",
+    "| 文件 | 说明 |",
+    "|---|---|",
+    "| `index.md` | 本文件 |",
+    "| `RK3288_CONSTRAINTS.md` | 约束 |",
+    "| `bsp/BSP_EVIDENCE_STATUS.md` | BSP 证据 |",
+    "| `../README.md` | 项目简介 |",
+    "| `../DEVELOP.md` | 开发指南 |",
+    "| `../AGENTS.md` | 助手指南 |",
+    "| `../CLAUDE.md` | 助手指南镜像 |",
+    "",
+  ].join("\n"));
   return root;
 }
 
@@ -181,7 +209,7 @@ test("Q-CQ-B08-007：markdownlint-cli2 非零退出时门禁必须失败（退�
 // 按指定的 MUST 清单重写 BSP 三件套：约束文档策略块、defconfig、运行态内核快照。
 // defconfigIds 少于 mustIds 即人为制造 MUST 缺失，用于验证 3% 容差边界。
 function writeBspPolicy(root, mustIds, defconfigIds, kernelIds) {
-  write(root, "docs/RK3288_CONSTRAINTS.md", [
+  write(root, "docs/RK3288_CONSTRAINTS.md", docMeta("reference", "living") + [
     "# RK3288 约束文档",
     "",
     "## 硬件限制",
@@ -198,7 +226,7 @@ function writeBspPolicy(root, mustIds, defconfigIds, kernelIds) {
     "CONFIG_Z",
     "```",
     "",
-    "BSP Release Note: docs/bsp/BSP_RELEASE_NOTES.md",
+    "BSP Release Note: docs/bsp/BSP_EVIDENCE_STATUS.md",
     "## 驱动补丁",
     "摄像头驱动补丁。",
     "## 已知缺陷",
@@ -246,4 +274,69 @@ test("BSP：运行态内核出现 FORBIDDEN 项必须阻断", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ── doc-meta：文档元数据块 ────────────────────────────────────────────────
+
+test("doc-meta：缺少元数据块时门禁必须失败", () => {
+  const root = createCleanFixture();
+  try {
+    const p = path.join(root, "README.md");
+    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(/<!-- DOCSYNC_DOC[\s\S]*?-->\n\n/, ""), "utf8");
+    const r = runAudit(root);
+    assert.notEqual(r.status, 0, `缺少 DOCSYNC_DOC 块应阻断；stdout=${r.stdout}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("doc-meta：status 取值非法时门禁必须失败", () => {
+  const root = createCleanFixture();
+  try {
+    const p = path.join(root, "README.md");
+    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("status=living", "status=whatever"), "utf8");
+    const r = runAudit(root);
+    assert.notEqual(r.status, 0, `status 不在闭集内应阻断；stdout=${r.stdout}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("doc-meta：as_of 不是合法日期时门禁必须失败", () => {
+  const root = createCleanFixture();
+  try {
+    const p = path.join(root, "README.md");
+    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("as_of=2026-01-01", "as_of=2026/01/01"), "utf8");
+    const r = runAudit(root);
+    assert.notEqual(r.status, 0, `as_of 格式非法应阻断；stdout=${r.stdout}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── doc-index 的双向差集（用真实索引驱动）─────────────────────────────────
+// 注：doc-index 在夹具中不生效——夹具没有 git，门禁枚举不到文件会回退到 3 个根文档，
+// docs/index.md 根本不在扫描范围内。故此处直接测 auditDocIndex 的出参。
+// 真实仓库的索引完整性由 docs-sync-audit-selfcheck.test.js 覆盖。
+
+test("auditDocIndex 报告漏登的文档（high）与索引死条目（medium）", () => {
+  const repoRoot = path.join(__dirname, "..", "..");
+  const indexMd = fs.readFileSync(path.join(repoRoot, "docs", "index.md"), "utf8");
+
+  // 真实索引 + 一份未登记的文档 → 应报 high
+  const docs = ["README.md", "docs/architecture/ARCHITECTURE.md", "docs/not-registered.md"];
+  const d = auditDocIndex(indexMd, repoRoot, docs);
+  assert.ok(
+    d.some((x) => x.severity === "high" && x.file === "docs/not-registered.md"),
+    `未登记的文档应报 high；实际：${JSON.stringify(d)}`
+  );
+  // 已登记的文档不应被误报
+  assert.ok(!d.some((x) => x.file === "docs/architecture/ARCHITECTURE.md"), "已登记文档不得误报");
+
+  // 索引里塞一条指向不存在文件的带路径条目 → 应报 medium
+  const d2 = auditDocIndex(`${indexMd}\n| \`missing/nope.md\` | 不存在 |\n`, repoRoot, docs);
+  assert.ok(
+    d2.some((x) => x.severity === "medium" && /missing\/nope\.md/.test(x.message)),
+    `索引死条目应报 medium；实际：${JSON.stringify(d2.filter((x) => x.severity === "medium"))}`
+  );
 });

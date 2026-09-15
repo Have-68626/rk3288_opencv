@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-09-15
+-->
+
 # CLAUDE.md — 项目 AI 助手指南
 
 <!-- DOCSYNC_AGENT_GUIDE_FACTS
@@ -219,8 +225,8 @@ JNI 函数按领域拆分到 `src/cpp/jni/`（`camera.cpp` / `engine.cpp` / `pre
 - **docs/architecture/ARCHITECTURE.md** —— 5 条架构契约（含未落地状态表）
 - **docs/windows-web-spa/openapi.yaml** —— REST API 规范
 - **docs/windows-web-spa/config.schema.json** —— Windows 配置 JSON Schema
-- **docs/superpowers/specs/2026-07-03-triple-refactor-design.md** —— 三层重构设计文档
-- **docs/superpowers/plans/2026-07-03-triple-refactor-plan.md** —— 三层重构实施计划
+- **docs/specs/2026-07-03-triple-refactor-design.md** —— 三层重构设计文档
+- **docs/plans/2026-07-03-triple-refactor-plan.md** —— 三层重构实施计划
 
 ## graphify
 

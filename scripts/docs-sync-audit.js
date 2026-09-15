@@ -30,13 +30,13 @@ function parseArgs(argv) {
     json: true,
     md: true,
     spacingSampleLimit: 12,
-    bspReleaseNotes: "docs/bsp/BSP_RELEASE_NOTES.md",
+    bspReleaseNotes: "docs/bsp/BSP_EVIDENCE_STATUS.md",
     runMarkdownlintCli2: false,
     skipLinks: false,
     linkConcurrency: 6,
     linkCache: "",
     linkCacheTtl: 86400,
-    skipVersionPaths: ["deps/", "docs/bsp/kernel-config/", "docs/bsp/BSP_RELEASE_NOTES.md", "src/win/third_party/"],
+    skipCheckPaths: [],
   };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
@@ -63,8 +63,11 @@ function parseArgs(argv) {
     } else if (a === "--link-cache-ttl" && argv[i + 1]) {
       args.linkCacheTtl = Math.max(0, Number(argv[i + 1]) || 86400);
       i += 1;
-    } else if (a === "--skip-version-paths" && argv[i + 1]) {
-      args.skipVersionPaths = argv[i + 1].split(",").map(s => s.trim()).filter(Boolean);
+    } else if (a === "--skip-check-paths" && argv[i + 1]) {
+      // ⚠️ 这是整体替换而非追加，且会同时关闭 version 与 refpath 两条检查。
+      // 它不是常规开关：CI 命令行中被断言不得出现该参数（见
+      // tests/scripts/docs-sync-audit-gate.test.js），仅本地排查时使用。
+      args.skipCheckPaths = argv[i + 1].split(",").map(s => s.trim()).filter(Boolean);
       i += 1;
     }
   }
@@ -98,24 +101,135 @@ const REPO_REF_PREFIXES = [
   "cmake/", ".github/", "config/", "models/", "deps/", "patterns/",
 ];
 
-// 时点性 / 历史性文档：按定义就是某日的快照。引用「未来才存在」的路径（计划、设计方案）、
-// 已被删除的历史路径（变更日志、审计快照），或上游第三方仓库的同名文件，都是合法行为。
-// 这类文档不做滞后与路径存在性检查，否则会持续产生假阳性。
-const TIMEPOINT_DOC_PATTERNS = [
-  "docs/superpowers/",
-  "docs/research/",
-  // 审计报告本身就是时点快照，而且必然要引用「不存在的路径」作为反例，
-  // 对它做路径存在性检查只会持续产生噪声。
-  "docs/audits/",
+// 不要求文档元数据的「非项目文档」：第三方内容、工具配置，以及两份自述不入库的工作台账。
+// 这是唯一保留的按路径豁免概念 —— 一份文档是否豁免「跟随代码更新」的检查，不再由它
+// 放在哪个目录决定，而由它头部的 status 自述决定（见 isLivingDoc）。
+const DOC_META_EXEMPT_PATTERNS = [
   "deps/",
-  "src/win/third_party/",
-  "CHANGELOG.md",
-  // 根级审计快照已归档到 docs/audits/archive/（由上面的 docs/audits/ 覆盖），
-  // 不再逐个列名。以下两项仍留在根目录且未被 git 跟踪 —— 它们是工作台账，
-  // 引用大量「计划中的路径」，不适用路径存在性检查。
+  "src/win/third_party/civetweb/LICENSE.md",
+  ".claude/agents/",
   "FULL_PROJECT_AUDIT_2026-07-22.md",
   "CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md",
 ];
+
+// 文档元数据块（规范见 docs/DOC_STANDARD.md §1）。
+// 它是「这份文档是什么 / 是否还需跟随代码」的唯一权威声明。此前的做法是按目录豁免
+// （TIMEPOINT_DOC_PATTERNS）——把文档挪进 docs/research/ 即可免检，惩罚为 0，
+// 是个实际生效的后门；改由自述决定后，豁免变成一处 review 时可见的声明。
+const DOC_META_START = "<!-- DOCSYNC_DOC";
+const DOC_META_TYPES = new Set([
+  "guide",
+  "architecture",
+  "design",
+  "plan",
+  "audit",
+  "research",
+  "security",
+  "runbook",
+  "reference",
+  "process",
+]);
+const DOC_META_STATUSES = new Set(["living", "snapshot", "frozen", "placeholder"]);
+
+function parseDocMeta(md) {
+  const start = md.indexOf(DOC_META_START);
+  if (start < 0) return null;
+  const end = md.indexOf("-->", start);
+  if (end < 0) return null;
+  const body = md.slice(start + DOC_META_START.length, end);
+  const meta = {};
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.trim().match(/^([a-z0-9_]+)\s*=\s*(.+)$/i);
+    if (m) meta[m[1]] = m[2].trim();
+  }
+  return meta;
+}
+
+// 该文件是否属于「需要文档元数据守卫」的项目文档
+function requiresDocMeta(rel) {
+  return !shouldSkipVersionPath(rel, DOC_META_EXEMPT_PATTERNS);
+}
+
+// 活文档 = 声明 status=living。缺少元数据时保守地按 living 处理（缺失本身由
+// doc-meta 规则单独报错），避免一个坏掉的块顺带关掉两条检查。
+function isLivingDoc(md) {
+  const meta = parseDocMeta(md);
+  if (!meta) return true;
+  return (meta.status || "living") === "living";
+}
+
+// 元数据块校验：存在、type/status 在闭集内、as_of 为合法日期。
+function auditDocMeta(rel, md) {
+  const meta = parseDocMeta(md);
+  const defects = [];
+  const push = (message) => defects.push({ type: "doc-meta", severity: "high", file: rel, message });
+  if (!meta) {
+    push("缺少 DOCSYNC_DOC 元数据块（规范见 docs/DOC_STANDARD.md）");
+    return defects;
+  }
+  if (!DOC_META_TYPES.has(meta.type)) {
+    push(`元数据 type 非法：${meta.type || "缺失"}（合法值：${[...DOC_META_TYPES].join(" / ")}）`);
+  }
+  if (!DOC_META_STATUSES.has(meta.status)) {
+    push(`元数据 status 非法：${meta.status || "缺失"}（合法值：${[...DOC_META_STATUSES].join(" / ")}）`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(meta.as_of || "")) {
+    push(`元数据 as_of 非法：${meta.as_of || "缺失"}（需 YYYY-MM-DD）`);
+  }
+  return defects;
+}
+
+// 索引里被引用的 .md 路径（反引号与 markdown 链接两种写法），按 docs/ 相对解析。
+// 裸文件名只在它确实指向 docs/ 下的文件时才计入 —— 否则索引里顺带提到的
+// `.claude/agents/android.md`、`FULL_PROJECT_AUDIT_….md` 之类会被误判成 docs/android.md。
+function collectIndexEntries(indexMd, repoRoot) {
+  const raw = new Set();
+  let m;
+  const tickRe = /`([^`]+)`/g;
+  while ((m = tickRe.exec(indexMd))) raw.add(m[1].trim());
+  const linkRe = /\[[^\]]*]\(([^)]+)\)/g;
+  while ((m = linkRe.exec(indexMd))) {
+    const href = m[1].trim();
+    if (!/^https?:/i.test(href)) raw.add(href.replace(/#.*$/, ""));
+  }
+  const resolved = new Set();
+  for (const r of raw) {
+    if (!/\.md$/i.test(r)) continue;
+    const rel = toPosix(path.posix.normalize(path.posix.join("docs", r)));
+    const bare = !r.includes("/");
+    if (bare && !fs.existsSync(path.resolve(repoRoot, rel))) continue;
+    resolved.add(rel);
+  }
+  return resolved;
+}
+
+// 索引完整性（双向差集）：漏登 → high；索引条目指向不存在的文件 → medium。
+// docs/index.md 此前自称受门禁保护，实际上完全不受检查——这条规则让它名副其实。
+function auditDocIndex(indexMd, repoRoot, docFiles) {
+  const defects = [];
+  const indexed = collectIndexEntries(indexMd, repoRoot);
+  for (const rel of docFiles) {
+    if (!requiresDocMeta(rel)) continue;
+    if (!indexed.has(rel)) {
+      defects.push({
+        type: "doc-index",
+        severity: "high",
+        file: rel,
+        message: "未登记进 docs/index.md（规范见 docs/DOC_STANDARD.md §5）",
+      });
+    }
+  }
+  for (const rel of indexed) {
+    if (fs.existsSync(path.resolve(repoRoot, rel))) continue;
+    defects.push({
+      type: "doc-index",
+      severity: "medium",
+      file: "docs/index.md",
+      message: `索引条目指向不存在的文件：${rel}`,
+    });
+  }
+  return defects;
+}
 
 const AGENT_GUIDE_FACTS_START = "<!-- DOCSYNC_AGENT_GUIDE_FACTS";
 const AGENT_GUIDE_SHARED_START = "<!-- DOCSYNC_SHARED_GUIDE_START -->";
@@ -1083,13 +1197,21 @@ async function main() {
       formatInfo: { zhEnNoSpace: conv.zhEnNoSpace, fullwidthAscii: conv.fullwidthAscii },
     };
 
-    const isTimepointDoc =
-      shouldSkipVersionPath(rel, TIMEPOINT_DOC_PATTERNS) ||
-      shouldSkipVersionPath(rel, args.skipVersionPaths);
+    // 元数据块是「这份文档是什么、是否还需跟随代码」的唯一权威声明
+    if (requiresDocMeta(rel)) {
+      report.defects.push(...auditDocMeta(rel, md));
+    }
+
+    // 只有活文档（status=living）做滞后与路径存在性检查——时点快照引用「当时存在、
+    // 现已消失」的路径是合法的。豁免依据是文档自述，不是它放在哪个目录。
+    const skipChecks =
+      !requiresDocMeta(rel) ||
+      !isLivingDoc(md) ||
+      shouldSkipVersionPath(rel, args.skipCheckPaths);
 
     // version 定为 low（复核清单，不阻断门禁）：时间戳无法证明内容陈旧——同一份文档
     // 只改一个字符的提交就能让它「通过」，而活跃仓库里任何活文档按此指标都会永久报红。
-    if (!isTimepointDoc && isVersionStale(lagDays)) {
+    if (!skipChecks && isVersionStale(lagDays)) {
       report.defects.push({
         type: "version",
         severity: "low",
@@ -1112,7 +1234,7 @@ async function main() {
       });
     }
 
-    if (!isTimepointDoc) {
+    if (!skipChecks) {
       for (const d of auditRefPaths(collectRepoPathRefs(md), repoRoot, rel)) {
         report.defects.push(d);
       }
@@ -1122,6 +1244,11 @@ async function main() {
   const agentGuideAudit = auditAgentGuides(repoRoot);
   report.agentGuideAudit = agentGuideAudit;
   report.defects.push(...agentGuideAudit.defects);
+
+  // 索引完整性：docs/index.md 与实际文档集做双向差集
+  if (mdCache["docs/index.md"] !== undefined) {
+    report.defects.push(...auditDocIndex(mdCache["docs/index.md"], repoRoot, Object.keys(mdCache)));
+  }
 
   const readme = await fsp.readFile(rootFiles[0], "utf8");
   const develop = await fsp.readFile(rootFiles[1], "utf8");
@@ -1549,6 +1676,15 @@ module.exports = {
   auditRefPaths,
   fixMarkdown,
   findRequiredSections,
+  parseDocMeta,
+  auditDocMeta,
+  auditDocIndex,
+  collectIndexEntries,
+  requiresDocMeta,
+  isLivingDoc,
+  DOC_META_TYPES,
+  DOC_META_STATUSES,
+  DOC_META_EXEMPT_PATTERNS,
   classifyLinkResult,
   linkDefectMessage,
   parseKernelConfigMap,

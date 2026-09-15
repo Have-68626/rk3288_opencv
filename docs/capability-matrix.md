@@ -1,8 +1,13 @@
+<!-- DOCSYNC_DOC
+type=reference
+status=living
+as_of=2026-09-12
+-->
+
 # 终端能力矩阵（Android / Windows / Web / CLI）
 
-**更新日期**: 2026-09-12
 
-**状态**: 现状快照（以仓库当前代码与构建脚本为准）。本文回答“每个终端**有什么构建产物、能做什么、边界在哪**”，不表示任何终端已完成真机验收；验收口径见 `docs/designs/rk3288-device-acceptance.md`。
+**状态**: 现状快照（以仓库当前代码与构建脚本为准）。本文回答“每个终端**有什么构建产物、能做什么、边界在哪**”，不表示任何终端已完成真机验收；验收口径见 `docs/guides/rk3288-device-acceptance.md`。
 
 **范围**: Android App、Windows 本地服务、Web SPA、旧 Win32 UI，以及 5 个命令行工具（`rk3288_cli`、`opencv_verify_cli`、`inference_bench_cli`、`win_face_eval_cli`、`win_face_bench_cli`）。
 
@@ -106,4 +111,4 @@
 - **加速契约**：MPP、ncnn、libyuv、Qualcomm、OpenCL 一律遵循 `requested`/`effective`/`evidence`/`reason`，reason 取固定码 `ok`、`build_disabled`、`unsupported_platform`、`missing_dependency`、`missing_model`、`runtime_init_failed`、`unsupported_input`。
 - **平台目标**：RK3288 目标 ABI 为 `armeabi-v7a`、NEON 必需、无 NPU；任何终端不得引入 rknn/rknpu 依赖。
 - **测试框架**：`core_unit_tests`/`core_gtest_tests` 用 GoogleTest；`face_infer_unit_tests`/`win_unit_tests`/`ncnn_precision_test` 用自定义 `bool` 测试；新增测试沿用所在 target 框架。
-- **相关文档**：`docs/RK3288_CONSTRAINTS.md`、`docs/windows-web-spa/architecture.md`、`docs/windows-web-spa/feature_parity.md`、`docs/windows-web-spa/performance.md`、`DEVELOP.md`、`CREDITS.md`。
+- **相关文档**：`docs/RK3288_CONSTRAINTS.md`、`docs/windows-web-spa/architecture.md`、`docs/windows-web-spa/feature_parity.md`、`docs/guides/windows-service/performance.md`、`DEVELOP.md`、`CREDITS.md`。

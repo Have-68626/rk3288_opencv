@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=security
+status=living
+as_of=2026-08-13
+-->
+
 # 最小启用方案（Security Enablement Plan）
 
 > 治理任务 S-SEC-B10-007（SEC-16）产物。与 `SECURITY.md` 配套，回答：

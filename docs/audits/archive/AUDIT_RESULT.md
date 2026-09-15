@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=audit
+status=frozen
+as_of=2026-07-06
+-->
+
 # 重构洞察审计报告
 
 ## 审计范围

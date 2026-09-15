@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-09-15
+-->
+
 # graphify
 用户输入 `/graphify` 时，先加载 graphify skill 再执行任何其他操作。知识图谱的查询/更新规则见根目录 `CLAUDE.md` 的 graphify 一节。
 

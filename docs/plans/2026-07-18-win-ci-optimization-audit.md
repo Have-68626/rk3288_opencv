@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=plan
+status=snapshot
+as_of=2026-07-18
+-->
+
 # Windows CI 优化审计报告
 
 **日期：** 2026-07-18（首次）；2026-07-18（更新）

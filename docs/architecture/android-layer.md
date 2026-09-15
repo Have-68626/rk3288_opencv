@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=architecture
+status=living
+as_of=2026-07-05
+-->
+
 # Android 层架构文档
 
 > 本文档描述 RK3288 AI Engine Android 层的架构设计，涵盖 Activity、JNI 桥接、采集管线、及安全架构。全部 Java 源码位于 `com.example.rk3288_opencv` 包。

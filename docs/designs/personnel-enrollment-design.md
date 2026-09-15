@@ -1,7 +1,11 @@
+<!-- DOCSYNC_DOC
+type=design
+status=living
+as_of=2026-07-21
+-->
+
 # 人员注册与权限系统顶层设计（Win + Android 双端）
 
-- 日期：2026-06-22
-- 最后复核：2026-07-21
 - 状态：目标设计；基础 personId 注册已落地，完整人员域与权限系统未实现
 - 适用范围：`rk3288_opencv` 项目 Windows 本地服务、Web SPA、Android App、共享 C++ 识别核心
 - 设计目标：在不引入企业级重型平台的前提下，建设一套具备生产实践能力、支持特殊场景扩展、覆盖 Win/Android 双端的人员注册与权限系统

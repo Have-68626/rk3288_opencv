@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-09-15
+-->
+
 # Loop Constraints — rk3288_opencv
 
 > 本文件由 `loop-constraints` 技能在每次运行开始时读取，约束**具有强制力**，loop 必须遵守。
