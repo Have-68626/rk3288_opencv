@@ -27,7 +27,11 @@ jobs:
           node-version: "22"
 
       - name: Test Docs Sync Audit
-        run: node --test tests/scripts/docs-sync-audit.test.js
+        # 用 glob 覆盖 docs-sync-audit 的全部测试文件（含 -gate 端到端与 -selfcheck
+        # 真实仓库门禁断言）。此前只点名 docs-sync-audit.test.js，而 ci.yml 的
+        # repo-hygiene job 带 docs_only != 'true' 条件，导致 docs-only PR 上
+        # 两个测试文件均不执行。
+        run: node --test tests/scripts/docs-sync-audit*.test.js
 
       - name: Run Docs Sync Audit
         # 与 ci.yml 的 docs-audit job 命令保持一致：--skip-links（本地可验证、内部一致性

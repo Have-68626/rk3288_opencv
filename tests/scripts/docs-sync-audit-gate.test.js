@@ -177,3 +177,73 @@ test("Q-CQ-B08-007：markdownlint-cli2 非零退出时门禁必须失败（退�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 按指定的 MUST 清单重写 BSP 三件套：约束文档策略块、defconfig、运行态内核快照。
+// defconfigIds 少于 mustIds 即人为制造 MUST 缺失，用于验证 3% 容差边界。
+function writeBspPolicy(root, mustIds, defconfigIds, kernelIds) {
+  write(root, "docs/RK3288_CONSTRAINTS.md", [
+    "# RK3288 约束文档",
+    "",
+    "## 硬件限制",
+    "内存 512M，CPU Cortex-A17。",
+    "## 内核配置",
+    "",
+    "```",
+    "DOCSYNC_KERNEL_CONFIG_POLICY",
+    "[MUST]",
+    ...mustIds,
+    "[OPTIONAL]",
+    "CONFIG_Y",
+    "[FORBIDDEN]",
+    "CONFIG_Z",
+    "```",
+    "",
+    "BSP Release Note: docs/bsp/BSP_RELEASE_NOTES.md",
+    "## 驱动补丁",
+    "摄像头驱动补丁。",
+    "## 已知缺陷",
+    "暂无已知缺陷。",
+    "",
+  ].join("\n"));
+  write(root, "configs/rockchip_defconfig", `${defconfigIds.map((id) => `${id}=y`).join("\n")}\n`);
+  write(root, "docs/bsp/kernel-config/kernel_cfg", `${kernelIds.map((id) => `${id}=y`).join("\n")}\n`);
+}
+
+// 容差是严格大于（diffPct > 0.03）：33 项缺 1 为 3.03% 必须阻断，
+// 100 项缺 3 恰好 3% 不得阻断。这组边界极易被误改成 >=。
+test("BSP 容差边界：MUST 缺失 3.03% 必须阻断", () => {
+  const root = createCleanFixture();
+  try {
+    const must = Array.from({ length: 33 }, (_, i) => `CONFIG_M${i}`);
+    writeBspPolicy(root, must, must.slice(1), must);
+    const r = runAudit(root);
+    assert.notEqual(r.status, 0, `1/33 ≈ 3.03% 超过 3% 阈值，必须阻断；stdout=${r.stdout}\nstderr=${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).ok, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("BSP 容差边界：MUST 缺失恰好 3% 不得阻断", () => {
+  const root = createCleanFixture();
+  try {
+    const must = Array.from({ length: 100 }, (_, i) => `CONFIG_M${i}`);
+    writeBspPolicy(root, must, must.slice(3), must);
+    const r = runAudit(root);
+    assert.equal(r.status, 0, `3/100 = 恰好 3% 不应阻断；stdout=${r.stdout}\nstderr=${r.stderr}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("BSP：运行态内核出现 FORBIDDEN 项必须阻断", () => {
+  const root = createCleanFixture();
+  try {
+    fs.appendFileSync(path.join(root, "docs/bsp/kernel-config/kernel_cfg"), "CONFIG_Z=y\n", "utf8");
+    const r = runAudit(root);
+    assert.notEqual(r.status, 0, `FORBIDDEN 命中应阻断；stdout=${r.stdout}\nstderr=${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).ok, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

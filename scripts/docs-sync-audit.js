@@ -71,6 +71,55 @@ function parseArgs(argv) {
   return args;
 }
 
+// 文档滞后基准的「代码路径」集合：文档描述的就是这些内容，只有它们变化才可能让文档陈旧。
+// 不能用 `git log --merges` 作基准——本项目用 squash merge，master 上的 merge commit
+// 只来自偶发的 `git pull`，基准会长期冻结（2026-09 曾因此产生 45 个假阳性 high 缺陷）。
+const CODE_BASELINE_PATHS = [
+  "src/",
+  "app/",
+  "web/src/",
+  "tests/",
+  "scripts/",
+  "cmake/",
+  ".github/",
+  "gradle/",
+  "config/",
+  "CMakeLists.txt",
+];
+
+// 时间戳只能提示「该复核了」，无法证明内容陈旧（改一个字符即可让文档「通过」），
+// 因此 version 缺陷定为 low：进报告作为复核清单，但不阻断门禁。
+const VERSION_LAG_THRESHOLD_DAYS = 7;
+
+// refpath 检查只认这些顶层前缀，避免把 `try/catch`、`actions/setup-java` 之类
+// 误判成仓库路径而制造噪声。
+const REPO_REF_PREFIXES = [
+  "src/", "app/", "web/", "docs/", "tests/", "scripts/",
+  "cmake/", ".github/", "config/", "models/", "deps/", "patterns/",
+];
+
+// 时点性 / 历史性文档：按定义就是某日的快照。引用「未来才存在」的路径（计划、设计方案）、
+// 已被删除的历史路径（变更日志、审计快照），或上游第三方仓库的同名文件，都是合法行为。
+// 这类文档不做滞后与路径存在性检查，否则会持续产生假阳性。
+const TIMEPOINT_DOC_PATTERNS = [
+  "docs/superpowers/",
+  "docs/research/",
+  // 审计报告本身就是时点快照，而且必然要引用「不存在的路径」作为反例，
+  // 对它做路径存在性检查只会持续产生噪声。
+  "docs/audits/",
+  "deps/",
+  "src/win/third_party/",
+  "CHANGELOG.md",
+  "AUDIT_REPORT.md",
+  "AUDIT_RESULT.md",
+  "GITHUB_SCAN_AUDIT.md",
+  "GOVERNANCE_VERIFICATION.md",
+  "GOVERNANCE_EXECUTION_AUDIT.md",
+  "REMOTE_BRANCH_AUDIT.md",
+  "FULL_PROJECT_AUDIT_2026-07-22.md",
+  "CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md",
+];
+
 const AGENT_GUIDE_FACTS_START = "<!-- DOCSYNC_AGENT_GUIDE_FACTS";
 const AGENT_GUIDE_SHARED_START = "<!-- DOCSYNC_SHARED_GUIDE_START -->";
 const AGENT_GUIDE_SHARED_END = "<!-- DOCSYNC_SHARED_GUIDE_END -->";
@@ -258,18 +307,28 @@ function splitMarkdownBlocks(md) {
 }
 
 function extractHeadUpdateTime(md) {
-  const head = md.split(/\r?\n/).slice(0, 60).join("\n");
+  // 只认文档头部（前 60 行）的元数据，正文里出现的日期不算。
+  // 先归一化：剥掉粗体标记、行首引用符与列表符号，使 `**更新日期**:`、`> **最后复核**:`、
+  // `- 最后复核：` 等写法与纯文本写法走同一条正则（此前 `[\s]*[:：]` 被 `**` 卡住，
+  // 导致仓库里 15 个文件写的是 `**更新日期**: YYYY-MM-DD` 却完全不被识别）。
+  const head = md
+    .split(/\r?\n/)
+    .slice(0, 60)
+    .map((l) => l.replace(/\*\*/g, "").replace(/^\s*[>-]\s*/, ""))
+    .join("\n");
+  const labels = ["最后更新", "更新时间", "更新日期", "最后复核"];
   const patterns = [
-    /最后更新[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /更新时间[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /更新日期[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
-    /last\s+updated[\s]*[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
+    ...labels.map((l) => new RegExp(`${l}[ \\t]*[:：][ \\t]*([0-9]{4}-[0-9]{2}-[0-9]{2})`, "i")),
+    /last\s+updated[ \t]*[:：][ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})/i,
   ];
+  // 命中优先级 = 标签在 labels 中的顺序；同一头部含多个标签时取先列出的那个（确定性）。
   for (const re of patterns) {
     const m = head.match(re);
     if (m) {
-      const d = new Date(`${m[1]}T00:00:00`);
-      if (!Number.isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
+      const [y, mo, d] = m[1].split("-").map(Number);
+      // 用 UTC 解释日期：基准时间戳来自 git（UTC），此处若按本地时区解释会产生
+      // 恒定的 8 小时偏差，使同一文档在 Windows 本地与 ubuntu CI 上判定不一致。
+      return Math.floor(Date.UTC(y, mo - 1, d) / 1000);
     }
   }
   return null;
@@ -291,6 +350,7 @@ function getMainBranchName() {
   return out || "main";
 }
 
+// 保留旧基准实现，仅供对照/测试使用，主流程已改用 getCodeBaselineTs。
 function getLastMergeTs(branch) {
   const out = safeExec(`git log ${branch} --merges -n 1 --format=%ct`);
   const n = Number(out);
@@ -300,8 +360,43 @@ function getLastMergeTs(branch) {
   return Number.isFinite(n2) && n2 > 0 ? n2 : null;
 }
 
+// 基准 = 最近一次触及「代码路径」的提交。语义是：代码变了，描述它的文档可能就旧了。
+// 取不到时回退到全仓最后一次提交（而非返回 null），否则整个 version 检查会静默失效。
+// runGit 可注入，使测试能断言命令内容（本次回归的本质就是「调错了 git 命令」）。
+function getCodeBaselineTs(branch, runGit = safeExec) {
+  const pathspecs = CODE_BASELINE_PATHS.map((p) => `"${p}"`).join(" ");
+  const out = runGit(`git log ${branch} -n 1 --format=%ct -- ${pathspecs}`);
+  const n = Number(out);
+  if (Number.isFinite(n) && n > 0) return n;
+  const out2 = runGit(`git log ${branch} -n 1 --format=%ct`);
+  const n2 = Number(out2);
+  return Number.isFinite(n2) && n2 > 0 ? n2 : null;
+}
+
 function dayDiff(aTs, bTs) {
   return Math.floor((aTs - bTs) / 86400);
+}
+
+// null 安全：基准或文档时间戳缺失时返回 null（而非 NaN），由调用方跳过该检查。
+function computeLagDays(baselineTs, usedTs) {
+  if (!baselineTs || !usedTs) return null;
+  return dayDiff(baselineTs, usedTs);
+}
+
+function isVersionStale(lagDays, threshold = VERSION_LAG_THRESHOLD_DAYS) {
+  return lagDays !== null && lagDays > threshold;
+}
+
+// 段匹配而非子串匹配：避免 `docs/bsp/kernel-config/` 连带豁免
+// `docs/bsp/kernel-config-notes.md` 这类同前缀不同目录的文档。
+// 空模式必须不匹配任何路径（裸 `rel.includes("")` 恒真，会静默豁免全部文档）。
+function shouldSkipVersionPath(rel, patterns) {
+  const p = toPosix(rel);
+  return patterns.some((raw) => {
+    const norm = toPosix(String(raw || "")).replace(/\/+$/, "");
+    if (!norm) return false;
+    return p === norm || p.startsWith(`${norm}/`);
+  });
 }
 
 function normalizeHeadingText(t) {
@@ -479,13 +574,39 @@ function fixMarkdown(md, defects) {
   return fixedBlocks.join("\n");
 }
 
+// 全角字符分类。中文文档本就应当使用全角标点（，。；：），把它们算作问题会产生
+// 海量假阳性（实测全仓 5086 行会被误报）。真正的问题是全角字母数字（ＡＢＣ１２３）
+// 与全角空格 U+3000——它们会破坏搜索、复制与代码对齐。
+// 用码点区间判断而非正则字面量，避免源文件里出现肉眼难辨的全角字符。
+function classifyFullwidth(text) {
+  let alnum = 0;
+  let space = 0;
+  let punct = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0);
+    if (c === 0x3000) space += 1;
+    else if (
+      (c >= 0xff10 && c <= 0xff19) ||
+      (c >= 0xff21 && c <= 0xff3a) ||
+      (c >= 0xff41 && c <= 0xff5a)
+    ) {
+      alnum += 1;
+    } else if (c >= 0xff01 && c <= 0xff5e) {
+      punct += 1;
+    }
+  }
+  return { alnum, space, punct };
+}
+
 function scanTextConventions(md, sampleLimit) {
   const lines = md.split(/\r?\n/);
   let inFence = false;
   let fence = "```";
   let zhEnNoSpace = 0;
   let fullwidthAscii = 0;
+  let fullwidthProblem = 0;
   const samples = [];
+  const problemSamples = [];
   const fullwidthRe = /[\u3000\uFF01-\uFF5E]/u;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -502,14 +623,26 @@ function scanTextConventions(md, sampleLimit) {
     const t = stripInlineCode(line);
     const zhEn = /[\u4e00-\u9fff][A-Za-z0-9]/.test(t) || /[A-Za-z0-9][\u4e00-\u9fff]/.test(t);
     const fw = fullwidthRe.test(t);
+    const cls = classifyFullwidth(t);
     if (zhEn) zhEnNoSpace += 1;
     if (fw) fullwidthAscii += 1;
+    // 与中英混排分开维护样例池：否则中英混排行会挤占全角问题的样例，
+    // 使 low 缺陷的 message 拼不出可定位的行号。
+    if (cls.alnum > 0 || cls.space > 0) {
+      fullwidthProblem += 1;
+      if (problemSamples.length < sampleLimit) {
+        const parts = [];
+        if (cls.alnum > 0) parts.push(`全角字母数字 ×${cls.alnum}`);
+        if (cls.space > 0) parts.push(`全角空格 ×${cls.space}`);
+        problemSamples.push({ line: i + 1, message: parts.join(" + "), excerpt: t.trim().slice(0, 120) });
+      }
+    }
     if ((zhEn || fw) && samples.length < sampleLimit) {
       const msg = zhEn && fw ? "中英文混排缺空格 + 全角ASCII" : zhEn ? "中英文混排缺空格" : "全角ASCII/全角空格";
       samples.push({ line: i + 1, message: msg, excerpt: t.trim().slice(0, 120) });
     }
   }
-  return { zhEnNoSpace, fullwidthAscii, samples };
+  return { zhEnNoSpace, fullwidthAscii, fullwidthProblem, samples, problemSamples };
 }
 
 function runMarkdownlintCli2(files, repoRoot) {
@@ -790,6 +923,80 @@ function parseConfigItems(text) {
   return out;
 }
 
+const REPO_REF_EXT = /\.(md|js|mjs|cjs|ts|tsx|jsx|py|cpp|cc|h|hpp|json|yaml|yml|sh|ps1|bat|cmd|ini|toml|txt|xml|properties|gradle|cmake|cfg|kt|java)$/i;
+
+// 把一处反引号引用展开成候选仓库路径。返回空数组表示「这不是一条仓库路径引用」——
+// 过滤规则刻意保守：裸文件名、通配符、占位符、绝对路径、URL 一律不计，以免制造噪声。
+function expandRepoPathRef(raw) {
+  let s = String(raw || "").trim();
+  if (!s) return [];
+  s = s.replace(/[#:].*$/, ""); // 去掉 :行号 与 #锚点
+  if (!s || /^https?:/i.test(s)) return [];
+  if (/[*?<>{}]/.test(s) || s.includes("...")) return []; // 通配、花括号展开、占位符
+  if (!s.includes("/")) return []; // 裸文件名歧义过大（同名文件散落多处），不计
+  if (s.startsWith("/") || /^[A-Za-z]:/.test(s)) return [];
+  const candidates = [];
+  // `Foo.h/.cpp` 这类合并写法展开成 Foo.h 与 Foo.cpp
+  const multi = s.match(/^(.*)\.([A-Za-z0-9]+)((?:\/\.[A-Za-z0-9]+)+)$/);
+  if (multi) {
+    candidates.push(`${multi[1]}.${multi[2]}`);
+    for (const extra of multi[3].split("/")) candidates.push(`${multi[1]}${extra}`);
+  } else {
+    candidates.push(s);
+  }
+  // 只接受仓库根相对路径且落在已知顶层目录下：据此排除 `try/catch`、
+  // `actions/setup-java`、`storage/...`（运行时路径，不入库）之类的误命中。
+  return candidates.filter(
+    (c) => REPO_REF_EXT.test(c) && REPO_REF_PREFIXES.some((pre) => c.startsWith(pre))
+  );
+}
+
+// 提取正文（跳过围栏代码块）中反引号引用的仓库路径。
+function collectRepoPathRefs(md) {
+  const lines = md.split(/\r?\n/);
+  const refs = [];
+  let inFence = false;
+  let fence = "```";
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const fenceStart = line.match(/^(```+)/);
+    if (fenceStart && !inFence) {
+      inFence = true;
+      fence = fenceStart[1];
+      continue;
+    }
+    if (inFence) {
+      if (line.startsWith(fence)) inFence = false;
+      continue;
+    }
+    const re = /`([^`]+)`/g;
+    let m;
+    while ((m = re.exec(line))) {
+      for (const p of expandRepoPathRef(m[1])) refs.push({ path: p, line: i + 1 });
+    }
+  }
+  return refs;
+}
+
+// 引用的仓库路径不存在 → low（提示，不阻断）。
+// 实测本仓库上该检查的真阳性为零：命中的都是「上游第三方仓库同名文件」（如 CREDITS.md
+// 引 ncnn 的 `src/paramdict.cpp`）、「运行时路径」（`storage/...`）与「计划中的路径」。
+// 反引号里的路径本质上是歧义的，不像 .md 链接那样可判定，因此不能用作阻断条件——
+// 否则会重蹈 version 时间戳检查的覆辙。
+function auditRefPaths(refs, repoRoot, fromFile) {
+  const defects = [];
+  for (const r of refs) {
+    if (fs.existsSync(path.resolve(repoRoot, r.path))) continue;
+    defects.push({
+      type: "refpath",
+      severity: "low",
+      file: fromFile,
+      message: `引用的仓库路径不存在：\`${r.path}\`（第 ${r.line} 行）`,
+    });
+  }
+  return defects;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const repoRoot = path.resolve(__dirname, "..");
@@ -804,13 +1011,13 @@ async function main() {
   const files = allFiles.length > 0 ? allFiles : rootFiles;
 
   const branch = getMainBranchName();
-  const lastMergeTs = getLastMergeTs(branch);
+  const baselineTs = getCodeBaselineTs(branch);
 
   const report = {
     runId: `${nowIsoLocal()}-${sha256Hex(String(Date.now())).slice(0, 8)}`,
     branch,
-    lastMergeTs,
-    lastMergeIso: lastMergeTs ? new Date(lastMergeTs * 1000).toISOString() : null,
+    baselineTs,
+    baselineIso: baselineTs ? new Date(baselineTs * 1000).toISOString() : null,
     files: {},
     defects: [],
     summary: { defectCount: 0, severity: { high: 0, medium: 0, low: 0 } },
@@ -824,7 +1031,7 @@ async function main() {
     const headTs = extractHeadUpdateTime(md);
     const gitTs = getGitFileLastCommitTs(abs);
     const usedTs = headTs || gitTs;
-    const lagDays = lastMergeTs && usedTs ? dayDiff(lastMergeTs, usedTs) : null;
+    const lagDays = computeLagDays(baselineTs, usedTs);
 
     const links = collectMdLinks(md);
     const externalLinks = links.filter((u) => isHttpUrl(u));
@@ -842,34 +1049,48 @@ async function main() {
       gitLastCommitTs: gitTs,
       usedUpdateTs: usedTs,
       usedUpdateIso: usedTs ? new Date(usedTs * 1000).toISOString() : null,
-      lagDaysFromLastMerge: lagDays,
+      lagDaysFromBaseline: lagDays,
       externalLinkCount: externalLinks.length,
       zhEnNoSpaceLineCount: conv.zhEnNoSpace,
       fullwidthAsciiLineCount: conv.fullwidthAscii,
+      fullwidthProblemLineCount: conv.fullwidthProblem,
+      // 保留 formatInfo 字段形状不变，避免破坏既有消费方
+      formatInfo: { zhEnNoSpace: conv.zhEnNoSpace, fullwidthAscii: conv.fullwidthAscii },
     };
 
-    const skipVersion = args.skipVersionPaths.some(p => rel.includes(p.replace(/\\/g, "/").replace(/\/$/, "")));
-    if (skipVersion) { /* skip version check for third-party/placeholder files */ }
-    else if (lagDays !== null && lagDays > 7) {
+    const isTimepointDoc =
+      shouldSkipVersionPath(rel, TIMEPOINT_DOC_PATTERNS) ||
+      shouldSkipVersionPath(rel, args.skipVersionPaths);
+
+    // version 定为 low（复核清单，不阻断门禁）：时间戳无法证明内容陈旧——同一份文档
+    // 只改一个字符的提交就能让它「通过」，而活跃仓库里任何活文档按此指标都会永久报红。
+    if (!isTimepointDoc && isVersionStale(lagDays)) {
       report.defects.push({
         type: "version",
-        severity: "high",
+        severity: "low",
         file: rel,
-        message: `文档更新滞后：距主分支最近一次合并已 ${lagDays} 天（阈值 7 天）`,
+        message: `文档更新滞后：距最近一次代码变更已 ${lagDays} 天（阈值 ${VERSION_LAG_THRESHOLD_DAYS} 天）`,
       });
     }
 
-    if (conv.zhEnNoSpace > 0 || conv.fullwidthAscii > 0) {
-      const sampleText =
-        conv.samples.length === 0
-          ? ""
-          : `；样例：` +
-            conv.samples
-              .map((s) => `L${s.line}(${s.message}): ${s.excerpt}`)
-              .join(" | ");
-      if (!report.files[rel].formatInfo) report.files[rel].formatInfo = {};
-      report.files[rel].formatInfo.zhEnNoSpace = conv.zhEnNoSpace;
-      report.files[rel].formatInfo.fullwidthAscii = conv.fullwidthAscii;
+    // 全角字母数字 / 全角空格是真实排版问题（破坏搜索、复制与代码对齐），记 low 不阻断；
+    // 全角标点是中文文档的正确用法，不计入。
+    if (conv.fullwidthProblem > 0) {
+      const sample = conv.problemSamples
+        .map((s) => `L${s.line}(${s.message}): ${s.excerpt}`)
+        .join(" | ");
+      report.defects.push({
+        type: "format",
+        severity: "low",
+        file: rel,
+        message: `存在全角字母数字或全角空格共 ${conv.fullwidthProblem} 行${sample ? `；样例：${sample}` : ""}`,
+      });
+    }
+
+    if (!isTimepointDoc) {
+      for (const d of auditRefPaths(collectRepoPathRefs(md), repoRoot, rel)) {
+        report.defects.push(d);
+      }
     }
   }
 
@@ -1249,7 +1470,7 @@ async function main() {
     lines.push("");
     lines.push(`- runId: \`${report.runId}\``);
     lines.push(`- branch: \`${report.branch}\``);
-    lines.push(`- lastMerge: \`${report.lastMergeIso || "N/A"}\``);
+    lines.push(`- baseline: \`${report.baselineIso || "N/A"}\``);
     lines.push(`- defects: \`${report.summary.defectCount}\` (high=${report.summary.severity.high}, medium=${report.summary.severity.medium}, low=${report.summary.severity.low})`);
     lines.push("");
     lines.push(`## Files`);
@@ -1257,7 +1478,7 @@ async function main() {
     for (const k of Object.keys(report.files)) {
       const f = report.files[k];
       lines.push(
-        `- \`${f.path}\` update=\`${f.usedUpdateIso || "N/A"}\` lagDays=\`${String(f.lagDaysFromLastMerge)}\` links=\`${f.externalLinkCount}\` zhEnNoSpaceLines=\`${f.zhEnNoSpaceLineCount}\` fullwidthLines=\`${f.fullwidthAsciiLineCount}\``
+        `- \`${f.path}\` update=\`${f.usedUpdateIso || "N/A"}\` lagDays=\`${String(f.lagDaysFromBaseline)}\` links=\`${f.externalLinkCount}\` zhEnNoSpaceLines=\`${f.zhEnNoSpaceLineCount}\` fullwidthLines=\`${f.fullwidthAsciiLineCount}\``
       );
     }
     lines.push("");
@@ -1299,4 +1520,35 @@ if (require.main === module) {
   });
 }
 
-module.exports = { auditAgentGuides, auditCrossRefs, isGatePassed, resolveCrossRefPath };
+module.exports = {
+  auditAgentGuides,
+  auditCrossRefs,
+  isGatePassed,
+  resolveCrossRefPath,
+  // 以下导出供单测直接调用（此前 40+ 个函数全为模块私有，导致 version/lagDays、
+  // bsp、--fix 等规则完全无法被单测覆盖）
+  parseArgs,
+  extractHeadUpdateTime,
+  computeLagDays,
+  isVersionStale,
+  getCodeBaselineTs,
+  getLastMergeTs,
+  getMainBranchName,
+  shouldSkipVersionPath,
+  scanTextConventions,
+  classifyFullwidth,
+  collectRepoPathRefs,
+  expandRepoPathRef,
+  auditRefPaths,
+  fixMarkdown,
+  findRequiredSections,
+  parseKernelConfigMap,
+  parseKernelConfigPolicyFromConstraints,
+  parseConfigItems,
+  isPlaceholderText,
+  findDefconfigPath,
+  findKernelConfigSnapshotPath,
+  CODE_BASELINE_PATHS,
+  REPO_REF_PREFIXES,
+  VERSION_LAG_THRESHOLD_DAYS,
+};
