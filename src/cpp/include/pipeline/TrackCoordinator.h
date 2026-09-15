@@ -61,6 +61,16 @@ public:
     //（见 Engine::trackFaces 持 tracksMu_ 调用 update/reset）。
     void reset();
 
+    // 按图库有效身份**精准撤销**（第三波审查 #1：reset() 过宽——多人场景删除/注册
+    // **一人**会瞬时抹掉其他人的稳定身份、需重新累计 stableFrames）。
+    // 语义：对 stableId **不在** keepIds（本次图库仍有效的身份集合）中的轨迹，仅把身份
+    // 清为 "Unknown" 并清零 stableConfidence；**保留轨迹本体、bbox 与确认/缺失计数**，
+    // 避免丢框、避免重新累计 stableFrames。keepIds 中的稳定身份原样保留。
+    // 空 keepIds（删除末位人员 → 空图库）→ 全部清为 "Unknown"，与 reset() 的全清语义
+    // 等价，但**不丢框**（reset() 会清空轨迹、需重新累计确认）。
+    // 线程安全：与 reset() 一致，非线程安全；调用方（Engine）须持 tracksMu_ 与 update() 互斥。
+    void resetIdentitiesExcept(const std::vector<std::string>& keepIds);
+
     int trackCount() const { return static_cast<int>(tracks_.size()); }
 
 private:

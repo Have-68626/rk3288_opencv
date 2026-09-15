@@ -1,6 +1,8 @@
 #include "pipeline/TrackCoordinator.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <string>
 #include <vector>
 
 namespace {
@@ -177,4 +179,53 @@ TEST(TrackCoordinator, ResetClearsTracksButKeepsIdCounter) {
     ASSERT_EQ(rebuilt.size(), 1u);
     EXPECT_EQ(rebuilt[0].trackId, 2);
     EXPECT_EQ(rebuilt[0].stableId, "alice");
+}
+
+// 第三波审查 #1：resetIdentitiesExcept 精准撤销——仅清「已不在图库」的身份，
+// 保留其他轨迹身份与轨迹本体（bbox），不丢框、不重新累计 stableFrames。
+TEST(TrackCoordinator, ResetIdentitiesExceptKeepsOtherIdentitiesAndBoxes) {
+    pipeline::TrackCoordinator tc;
+    // 3 帧确认两条已认证轨迹：alice（左）/ bob（右）
+    for (int i = 0; i < 3; ++i) {
+        tc.update({face(0, 0, 100, 150, true, "alice", 0.90f),
+                   face(200, 0, 100, 150, true, "bob", 0.91f)},
+                  1000 + i * 100, true);
+    }
+    ASSERT_EQ(tc.trackCount(), 2);
+
+    // 模拟「仅删除 alice」：keepIds={bob}
+    tc.resetIdentitiesExcept({"bob"});
+
+    // 空检测（已确认轨迹单次缺失仍保留）→ 观测内部身份
+    const auto views = tc.update({}, 1400, true);
+    EXPECT_EQ(tc.trackCount(), 2);  // 轨迹本体保留，不丢框
+    ASSERT_EQ(views.size(), 2u);
+    std::vector<std::string> ids;
+    for (const auto& v : views) {
+        EXPECT_GT(v.bbox.area(), 0);  // bbox 保留
+        ids.push_back(v.stableId);
+    }
+    std::sort(ids.begin(), ids.end());
+    ASSERT_EQ(ids.size(), 2u);
+    EXPECT_EQ(ids[0], "Unknown");  // alice 身份被撤销
+    EXPECT_EQ(ids[1], "bob");      // bob 身份原样保留
+}
+
+// 第三波审查 #1：空 keepIds（删除末位人员 → 空图库）→ 全部清为 "Unknown"，
+// 与 reset() 的全清语义等价，但**不丢框**（轨迹本体保留；reset() 则会清空轨迹）。
+TEST(TrackCoordinator, ResetIdentitiesExceptEmptyClearsAllButKeepsBoxes) {
+    pipeline::TrackCoordinator tc;
+    for (int i = 0; i < 3; ++i) {
+        tc.update({face(0, 0, 100, 150, true, "alice", 0.90f),
+                   face(200, 0, 100, 150, true, "bob", 0.91f)},
+                  1000 + i * 100, true);
+    }
+    ASSERT_EQ(tc.trackCount(), 2);
+
+    tc.resetIdentitiesExcept({});  // 空图库
+
+    const auto views = tc.update({}, 1400, true);
+    EXPECT_EQ(tc.trackCount(), 2);  // 不丢框（对比：reset() 后 trackCount 归零）
+    ASSERT_EQ(views.size(), 2u);
+    for (const auto& v : views) EXPECT_EQ(v.stableId, "Unknown");
 }

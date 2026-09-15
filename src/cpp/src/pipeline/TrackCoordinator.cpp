@@ -161,6 +161,26 @@ void TrackCoordinator::reset() {
     tracks_.clear();
 }
 
+void TrackCoordinator::resetIdentitiesExcept(const std::vector<std::string>& keepIds) {
+    // 第三波审查 #1：reset() 过宽——多人场景下删除/注册一人会瞬时抹掉其他人身份。
+    // 本方法仅撤销「已不在本次图库有效集（keepIds）」中的稳定身份：把 stableId 清为
+    // "Unknown" 并清零 stableConfidence，但**保留轨迹本体/bbox/确认计数**（不丢框、
+    // 不需重新累计 stableFrames）。keepIds 中的身份原样保留。空 keepIds → 全部清为
+    // "Unknown"（与 reset() 全清等价，但不丢框）。
+    for (auto& t : tracks_) {
+        // 未认证轨迹（"Unknown"）本就不持有有效身份，跳过（避免无谓重置 confidence）。
+        if (t.view.stableId == "Unknown") continue;
+        bool keep = false;
+        for (const auto& id : keepIds) {
+            if (t.view.stableId == id) { keep = true; break; }
+        }
+        if (!keep) {
+            t.view.stableId = "Unknown";
+            t.view.stableConfidence = 0.0f;
+        }
+    }
+}
+
 std::vector<TrackView> TrackCoordinator::views() const {
     std::vector<TrackView> out;
     out.reserve(tracks_.size());
