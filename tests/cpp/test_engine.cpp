@@ -418,6 +418,49 @@ TEST(EngineTest, RealtimeGalleryMatchAssignsIdentity) {
     EXPECT_EQ(tracks[0].stableId, "alice");
 }
 
+// 第三波审查 #2：图库变更（删除人员等价于 replaceGallery 路径）后必须撤销旧轨迹身份。
+// 等价于 JNI bridge_replaceGallery 成功分支的 updateRealtimeGallery + resetTrackIdentities 序列：
+// 变更前轨迹稳定身份为 alice（VERIFIED）；删除后旧身份立即作废，且后续帧须重新确认，
+// 期间不再输出 VERIFIED；重建图库后同一张脸重新确认为 Unknown（而非残留的已删除者）。
+TEST(EngineTest, GalleryChangeResetsTrackIdentityAndStopsVerified) {
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    std::vector<FaceSearchEntry> entries = {{"alice", std::vector<float>(512, 1.0f)}};
+    ASSERT_TRUE(index->reset(std::move(entries), 512, err)) << err;
+
+    Engine engine;
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    engine.setRealtimePipeline(makeRtPipeline(det, index));
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) engine.processFrameOnce(frame);
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "alice");  // 变更前：VERIFIED alice
+
+    // 模拟「删除 alice」后的图库重建：替换为不再含 alice 的图库 + 撤销跟踪身份。
+    auto rebuilt = std::make_shared<FaceSearchLinearIndex>();
+    std::string err2;
+    ASSERT_TRUE(rebuilt->reset({}, 512, err2)) << err2;  // 空图库
+    engine.updateRealtimeGallery(rebuilt);
+    engine.resetTrackIdentities();
+
+    // 旧轨迹身份立即作废：对外视图清空，不再输出 VERIFIED
+    EXPECT_TRUE(engine.getTrackViews().empty());
+
+    // 后续帧：新轨迹须重新累计确认帧数，期间不输出（未确认）；图库已无 alice，
+    // 确认后稳定身份为 Unknown，而非残留的已删除者
+    engine.processFrameOnce(frame);
+    EXPECT_TRUE(engine.getTrackViews().empty());
+    engine.processFrameOnce(frame);
+    EXPECT_TRUE(engine.getTrackViews().empty());
+    engine.processFrameOnce(frame);  // 第 3 次命中确认
+    const auto after = engine.getTrackViews();
+    ASSERT_EQ(after.size(), 1u);
+    EXPECT_EQ(after[0].stableId, "Unknown");
+}
+
 // ── #1 注册采集接缝回归 ──
 
 // 采集模式关闭时零回调；开启后对每个检测脸回调一次，且 embedding/bbox/关键点/质量/faceCount

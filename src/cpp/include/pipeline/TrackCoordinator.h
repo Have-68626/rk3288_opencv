@@ -52,6 +52,15 @@ public:
         long long timestampMs,
         bool detectionRan);
 
+    // 清空全部内部轨迹（撤销所有稳定身份）。人员删除 / 图库重建后由
+    // Engine::resetTrackIdentities() 调用：被删除的人不应因旧轨迹仍持有其 stableId
+    // 而持续被判为 VERIFIED（第三波审查 #2）。
+    // **保留 nextTrackId_**：不回退计数器，避免新轨迹复用已对外发布过的 trackId，
+    // 造成旧帧回调/日志中的 trackId 指向不同目标的复用歧义。
+    // 线程安全：本方法非线程安全；调用方（Engine）须保证与 update() 互斥
+    //（见 Engine::trackFaces 持 tracksMu_ 调用 update/reset）。
+    void reset();
+
     int trackCount() const { return static_cast<int>(tracks_.size()); }
 
 private:

@@ -529,6 +529,10 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
         // 图库变化后同步到 Engine 的实时匹配接缝（Engine 未创建时忽略；激活时会重取快照）。
         if (g_engine) {
             g_engine->updateRealtimeGallery(gallerySnap);
+            // 删除人员 / 注册提交均经本 replaceGallery 路径：图库变更后必须撤销全部跟踪身份，
+            // 否则旧轨迹的 stableId 会保留到该人离开画面（连续 2 个实际检测缺失），期间持续
+            // 输出 "VERIFIED <id>"——被删除的人仍被判为已认证（第三波审查 #2）。
+            g_engine->resetTrackIdentities();
         }
 
         return toJString(env, okJson(

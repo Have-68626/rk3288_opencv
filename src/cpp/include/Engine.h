@@ -197,6 +197,19 @@ public:
     void updateRealtimeGallery(std::shared_ptr<const FaceSearchLinearIndex> gallery);
 
     /**
+     * @brief 撤销全部跟踪身份（清空轨迹），由 JNI bridge_replaceGallery 成功分支调用。
+     *
+     * WHY：人员删除 / 图库重建后，旧轨迹内部仍持有被删除者的 stableId；TrackCoordinator
+     * 只在非认证帧「不覆盖」而非清除，故旧 stableId 会保留到该人离开画面（连续 2 个实际
+     * 检测缺失）才消失，期间 ResultPublisher 持续回调 "VERIFIED <id> ..."，即删除的人仍
+     * 被持续判为已认证（第三波审查 #2）。此处清空轨迹的**真相持有者**（trackCoordinator_
+     * 内部 tracks_，其 view.stableId 才是身份来源；currentTracks_ 仅为逐帧派生的对外快照），
+     * 并一并清空 currentTracks_ 使对外视图立即失效；新帧须重新累计确认帧数后才会再次输出。
+     * 线程安全：可与 run() 并发调用（内部持 tracksMu_，与 trackFaces 的 update() 互斥）。
+     */
+    void resetTrackIdentities();
+
+    /**
      * @brief 当前实时快照是否 effective（模型/自检/基准全部通过）。
      * 供 JNI getRuntimeStatus 暴露 effective 字段，避免 UI 仅凭 profileLoaded 误报就绪。
      */

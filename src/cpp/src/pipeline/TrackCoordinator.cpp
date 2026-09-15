@@ -153,6 +153,14 @@ std::vector<TrackView> TrackCoordinator::update(
     return views();
 }
 
+void TrackCoordinator::reset() {
+    // 清空内部轨迹：撤销全部稳定身份（stableId），使新帧必须重新累计确认帧数，
+    // 被删除的人不会再因旧轨迹残留 stableId 而持续输出 VERIFIED（第三波审查 #2）。
+    // 刻意**不重置 nextTrackId_**：新轨迹使用全新 trackId，避免与已发布过的 ID 复用，
+    // 消除「同一 trackId 先后指向不同目标」的对外歧义。
+    tracks_.clear();
+}
+
 std::vector<TrackView> TrackCoordinator::views() const {
     std::vector<TrackView> out;
     out.reserve(tracks_.size());
