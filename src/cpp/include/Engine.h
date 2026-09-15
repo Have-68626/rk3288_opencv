@@ -63,7 +63,9 @@ public:
     explicit Engine(std::unique_ptr<VideoManager> vm,
                     std::unique_ptr<BioAuth> ba,
                     std::unique_ptr<EventManager> em);
-    ~Engine();
+    // 虚析构：Engine 现含 protected virtual 接缝（onBeforeRenderPublish）供测试子类覆写，
+    // 声明为 virtual 保证经基类指针删除子类对象时行为正确（第四轮审查 M3）。
+    virtual ~Engine();
 
     /**
      * @brief Initializes the engine and all sub-modules.
@@ -169,6 +171,15 @@ public:
      * - 注入 nullptr 恢复 BioAuth 兼容路径（Windows/旧 CLI/兼容测试）；
      * - Android 平台在构造时默认创建并启用（见 Engine::Engine），宿主可再次注入
      *   带真实 manifest 图库的管线替换之。
+     * 换管线 = 换模型：新旧模型嵌入空间不同，旧模型下得出的 stableId 一律失效，故本方法除
+     * 重置图库覆盖并递增图库代次外，还会在 tracksMu_ 下**撤销全部跟踪身份**（保留轨迹本体与
+     * bbox）并递增 identityVersion_，使在途渲染在发布点作废旧身份（与 applyGalleryUpdate 的
+     * 撤销语义一致；否则换模型后残留旧 id 会持续输出 VERIFIED，见上轮未覆盖项 B）。
+     * 幂等（第四轮审查 M1）：仅当传入 shared_ptr 与当前持有者**指向不同对象**时才执行上述
+     * 重置与撤销；同对象重复注入视为「未换模型」直接返回——否则每次重复激活都会抹掉在途稳定
+     * 身份、需重新累计 stableFrames、画面短暂回退 Unknown，并使紧随其后的 injectGalleryToEngine
+     * 的 keepIds 无物可保（撤销先行）。「换模型必撤销」语义不变：换到新对象或启停
+     *（null ↔ 非 null）仍完整撤销。
      * 线程安全：可与 run() 并发调用（内部加锁取共享指针）。
      */
     void setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline);
@@ -186,7 +197,11 @@ public:
     std::string getRealtimeReason() const;
 
     /**
-     * @brief 运行时更新实时图库（图库变化时由 JNI bridge_replaceGallery 调用）。
+     * @brief 运行时更新实时图库（单项 API；**不含**身份撤销）。
+     *
+     * 注：bridge_replaceGallery 现改用 applyGalleryUpdate（换库 + 精准撤销同一临界区原子完成，
+     * 第三波审查 #4）。本单项 API 保留供测试/其他场景，且每次调用会递增图库代次
+     *（galleryGeneration_），使在途帧据旧库得出的认证结论在提交点作废（见 applyGalleryUpdate）。
      *
      * WHY 独立接缝：RealtimePipelineSnapshot 为不可变对象，且其替换 API 不对 Engine 暴露，
      * 故由 Engine 持有一份「图库覆盖」不可变快照，身份匹配时优先于快照自带 gallery——
@@ -208,6 +223,46 @@ public:
      * 线程安全：可与 run() 并发调用（内部持 tracksMu_，与 trackFaces 的 update() 互斥）。
      */
     void resetTrackIdentities();
+
+    /**
+     * @brief 按图库有效身份**精准撤销**跟踪身份（第三波审查 #1：取代过宽的全清）。
+     *
+     * WHY：图库变更（人员删除 / 注册提交）后，只需撤销「已不在新图库中」的身份。旧实现
+     * resetTrackIdentities() 无条件清空全部轨迹，导致多人场景删除/注册**一人**时瞬时抹掉
+     * **其他人**的稳定身份，须重新累计 stableFrames 才重新输出（丢身份、画面抖动）。
+     * 本接口仅把 stableId **不在** keepIds 中的轨迹身份清为 "Unknown"（保留轨迹本体与 bbox，
+     * 不丢框），keepIds 中的身份原样保留。空图库（删除末位人员）→ keepIds 为空 → 全部清为
+     * "Unknown"（与 resetTrackIdentities 的全清语义等价，但不丢框）。
+     * keepIds 来源：JNI bridge_replaceGallery 本次提交的 personIds 数组（即新图库有效身份）。
+     * 线程安全：可与 run() 并发调用（内部持 tracksMu_，与 trackFaces 的 update() 互斥）。
+     */
+    void resetTrackIdentitiesExcept(const std::vector<std::string>& keepIds);
+
+    /**
+     * @brief 图库变更的**原子提交**：在**同一 tracksMu_ 临界区**内完成「换图库覆盖 +
+     *        按新图库有效身份精准撤销跟踪身份」。由 JNI bridge_replaceGallery 成功分支
+     *        **单次调用**（取代此前的 resetTrackIdentitiesExcept 后再 updateRealtimeGallery
+     *        两次独立持锁调用）。
+     *
+     * WHY（第三波审查 #4 残留竞态）：两次独立调用之间存在可观测缝隙：引擎线程可在此缝隙内
+     * 用**旧图库**跑完一帧——update() 见 stableId=="Unknown" 且该帧检测已认证时会**重新赋
+     * 身份**，随后新图库（已无此人）生效，被持久保留 → 等同 #2 复发。合并为单一临界区后，
+     * 「换库」与「撤销」之间不存在可观测中间态：任何 trackFaces/update 要么看到（旧库 + 旧
+     * 身份），要么看到（新库 + 已撤销身份）。
+     *
+     * 读路径补充（关键评估结论）：assignRealtimeIdentities 读 realtimeGallery_ 走
+     * realtimeGalleryMu_（**非** tracksMu_），且「读图库」与 trackFaces「提交轨迹」之间隔着
+     * 嵌入计算——故单靠本合并仍有一个更小的残留窗口：某帧在换库前读到旧库（认证为已删者）、
+     * 却在换库后才提交轨迹。为此引入 galleryGeneration_ 代次：换库时递增，assign 记录当帧读库
+     * 代次，trackFaces 在 tracksMu_ 内比对，代次不一致即作废该帧认证结论，从而彻底闭合。
+     *
+     * @param gallery 新图库不可变索引（nullptr = 清除覆盖，回退到快照自带图库）
+     * @param keepIds 本次提交后**仍有效**的身份集合（新图库 personIds）；未命中者身份清为
+     *                "Unknown"（保留轨迹本体与 bbox，不丢框）
+     * 线程安全：可与 run() 并发调用（内部持 tracksMu_，与 trackFaces 的 update() 互斥）。
+     */
+    void applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
+                            const std::vector<std::string>& keepIds);
 
     /**
      * @brief 当前实时快照是否 effective（模型/自检/基准全部通过）。
@@ -303,6 +358,18 @@ public:
 
     void setOnResultCallback(std::function<void(std::string)> callback);
 
+protected:
+    /**
+     * @brief 发布前钩子（测试接缝，默认空实现）：renderResults 在「快照拷贝后、发布前」窗口内调用。
+     *
+     * WHY（第四轮审查 M3）：此前用公有 setRenderPublishBarrier 注入 std::function 成员充当该窗口的
+     * 同步点；该成员由引擎线程无锁读、setter 写，任何运行期调用即构成数据竞争 UB，且是公有的误用面。
+     * 改为 protected virtual 空钩子后：生产路径恒为空（一次虚调用，无函数对象/堆开销，无可被误调的
+     * 公有入口）；仅测试子类可覆写以确定性钉住该窗口（取代 sleep 竞态）。
+     * 调用时**不持任何锁**，覆写实现内可安全调用 applyGalleryUpdate 等会取 tracksMu_ 的公共 API。
+     */
+    virtual void onBeforeRenderPublish() {}
+
 private:
     /** Shared by both initialize() overloads: storage, cleanup, BioAuth */
     bool initCommon(const std::string& cascadePath, const std::string& storagePath);
@@ -311,9 +378,21 @@ private:
     // === processFrame 子方法（P2.1）===
     bool processFrame(const cv::Mat& rawFrame, double decodeMs);
     bool preprocessFrame(const cv::Mat& frame);
-    void trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool detectionRan);
+    // 提交本帧跟踪：trackCoordinator_->update() + currentTracks_ 更新，持 tracksMu_。
+    // frameGalleryGen：本帧身份匹配所用图库代次（实时路径传 frameGalleryGeneration_；
+    //   兼容路径传 kNoGalleryGuard 表示不做代次作废）。若与当前 galleryGeneration_ 不一致，
+    //   说明图库在「读库」与「提交」之间被替换，本帧据旧库得出的认证结论作废后再交 coordinator。
+    void trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool detectionRan,
+                    uint64_t frameGalleryGen);
     void renderResults();
     void collectStats();
+
+    // 精准撤销跟踪身份（keepIds 命中者保留，其余清为 "Unknown"）。**调用方须已持 tracksMu_**，
+    // 保证与 trackFaces 的 update() 互斥；仅改身份、保留轨迹本体与 bbox（不丢框）。
+    void revokeTrackIdentitiesLocked(const std::vector<std::string>& keepIds);
+
+    // trackFaces 的哨兵参数：表示「不做图库代次作废」（兼容路径不经图库覆盖匹配）。
+    static constexpr uint64_t kNoGalleryGuard = ~static_cast<uint64_t>(0);
 
     // === 任务12 实时路径子方法 ===
     // 实时路径单帧：检测→（可选身份）→跟踪→渲染。processedFrame_ 已统一变换。
@@ -354,6 +433,25 @@ private:
     // 独立锁，避免与 realtimeMu_ 的注入路径互相阻塞。
     std::shared_ptr<const FaceSearchLinearIndex> realtimeGallery_;
     mutable std::mutex realtimeGalleryMu_;
+
+    // 图库代次：任何对 realtimeGallery_ 的替换（applyGalleryUpdate / updateRealtimeGallery /
+    // setRealtimePipeline 重置）都在 realtimeGalleryMu_ 下原子递增。assignRealtimeIdentities 读库
+    // 时把所用代次记入 frameGalleryGeneration_，trackFaces 在 tracksMu_ 内比对——若图库在「读库」
+    // 与「提交轨迹」之间被替换，则该帧据旧库得出的认证结论作废（闭合 #4 残留竞态，见
+    // applyGalleryUpdate 注释）。之所以用代次而非把读库纳入 tracksMu_：读库与提交之间隔着嵌入
+    // 计算，无法在该锁内完成，唯代次比对能在提交点判定「读数已过期」。
+    std::atomic<uint64_t> galleryGeneration_{0};
+    uint64_t frameGalleryGeneration_{0};  // 仅引擎线程在单帧内 写(assign)→读(processFrameRealtime)
+
+    // 身份版本号：任何**撤销 / 清空跟踪身份**的对外操作（applyGalleryUpdate、
+    // resetTrackIdentities、resetTrackIdentitiesExcept、setRealtimePipeline[仅管线真正变化时]）
+    // 都在 tracksMu_ 内递增。renderResults 在锁内拷贝 currentTracks_ 的同时记录该版本，并在
+    // **发布前**比对：若期间发生撤销，本次快照的稳定身份已失效，须清为 Unknown 后再发布——
+    // 否则已撤销身份会随旧副本被画进 renderFrame 并作为 VERIFIED 发出（发布路径 P1 竞态：拷贝在
+    // 锁内、绘制/发布在锁外）。与 galleryGeneration_ 的分工：后者闭合「读库 → 提交轨迹」窗口
+    //（trackFaces 内比对），前者闭合「拷贝 → 绘制 → 发布」窗口（renderResults 内比对）。
+    // 单调递增，仅在外部撤销身份时变化。
+    std::atomic<uint64_t> identityVersion_{0};
 
     // #1 注册采集：enabled 为原子快速分支；回调在锁内复制快照、锁外调用，避免回调同步重入
     // setEnrollmentCapture 时同线程二次加锁自死锁。关闭时经 enrollmentCaptureCv_ 等待其他

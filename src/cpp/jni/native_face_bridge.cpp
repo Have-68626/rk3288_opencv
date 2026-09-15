@@ -170,6 +170,13 @@ rk_core::RealtimePipelineHooks makeActivatedHooks(const std::shared_ptr<GalleryS
 }
 
 // 把当前图库快照注入 Engine 的图库覆盖接缝（Engine 未创建时为空操作）。
+//
+// 语义修正（上轮未覆盖项 B）：改用**原子提交** applyGalleryUpdate（换库 + 按新库有效身份
+// 精准撤销身份），取代只换库、不撤销身份的 updateRealtimeGallery。原因：activateRuntime 换
+// 模型后，旧模型轨迹的 stableId 若不撤销会被持续保留——而新旧模型嵌入空间不同，残留 id 在新库
+// 并无对应，表现为「换模型后持续 VERIFIED <旧id>」直至该人离开画面 2 帧。keepIds 取新库全部
+// personId（FaceSearchLinearIndex::entries() 的 e.id，与 bridge_replaceGallery 同法），未命中者
+// 身份清为 "Unknown"（保留轨迹本体与 bbox）。
 void injectGalleryToEngine(const std::shared_ptr<GallerySlot>& slot) {
     if (!g_engine) return;
     std::shared_ptr<const FaceSearchLinearIndex> snap;
@@ -177,7 +184,14 @@ void injectGalleryToEngine(const std::shared_ptr<GallerySlot>& slot) {
         std::lock_guard<std::mutex> lock(slot->mutex);
         snap = slot->snapshot;
     }
-    g_engine->updateRealtimeGallery(std::move(snap));
+    // 由新图库快照构造有效身份集合；空快照 → 空 keepIds → 全部撤销（不丢框）。
+    std::vector<std::string> keepIds;
+    if (snap) {
+        const std::vector<FaceSearchEntry>& entries = snap->entries();
+        keepIds.reserve(entries.size());
+        for (const FaceSearchEntry& e : entries) keepIds.push_back(e.id);
+    }
+    g_engine->applyGalleryUpdate(std::move(snap), keepIds);
 }
 
 const char* boolJson(bool v) { return v ? "true" : "false"; }
@@ -472,6 +486,11 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
 
         std::vector<FaceSearchEntry> entries;
         entries.reserve(static_cast<std::size_t>(idCount));
+        // 本次图库有效身份集合（personIds），供跟踪身份**精准撤销**（第三波审查 #1：
+        // 只撤销已不在新图库中的身份，保留其他人的稳定身份）。仅作内存内临时集合，
+        // 绝不写入日志（安全红线）。
+        std::vector<std::string> keepIds;
+        keepIds.reserve(static_cast<std::size_t>(idCount));
         // 红线：校验失败 early-return 或异常展开时，已累积条目的 embedding 也必须清零。
         auto entriesGuard = makeScopeClearGuard([&entries] {
             for (auto& e : entries) secureClear(e.embedding);
@@ -500,6 +519,8 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
             // 若 push_back 因异常失败，本条目 embedding 仍在此作用域内，需清零。
             auto entryGuard = makeScopeClearGuard([&entry] { secureClear(entry.embedding); });
             entry.id = std::move(id);
+            // 先复制 id 进有效身份集合，再随 entry 移入图库（entry.id 之后被 reset 移走）。
+            keepIds.push_back(entry.id);
             entry.embedding = std::move(vec);
             entries.push_back(std::move(entry));
         }
@@ -528,11 +549,19 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
         }
         // 图库变化后同步到 Engine 的实时匹配接缝（Engine 未创建时忽略；激活时会重取快照）。
         if (g_engine) {
-            g_engine->updateRealtimeGallery(gallerySnap);
-            // 删除人员 / 注册提交均经本 replaceGallery 路径：图库变更后必须撤销全部跟踪身份，
-            // 否则旧轨迹的 stableId 会保留到该人离开画面（连续 2 个实际检测缺失），期间持续
-            // 输出 "VERIFIED <id>"——被删除的人仍被判为已认证（第三波审查 #2）。
-            g_engine->resetTrackIdentities();
+            // 删除人员 / 注册提交均经本 replaceGallery 路径。**原子提交（第三波审查 #4 残留竞态
+            // 闭合）**：改由 applyGalleryUpdate 在**单一 tracksMu_ 临界区**内一次性完成
+            //「换图库覆盖 + 按新库有效身份 keepIds 精准撤销跟踪身份」。
+            // 因果：此前是 resetTrackIdentitiesExcept(keepIds) 与 updateRealtimeGallery(snap)
+            // **两次独立持锁调用**，二者之间的缝隙内引擎线程可用**旧图库**跑完一帧——该帧检测
+            // 已认证（旧库含被删者）会把身份重新写入轨迹，随后新库（已无此人）生效却被持久保留，
+            // 等同 #2 复发。合并为单次调用后，「换库」与「撤销」之间不存在可观测中间态：任何
+            // 引擎帧要么看到（旧库 + 旧身份），要么看到（新库 + 已撤销身份）。
+            // 精准撤销而非全清：多人场景删除/注册一人不再抹掉其他人的稳定身份（第三波审查 #1）；
+            // 空图库 → keepIds 为空 → 全部清为 Unknown（不丢框）。
+            // 注：Engine 侧 assignRealtimeIdentities 读库走 realtimeGalleryMu_（非 tracksMu_），
+            // 故另有「读库→提交」更小窗口，已由 Engine 的图库代次作废机制闭合（见 applyGalleryUpdate）。
+            g_engine->applyGalleryUpdate(gallerySnap, keepIds);
         }
 
         return toJString(env, okJson(
