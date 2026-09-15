@@ -848,7 +848,119 @@ public class FaceModelManagerTest {
                 new File(target, FaceModelManager.MANIFEST_FILE_NAME).isFile());
     }
 
+    // ---------- ⑰ 第五轮审查 P1：回滚时新目录删不掉 -> 可恢复的事务标记 ----------
+
+    /**
+     * 第五轮审查 P1：同名覆盖激活失败 + {@code rollbackProfileSwap()} 的**新目录删除**失败时，
+     * {@code deleteRecursivelyQuietly(swap.target)} 吞掉失败，于是 target 与 {@code .bak_<id>}
+     * **同时存在**；而 {@code recoverProfileDirIfNeeded} 的判据是「target 缺失」，原实现**永远不会触发**——
+     * 旧模型永久滞留，激活指针却指向那个激活失败的新包（{@code buildStatus} 还会把它误报成就绪）。
+     *
+     * <p>修复后：回滚时写入 {@code .rollback_<id>} 意图标记，恢复逻辑据此先删新目录、再还原备份。
+     * 本用例直接构造「target 存在 + bak 存在 + 标记存在」现场（删除失败无法在纯 JVM 稳定注入，
+     * 与 {@link #rollbackRenameFailureStrandedBackupIsRecoveredByStatus()} 同法按等价方式构造）。
+     *
+     * <p>关键 RED 断点：修复前 target 内是一个**校验合法的新包**，{@code status()} 会把它当成激活配置
+     * 而报 ready——正是审查指出的「把失败的新目录当作激活配置」。
+     */
+    @Test
+    public void rollbackWithUndeletableTargetIsRecoveredByMarkerAndRestoresOldModel() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+        assertEquals("p1", m.activeProfileId());
+
+        // 回滚失败现场：旧目录移开、新的（激活失败的）包占据 target，故 target 删不掉。
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue("旧目录应移开", target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        // 回滚删除失败必然留下意图标记（存在性即语义）。
+        java.nio.file.Files.write(new File(dir, ".rollback_p1").toPath(),
+                "target=p1\n".getBytes(StandardCharsets.UTF_8));
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue("带标记的回滚现场必须由恢复逻辑还原旧模型后就绪", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertTrue("必须还原旧模型内容（绝不能把激活失败的新包当作激活配置）",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        assertFalse(".bak_p1 应已被消费", bak.exists());
+        assertFalse("回滚完成后不得残留意图标记", new File(dir, ".rollback_p1").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 第五轮审查 P1（负例）：意图标记存在但**备份已不存在**——标记已无意义，必须清除；否则
+     * {@code buildStatus} 会永久停在「回滚未完成」的 ERROR，用户即使重装模型也无法回到就绪态。
+     */
+    @Test
+    public void rollbackMarkerWithoutBackupIsClearedAndDoesNotStickError() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        File marker = new File(dir, ".rollback_p1");
+        java.nio.file.Files.write(marker.toPath(), "target=p1\n".getBytes(StandardCharsets.UTF_8));
+        assertTrue(marker.exists());
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue("无备份可还原时不得卡在「回滚未完成」态", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertFalse("失去意义的意图标记应被清除", marker.exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 第五轮审查 A3' δ5②：用户对同一 profileId **显式 activate 且成功**后，结果与状态必须一致
+     * ——不得出现「Result OK 但 buildStatus 报『回滚未完成』ERROR」。
+     *
+     * <p><b>覆盖性质（如实说明）</b>：本用例是**不变量护栏**（Result OK ⇒ 状态不就绪即失败），
+     * 而**不是**对 {@code activate()} 中新增的 {@code clearRollbackMarker} 那行的**判别性**证据——
+     * 在本用例构造的「标记在 + 备份已消费」现场里，前置的 {@code recoverProfileDirIfNeeded} 已经
+     * 把它清掉了，删掉那行测试仍会通过。真正需要那行的现场是「标记在 + 备份在 + target 删不掉」，
+     * 而「删除失败」无法在纯 JVM 下跨平台稳定注入（Android Gradle 单测跑在 Linux，持句柄仍可
+     * 删目录/文件；Windows 侧的只读文件语义不可移植）——与既有回滚用例同处的构造限制。
+     */
+    @Test
+    public void activateClearsPendingRollbackMarkerSoResultAndStatusAgree() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        // 残留「回滚未完成」现场（标记在、备份已被消费：正是 A3' γ7 的收尾状态）。
+        File marker = new File(dir, ".rollback_p1");
+        java.nio.file.Files.write(marker.toPath(), "target=p1\n".getBytes(StandardCharsets.UTF_8));
+        assertTrue(marker.exists());
+
+        FaceModelManager.Result r = m.activate("p1", ABI, true);
+        assertTrue("激活应成功", r.isOk());
+        assertFalse("激活成功后不得残留回滚意图标记", marker.exists());
+        FaceRuntimeStatus st = m.status();
+        assertTrue("Result 为 OK 时状态不得仍是「回滚未完成」ERROR", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertNoTempArtifacts(dir);
+    }
+
     // ---------- 夹具 ----------
+
+    /** 按 flat 布局把 manifest 与模型文件写入目录（供构造磁盘现场使用）。 */
+    private static void writeProfileDir(File dir, String manifestJson, Map<String, byte[]> files)
+            throws IOException {
+        assertTrue("目录应可创建", dir.isDirectory() || dir.mkdirs());
+        java.nio.file.Files.write(new File(dir, FaceModelManager.MANIFEST_FILE_NAME).toPath(),
+                manifestJson.getBytes(StandardCharsets.UTF_8));
+        for (Map.Entry<String, byte[]> e : files.entrySet()) {
+            java.nio.file.Files.write(new File(dir, e.getKey()).toPath(), e.getValue());
+        }
+    }
 
     private FaceModelManager manager(FakeRuntime rt) throws IOException {
         return new FaceModelManager(tmp.newFolder(), rt);
@@ -966,7 +1078,7 @@ public class FaceModelManagerTest {
         for (File f : ch) {
             String n = f.getName();
             assertFalse("残留临时/备份内容: " + n,
-                    n.startsWith(".tmp_") || n.startsWith(".bak_")
+                    n.startsWith(".tmp_") || n.startsWith(".bak_") || n.startsWith(".rollback_")
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".tmp")
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".bak"));
         }
