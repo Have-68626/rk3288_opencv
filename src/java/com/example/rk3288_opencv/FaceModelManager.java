@@ -82,6 +82,14 @@ public final class FaceModelManager {
     /** 当前激活 profile 的指针文件名。 */
     public static final String ACTIVE_POINTER_FILE = "active_profile";
 
+    /**
+     * 回滚意图标记前缀（第五轮审查 P1）：仅当「目录回滚时新目录删不掉」才写入 {@code .rollback_<id>}。
+     *
+     * <p>标记存在的语义是：{@code <profileId>} 目录是**激活失败的新包**、原模型仍滞留在
+     * {@code .bak_<id>}，必须在启动/状态查询时先删新目录、再把备份还原就位。
+     */
+    private static final String ROLLBACK_MARKER_PREFIX = ".rollback_";
+
     /** 默认存储目录名（相对 {@code files/}）。 */
     private static final String DEFAULT_STORE_DIR = "face_models";
 
@@ -358,17 +366,32 @@ public final class FaceModelManager {
                     // - 首次导入：新目录是唯一副本，保留之（不切指针 -> 仍为未导入引导态）。
                     if (swap.hadOld) {
                         // #1（第三波审查）：回滚结果必须显式检查，绝不静默当作「已回滚成功」。
-                        // 回滚失败时 target 已被删除、旧目录滞留 .bak_<id>，而 active_profile 仍指向
-                        // 同名 <profileId> —— 磁盘可能残留失败模型，重启后可能加载错误模型。
+                        // 回滚失败时旧目录滞留 .bak_<id>，而 active_profile 仍指向同名 <profileId>
+                        // ——磁盘可能残留失败模型，重启后可能加载错误模型。
                         // 此处返回 ATOMIC_RENAME_FAILED（与 persistActive 失败路径、swapInProfileDirs
                         // 失败路径的失败码/文案语义一致），并保留 .bak_<id>，交由随后的
                         // buildStatus()->recoverProfileDirIfNeeded() 在状态查询/启动时把它还原就位。
+                        // 第五轮审查 P1：两种失败现场都必须可被启动恢复覆盖——target 已删除（缺目标）
+                        // 与 target 删不掉（回滚时已写入 .rollback_<id> 意图标记），故「将由启动恢复」
+                        // 现在是可兑现的承诺，而不再是空头支票。
                         if (!rollbackProfileSwap(swap)) {
-                            return new Result(Status.ATOMIC_RENAME_FAILED,
-                                    buildStatus(nativeStatusOrNull()),
-                                    "模型已导入，但实时管线激活失败：" + ao.reason
-                                            + "，且旧配置回滚失败（旧目录滞留于 "
-                                            + swap.bak.getName() + "，将由启动恢复）");
+                            FaceRuntimeStatus st = buildStatus(nativeStatusOrNull());
+                            // 按**落盘后状态**而非仅标记存在性给出如实文案（外部审计：writeRollbackMarker
+                            // 的失败被静默忽略，故极端 I/O 下不得承诺可自动恢复）：
+                            // · 备份已被消费 → 回滚其实已就位（buildStatus 可能刚就地完成回滚）；
+                            // · 备份仍在且有标记 → 可启动恢复；
+                            // · 备份仍在但**无标记** → 标记写入失败，绝不承诺「将由启动恢复」。
+                            String detail;
+                            if (!swap.bak.exists()) {
+                                detail = "，旧配置已回滚就位";
+                            } else if (rollbackMarkerOf(swap.profileId).exists()) {
+                                detail = "且旧配置回滚失败（旧目录滞留于 " + swap.bak.getName() + "，将由启动恢复）";
+                            } else {
+                                detail = "且旧配置回滚失败，且未能记录恢复意图（旧目录滞留于 "
+                                        + swap.bak.getName() + "）——请排除文件占用后重试导入，或重启应用";
+                            }
+                            return new Result(Status.ATOMIC_RENAME_FAILED, st,
+                                    "模型已导入，但实时管线激活失败：" + ao.reason + "，" + detail);
                         }
                     } else {
                         deleteRecursivelyQuietly(swap.bak);
@@ -450,6 +473,11 @@ public final class FaceModelManager {
                     bestEffortReactivate(previousActive, currentAbi);
                     return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已保留原配置");
                 }
+                // 第五轮审查 A3' δ5：用户已显式激活该 profile 且成功——上一次「回滚未完成」的意图
+                // 已被本次激活取代。不清标记的话，buildStatus 会报「回滚未完成」ERROR，与本次
+                // OK 结果自相矛盾。上方 recoverProfileDirIfNeeded 在 target 可删时已就地完成回滚
+                // 并清标记；此处覆盖的是「它没能清掉」（target 仍被占用等）的剩余情形。
+                clearRollbackMarker(profile.profileId);
                 return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
                 return fail(f.status, f.getMessage());
@@ -829,7 +857,11 @@ public final class FaceModelManager {
     private ProfileSwap swapInProfileDirs(@NonNull File base, @NonNull String profileId)
             throws ImportFailure {
         File target = profileDir(profileId);
-        File bak = new File(storeDir, ".bak_" + profileId);
+        File bak = bakDirOf(profileId);
+        // 先了结上一次未完成的回滚（第五轮审查 A3' γ5）：若残留 .rollback_<id> 意图标记，下面的
+        // deleteRecursivelyQuietly(bak) 会先删掉**旧模型备份**，而 target 仍是那个激活失败的新包
+        // ——旧模型就此永久丢失。此调用同时覆盖崩溃窗口（target 缺失 + bak 存在）现场。
+        recoverProfileDirIfNeeded(profileId);
         if (!target.exists() && bak.exists()) {
             // 崩溃恢复：旧目录是唯一完整副本，恢复失败不能继续（否则下一步会删掉它）。
             if (!renameQuietly(bak, target)) {
@@ -852,7 +884,10 @@ public final class FaceModelManager {
             }
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "临时目录无法原子重命名");
         }
-        return new ProfileSwap(target, bak, hadOld);
+        // 替换已成功落定：目录语义完全由本 swap 承担，此前遗留的回滚意图标记随之失效，必须清除，
+        // 否则 buildStatus 会因残留标记把本次新配置误判为「回滚未完成」而报 ERROR。
+        clearRollbackMarker(profileId);
+        return new ProfileSwap(target, bak, hadOld, profileId);
     }
 
     /** 目录替换句柄：记录旧目录备份，供激活指针落定成功时清理、失败时回滚。 */
@@ -860,18 +895,80 @@ public final class FaceModelManager {
         final File target;
         final File bak;
         final boolean hadOld;
+        /** 本次替换的 profileId——回滚写入意图标记时需要（target/bak 名称已被改写，不能反推）。 */
+        final String profileId;
 
-        ProfileSwap(File target, File bak, boolean hadOld) {
+        ProfileSwap(File target, File bak, boolean hadOld, String profileId) {
             this.target = target;
             this.bak = bak;
             this.hadOld = hadOld;
+            this.profileId = profileId;
         }
     }
 
-    /** 指针落定失败：删除新目录并把旧目录恢复就位；返回 false 表示旧目录回滚失败（滞留于 bak）。 */
+    /**
+     * 目录回滚：删除激活失败的新目录，并把旧目录（{@code .bak_<id>}）还原就位。
+     *
+     * <p><b>返回 false 有两种现场，恢复逻辑都必须能覆盖（第五轮审查 P1）：</b>
+     * <ul>
+     *   <li>新目录已删掉、仅改名还原失败 → target 缺失、bak 仍在（崩溃窗口语义，直接还原）。</li>
+     *   <li>新目录**没删掉**（文件被占用等）→ target 与 bak **同时存在**。此时
+     *       {@code bak.renameTo(target)} 对非空目录必然失败，而恢复逻辑原判据是「target 缺失」，
+     *       永远不会触发——旧模型永久滞留，激活指针却指向那个激活失败的新包。</li>
+     * </ul>
+     *
+     * <p>故改为 <b>intent-first</b>：先写 {@code .rollback_<id>} 意图标记，再执行删除+还原，成功才清标记。
+     * 这样不仅覆盖「删除失败」，也覆盖「删除过程中进程崩溃」（留半删除目录）——恢复逻辑据标记完成收尾。
+     */
     private boolean rollbackProfileSwap(@NonNull ProfileSwap swap) {
+        if (!swap.hadOld) {
+            // 首次导入无旧配置可还原：删掉新目录即完成回滚。删除失败不影响对外语义——
+            // 该目录从未被激活指针引用，最坏只是磁盘残留。
+            deleteRecursivelyQuietly(swap.target);
+            return true;
+        }
+        writeRollbackMarker(swap);
         deleteRecursivelyQuietly(swap.target);
-        return !swap.hadOld || swap.bak.renameTo(swap.target);
+        if (!swap.target.exists() && swap.bak.renameTo(swap.target)) {
+            clearRollbackMarker(swap.profileId);  // 回滚完整完成，意图标记使命结束
+            return true;
+        }
+        return false;
+    }
+
+    /** 回滚意图标记文件路径：{@code <storeDir>/.rollback_<profileId>}。 */
+    @NonNull
+    private File rollbackMarkerOf(@NonNull String profileId) {
+        return new File(storeDir, ROLLBACK_MARKER_PREFIX + profileId);
+    }
+
+    /** 旧目录备份路径：{@code <storeDir>/.bak_<profileId>}（回滚是否真正完成以它是否被消费为准）。 */
+    @NonNull
+    private File bakDirOf(@NonNull String profileId) {
+        return new File(storeDir, ".bak_" + profileId);
+    }
+
+    /**
+     * 写入回滚意图标记（存在性即语义；内容仅供诊断）。
+     *
+     * <p>写入失败不改返回值语义：调用方已按「回滚失败」上报，此处仅是让启动恢复有机会补救。
+     */
+    private void writeRollbackMarker(@NonNull ProfileSwap swap) {
+        try (FileOutputStream fos = new FileOutputStream(rollbackMarkerOf(swap.profileId), false)) {
+            fos.write(("target=" + swap.target.getName() + "\n").getBytes(StandardCharsets.UTF_8));
+            fos.flush();
+            try {
+                fos.getFD().sync();
+            } catch (Exception ignored) {
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** 清除回滚意图标记（无可清除时静默）。 */
+    private void clearRollbackMarker(@NonNull String profileId) {
+        //noinspection ResultOfMethodCallIgnored
+        rollbackMarkerOf(profileId).delete();
     }
 
     /** 原子写激活指针：tmp + bak 替换（与注册表落盘同策略）。 */
@@ -969,13 +1066,40 @@ public final class FaceModelManager {
     }
 
     /**
-     * #3 崩溃恢复：激活目录缺失但存在 {@code .bak_<id>} 时把备份恢复就位
-     * （上次目录替换在 target→bak 之后、base→target 之前崩溃）。恢复为静默 best-effort，
-     * 失败仍由 {@link #buildStatus} 报「目录缺失」，绝不误报就绪。
+     * 目录恢复（启动/状态查询前调用），覆盖两种现场：
+     *
+     * <ol>
+     *   <li><b>回滚未完成</b>（存在 {@code .rollback_<id>} 标记，第五轮审查 P1）：{@code <profileId>}
+     *       目录是**激活失败的新包**，原模型在 {@code .bak_<id>}。先删掉新目录，备份才有位置还原；
+     *       target 删不掉则**保持现场不动**（既不丢旧模型，也不谎报就绪）。</li>
+     *   <li><b>崩溃窗口</b>（#3）：激活目录缺失但存在 {@code .bak_<id>}——上次替换在 target→bak 之后、
+     *       base→target 之前崩溃，旧目录是唯一完整副本，直接还原。</li>
+     * </ol>
+     *
+     * <p>恢复为 best-effort：失败不在此处报错，仍由 {@link #buildStatus} 依据真实目录如实判定。
      */
     private void recoverProfileDirIfNeeded(@NonNull String profileId) {
         File target = profileDir(profileId);
-        File bak = new File(storeDir, ".bak_" + profileId);
+        File bak = bakDirOf(profileId);
+        File marker = rollbackMarkerOf(profileId);
+
+        if (marker.exists()) {
+            if (!bak.exists()) {
+                // 备份已不存在（无旧模型可还原）：标记失去意义，清除以免状态永久卡在 ERROR。
+                //noinspection ResultOfMethodCallIgnored
+                marker.delete();
+            } else if (!target.exists() || deleteRecursively(target)) {
+                // 新目录已清空，备份可还原；成功则连标记一并清除（回滚到此完成）。
+                if (renameQuietly(bak, target)) {
+                    //noinspection ResultOfMethodCallIgnored
+                    marker.delete();
+                }
+            }
+            // 至此 target 仍存在或备份仍未还原：保持现场，交由 buildStatus 如实报错，不做无根据的承诺。
+            return;
+        }
+
+        // 崩溃窗口（无回滚标记）：旧目录是唯一完整副本，直接还原。
         if (!target.exists() && bak.exists()) {
             renameQuietly(bak, target);
         }
@@ -991,11 +1115,18 @@ public final class FaceModelManager {
         if (active == null) {
             base = FaceRuntimeStatus.notImported(count);
         } else {
-            // #3 崩溃恢复：目录替换窗口崩溃留下的 .bak_<id> 先恢复就位，再判状态。
+            // #3 崩溃恢复 + 第五轮审查 P1：回滚未完成 / 目录替换窗口的残留现场先恢复就位，再判状态。
             recoverProfileDirIfNeeded(active);
             File dir = profileDir(active);
             File mf = new File(dir, MANIFEST_FILE_NAME);
-            if (!dir.isDirectory() || !mf.isFile()) {
+            if (rollbackMarkerOf(active).exists() && bakDirOf(active).exists()) {
+                // 仅当「意图标记在**且**旧模型仍在备份目录」才是真正卡住的回滚：此时既不能报 ready
+                //（会掩盖真实故障、让人以为新模型在跑），也不能承诺「已回滚」——如实报 ERROR 并指出
+                // 原模型位置。若备份已被消费，说明还原其实已经完成（仅标记删除失败，A3' γ7），
+                // 落入下方常规目录判定即可；否则会误报 ERROR 并谎称旧模型仍在备份里。
+                base = FaceRuntimeStatus.error(active, count,
+                        "上次模型回滚未完成：原模型仍滞留在 " + bakDirOf(active).getName() + "，当前配置未生效");
+            } else if (!dir.isDirectory() || !mf.isFile()) {
                 base = FaceRuntimeStatus.error(active, count, "激活配置目录缺失：" + active);
             } else {
                 try {
@@ -1106,7 +1237,14 @@ public final class FaceModelManager {
         }
     }
 
-    private static void deleteRecursively(@NonNull File f) {
+    /**
+     * 递归删除；返回是否**确实已不存在**。
+     *
+     * <p>删除失败（文件被占用等）不抛错——多数调用方只需 best-effort 清理；但回滚路径必须据此
+     * 判定「新目录是否真的清空」，否则会在 target 仍在时误判为可还原（第五轮审查 P1）。
+     */
+    private static boolean deleteRecursively(@NonNull File f) {
+        if (!f.exists()) return true;
         if (f.isDirectory()) {
             File[] children = f.listFiles();
             if (children != null) {
@@ -1115,9 +1253,9 @@ public final class FaceModelManager {
                 }
             }
         }
-        // 删除失败（被占用等）不抛错：临时目录清理失败不影响导入结果判定。
         //noinspection ResultOfMethodCallIgnored
         f.delete();
+        return !f.exists();
     }
 
     @NonNull
