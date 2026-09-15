@@ -145,3 +145,23 @@ deps/insightface/*
 __pycache__/
 *.py[cod]
 *$py.class
+
+# OS / editor artifacts（跨平台开发时各工具默认生成，避免误入库）
+.DS_Store
+Thumbs.db
+desktop.ini
+.history/
+
+# Python 虚拟环境与缓存（仓库含 quantize_ncnn_int8.py / pytest）
+.venv/
+venv/
+.cache/
+
+# 前端构建/覆盖率产物（web/：Vite + Cypress）
+web/coverage/
+web/.vite/
+.nyc_output/
+*.tsbuildinfo
+
+# 备份文件（构建/部署脚本产出的临时副本）
+*.bak
