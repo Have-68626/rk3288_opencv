@@ -357,9 +357,19 @@ public final class FaceModelManager {
                     //   回滚后与 activate 路径（不删文件、保留原配置）语义一致。
                     // - 首次导入：新目录是唯一副本，保留之（不切指针 -> 仍为未导入引导态）。
                     if (swap.hadOld) {
-                        // 回滚失败不改变对外失败语义：旧目录会滞留 .bak_<id>，随后的
-                        // buildStatus()/readActive()/activate() 崩溃恢复路径会把它还原就位，旧模型不丢。
-                        rollbackProfileSwap(swap);
+                        // #1（第三波审查）：回滚结果必须显式检查，绝不静默当作「已回滚成功」。
+                        // 回滚失败时 target 已被删除、旧目录滞留 .bak_<id>，而 active_profile 仍指向
+                        // 同名 <profileId> —— 磁盘可能残留失败模型，重启后可能加载错误模型。
+                        // 此处返回 ATOMIC_RENAME_FAILED（与 persistActive 失败路径、swapInProfileDirs
+                        // 失败路径的失败码/文案语义一致），并保留 .bak_<id>，交由随后的
+                        // buildStatus()->recoverProfileDirIfNeeded() 在状态查询/启动时把它还原就位。
+                        if (!rollbackProfileSwap(swap)) {
+                            return new Result(Status.ATOMIC_RENAME_FAILED,
+                                    buildStatus(nativeStatusOrNull()),
+                                    "模型已导入，但实时管线激活失败：" + ao.reason
+                                            + "，且旧配置回滚失败（旧目录滞留于 "
+                                            + swap.bak.getName() + "，将由启动恢复）");
+                        }
                     } else {
                         deleteRecursivelyQuietly(swap.bak);
                     }

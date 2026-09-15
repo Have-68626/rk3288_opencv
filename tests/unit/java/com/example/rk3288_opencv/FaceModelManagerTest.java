@@ -690,6 +690,52 @@ public class FaceModelManagerTest {
         assertNoTempArtifacts(dir);
     }
 
+    /**
+     * 第三波 #1b：同名覆盖激活失败 + {@code rollbackProfileSwap()} 的还原 rename 也失败时，磁盘会留下
+     * 「target 缺失 + {@code .bak_<id>} 存在 + 指针仍指同名 &lt;profileId&gt;」的滞留现场——这正是新的
+     * 失败分支（返回 {@link FaceModelManager.Status#ATOMIC_RENAME_FAILED} 并保留 {@code .bak_<id>}）
+     * 所依赖、并对外承诺「将由启动恢复」的保证：{@code status()}-&gt;{@code recoverProfileDirIfNeeded()}
+     * 必须把滞留的**旧模型**目录还原就位，绝不误报就绪、绝不加载到失败/空目录。
+     *
+     * <p><b>为何不引入文件操作接缝来注入 rename 失败</b>：{@code FaceModelManager} 是 {@code final} 类，
+     * {@code rollbackProfileSwap()}/{@code deleteRecursivelyQuietly()} 均为 {@code private static}，
+     * 不存在可覆盖的 delete/rename 接缝；且 {@code bak.renameTo(target)} 发生在「删除新 target →
+     * 还原旧 bak」之间的极短窗口，纯 JVM 无法注入句柄令其失败（改用文件锁/权限构造则依赖平台语义、
+     * 跨平台 flaky）。故与 {@link #rollbackRenameFailureStrandedBackupIsRecoveredByStatus()} 同法，
+     * 直接构造「回滚失败后的磁盘现场」，验证新分支所依赖的启动恢复契约。
+     */
+    @Test
+    public void sameNameRollbackFailureStrandsBackupThenStatusRecoversOldModel() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+        assertEquals("p1", m.activeProfileId());
+
+        // 构造同名覆盖回滚失败的滞留现场：新 target 已被删除、旧目录滞留 .bak_p1、指针未改写。
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        assertFalse("回滚失败后 target 应缺失", target.exists());
+        assertTrue("旧目录应滞留于 .bak_p1", bak.isDirectory());
+        assertEquals("指针未改写，仍是同名 p1", "p1", m.activeProfileId());
+
+        // 新分支承诺「将由启动恢复」：status() 兜底把滞留备份还原为激活目录，且还原的是旧模型内容；
+        // 该现场绝不能被误报为「未导入」（否则会引导用户重导、掩盖滞留的旧模型）。
+        FaceRuntimeStatus st = m.status();
+        assertFalse("滞留现场不得被当作未导入", st.isNotImported());
+        assertTrue("应从 .bak_p1 兜底还原后就绪", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertTrue("兜底必须还原旧模型内容（不得误切成失败/空目录）", java.util.Arrays.equals(oldBin,
+                readFile(new File(target, DET_BIN))));
+        assertTrue("还原后 manifest 应就位",
+                new File(target, FaceModelManager.MANIFEST_FILE_NAME).isFile());
+        assertFalse("还原后不得残留 .bak_p1", bak.exists());
+        assertNoTempArtifacts(dir);
+    }
+
     // ---------- ⑮ 第三波审查 #3：statusSnapshot() 无锁读缓存 ----------
 
     /**
@@ -722,6 +768,84 @@ public class FaceModelManagerTest {
         FaceRuntimeStatus snap1 = m.statusSnapshot();
         assertTrue("快照应反映上次 status() 结果", snap1.isReady());
         assertEquals("p1", snap1.profileId);
+    }
+
+    // ---------- ⑯ 第三波审查 #3b：回滚 rename 失败的兜底 ----------
+
+    /**
+     * 第三波 #3b：{@code rollbackProfileSwap()} 的恢复 rename 失败（新 target 已删、旧目录滞留
+     * {@code .bak_<id>}、激活指针仍指该 profile）后，{@code buildStatus()} 的
+     * {@code recoverProfileDirIfNeeded()} 必须兜底：把滞留备份还原为激活目录，且状态与实际目录一致
+     * （还原的是**旧模型内容**、不误报就绪）。
+     *
+     * <p><b>场景构造说明</b>：无法在纯 JVM 下稳定地让 {@code rollbackProfileSwap} 内部的
+     * {@code bak.renameTo(target)} 失败——该 rename 发生在「删除新 target → 还原旧 bak」之间的极短
+     * 窗口内，测试无法注入句柄；若改用「持有独占文件句柄令 rename 失败」构造，则依赖 Windows 文件锁
+     * 语义，而 Android Gradle 单测跑在 Linux（持句柄仍可 rename 目录），跨平台 flaky。故按**等价**方式
+     * 直接构造「target 缺失 + {@code .bak_<id>} 存在」这一回滚失败后的磁盘现场，再调 {@code status()}
+     * 验证兜底路径。它与 {@link #statusRecoversActiveDirFromSwapBackup}（崩溃窗口）共用同一
+     * {@code recoverProfileDirIfNeeded} 契约；此处额外断言还原的是**旧模型内容**、状态与真实目录一致。
+     */
+    @Test
+    public void rollbackRenameFailureStrandedBackupIsRecoveredByStatus() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+        assertEquals("p1", m.activeProfileId());
+
+        // 构造 rollbackProfileSwap 恢复失败的现场：旧目录滞留 .bak_p1，target 缺失，指针未变。
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        assertFalse("回滚失败后 target 应缺失", target.exists());
+        assertTrue("旧目录应滞留于 .bak_p1", bak.isDirectory());
+
+        // 兜底：buildStatus -> recoverProfileDirIfNeeded 把 .bak_p1 还原为激活目录。
+        FaceRuntimeStatus st = m.status();
+        assertTrue("应从 .bak_p1 还原激活目录后就绪", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertTrue("还原后 target 目录应就位", target.isDirectory());
+        assertTrue("还原后必须保留旧模型内容（不得误切成新/空目录）",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        assertTrue("还原后 manifest 应就位",
+                new File(target, FaceModelManager.MANIFEST_FILE_NAME).isFile());
+        assertFalse("还原后不得残留 .bak_p1", bak.exists());
+        // 状态与实际目录一致：就绪当且仅当激活目录存在且含 manifest。
+        assertEquals("状态必须与真实目录一致",
+                st.isReady(), target.isDirectory()
+                        && new File(target, FaceModelManager.MANIFEST_FILE_NAME).isFile());
+    }
+
+    /**
+     * 第三波 #3b（负例）：兜底恢复 rename 成功后，若还原出的目录并非有效 profile（缺 manifest），
+     * {@code buildStatus()} 绝不能因此误报就绪——必须落到 ERROR（目录无效），与真实目录一致。
+     * 直接守住 {@code recoverProfileDirIfNeeded} 之后的 {@code !mf.isFile()} 判定分支。
+     */
+    @Test
+    public void recoveredBackupWithoutManifestIsNotReportedReady() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> files = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", files, "lic"), files)), ABI, true).isOk());
+
+        // 构造 target 缺失 + .bak_p1 存在但内容无效（无 manifest）的兜底现场。
+        File target = m.profileDir("p1");
+        deleteRecursively(target);
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(bak.mkdirs());
+
+        FaceRuntimeStatus st = m.status();
+        assertFalse("还原目录缺 manifest 不得误报就绪", st.isReady());
+        assertEquals(FaceRuntimeStatus.State.ERROR, st.state);
+        assertTrue("应如实说明激活配置目录无效/缺失", st.message.contains("p1"));
+        assertTrue("兜底应把备份还原为 target 目录", target.isDirectory());
+        assertFalse(".bak_p1 应已被消费", bak.exists());
+        assertFalse("target 无 manifest，状态与实际目录一致（不就绪）",
+                new File(target, FaceModelManager.MANIFEST_FILE_NAME).isFile());
     }
 
     // ---------- 夹具 ----------
