@@ -267,6 +267,31 @@ public class FeatureTemplateEncryptedStoreTest {
         assertTrue("null userId 应归为错误码而非成功", rr.code != FeatureTemplateEncryptedStore.Code.OK);
     }
 
+    /**
+     * A4：读路径的**阶段 1 恢复基线**——主文件缺失但 {@code .bak} 存在时，应先把备份还原再读，
+     * 而不是直接判 {@code NOT_FOUND}（`persistRegistry`/`persistActive` 早有这一步，唯独本类此前缺）。
+     */
+    @Test
+    public void readRecoversFromBackupWhenMainFileIsMissing() throws Exception {
+        File dir = tmp.newFolder();
+        File dst = new File(dir, "u_x.bin");
+        byte[] payload = new byte[]{7, 8, 9};
+        assertEquals(FeatureTemplateEncryptedStore.Code.OK,
+                FeatureTemplateEncryptedStore.write(null, dst, "u1", payload, 1, 1).code);
+
+        // 造出「dst 缺失 + dst.bak 存在」的崩溃现场（写入在 dst→bak 之后、tmp→dst 之前中断）。
+        File bak = new File(dir, "u_x.bin.bak");
+        assertTrue("前置：应能移开主文件", dst.renameTo(bak));
+
+        FeatureTemplateEncryptedStore.ReadResult rr =
+                FeatureTemplateEncryptedStore.read(null, dst, "u1", 1, 1, false);
+        assertEquals("应从 .bak 恢复后读出，而非判 NOT_FOUND",
+                FeatureTemplateEncryptedStore.Code.OK, rr.code);
+        assertArrayEquals(payload, rr.plaintext);
+        assertTrue("恢复后主文件应就位", dst.isFile());
+        assertFalse("备份应已被消费", bak.exists());
+    }
+
     private static File findRepoRoot() {
         File dir = new File(System.getProperty("user.dir", "."));
         while (dir != null) {

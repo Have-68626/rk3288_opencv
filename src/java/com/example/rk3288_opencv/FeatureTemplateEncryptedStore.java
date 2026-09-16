@@ -401,7 +401,18 @@ public final class FeatureTemplateEncryptedStore {
                                            @NonNull AadSupplier aadSupplier,
                                            boolean quarantineOnCorrupt) {
         if (!srcFile.exists()) {
-            return new ReadResult(Code.NOT_FOUND, null);
+            // 阶段 1 恢复基线（任务 A4）：与 persistRegistry / persistActive 对齐。上次写入若崩在
+            // 「dst→bak」之后、「tmp→dst」完成前，主文件缺失而**备份仍是唯一完整副本**；此前这里
+            // 直接报 NOT_FOUND，等于把可用数据判为不存在——三个写入器中唯独本类缺这一步。
+            File parent = srcFile.getParentFile();
+            File bak = (parent != null) ? new File(parent, srcFile.getName() + ".bak") : null;
+            if (bak != null && bak.isFile()) {
+                //noinspection ResultOfMethodCallIgnored
+                bak.renameTo(srcFile);
+            }
+            if (!srcFile.exists()) {
+                return new ReadResult(Code.NOT_FOUND, null);
+            }
         }
 
         byte[] raw;
