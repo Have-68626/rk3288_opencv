@@ -315,6 +315,60 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(0, healed.skippedLineCount);
     }
 
+    // ---------- ⑨b 条目集权威性（A2 审计 H2：破坏性对账的门禁） ----------
+
+    /**
+     * 损坏行被跳过时 {@code authoritative} 必须为 false。
+     *
+     * <p>它门禁的是**破坏性对账**（显示名孤儿清理）：若用非权威集合做差集删除，「仍在册但本次
+     * 没读到」的人会被当作已注销，其派生数据被误删。
+     */
+    @Test
+    public void authoritativeIsFalseWhenARowIsCorrupt() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 31), MV, TSV).status);
+        try (FileOutputStream fos = new FileOutputStream(repo.registryFile(), true)) {
+            fos.write("this-is-a-corrupt-row\n".getBytes(StandardCharsets.UTF_8));
+        }
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(1, list.skippedLineCount);
+        assertFalse("有损坏行 ⇒ 条目集不权威（不得据此删除派生数据）", list.authoritative);
+
+        // 一次成功写入自愈后，重新变为权威。
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 32), MV, TSV).status);
+        assertTrue("自愈后应恢复权威", repo.list().authoritative);
+    }
+
+    /** 无注册表文件 ⇒ 非权威（无法区分「全新安装」与「索引丢失」）。 */
+    @Test
+    public void authoritativeIsFalseWhenNoRegistryFileExists() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertFalse("无注册表不得视为权威", list.authoritative);
+    }
+
+    /** 从 {@code .bak} 恢复 ⇒ 非权威（备份可能早于最近新增）。 */
+    @Test
+    public void authoritativeIsFalseWhenRecoveredFromBackup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 31), MV, TSV).status);
+
+        // 造出「主文件缺失 + 备份存在」的崩溃现场：dst → bak。
+        File dst = repo.registryFile();
+        File bak = new File(dst.getParentFile(), dst.getName() + ".bak");
+        assertTrue("前置：应能移开主文件", dst.renameTo(bak));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("应从备份取回 alice", 1, list.entries.size());
+        assertFalse("从备份恢复的条目集不得视为权威", list.authoritative);
+    }
+
     // ---------- ⑩ 同目录跨实例共享锁（#6） ----------
 
     @Test

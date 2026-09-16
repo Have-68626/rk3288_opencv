@@ -159,6 +159,14 @@ public final class AndroidEnrollmentRepository {
          */
         public final int skippedLineCount;
         @NonNull public final String message;
+        /**
+         * 条目集是否**权威**（即「就是全部已注册人员」）。跳过损坏行 / 从 {@code .bak} 恢复 /
+         * 无注册表文件时均为 false。
+         *
+         * <p><b>破坏性对账必须以此为前提</b>：用非权威集合做差集删除会误删仍注册者的派生数据
+         * （显示名孤儿清理即其一）。
+         */
+        public boolean authoritative = true;
 
         ListResult(@NonNull Status status, @NonNull List<Entry> entries,
                    int skippedLineCount, @NonNull String message) {
@@ -308,7 +316,9 @@ public final class AndroidEnrollmentRepository {
     public ListResult list() {
         synchronized (dirLock()) {
             RegistrySnapshot snap = loadRegistry();
-            return new ListResult(snap.status, snap.entries, snap.skippedLineCount, snap.message);
+            ListResult result = new ListResult(snap.status, snap.entries, snap.skippedLineCount, snap.message);
+            result.authoritative = snap.authoritative;
+            return result;
         }
     }
 
@@ -461,6 +471,14 @@ public final class AndroidEnrollmentRepository {
         /** 解析时跳过的损坏行数；头部损坏时为 0。 */
         final int skippedLineCount;
         final String message;
+        /**
+         * 条目集是否**权威**（即「就是全部已注册人员」）。以下情形一律 false：
+         * 跳过损坏行、从 {@code .bak} 恢复（备份可能早于最近新增）、以及压根没有注册表文件
+         * （无法区分「全新安装」与「索引丢失」）。
+         *
+         * <p>用途：显示名孤儿清理等**破坏性**对账必须以此为前提——用非权威集合做差集删除会误删。
+         */
+        boolean authoritative = true;
 
         RegistrySnapshot(Status status, List<Entry> entries, int skippedLineCount, String message) {
             this.status = status;
@@ -483,13 +501,19 @@ public final class AndroidEnrollmentRepository {
                 RegistrySnapshot fromBak = parseRegistryFile(bak);
                 if (fromBak.status == Status.OK) {
                     boolean restored = renameQuietly(bak, dst);
-                    return new RegistrySnapshot(Status.OK, fromBak.entries, fromBak.skippedLineCount,
+                    RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
+                            fromBak.skippedLineCount,
                             restored ? "已从备份恢复注册表" : "注册表主文件缺失，已从备份读取");
+                    recovered.authoritative = false;   // 备份可能早于最近新增，条目集未必完整
+                    return recovered;
                 }
                 // 备份也损坏/不可读：如实上报，避免伪装成空库后被一次写入覆盖。
                 return fromBak;
             }
-            return new RegistrySnapshot(Status.OK, new ArrayList<Entry>(), 0, "");
+            // 无注册表文件：无法区分「全新安装」与「索引丢失」，故不视为权威。
+            RegistrySnapshot none = new RegistrySnapshot(Status.OK, new ArrayList<Entry>(), 0, "");
+            none.authoritative = false;
+            return none;
         }
 
         RegistrySnapshot snap = parseRegistryFile(dst);
@@ -498,8 +522,10 @@ public final class AndroidEnrollmentRepository {
             RegistrySnapshot fromBak = parseRegistryFile(bak);
             if (fromBak.status == Status.OK) {
                 renameQuietly(bak, dst);
-                return new RegistrySnapshot(Status.OK, fromBak.entries, fromBak.skippedLineCount,
-                        "注册表主文件不可读，已从备份恢复");
+                RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
+                        fromBak.skippedLineCount, "注册表主文件不可读，已从备份恢复");
+                recovered.authoritative = false;   // 同上：备份未必反映最新状态
+                return recovered;
             }
         }
         return snap;
@@ -539,7 +565,9 @@ public final class AndroidEnrollmentRepository {
             out.add(parsed);
         }
         String msg = (skipped == 0) ? "" : ("注册表有 " + skipped + " 行损坏，已跳过");
-        return new RegistrySnapshot(Status.OK, out, skipped, msg);
+        RegistrySnapshot snap = new RegistrySnapshot(Status.OK, out, skipped, msg);
+        snap.authoritative = (skipped == 0);   // 跳过了损坏行 ⇒ 条目集不等于全部已注册人员
+        return snap;
     }
 
     /** 静默重命名（用于崩溃恢复）；失败返回 false，由调用方决定后续语义。 */

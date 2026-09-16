@@ -68,17 +68,28 @@ public class MainActivityDisplayNameLifecycleTest {
                 assign < captureStart);
     }
 
-    /** 契约 3：加密落盘只允许出现在「图库替换成功」之后的分支里。 */
+    /**
+     * 契约 3：加密落盘只允许出现在**注册提交路径**（`add` 成功之后），且与图库替换结果**解耦**。
+     *
+     * <p>契约演变（A1 审计 P3-3）：最初要求「落盘在图库替换成功之后」，但那会让「模板已落盘、
+     * 图库替换失败」的人**永久丢失显示名**。正确语义是**与模板的持久化对齐**——`add` 成功即注册
+     * 已落盘，此时就应写显示名。
+     */
     @Test
-    public void encryptedPersistHappensOnlyAfterGallerySucceeded() throws IOException {
+    public void encryptedPersistHappensInCommitPathDecoupledFromGallery() throws IOException {
         String text = source();
         int save = text.indexOf("displayNameStore().save(");
         assertTrue("应存在显示名加密写入调用", save >= 0);
 
+        int addOk = text.indexOf("AndroidEnrollmentRepository.Result add = enrollmentRepository().add(");
+        assertTrue("应存在仓库写入调用", addOk >= 0);
+        assertTrue("显示名落盘必须在仓库写入（add）之后", save > addOk);
+
+        // 与图库替换解耦：不得再用「图库成功」作为落盘的前置条件。
         int galleryFailBranch = text.indexOf("已加密写入本地，但运行中图库替换失败（未更新）");
         assertTrue("应存在图库替换失败分支", galleryFailBranch >= 0);
-        assertTrue("显示名落盘必须在图库替换成功之后（失败分支不得落盘）",
-                save > galleryFailBranch);
+        assertTrue("显示名落盘不得排在『图库替换失败』分支之后（那等于与图库结果耦合）",
+                save < galleryFailBranch);
 
         // 仅此一处落盘调用（防止有人又在采集开始前加一次）
         assertTrue("显示名加密写入应只有一处调用点，实际=" + count(text, "displayNameStore().save("),
