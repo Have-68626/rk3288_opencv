@@ -870,20 +870,20 @@ public final class FaceModelManager {
         recoverProfileDirIfNeeded(profileId);
         if (!target.exists() && bak.exists()) {
             // 崩溃恢复：旧目录是唯一完整副本，恢复失败不能继续（否则下一步会删掉它）。
-            if (!renameQuietly(bak, target)) {
+            if (!fileOps.rename(bak, target)) {
                 throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
                         "检测到上次替换残留（" + bak.getName() + "），恢复失败，已中止以保留旧配置");
             }
         }
         deleteRecursivelyQuietly(bak);
         boolean hadOld = target.exists();
-        if (hadOld && !target.renameTo(bak)) {
+        if (hadOld && !fileOps.rename(target, bak)) {
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "旧配置目录无法移开");
         }
-        boolean moved = base.renameTo(target);
+        boolean moved = fileOps.rename(base, target);
         if (!moved) {
             // 回滚失败必须显式上报，绝不静默：否则旧目录仅以 .bak_<id> 滞留、指针悬空。
-            boolean restored = !hadOld || bak.renameTo(target);
+            boolean restored = !hadOld || fileOps.rename(bak, target);
             if (!restored) {
                 throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
                         "临时目录无法原子重命名，且旧配置恢复失败（旧目录滞留于 " + bak.getName() + "）");
@@ -944,7 +944,7 @@ public final class FaceModelManager {
         // 尽力记录回滚意图：它能覆盖「删除过程中崩溃」等窄窗口，但记录失败不应阻止还原。
         final boolean recorded = writeRollbackMarker(swap);
         deleteRecursivelyQuietly(swap.target);
-        if (!swap.target.exists() && swap.bak.renameTo(swap.target)) {
+        if (!swap.target.exists() && fileOps.rename(swap.bak, swap.target)) {
             clearRollbackMarker(swap.profileId);  // 回滚完整完成，意图标记使命结束
             return RollbackOutcome.RESTORED;
         }
@@ -999,7 +999,7 @@ public final class FaceModelManager {
         // 阶段 1：#3 崩溃恢复——上次写入在「dst→bak」之后、「tmp→dst」完成前退出时主指针缺失、
         // 备份尚在；先把备份恢复为可回滚基线，否则下面会先删备份再写，指针在崩溃窗口中丢失。
         // 恢复失败则宁可不写（绝不删除唯一副本）。
-        if (!dst.exists() && bak.exists() && !renameQuietly(bak, dst)) {
+        if (!dst.exists() && bak.exists() && !fileOps.rename(bak, dst)) {
             return false;
         }
         try (FileOutputStream fos = new FileOutputStream(tmp, false)) {
@@ -1016,13 +1016,13 @@ public final class FaceModelManager {
         if (bak.exists()) {
             bak.delete();
         }
-        if (dst.exists() && !dst.renameTo(bak)) {
+        if (dst.exists() && !fileOps.rename(dst, bak)) {
             tmp.delete();
             return false;
         }
-        if (!tmp.renameTo(dst)) {
+        if (!fileOps.rename(tmp, dst)) {
             if (bak.exists()) {
-                bak.renameTo(dst);
+                fileOps.rename(bak, dst);
             }
             tmp.delete();
             return false;
@@ -1047,7 +1047,7 @@ public final class FaceModelManager {
                 // 崩溃恢复：主指针缺失但备份是唯一完整副本，先解析备份再 rename 回主。
                 String id = parseActiveFile(bak);
                 if (id != null) {
-                    renameQuietly(bak, dst);
+                    fileOps.rename(bak, dst);
                     return id;
                 }
             }
@@ -1058,7 +1058,7 @@ public final class FaceModelManager {
             // 主指针存在但不可读/非法：从备份恢复，避免退化为「未导入」丢失激活。
             String fromBak = parseActiveFile(bak);
             if (fromBak != null) {
-                renameQuietly(bak, dst);
+                fileOps.rename(bak, dst);
                 return fromBak;
             }
         }
@@ -1085,6 +1085,59 @@ public final class FaceModelManager {
         }
     }
 
+    // ── 文件操作接缝（任务 A，2026-09-16 决策）────────────────────────────────────
+    // 用途：目录替换的事务协议有大量**破坏性**步骤（改名 / 删除 / 落事务记录），其失败分支在纯 JVM
+    // 下难以构造（本类是 final、原方法均为 private static，「非空目录占位」只覆盖得了少数情形）。
+    // 故把这三类操作收敛为可注入接口，与 FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting
+    // 同构。默认实现即原有行为，**生产路径零变化**。
+
+    @androidx.annotation.VisibleForTesting
+    interface FileOps {
+        /** 改名；语义同 {@link File#renameTo}（含吞 SecurityException）。 */
+        boolean rename(@NonNull File from, @NonNull File to);
+
+        /** 递归删除；返回是否**确实已不存在**。 */
+        boolean deleteRecursively(@NonNull File f);
+
+        /** 写入 + flush + fsync（事务记录等需落盘保证的小文件）；返回是否成功。 */
+        boolean writeSync(@NonNull File f, @NonNull byte[] data);
+    }
+
+    private static final FileOps DEFAULT_FILE_OPS = new FileOps() {
+        @Override
+        public boolean rename(@NonNull File from, @NonNull File to) {
+            return renameQuietly(from, to);
+        }
+
+        @Override
+        public boolean deleteRecursively(@NonNull File f) {
+            return FaceModelManager.deleteRecursively(f);
+        }
+
+        @Override
+        public boolean writeSync(@NonNull File f, @NonNull byte[] data) {
+            try (FileOutputStream fos = new FileOutputStream(f, false)) {
+                fos.write(data);
+                fos.flush();
+                try {
+                    fos.getFD().sync();
+                } catch (Exception ignored) {
+                }
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    };
+
+    private static volatile FileOps fileOps = DEFAULT_FILE_OPS;
+
+    /** 仅供测试注入；传 null 恢复默认（真实文件系统）实现。 */
+    @androidx.annotation.VisibleForTesting
+    static void setFileOpsForTesting(@Nullable FileOps ops) {
+        fileOps = (ops != null) ? ops : DEFAULT_FILE_OPS;
+    }
+
     /**
      * 目录恢复（启动/状态查询前调用），覆盖两种现场：
      *
@@ -1108,9 +1161,9 @@ public final class FaceModelManager {
                 // 备份已不存在（无旧模型可还原）：标记失去意义，清除以免状态永久卡在 ERROR。
                 //noinspection ResultOfMethodCallIgnored
                 marker.delete();
-            } else if (!target.exists() || deleteRecursively(target)) {
+            } else if (!target.exists() || fileOps.deleteRecursively(target)) {
                 // 新目录已清空，备份可还原；成功则连标记一并清除（回滚到此完成）。
-                if (renameQuietly(bak, target)) {
+                if (fileOps.rename(bak, target)) {
                     //noinspection ResultOfMethodCallIgnored
                     marker.delete();
                 }
@@ -1121,7 +1174,7 @@ public final class FaceModelManager {
 
         // 崩溃窗口（无回滚标记）：旧目录是唯一完整副本，直接还原。
         if (!target.exists() && bak.exists()) {
-            renameQuietly(bak, target);
+            fileOps.rename(bak, target);
         }
     }
 
@@ -1252,7 +1305,7 @@ public final class FaceModelManager {
 
     private static void deleteRecursivelyQuietly(@NonNull File f) {
         try {
-            deleteRecursively(f);
+            fileOps.deleteRecursively(f);
         } catch (Exception ignored) {
         }
     }
