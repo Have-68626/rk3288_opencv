@@ -161,7 +161,11 @@ JNI 函数按领域拆分到 `src/cpp/jni/`（`camera.cpp` / `engine.cpp` / `pre
 
 ### Acceleration contract
 
-每个加速器（MPP、ncnn、libyuv、Qualcomm、OpenCL）在 `Engine::performAccelSelfCheck()` 或 `inference_bench_cli` 中使用 `requested` / `effective` / `evidence` / `reason` 四元组。固定原因码：`ok`、`build_disabled`、`unsupported_platform`、`missing_dependency`、`missing_model`、`runtime_init_failed`、`unsupported_input`。
+每个加速器（MPP、ncnn、libyuv、Qualcomm、OpenCL）在 `Engine::performAccelSelfCheck()` 中使用 `requested` / `effective` / `evidence` / `reason` 四元组，输出为**单行日志**（非 JSON）。固定原因码：`ok`、`build_disabled`、`unsupported_platform`、`missing_dependency`、`missing_model`、`runtime_init_failed`、`unsupported_input`。
+
+> 覆盖范围的实际情况：`inference_bench_cli` **只覆盖 `opencl`**（且自带一套手搓的 `backendRequested/Effective/Reason/Evidence`，与 `AccelContractStatus` 无类型级复用）；`mpp` 在 Windows 恒为 `unsupported_platform`，`qualcomm` 因项目内无 `deps/qualcomm_snpe/` 恒为 `missing_dependency`。
+>
+> 契约**已有 CI 行为测试**（`tests/cpp/test_acceleration_contract.cpp` 编入 `core_unit_tests`，每次 push 都跑；`test_engine.cpp` 另断言模型缺失时 `missing_model` 且零轨迹）；但**缺规格层**——无 JSON Schema、无 7 个固定码的穷尽往返测试，且"`requested ≠ effective` 即拒绝"仅存在于文档约定，无代码强制。
 
 ### 其他约定入口
 
