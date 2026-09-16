@@ -44,7 +44,9 @@ as_of=2026-09-12
 关键设计取舍：
 
 - **模板加密、注册表明文**：敏感的是向量；模板文件名是 userId 的 SHA-256，没有注册表无法反推，因此索引必须依赖一张表；低版本无 Keystore AES-GCM 时，明文注册表仍能支撑“只读预览”。
-- **userId 用 hex 可逆编码而非哈希（明文档化取舍）**：为在低版本展示人员标识；若后续要求不可逆，需引入展示名映射表或放弃 `list` 展示，不能只改编码一处。
+- **userId 用 hex 可逆编码而非哈希（明文档化取舍）**：为在低版本展示人员标识；若后续要求不可逆，需放弃 `list` 展示或改为单向派生，不能只改编码一处。**该取舍仍然成立**——见下一条的保护边界。
+- **显示名加密（任务 B，2026-09-16）**：显示名**不再**以明文存于 SharedPreferences，改由 `PersonDisplayNameStore` 加密存于 `files/face_names/n_<sha256(personId)>.enc`（KeyStore AES-GCM，**独立密钥** `person_name_aes_gcm_v1` + **独立 AAD 域**，与模板文件互不可换用）。**三者各自的边界**：注册表 `face_registry_v1.dat` 只存 userId 等元数据、**不含显示名**；显示名加密存于上述目录；模板向量加密存于 `files/face_templates/`。⚠️ `userId` 仍是可逆编码，故**不得**宣称「人员 PII 全部加密」。
+- **显示名生命周期（任务 B）**：采集期**仅存内存**，注册成功（模板落盘 + 图库替换成功）后才加密写入——因此取消/失败**不会留下残留**（此前是先写 SharedPreferences 再采集，取消/失败都不清理）。旧明文键经一次性迁移清除，顺序为「加密 → **验证密文可读** → 删原值」，失败保留原值待重试。API<23 或密钥不可用时返回 `UNSUPPORTED_PLATFORM` / `KEYSTORE_ERROR`，**绝不回落明文**，UI 降级显示 personId。密钥刻意**不设** `setUserAuthenticationRequired(true)`：设了则只能在「已设置安全锁屏」的设备上生成，且锁屏变更会令其不可逆失效。
 - **并发**：按规范化 `scopeDir` 路径共享静态锁，串行化同目录多实例的 `add/remove/readTemplate/list/get`。
 - **容错**：单行损坏跳过并计数（`skippedLineCount`），仅文件头（魔数 `FREG1`/版本）损坏才判 `CORRUPTED`；后续成功写入自愈。
 - **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；中间退出导致主文件缺失时，`loadRegistry` 先用 `.bak` 恢复为主文件再解析，避免把唯一索引伪装成空库。

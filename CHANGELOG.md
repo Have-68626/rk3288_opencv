@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **JNI 桥接**：`NativeFaceBridge` 及逐帧注册 API，打通注册闭环（任务 13、开箱即用）
 - **注册会话**：`EnrollmentSession` 八样本注册会话（任务 17）
 - **加密人员仓库**：`AndroidEnrollmentRepository`，注册表落盘崩溃安全与 `.bak` 恢复
+- **显示名加密**：显示名由明文 SharedPreferences 改为 KeyStore AES-GCM 加密存储（独立密钥与 AAD 域，与模板互不可换用）；采集期仅存内存、注册成功后才落盘（取消/失败无残留），含一次性明文迁移与孤儿清理
 - **模型管理**：Android 模型管理器与 SAF 导入（任务 14），APK 不内置模型
 - **UI 接线**：状态区、注册与人员管理界面接线；状态区增加模型来源与加速契约展示（任务 15/18）
 - **识别结果**：JSON 增 `personId` / `displayName`（任务 18）
