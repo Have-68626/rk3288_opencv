@@ -350,9 +350,15 @@ public final class FaceModelManager {
                 // 记录旧激活指针：激活/落定失败时保留旧配置。
                 String previousActive = readActive();
 
+                // Codex 要求 5：存在未了结的替换现场时**禁止继续覆盖导入**（先尽力恢复一次）。
+                String blocked = unresolvedSwapReason(profile.profileId);
+                if (blocked != null) {
+                    return fail(Status.ATOMIC_RENAME_FAILED, blocked);
+                }
+
                 // ⑦ 目录原子替换（rename 基目录到 <profileId>），但**先不写激活指针**：
                 //    只有实时管线激活成功才落定指针（#2）。
-                ProfileSwap swap = swapInProfileDirs(base, profile.profileId);
+                ProfileSwap swap = swapInProfileDirs(base, profile.profileId, previousActive);
 
                 // ⑧ 激活实时管线：目录已稳定，用最终 profileId 目录绑定（临时目录随后被清理）。
                 //    native 侧候选管线先 reload、成功才提交，失败时旧管线原样保留。
@@ -395,7 +401,10 @@ public final class FaceModelManager {
                                     "模型已导入，但实时管线激活失败：" + ao.reason + "，" + detail);
                         }
                     } else {
+                        // 首次导入无旧配置：新目录保留（不切指针 → 仍为未导入引导态），事务就地了结——
+                        // 否则残留的未提交记录会让 buildStatus 误报「事务未完成」。
                         deleteRecursivelyQuietly(swap.bak);
+                        clearTxn(profile.profileId);
                     }
                     // #1-Low-2（第三波审查）：按是否有旧同名配置区分失败文案，避免首次导入也误报
                     // 「已保留原配置」（此时并无旧配置）。
@@ -421,7 +430,14 @@ public final class FaceModelManager {
                     bestEffortReactivate(previousActive, currentAbi);
                     return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已回滚配置");
                 }
+                // 事务提交（Codex 要求 3）：指针已落定 → 先把记录改写为 committed，再清备份，最后清记录。
+                // 改写失败时**继续**而**不回滚**：此刻激活确已成功（native 提交 + 指针落定都在前），
+                // 因「记录写失败」而回滚一个可用配置更糟。此举安全，理由见 recoverProfileDirIfNeeded
+                // 的状态推导规则——本路径随后会删掉 bak，而「in_progress + 无 bak」一律判为「未曾替换」，
+                // 故即便记录残留也会收敛到「保留新目录」。
+                writeTxn(new DirTxn(swap.profileId, swap.hadOld, previousActive, true));
                 deleteRecursivelyQuietly(swap.bak);
+                clearTxn(swap.profileId);
 
                 return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
@@ -456,6 +472,11 @@ public final class FaceModelManager {
             File manifestFile = new File(dir, MANIFEST_FILE_NAME);
             // #3 崩溃恢复：目录替换窗口崩溃后（target 缺失 + .bak_<id> 存在）先恢复就位。
             recoverProfileDirIfNeeded(profileId);
+            // Codex 要求 5：未了结的替换现场（未提交事务 / 歧义并存）时禁止继续操作。
+            String blocked = unresolvedSwapReason(profileId);
+            if (blocked != null) {
+                return fail(Status.ATOMIC_RENAME_FAILED, blocked);
+            }
             if (!dir.isDirectory() || !manifestFile.isFile()) {
                 return fail(Status.PROFILE_NOT_FOUND, "该配置尚未导入：" + profileId);
             }
@@ -860,7 +881,8 @@ public final class FaceModelManager {
      * 绝不删除唯一完整副本。
      */
     @NonNull
-    private ProfileSwap swapInProfileDirs(@NonNull File base, @NonNull String profileId)
+    private ProfileSwap swapInProfileDirs(@NonNull File base, @NonNull String profileId,
+                                          @Nullable String prevActive)
             throws ImportFailure {
         File target = profileDir(profileId);
         File bak = bakDirOf(profileId);
@@ -877,6 +899,14 @@ public final class FaceModelManager {
         }
         deleteRecursivelyQuietly(bak);
         boolean hadOld = target.exists();
+
+        // 事务记录（Codex 要求 1）：**破坏性改名前**可靠落 in_progress；写不进去就绝不动手，
+        // 旧配置保持原位。记录里的 hadOld + 原激活指针供恢复时「退旧」使用。
+        if (!writeTxn(new DirTxn(profileId, hadOld, prevActive, false))) {
+            throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
+                    "无法记录目录替换事务，已中止以保留旧配置（未做任何破坏性改动）");
+        }
+
         if (hadOld && !fileOps.rename(target, bak)) {
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "旧配置目录无法移开");
         }
@@ -939,6 +969,7 @@ public final class FaceModelManager {
             // 首次导入无旧配置可还原：删掉新目录即完成回滚。删除失败不影响对外语义——
             // 该目录从未被激活指针引用，最坏只是磁盘残留。
             deleteRecursivelyQuietly(swap.target);
+            clearTxn(swap.profileId);   // 已在进程内完成回滚，无需启动恢复
             return RollbackOutcome.RESTORED;
         }
         // 尽力记录回滚意图：它能覆盖「删除过程中崩溃」等窄窗口，但记录失败不应阻止还原。
@@ -946,6 +977,7 @@ public final class FaceModelManager {
         deleteRecursivelyQuietly(swap.target);
         if (!swap.target.exists() && fileOps.rename(swap.bak, swap.target)) {
             clearRollbackMarker(swap.profileId);  // 回滚完整完成，意图标记使命结束
+            clearTxn(swap.profileId);             // 事务亦然：现场已回到替换前
             return RollbackOutcome.RESTORED;
         }
         return recorded ? RollbackOutcome.FAILED_RECORDED : RollbackOutcome.FAILED_UNRECORDED;
@@ -989,6 +1021,114 @@ public final class FaceModelManager {
     private void clearRollbackMarker(@NonNull String profileId) {
         //noinspection ResultOfMethodCallIgnored
         rollbackMarkerOf(profileId).delete();
+    }
+
+    // ── 目录替换事务记录（任务 A，2026-09-16 决策）────────────────────────────────
+    // 为什么需要它：`.rollback_<id>` 只有「存在即回滚」语义，**无法区分**「替换进行中」与
+    // 「已成功提交但尚未清理备份」。故引入带 **state** 的记录：任何破坏性改名前先落
+    // `in_progress`，指针落定后再改写为 `committed`。恢复据此判定「退旧」还是「留新」，
+    // 不再依赖目录存在性猜测（那正是「把从未激活成功的新包报成 READY」的根因）。
+
+    /** 事务记录文件名前缀：{@code <storeDir>/.txn_<profileId>}（点号前缀 → 被 listProfiles 忽略）。 */
+    private static final String TXN_PREFIX = ".txn_";
+    private static final String TXN_STATE_IN_PROGRESS = "in_progress";
+    private static final String TXN_STATE_COMMITTED = "committed";
+
+    /** 目录替换事务记录（Codex 要求 2：目标 profile / 是否有旧目录 / 原激活指针 / 提交状态）。 */
+    private static final class DirTxn {
+        @NonNull final String profileId;
+        final boolean hadOld;
+        @Nullable final String prevActive;
+        final boolean committed;
+
+        DirTxn(@NonNull String profileId, boolean hadOld, @Nullable String prevActive, boolean committed) {
+            this.profileId = profileId;
+            this.hadOld = hadOld;
+            this.prevActive = prevActive;
+            this.committed = committed;
+        }
+
+        @NonNull
+        DirTxn asCommitted() {
+            return new DirTxn(profileId, hadOld, prevActive, true);
+        }
+
+        @NonNull
+        byte[] encode() {
+            return ("profileId=" + profileId + "\n"
+                    + "hadOld=" + hadOld + "\n"
+                    + "prevActive=" + (prevActive == null ? "" : prevActive) + "\n"
+                    + "state=" + (committed ? TXN_STATE_COMMITTED : TXN_STATE_IN_PROGRESS) + "\n")
+                    .getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
+    /** 事务记录路径。 */
+    @NonNull
+    private File txnFileOf(@NonNull String profileId) {
+        return new File(storeDir, TXN_PREFIX + profileId);
+    }
+
+    /**
+     * 读事务记录。
+     *
+     * @return 记录；无文件或内容不可解析（含 profileId 不匹配）时返回 null——
+     *         调用方必须把 null 当作「**无记录**」而非「无事务」，后者需按歧义现场处理。
+     */
+    @Nullable
+    private DirTxn readTxn(@NonNull String profileId) {
+        File f = txnFileOf(profileId);
+        if (!f.isFile()) return null;
+        String text;
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] buf = new byte[512];   // 记录 < 200 字节，单次读足够
+            int n = fis.read(buf);
+            if (n <= 0) return null;
+            text = new String(buf, 0, n, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+        String id = null;
+        String prev = "";
+        boolean hadOld = false;
+        boolean committed = false;
+        for (String line : text.split("\n")) {
+            int eq = line.indexOf('=');
+            if (eq <= 0) continue;
+            String k = line.substring(0, eq).trim();
+            String v = line.substring(eq + 1).trim();
+            if ("profileId".equals(k)) id = v;
+            else if ("hadOld".equals(k)) hadOld = "true".equals(v);
+            else if ("prevActive".equals(k)) prev = v;
+            else if ("state".equals(k)) committed = TXN_STATE_COMMITTED.equals(v);
+        }
+        if (id == null || !id.equals(profileId)) return null;
+        return new DirTxn(id, hadOld, prev.isEmpty() ? null : prev, committed);
+    }
+
+    /**
+     * 原子落事务记录（临时文件 + fsync + 改名）。
+     *
+     * <p><b>返回值必须被检查</b>：破坏性改名前写不进去就**绝不能动手**（Codex 要求 1），
+     * 否则会留下「改了一半、且无任何记录可依」的现场。
+     */
+    private boolean writeTxn(@NonNull DirTxn txn) {
+        File tmp = new File(storeDir, TXN_PREFIX + txn.profileId + ".tmp");
+        if (!fileOps.writeSync(tmp, txn.encode())) {
+            return false;
+        }
+        if (!fileOps.rename(tmp, txnFileOf(txn.profileId))) {
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            return false;
+        }
+        return true;
+    }
+
+    /** 清除事务记录（无可清除时静默）。 */
+    private void clearTxn(@NonNull String profileId) {
+        //noinspection ResultOfMethodCallIgnored
+        txnFileOf(profileId).delete();
     }
 
     /** 原子写激活指针：tmp + bak 替换（与注册表落盘同策略）。 */
@@ -1154,8 +1294,17 @@ public final class FaceModelManager {
     private void recoverProfileDirIfNeeded(@NonNull String profileId) {
         File target = profileDir(profileId);
         File bak = bakDirOf(profileId);
-        File marker = rollbackMarkerOf(profileId);
 
+        // ① 事务记录**优先**：它带 state，能区分「替换进行中」与「已成功提交但尚未清理备份」，
+        //    而 .rollback_<id> 只有「存在即回滚」语义（这正是方案①必须升级为事务记录的原因）。
+        DirTxn txn = readTxn(profileId);
+        if (txn != null) {
+            recoverTxn(txn, target, bak);
+            return;
+        }
+
+        // ② 旧版回滚意图标记（无事务记录的年代）：存在即回滚。
+        File marker = rollbackMarkerOf(profileId);
         if (marker.exists()) {
             if (!bak.exists()) {
                 // 备份已不存在（无旧模型可还原）：标记失去意义，清除以免状态永久卡在 ERROR。
@@ -1172,10 +1321,102 @@ public final class FaceModelManager {
             return;
         }
 
-        // 崩溃窗口（无回滚标记）：旧目录是唯一完整副本，直接还原。
+        // ③ 崩溃窗口（无任何记录）：旧目录是唯一完整副本，直接还原。
         if (!target.exists() && bak.exists()) {
             fileOps.rename(bak, target);
         }
+        // ④ 「无记录且 target 与 bak 并存」= **歧义现场**（旧版本遗留）：保留两份数据、
+        //    **不猜哪份应生效**（Codex 要求 6）。此处刻意不做任何改动，由 buildStatus 报错提示人工处理。
+    }
+
+    /**
+     * 按事务记录恢复（Codex 要求 4）。
+     *
+     * <p><b>状态推导</b>（无需额外状态字段——由记录 + 磁盘即可判定「替换是否已开始」）：
+     * <ul>
+     *   <li>{@code hadOld} 且 bak 存在 ⇒ 已越过「旧目录移开」这一步，替换**已开始**；</li>
+     *   <li>{@code !hadOld} 且 target 存在 ⇒ 新目录已就位（此前 target 不存在），替换**已开始**。</li>
+     * </ul>
+     * 未开始 ⇒ 磁盘即原状，清掉记录即可；已开始且**未提交** ⇒ 回滚到旧目录与原指针；
+     * 已提交 ⇒ 保留新目录、继续清理备份。
+     *
+     * <p>任一步失败都**保持现场并保留记录**，由 {@code buildStatus} 报 ERROR 且拒绝继续覆盖导入。
+     */
+    private void recoverTxn(@NonNull DirTxn txn, @NonNull File target, @NonNull File bak) {
+        if (txn.committed) {
+            // 已提交：保留新目录，继续清理备份；备份确实清掉后才清记录（否则下次继续重试清理）。
+            if (bak.exists()) {
+                fileOps.deleteRecursively(bak);
+            }
+            if (!bak.exists()) {
+                clearTxn(txn.profileId);
+            }
+            return;
+        }
+        // 未提交：恢复到替换前的状态。
+        //
+        // !hadOld 特例：**无需回滚**——没有旧目录可还原，且指针未改动（persistActive 在提交记录之后
+        // 才执行）。保留下来的新包只是一个「可激活但尚未激活」的目录，不影响状态（active 仍为 null
+        // → NOT_IMPORTED）。这与首次导入失败时的非崩溃语义一致（那里也是保留目录、不切指针）。
+        if (!txn.hadOld) {
+            clearTxn(txn.profileId);
+            return;
+        }
+        // hadOld：bak 不存在 ⇒ 尚未越过「旧目录移开」，磁盘即原状。
+        if (!bak.exists()) {
+            clearTxn(txn.profileId);
+            return;
+        }
+        // 已越过「旧目录移开」且未提交 ⇒ 回滚到旧目录与原指针。先删新目录，备份才有位置还原。
+        if (target.exists() && !fileOps.deleteRecursively(target)) {
+            return;   // 删不掉 → 保持现场，记录保留 → buildStatus 报 ERROR
+        }
+        if (!fileOps.rename(bak, target)) {
+            return;   // 还原失败 → 保持现场，记录保留
+        }
+        if (!restoreActivePointer(txn.prevActive)) {
+            return;   // 指针还原失败 → 保留记录待下次重试
+        }
+        clearTxn(txn.profileId);
+    }
+
+    /**
+     * 是否存在**未了结**的目录替换现场；有则禁止继续覆盖导入（Codex 要求 5）。
+     *
+     * <p>先尽力恢复一次：可自愈的现场（如未提交但未真正替换、已提交只差清备份）会被就地了结，
+     * 不留阻塞理由；只有**恢复失败**或**歧义并存**才拒绝继续——否则下一次导入会覆盖掉待恢复的数据。
+     *
+     * @return 阻塞原因；{@code null} 表示可继续
+     */
+    @Nullable
+    private String unresolvedSwapReason(@NonNull String profileId) {
+        recoverProfileDirIfNeeded(profileId);
+
+        DirTxn txn = readTxn(profileId);
+        if (txn != null && !txn.committed) {
+            return "上次目录替换未完成（未提交事务），已保留现场，请先排除磁盘占用再导入";
+        }
+        File target = profileDir(profileId);
+        File bak = bakDirOf(profileId);
+        if (txn == null && !rollbackMarkerOf(profileId).exists() && target.exists() && bak.exists()) {
+            return "检测到新旧配置并存且无事务记录，无法判定哪份应生效，请人工确认后再导入";
+        }
+        return null;
+    }
+
+    /**
+     * 把激活指针写回指定值（{@code null} = 清除指针文件）。
+     *
+     * @return 是否确实落盘；失败时调用方**不得**清除事务记录，留待下次重试
+     */
+    private boolean restoreActivePointer(@Nullable String prevActive) {
+        File dst = new File(storeDir, ACTIVE_POINTER_FILE);
+        if (prevActive == null) {
+            //noinspection ResultOfMethodCallIgnored
+            dst.delete();
+            return !dst.exists();
+        }
+        return fileOps.writeSync(dst, prevActive.getBytes(StandardCharsets.UTF_8));
     }
 
     // ---------------- 状态组装 ----------------
@@ -1192,13 +1433,25 @@ public final class FaceModelManager {
             recoverProfileDirIfNeeded(active);
             File dir = profileDir(active);
             File mf = new File(dir, MANIFEST_FILE_NAME);
-            if (rollbackMarkerOf(active).exists() && bakDirOf(active).exists()) {
+            DirTxn pendingTxn = readTxn(active);
+            if (pendingTxn != null && !pendingTxn.committed) {
+                // 未提交的事务仍在 = 恢复未能完成（删不掉新目录 / 还原失败 / 指针写不回）。
+                // 既不能报 ready（会让人以为新模型在跑），也不能承诺「已回滚」——如实报错并要求人工介入。
+                base = FaceRuntimeStatus.error(active, count,
+                        "目录替换事务未完成（未提交），已保留现场；请排除磁盘占用后重试，勿反复导入");
+            } else if (rollbackMarkerOf(active).exists() && bakDirOf(active).exists()) {
                 // 仅当「意图标记在**且**旧模型仍在备份目录」才是真正卡住的回滚：此时既不能报 ready
                 //（会掩盖真实故障、让人以为新模型在跑），也不能承诺「已回滚」——如实报 ERROR 并指出
                 // 原模型位置。若备份已被消费，说明还原其实已经完成（仅标记删除失败，A3' γ7），
                 // 落入下方常规目录判定即可；否则会误报 ERROR 并谎称旧模型仍在备份里。
                 base = FaceRuntimeStatus.error(active, count,
                         "上次模型回滚未完成：原模型仍滞留在 " + bakDirOf(active).getName() + "，当前配置未生效");
+            } else if (pendingTxn == null && !rollbackMarkerOf(active).exists()
+                    && dir.isDirectory() && mf.isFile() && bakDirOf(active).exists()) {
+                // 无事务记录、无回滚标记，却「新目录与旧备份并存」：**无法判定哪份应生效**
+                //（旧版本遗留；自动恢复 bak 会误撤销一次成功更新，故绝不猜）。保留两份数据（Codex 要求 6）。
+                base = FaceRuntimeStatus.error(active, count,
+                        "检测到未完成的目录替换（新旧配置并存且无事务记录），已保留两份数据，请人工确认");
             } else if (!dir.isDirectory() || !mf.isFile()) {
                 base = FaceRuntimeStatus.error(active, count, "激活配置目录缺失：" + active);
             } else {
