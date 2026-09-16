@@ -54,11 +54,30 @@ public final class FeatureTemplateEncryptedStore {
 
     private static final String KEYSTORE = "AndroidKeyStore";
     private static final String KEY_ALIAS_V1 = "feature_aes_gcm_v1";
+    /**
+     * 显示名用的**独立密钥**（任务 B）：与模板密钥分离，任一用途的密钥轮换不影响另一用途。
+     *
+     * <p>注意：密钥**刻意不设** {@code setUserAuthenticationRequired(true)}——设了之后密钥只能在
+     * 「已设置安全锁屏」的设备上生成（本类设备多为值守机、常无锁屏 → 直接生成失败），且锁屏被
+     * 关闭/重配/强制重置会令其**不可逆失效**。默认即 false，保持默认。
+     */
+    private static final String KEY_ALIAS_NAME_V1 = "person_name_aes_gcm_v1";
 
     private static final byte[] MAGIC = "FST0".getBytes(StandardCharsets.US_ASCII);
     private static final byte VERSION = 1;
     private static final int IV_LEN = 12;
     private static final int TAG_BITS = 128;
+
+    /**
+     * 显示名 AAD 的域分隔标签（任务 B）。
+     *
+     * <p>与模板 AAD（{@code sha256(userId)||mv||sv}）**不同域**：把模板文件喂给读显示名的路径，
+     * 或反之，都会因 GCM 标签校验失败而被拒（{@link Code#DECRYPT_FAILED}），不会静默换用。
+     */
+    private static final byte[] NAME_AAD_DOMAIN = "NAM0".getBytes(StandardCharsets.US_ASCII);
+
+    /** 显示名单条明文上限（字节）。显示名是短标识，超限一律拒绝而非截断。 */
+    private static final int MAX_NAME_BYTES = 256;
 
     private static final SecureRandom RNG = new SecureRandom();
 
@@ -76,6 +95,14 @@ public final class FeatureTemplateEncryptedStore {
         boolean isSupported();
 
         SecretKey getOrCreateKeyV1() throws Exception;
+
+        /**
+         * 显示名专用密钥（任务 B）。**默认复用 v1 密钥**——既有测试替身因此无需改动即可获得可用的
+         * 加解密能力；生产实现覆盖为独立 alias（见下方 {@code DEFAULT_KEY_PROVIDER}）。
+         */
+        default SecretKey getOrCreateNameKey() throws Exception {
+            return getOrCreateKeyV1();
+        }
     }
 
     private static final PlatformKeyProvider DEFAULT_KEY_PROVIDER = new PlatformKeyProvider() {
@@ -87,6 +114,11 @@ public final class FeatureTemplateEncryptedStore {
         @Override
         public SecretKey getOrCreateKeyV1() throws Exception {
             return Api23.getOrCreateKeyV1();
+        }
+
+        @Override
+        public SecretKey getOrCreateNameKey() throws Exception {
+            return Api23.getOrCreateNameKey();
         }
     };
 
@@ -133,6 +165,91 @@ public final class FeatureTemplateEncryptedStore {
         return new File(dir, name);
     }
 
+    // ── 显示名加密存储（任务 B）────────────────────────────────────────────────
+    // 与模板**同款信封与落盘语义**，但用**独立密钥**（KEY_ALIAS_NAME_V1）与**独立 AAD 域**
+    // （NAME_AAD_DOMAIN），且文件名前缀不同（n_ vs u_）——避免与 AndroidEnrollmentRepository.add
+    // 的「模板已存在」判重相撞。API<23 与密钥不可用时的语义与模板一致（返回错误码、不抛异常）。
+
+    /**
+     * 显示名文件路径：{@code n_<sha256(personId)>.enc}。
+     *
+     * <p>文件名由 personId 单向派生（不落 personId 明文），且与模板的 {@code u_*.bin} 前缀区分。
+     */
+    @NonNull
+    public static File nameFileForPersonInDir(@NonNull File dir, @NonNull String personId) {
+        return new File(dir, "n_" + toHex(sha256(personId.getBytes(StandardCharsets.UTF_8))) + ".enc");
+    }
+
+    /** 显示名 AAD：域标签 ‖ sha256(personId)。与模板 AAD 不同域，跨用途换用会被 GCM 标签拒绝。 */
+    private static byte[] buildNameAad(@NonNull String personId) {
+        byte[] idDigest = sha256(personId.getBytes(StandardCharsets.UTF_8));
+        byte[] aad = new byte[NAME_AAD_DOMAIN.length + idDigest.length];
+        System.arraycopy(NAME_AAD_DOMAIN, 0, aad, 0, NAME_AAD_DOMAIN.length);
+        System.arraycopy(idDigest, 0, aad, NAME_AAD_DOMAIN.length, idDigest.length);
+        return aad;
+    }
+
+    /**
+     * 加密写入一条显示名。明文为 {@code displayName} 的 UTF-8 字节，写后立即清零。
+     *
+     * @return {@link Code#BAD_FORMAT} = 显示名为空或超过 {@link #MAX_NAME_BYTES} 字节
+     *         （**拒绝而非截断**）；{@link Code#UNSUPPORTED_PLATFORM} = 平台不支持（API&lt;23）。
+     */
+    @NonNull
+    public static WriteResult writeNameString(@NonNull File dstFile,
+                                              @NonNull String personId,
+                                              @NonNull String displayName) {
+        byte[] plain = displayName.getBytes(StandardCharsets.UTF_8);
+        try {
+            if (plain.length == 0 || plain.length > MAX_NAME_BYTES) {
+                return new WriteResult(Code.BAD_FORMAT);
+            }
+            if (!platformKeyProvider.isSupported()) {
+                return new WriteResult(Code.UNSUPPORTED_PLATFORM);
+            }
+
+            SecretKey key = platformKeyProvider.getOrCreateNameKey();
+            byte[] iv = new byte[IV_LEN];
+            RNG.nextBytes(iv);
+            byte[] aad = buildNameAad(personId);
+
+            Cipher cipher;
+            try {
+                cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            } catch (java.security.NoSuchAlgorithmException | javax.crypto.NoSuchPaddingException e) {
+                throw new IllegalStateException("KEYSTORE_ERROR: AES/GCM/NoPadding not found", e);
+            }
+            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, iv));
+            cipher.updateAAD(aad);
+            byte[] ciphertextAndTag = cipher.doFinal(plain);
+
+            return writeEnvelopeAtomically(dstFile, encodeEnvelope(iv, aad, ciphertextAndTag));
+        } catch (Exception e) {
+            return new WriteResult(mapWriteError(e));
+        } finally {
+            Arrays.fill(plain, (byte) 0);
+        }
+    }
+
+    /**
+     * 低层读取显示名：返回的 {@link ReadResult#plaintext} 是 UTF-8 显示名字节，**由调用方使用后清零**。
+     *
+     * @param quarantineOnCorrupt 是否把损坏文件重命名为 {@code *.corrupt.<ts>}；显示名损坏可降级为
+     *                            personId，通常传 false 即可（避免在显示名目录堆积隔离文件）。
+     */
+    @NonNull
+    public static ReadResult readNameString(@NonNull File srcFile,
+                                            @NonNull String personId,
+                                            boolean quarantineOnCorrupt) {
+        if (!platformKeyProvider.isSupported()) {
+            return new ReadResult(Code.UNSUPPORTED_PLATFORM, null);
+        }
+        return readEnvelope(srcFile,
+                () -> platformKeyProvider.getOrCreateNameKey(),
+                buildNameAad(personId),
+                quarantineOnCorrupt);
+    }
+
     @NonNull
     public static WriteResult write(@NonNull Context ctx,
                                     @NonNull File dstFile,
@@ -162,45 +279,56 @@ public final class FeatureTemplateEncryptedStore {
 
             byte[] envelope = encodeEnvelope(iv, aad, ciphertextAndTag);
 
-            File parent = dstFile.getParentFile();
-            if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                return new WriteResult(Code.IO_ERROR);
-            }
-
-            String tmpName = dstFile.getName() + ".tmp." + Long.toHexString(RNG.nextLong());
-            File tmpFile = new File(parent != null ? parent : dstFile.getAbsoluteFile().getParentFile(), tmpName);
-
-            try (FileOutputStream fos = new FileOutputStream(tmpFile, false)) {
-                fos.write(envelope);
-                fos.flush();
-                try {
-                    fos.getFD().sync();
-                } catch (Exception ignored) {
-                }
-            }
-
-            File bakFile = new File(tmpFile.getParentFile(), dstFile.getName() + ".bak");
-            if (bakFile.exists()) bakFile.delete();
-
-            if (dstFile.exists()) {
-                if (!dstFile.renameTo(bakFile)) {
-                    tmpFile.delete();
-                    return new WriteResult(Code.ATOMIC_RENAME_FAILED);
-                }
-            }
-
-            boolean moved = tmpFile.renameTo(dstFile);
-            if (!moved) {
-                if (bakFile.exists()) bakFile.renameTo(dstFile);
-                tmpFile.delete();
-                return new WriteResult(Code.ATOMIC_RENAME_FAILED);
-            }
-
-            if (bakFile.exists()) bakFile.delete();
-            return new WriteResult(Code.OK);
+            return writeEnvelopeAtomically(dstFile, envelope);
         } catch (Exception e) {
             return new WriteResult(mapWriteError(e));
         }
+    }
+
+    /**
+     * 把已编码信封原子落盘：父目录 → 临时文件 + flush + fsync → dst→bak → tmp→dst → 删 bak。
+     *
+     * <p>由模板写入与显示名写入共用（同一份落盘语义）。异常交由调用方按各自错误映射处理。
+     */
+    @NonNull
+    private static WriteResult writeEnvelopeAtomically(@NonNull File dstFile, @NonNull byte[] envelope)
+            throws Exception {
+        File parent = dstFile.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            return new WriteResult(Code.IO_ERROR);
+        }
+
+        String tmpName = dstFile.getName() + ".tmp." + Long.toHexString(RNG.nextLong());
+        File tmpFile = new File(parent != null ? parent : dstFile.getAbsoluteFile().getParentFile(), tmpName);
+
+        try (FileOutputStream fos = new FileOutputStream(tmpFile, false)) {
+            fos.write(envelope);
+            fos.flush();
+            try {
+                fos.getFD().sync();
+            } catch (Exception ignored) {
+            }
+        }
+
+        File bakFile = new File(tmpFile.getParentFile(), dstFile.getName() + ".bak");
+        if (bakFile.exists()) bakFile.delete();
+
+        if (dstFile.exists()) {
+            if (!dstFile.renameTo(bakFile)) {
+                tmpFile.delete();
+                return new WriteResult(Code.ATOMIC_RENAME_FAILED);
+            }
+        }
+
+        boolean moved = tmpFile.renameTo(dstFile);
+        if (!moved) {
+            if (bakFile.exists()) bakFile.renameTo(dstFile);
+            tmpFile.delete();
+            return new WriteResult(Code.ATOMIC_RENAME_FAILED);
+        }
+
+        if (bakFile.exists()) bakFile.delete();
+        return new WriteResult(Code.OK);
     }
 
     /**
@@ -217,6 +345,30 @@ public final class FeatureTemplateEncryptedStore {
         if (!platformKeyProvider.isSupported()) {
             return new ReadResult(Code.UNSUPPORTED_PLATFORM, null);
         }
+        return readEnvelope(srcFile,
+                () -> platformKeyProvider.getOrCreateKeyV1(),
+                buildAad(userId, modelVersion, templateSchemaVersion),
+                quarantineOnCorrupt);
+    }
+
+    /** 取密钥的延迟求值口：保证「密钥获取」发生在文件读取与信封解码**之后**（与原实现顺序一致）。 */
+    @FunctionalInterface
+    private interface KeySupplier {
+        SecretKey get() throws Exception;
+    }
+
+    /**
+     * 读文件 → 解信封 → 校验 AAD → 解密。模板与显示名共用（同一份落盘语义）。
+     *
+     * <p>顺序刻意与提取前一致：{@code isSupported} 由调用方前置判定 → 文件存在性 → 读文件 →
+     * 解信封 → **此时才取密钥** → AAD 比对 → 解密。密钥获取失败与解密失败同归 {@link #mapReadError}。
+     * 若为「密钥不可用且文件不存在」，仍应报 `NOT_FOUND` 而非 `KEYSTORE_ERROR`。
+     */
+    @NonNull
+    private static ReadResult readEnvelope(@NonNull File srcFile,
+                                           @NonNull KeySupplier keySupplier,
+                                           @NonNull byte[] expectedAad,
+                                           boolean quarantineOnCorrupt) {
         if (!srcFile.exists()) {
             return new ReadResult(Code.NOT_FOUND, null);
         }
@@ -240,9 +392,8 @@ public final class FeatureTemplateEncryptedStore {
         }
 
         try {
-            SecretKey key = platformKeyProvider.getOrCreateKeyV1();
-            byte[] aad = buildAad(userId, modelVersion, templateSchemaVersion);
-            if (!Arrays.equals(env.aad, aad)) {
+            SecretKey key = keySupplier.get();
+            if (!Arrays.equals(env.aad, expectedAad)) {
                 if (quarantineOnCorrupt) quarantine(srcFile);
                 return new ReadResult(Code.CORRUPTED, null);
             }
@@ -329,6 +480,17 @@ public final class FeatureTemplateEncryptedStore {
 
         @android.annotation.TargetApi(23)
         private static SecretKey getOrCreateKeyV1() throws Exception {
+            return getOrCreate(KEY_ALIAS_V1);
+        }
+
+        /** 显示名专用密钥（任务 B）：独立 alias，轮换互不影响。 */
+        @android.annotation.TargetApi(23)
+        private static SecretKey getOrCreateNameKey() throws Exception {
+            return getOrCreate(KEY_ALIAS_NAME_V1);
+        }
+
+        @android.annotation.TargetApi(23)
+        private static SecretKey getOrCreate(String alias) throws Exception {
             KeyStore ks;
             try {
                 ks = KeyStore.getInstance(KEYSTORE);
@@ -337,7 +499,7 @@ public final class FeatureTemplateEncryptedStore {
             }
             ks.load(null);
 
-            java.security.Key existing = ks.getKey(KEY_ALIAS_V1, null);
+            java.security.Key existing = ks.getKey(alias, null);
             if (existing instanceof SecretKey) return (SecretKey) existing;
 
             javax.crypto.KeyGenerator kg;
@@ -347,7 +509,7 @@ public final class FeatureTemplateEncryptedStore {
                 throw new IllegalStateException("KEYSTORE_ERROR: AES KeyGenerator not found", e);
             }
             android.security.keystore.KeyGenParameterSpec.Builder b = new android.security.keystore.KeyGenParameterSpec.Builder(
-                    KEY_ALIAS_V1,
+                    alias,
                     android.security.keystore.KeyProperties.PURPOSE_ENCRYPT | android.security.keystore.KeyProperties.PURPOSE_DECRYPT
             );
             b.setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM);
