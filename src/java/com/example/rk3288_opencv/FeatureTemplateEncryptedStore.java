@@ -190,6 +190,26 @@ public final class FeatureTemplateEncryptedStore {
     }
 
     /**
+     * 取 Keystore 生成的 GCM IV（加密路径必须走这里，不得自造 IV）。
+     *
+     * <p><b>为什么不能自己造 IV</b>：密钥以 {@code setRandomizedEncryptionRequired(true)} 生成，
+     * AndroidKeyStore 在这种情况下会**拒绝调用方提供的 IV**——加密时抛
+     * {@code InvalidAlgorithmParameterException: Caller-provided IV not permitted}。必须让 Keystore
+     * 自行生成、再经 {@link Cipher#getIV()} 回读并随密文落盘（解密侧仍用信封里的该 IV）。
+     *
+     * <p>⚠️ **JVM 的 JCE 替身没有这条限制**，故单元测试无法覆盖该约束——模板写入与显示名写入
+     * 这两条路径**必须在真机验证**（本项目尚无实机留档）。
+     */
+    @NonNull
+    private static byte[] requireIv(@NonNull Cipher cipher) {
+        byte[] iv = cipher.getIV();
+        if (iv == null || iv.length == 0) {
+            throw new IllegalStateException("KEYSTORE_ERROR: 加密未产生 IV");
+        }
+        return iv;
+    }
+
+    /**
      * 加密写入一条显示名。明文为 {@code displayName} 的 UTF-8 字节，写后立即清零。
      *
      * @return {@link Code#BAD_FORMAT} = 显示名为空或超过 {@link #MAX_NAME_BYTES} 字节
@@ -209,8 +229,6 @@ public final class FeatureTemplateEncryptedStore {
             }
 
             SecretKey key = platformKeyProvider.getOrCreateNameKey();
-            byte[] iv = new byte[IV_LEN];
-            RNG.nextBytes(iv);
             byte[] aad = buildNameAad(personId);
 
             Cipher cipher;
@@ -219,7 +237,9 @@ public final class FeatureTemplateEncryptedStore {
             } catch (java.security.NoSuchAlgorithmException | javax.crypto.NoSuchPaddingException e) {
                 throw new IllegalStateException("KEYSTORE_ERROR: AES/GCM/NoPadding not found", e);
             }
-            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, iv));
+            // 与模板路径同理：IV 由 Keystore 生成并回读，**不得**传调用方 IV。
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+            byte[] iv = requireIv(cipher);
             cipher.updateAAD(aad);
             byte[] ciphertextAndTag = cipher.doFinal(plain);
 
@@ -263,9 +283,6 @@ public final class FeatureTemplateEncryptedStore {
 
         try {
             SecretKey key = platformKeyProvider.getOrCreateKeyV1();
-            byte[] iv = new byte[IV_LEN];
-            RNG.nextBytes(iv);
-
             byte[] aad = buildAad(userId, modelVersion, templateSchemaVersion);
             Cipher cipher;
             try {
@@ -273,7 +290,10 @@ public final class FeatureTemplateEncryptedStore {
             } catch (java.security.NoSuchAlgorithmException | javax.crypto.NoSuchPaddingException e) {
                 throw new IllegalStateException("KEYSTORE_ERROR: AES/GCM/NoPadding not found", e);
             }
-            cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, iv));
+            // IV 必须由 Keystore 生成并回读（见 newGcmCipher 的注释）：密钥以
+            // setRandomizedEncryptionRequired(true) 生成，AndroidKeyStore 会**拒绝调用方提供的 IV**。
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+            byte[] iv = requireIv(cipher);
             cipher.updateAAD(aad);
             byte[] ciphertextAndTag = cipher.doFinal(plaintextTemplate);
 

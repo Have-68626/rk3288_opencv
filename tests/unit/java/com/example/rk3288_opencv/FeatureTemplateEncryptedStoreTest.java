@@ -14,7 +14,9 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.SecureRandom;
 
 import javax.crypto.KeyGenerator;
@@ -182,6 +184,80 @@ public class FeatureTemplateEncryptedStoreTest {
         assertTrue(a.getName().endsWith(".enc"));
         assertFalse("文件名不得含 personId 明文", a.getName().contains("alice"));
         assertFalse("不同人员不得同文件", a.getName().equals(b.getName()));
+    }
+
+    /**
+     * 源码结构守卫（A2 审计 H1）：加密路径**不得**向 {@code Cipher.init} 传调用方 IV。
+     *
+     * <p>密钥以 {@code setRandomizedEncryptionRequired(true)} 生成，AndroidKeyStore 在这种情况下
+     * 会**拒绝调用方提供的 IV**（加密时抛
+     * {@code InvalidAlgorithmParameterException: Caller-provided IV not permitted}），必须让 Keystore
+     * 生成、再经 {@code getIV()} 回读。**JVM 的 JCE 替身没有这条限制**，故单元测试无法覆盖该约束
+     * ——这是本批唯一只能用结构锁定的契约，模板与显示名两条写入路径都要遵守。
+     *
+     * <p>历史：修复前两条路径都是「自造 IV 传给 init」，在 API≥23 真机上会**恒失败**（本项目尚无
+     * 实机留档，故一直未被发现）。
+     */
+    @Test
+    public void encryptionNeverPassesCallerProvidedIv() throws IOException {
+        File src = new File(findRepoRoot(),
+                "src/java/com/example/rk3288_opencv/FeatureTemplateEncryptedStore.java");
+        assertTrue(src.isFile());
+        String text = new String(Files.readAllBytes(src.toPath()), StandardCharsets.UTF_8);
+
+        assertFalse("加密不得向 Cipher.init 传 caller IV（真机 KeyStore 会拒绝）",
+                text.contains("Cipher.ENCRYPT_MODE, key, "));
+        assertTrue("IV 必须由 Keystore 生成并回读",
+                text.contains("byte[] iv = requireIv(cipher);"));
+        assertTrue("应保留随机化加密要求（不靠关掉该要求绕过）",
+                text.contains("setRandomizedEncryptionRequired(true)"));
+    }
+
+    /**
+     * 读路径优先级（A1 审计 P3-2 沉淀为回归用例）：**密钥不可用且文件不存在时，必须报
+     * {@code NOT_FOUND} 而非 {@code KEYSTORE_ERROR}**。
+     *
+     * <p>这是提取 {@code readEnvelope} 时刻意保住的顺序（先判文件存在性 → 再取密钥）。此前仅由
+     * 审计的临时探针验证过，现固化下来，防止日后重构悄然改变优先级。
+     */
+    @Test
+    public void missingFileBeatsKeystoreErrorOnRead() throws Exception {
+        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(
+                new FeatureTemplateEncryptedStore.PlatformKeyProvider() {
+                    @Override
+                    public boolean isSupported() {
+                        return true;
+                    }
+
+                    @Override
+                    public SecretKey getOrCreateKeyV1() {
+                        throw new IllegalStateException("keystore down");
+                    }
+
+                    @Override
+                    public SecretKey getOrCreateNameKey() {
+                        throw new IllegalStateException("keystore down");
+                    }
+                });
+
+        File missing = new File(tmp.newFolder(), "nope.bin");
+        assertEquals("模板读路径：文件缺失优先于密钥错误",
+                FeatureTemplateEncryptedStore.Code.NOT_FOUND,
+                FeatureTemplateEncryptedStore.read(null, missing, "u", 1, 1, false).code);
+        assertEquals("显示名读路径：同上",
+                FeatureTemplateEncryptedStore.Code.NOT_FOUND,
+                FeatureTemplateEncryptedStore.readNameString(missing, "u", false).code);
+    }
+
+    private static File findRepoRoot() {
+        File dir = new File(System.getProperty("user.dir", "."));
+        while (dir != null) {
+            if (new File(dir, "src/java/com/example/rk3288_opencv/FeatureTemplateEncryptedStore.java").isFile()) {
+                return dir;
+            }
+            dir = dir.getParentFile();
+        }
+        throw new IllegalStateException("无法定位仓库根目录");
     }
 
     // 内存模板清零：readAndConsume 回调返回后，同一明文数组必须被就地清零。
