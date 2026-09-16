@@ -324,6 +324,8 @@ public final class FaceModelManager {
             if (!ensureStoreDir()) {
                 return fail(Status.IO_ERROR, "无法创建模型存储目录");
             }
+            // 任务 A4：先扫掉上次残留的解压临时目录（本方法持 dirLock，不会误删本次的）。
+            sweepStaleTempDirs();
 
             File tmpDir = new File(storeDir, ".tmp_" + System.nanoTime());
             if (!tmpDir.mkdirs()) {
@@ -918,6 +920,8 @@ public final class FaceModelManager {
                 throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
                         "临时目录无法原子重命名，且旧配置恢复失败（旧目录滞留于 " + bak.getName() + "）");
             }
+            // 已就地还原到替换前状态 → 事务了结（否则残留记录会让 buildStatus 误报「事务未完成」）。
+            clearTxn(profileId);
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "临时目录无法原子重命名");
         }
         // 替换已成功落定：目录语义完全由本 swap 承担，此前遗留的回滚意图标记随之失效，必须清除，
@@ -1492,6 +1496,26 @@ public final class FaceModelManager {
 
     private boolean ensureStoreDir() {
         return storeDir.isDirectory() || storeDir.mkdirs();
+    }
+
+    /**
+     * 清理遗留的解压临时目录 {@code .tmp_<nano>}（任务 A4）。
+     *
+     * <p>此前**没有任何清理路径**：解压阶段（或其后任何时刻）进程被杀，临时目录就永久滞留在
+     * `files/face_models/` 下——只被 `listProfiles()` 的点号前缀规则忽略，磁盘上却一直占着。
+     *
+     * <p>安全性：本方法只在**持 {@code dirLock}** 时调用，而 `importZip` 全程持锁，故不会误删
+     * 正在使用的临时目录。前缀 {@code .tmp_} 在本目录内唯一标识解压临时目录（事务记录是
+     * {@code .txn_*}、指针临时文件是 {@code active_profile.tmp}，均不匹配）。
+     */
+    private void sweepStaleTempDirs() {
+        File[] files = storeDir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (!f.getName().startsWith(".tmp_")) continue;
+            if (!f.isDirectory()) continue;
+            deleteRecursivelyQuietly(f);
+        }
     }
 
     /** canonical 路径包含性判断：{@code child} 必须位于 {@code parent} 之内。 */

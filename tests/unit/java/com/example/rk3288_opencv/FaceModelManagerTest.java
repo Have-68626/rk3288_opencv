@@ -1009,10 +1009,14 @@ public class FaceModelManagerTest {
         boolean failWrite;
         boolean failRename;
         boolean failDelete;
+        /** 只让「从 .tmp_ 解压目录改名到目标」这一步失败（迁就其它改名，如回滚的 bak→target）。 */
+        boolean failRenameFromTmp;
 
         @Override
         public boolean rename(File from, File to) {
-            return !failRename && from.renameTo(to);
+            if (failRename) return false;
+            if (failRenameFromTmp && from.getName().startsWith(".tmp_")) return false;
+            return from.renameTo(to);
         }
 
         @Override
@@ -1166,6 +1170,128 @@ public class FaceModelManagerTest {
         assertTrue("应如实说明无法判定", st.message.contains("无法判定") || st.message.contains("并存"));
         assertTrue("必须保留两份数据（target）", target.isDirectory());
         assertTrue("必须保留两份数据（bak）", bak.isDirectory());
+    }
+
+    /**
+     * 替换过程中「临时目录无法改名到 target」⇒ 就地还原旧配置且**结清事务记录**。
+     *
+     * <p>覆盖 Codex 要求的「改名失败」分支：这条路径在进程内回滚后必须清掉事务记录，否则残留的
+     * 未提交记录会让后续 `buildStatus` 误报「事务未完成」。
+     */
+    @Test
+    public void renameFailureDuringDirSwapRestoresOldConfigAndClearsTxn() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+            ops.failRenameFromTmp = true;   // 只让 base→target 这一步失败，回滚用的 bak→target 照常
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+            assertTrue("旧模型内容必须原样保留",
+                    java.util.Arrays.equals(oldBin, readFile(new File(m.profileDir("p1"), DET_BIN))));
+            assertFalse("就地还原后不得残留备份", new File(dir, ".bak_p1").exists());
+            assertFalse("就地还原后必须结清事务记录", new File(dir, ".txn_p1").exists());
+            assertTrue("状态应仍为就绪（旧模型在位）", m.status().isReady());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 恢复过程中「新目录删不掉」⇒ **保持现场、保留记录、报 ERROR**（Codex 要求 5）。
+     *
+     * <p>绝不可以在删不掉的情况下继续还原备份——那会把旧模型覆盖进一个仍在使用的新目录。
+     */
+    @Test
+    public void deleteFailureDuringTxnRecoveryKeepsSceneAndReportsError() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            File target = m.profileDir("p1");
+            File bak = new File(dir, ".bak_p1");
+            assertTrue(target.renameTo(bak));
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+            writeTxnFile(dir, "p1", true, "p1", false);
+
+            ops.failDelete = true;   // 新目录删不掉
+            FaceRuntimeStatus st = m.status();
+
+            assertFalse("恢复失败不得报就绪", st.isReady());
+            assertTrue("应如实说明事务未完成", st.message.contains("事务未完成"));
+            assertTrue("必须保留新目录现场", target.isDirectory());
+            assertTrue("必须保留旧备份", bak.isDirectory());
+            assertTrue("必须保留事务记录以待重试", new File(dir, ".txn_p1").exists());
+            assertFalse("删除失败时不得误报已回滚（内容仍是新包）",
+                    java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN)))
+                            && !target.isDirectory());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /** 恢复必须**幂等**：反复查询状态不得产生不同结果或进一步改动磁盘（Codex 验收要求）。 */
+    @Test
+    public void txnRecoveryIsIdempotentAcrossRepeatedStatusCalls() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false);
+
+        for (int i = 0; i < 3; i++) {
+            FaceRuntimeStatus st = m.status();
+            assertTrue("第 " + i + " 次恢复应就绪", st.isReady());
+            assertEquals("p1", st.profileId);
+            assertTrue("第 " + i + " 次后内容应为旧模型",
+                    java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+            assertFalse("第 " + i + " 次后不应残留备份", bak.exists());
+            assertFalse("第 " + i + " 次后不应残留记录", new File(dir, ".txn_p1").exists());
+        }
+        assertNoTempArtifacts(dir);
+    }
+
+    /** A4：遗留在存储目录里的解压临时目录应在下次导入时被清扫（此前无任何清理路径）。 */
+    @Test
+    public void staleExtractionTempDirsAreSweptOnNextImport() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+
+        // 模拟「解压阶段被杀」留下的残留
+        File stale = new File(dir, ".tmp_12345");
+        assertTrue(stale.mkdirs());
+        assertTrue(new File(stale, "leftover.bin").createNewFile());
+        assertTrue("前置：残留目录应存在", stale.isDirectory());
+
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        assertFalse("下次导入应清扫掉残留的解压临时目录", stale.exists());
+        assertNoTempArtifacts(dir);
     }
 
     // ---------- 夹具 ----------
