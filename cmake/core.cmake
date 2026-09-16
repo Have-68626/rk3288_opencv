@@ -72,6 +72,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_ncnn_param_guard.cpp"
         "tests/cpp/test_native_log_redaction.cpp"
         "tests/cpp/test_track_coordinator.cpp"
+        "tests/cpp/test_track_replay.cpp"
         "tests/cpp/test_face_post_processor.cpp"
         "tests/cpp/test_scrfd_decoder.cpp"
         "tests/cpp/test_realtime_face_pipeline.cpp"
