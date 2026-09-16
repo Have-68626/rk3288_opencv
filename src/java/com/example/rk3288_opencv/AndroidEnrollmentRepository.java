@@ -48,7 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>并发</h2>
  * 实例方法不再使用实例级 {@code synchronized}：{@link #forDefaultGallery}/{@link #forScope}
  * 每次都会 {@code new}，同目录多实例并发读改写注册表会丢更新。改为按<b>规范化 scopeDir 路径</b>
- * 共享静态锁（{@link #DIR_LOCKS}），使同目录的所有实例串行化 add/remove/readTemplate/list/get。
+     * 共享静态锁（{@link FileStoreUtils#dirLockFor}），使同目录的所有实例串行化 add/remove/readTemplate/list/get。
  *
  * <h2>注册表容错</h2>
  * 单行条目损坏时<b>跳过并隔离该行</b>，保留其余可解析条目，{@link ListResult#skippedLineCount}
@@ -81,13 +81,7 @@ public final class AndroidEnrollmentRepository {
     /** 默认作用域目录名，与 {@link FeatureTemplateEncryptedStore#defaultDir(Context)} 保持一致。 */
     private static final String DEFAULT_SCOPE_DIR = "face_templates";
 
-    /**
-     * 按规范化 scopeDir 路径共享的静态锁表。
-     *
-     * <p>实例级 {@code synchronized} 挡不住“同目录、不同实例”的并发写；这里用目录路径当 key，
-     * 让同目录所有仓库实例共用同一把锁。key 数量等于进程内出现过的作用域目录数，规模有限。
-     */
-    private static final ConcurrentHashMap<String, Object> DIR_LOCKS = new ConcurrentHashMap<>();
+    // 目录锁与静默改名已收敛到 FileStoreUtils（任务 A4c）。
 
     /** 仓库操作结果码。模板加解密类错误码沿用存储层语义，避免双端错误码分裂。 */
     public enum Status {
@@ -437,30 +431,12 @@ public final class AndroidEnrollmentRepository {
     @androidx.annotation.VisibleForTesting
     @NonNull
     static Object dirLockForTesting(@NonNull File scopeDir) {
-        return staticLockFor(scopeDir);
+        return FileStoreUtils.dirLockFor(scopeDir);
     }
 
     @NonNull
     private Object dirLock() {
-        return staticLockFor(scopeDir);
-    }
-
-    @NonNull
-    private static Object staticLockFor(@NonNull File dir) {
-        String key;
-        try {
-            key = dir.getCanonicalPath();
-        } catch (Exception ex) {
-            // 规范化失败时退化为绝对路径，仍能覆盖绝大多数同目录场景。
-            key = dir.getAbsolutePath();
-        }
-        Object lock = DIR_LOCKS.get(key);
-        if (lock == null) {
-            Object fresh = new Object();
-            Object prev = DIR_LOCKS.putIfAbsent(key, fresh);
-            lock = (prev != null) ? prev : fresh;
-        }
-        return lock;
+        return FileStoreUtils.dirLockFor(scopeDir);
     }
 
     // ---------------- 注册表序列化（明文元数据，行式文本，无外部依赖） ----------------
@@ -500,7 +476,7 @@ public final class AndroidEnrollmentRepository {
                 // 已注册人员索引将永久丢失（P1-3）。
                 RegistrySnapshot fromBak = parseRegistryFile(bak);
                 if (fromBak.status == Status.OK) {
-                    boolean restored = renameQuietly(bak, dst);
+                    boolean restored = FileStoreUtils.renameQuietly(bak, dst);
                     RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
                             fromBak.skippedLineCount,
                             restored ? "已从备份恢复注册表" : "注册表主文件缺失，已从备份读取");
@@ -521,7 +497,7 @@ public final class AndroidEnrollmentRepository {
         if (snap.status == Status.IO_ERROR && bak.exists()) {
             RegistrySnapshot fromBak = parseRegistryFile(bak);
             if (fromBak.status == Status.OK) {
-                renameQuietly(bak, dst);
+                FileStoreUtils.renameQuietly(bak, dst);
                 RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
                         fromBak.skippedLineCount, "注册表主文件不可读，已从备份恢复");
                 recovered.authoritative = false;   // 同上：备份未必反映最新状态
@@ -571,13 +547,6 @@ public final class AndroidEnrollmentRepository {
     }
 
     /** 静默重命名（用于崩溃恢复）；失败返回 false，由调用方决定后续语义。 */
-    private static boolean renameQuietly(@NonNull File from, @NonNull File to) {
-        try {
-            return from.renameTo(to);
-        } catch (SecurityException ex) {
-            return false;
-        }
-    }
 
     /** 解析单行条目；字段非法或损坏返回 null（由调用方跳过隔离）。 */
     @Nullable
@@ -633,7 +602,7 @@ public final class AndroidEnrollmentRepository {
 
         // 阶段 1：恢复上次崩溃遗留的「主文件缺失 + 备份存在」，确立本轮可回滚基线。
         // 恢复不了就宁可不写：绝不删掉唯一索引。
-        if (!dst.exists() && bak.exists() && !renameQuietly(bak, dst)) {
+        if (!dst.exists() && bak.exists() && !FileStoreUtils.renameQuietly(bak, dst)) {
             return Status.IO_ERROR;
         }
 
