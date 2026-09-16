@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-12
+as_of=2026-09-16
 -->
 
 # 模型获取与导入流程（Android 端）
@@ -16,7 +16,7 @@ as_of=2026-09-12
 - **APK 不内置模型**：默认构建会清理并禁止 `assets/face_models/`（`app/build.gradle` 的 `checkApkFaceModels` 在 APK 中出现该目录即构建失败）。仓库仅跟踪 `models/android/<profile>/` 下的 `manifest.json`、`LICENSE.txt`、`NOTICE.txt`，`*.param` / `*.bin` 被 gitignore。
 - **用户自行获取、自行导入**：模型由使用者获取并经应用内文件选择（SAF）以 ZIP 导入。
 - **合规自负**：`models/android/rk3288_light/LICENSE.txt` 明确“本仓库不随 APK 分发模型权重——模型由使用者自行获取并导入、自负合规责任，本项目仅提供导入与校验机制”；上游训练权重限非商业研究用途，再分发须自行取得 InsightFace 明确许可。
-- **许可门禁**：导入前必须 `licenseAccepted==true`，否则返回 `LICENSE_NOT_ACCEPTED`（“请先确认模型许可后再导入”）；profile 的 `licenseId` 会随运行时状态暴露。
+- **许可门禁**：导入前必须 `licenseAccepted==true`，否则返回 `LICENSE_NOT_ACCEPTED`（“请先确认模型许可后再导入”）；profile 的 `licenseId` 会随运行时状态暴露。此外，每个导入模型的**来源 / 许可证 / 是否可商用**须在 manifest 中登记（见 §3.1）。
 
 ## 2. 模型获取与格式
 
@@ -48,6 +48,17 @@ as_of=2026-09-12
     .txn_<profileId>          # 目录替换**事务记录**（任务 A，见 §4 步骤 7/8）
     .rollback_<profileId>     # 旧版回滚意图标记（已非主路径，仅保留兼容与恢复）
   ```
+
+### 3.1 许可证与商用限制登记（必填）
+
+导入一个模型时，manifest 必须**显式登记**该模型的**来源、许可证与是否可商用**——这三项与 `licenseAccepted` 门禁（§1）共同构成合规边界；缺失或含糊者视为登记不完整：
+
+- `source`：权重来源（可核对的 URL 或上游项目名，如 `https://github.com/deepinsight/insightface`），不得留空。
+- `license`：许可证名称，写**具体名称**（SPDX 标识或全称，如 `MIT` / `Apache-2.0` / `BSD-2-Clause` / 专有）；无法核实的须显式写“未能核实”，不得臆测或留空。
+- `commercialUse`：布尔值——`true` 表示可商用，`false` 表示不可商用。注意**代码许可证与权重许可证可能不同**：例如 insightface 系模型，其代码可能是 MIT/Apache-2.0，但训练权重声明“仅限非商业研究用途”，故 `commercialUse=false`。不可商用模型须同时在 profile 的 `LICENSE.txt` 中写明再分发边界。
+- `licenseId`：（既有字段，随运行时状态暴露）指向 profile 内 `LICENSE.txt` 的许可标识，如 `insightface-models-noncommercial-research`。
+
+**权威事实源**：模型来源 / 许可证 / 商用限制的台账见 [`CREDITS.md`](../../CREDITS.md) 的「模型台账与依赖」一节（含 `yunet`(MIT) 与 `sface`(Apache-2.0) 等可商用替代）。本流程只做登记，不改变既有 `licenseAccepted` 判定语义。
 
 ## 4. `FaceModelManager.importZip` 校验链（顺序即安全边界）
 
