@@ -149,6 +149,7 @@ as_of=2026-09-15
 | `research/appendix-f.md` | snapshot | 证据日志分析报告 |
 | `research/appendix-g.md` | snapshot | 稳定性治理审计修复计划 |
 | `research/appendix-h.md` | placeholder | 稳定性治理分阶段执行报告（内容未填充） |
+| `research/opensource-benchmark-2026-09-16.md` | snapshot | 开源对标调研（核实版）：重复开发 / 独有 / 可借鉴三分类与行动建议 |
 
 ## 仓库根目录
 
