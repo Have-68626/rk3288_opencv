@@ -77,6 +77,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.nio.ByteBuffer;
@@ -110,8 +111,24 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_DETECTION_INTERVAL_MS = "pref_detection_interval_ms";
     private static final String PREF_INFERENCE_THROTTLE_MODE = "pref_inference_throttle_mode";
     private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
-    /** 任务18：personId -> displayName 的本地展示名映射前缀（仓库不存储展示名，仅存 userId）。 */
+    /**
+     * 【历史】任务18 的 personId → 显示名映射前缀。**任务 B 起不再写入**，仅作一次性迁移的来源。
+     *
+     * <p>保护边界（旧注释称「仓库不存储展示名」属实但边界含混，易被读成「整个 App 不存显示名」）：
+     * <ul>
+     *   <li>{@code AndroidEnrollmentRepository}（{@code face_registry_v1.dat}）只存 userId 等
+     *       6 个元数据字段，**不含显示名**;</li>
+     *   <li>显示名自任务 B 起由 {@link PersonDisplayNameStore} **加密**存于
+     *       {@code files/face_names/n_<sha256(personId)>.enc};</li>
+     *   <li>模板向量由 {@code FeatureTemplateEncryptedStore} 加密存于
+     *       {@code files/face_templates/u_<sha256(userId)>.bin}。</li>
+     * </ul>
+     * <p>另注：{@code userId} 本身是**可逆 hex 编码**（非加密），故**不得**宣称「人员 PII 全部加密」。
+     */
     private static final String PREF_PERSON_NAME_PREFIX = "pref_person_name_";
+
+    /** 任务 B：旧明文显示名是否已迁移完毕（迁移成功才置位；失败保留原值下次重试）。 */
+    private static final String PREF_NAME_MIGRATED = "pref_person_name_migrated_v1";
     private static final String TAG = "MainActivity";
 
     /** Sentinel: no real camera device, external frame input only */
@@ -203,6 +220,18 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private volatile FaceModelManager faceModelManager;
     /** 同类懒加载（UI/后台线程并发首次调用），按同一策略一并加固为 volatile + 双检锁。 */
     private volatile AndroidEnrollmentRepository enrollmentRepository;
+
+    /** 显示名加密存储 + 内存缓存（任务 B）。解密不能上 UI 线程，UI 侧只读其缓存。 */
+    private volatile PersonDisplayNameStore displayNameStore;
+
+    /**
+     * 采集期间的显示名（**仅内存**，任务 B）。
+     *
+     * <p>显示名改为「注册成功后才加密落盘」：采集开始前不再写任何持久化存储，故**取消或注册失败
+     * 天然不会留下残留**（此前是先写 SharedPreferences 再开始采集，取消/失败都不清理）。
+     * 会话结束（成功/取消/失败/销毁）时清空本字段。
+     */
+    private volatile String pendingEnrollmentDisplayName;
     /** 执行中的注册会话；native 采集线程会读取，故 volatile 保证可见性。 */
     private volatile EnrollmentSession enrollmentSession;
     /** #1 注册采集：复用的 direct ByteBuffer（512×4 字节 LE float32），由 native 逐帧写入。 */
@@ -3977,7 +4006,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     if (regStartButton != null) regStartButton.setEnabled(true);
                     return;
                 }
-                persistDisplayName(personId, displayName);
+                // 任务 B：显示名**仅存内存**，注册成功后才加密落盘。
+                // 此前是此处立即写 SharedPreferences（明文），而它早于 startNativeEnrollmentCapture，
+                // 导致取消/失败都留下孤儿键；改为延迟落盘后该问题从根上消失。
+                pendingEnrollmentDisplayName = displayName;
                 lastEnrollmentRejectReason = "";
                 enrollmentSession = session;
                 enrollmentInProgress = true;
@@ -4194,6 +4226,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     } else if (!refreshGalleryFromRepository()) {
                         // 失败不更新运行中 gallery：数据已加密落盘，但内存图库保持旧状态。
                         error = "已加密写入本地，但运行中图库替换失败（未更新）";
+                    } else {
+                        // 任务 B：模板已加密落盘且图库已生效，此时才加密写入显示名（本线程即后台线程）。
+                        // 失败**不阻断注册**——显示名可降级为 personId，仅记日志。
+                        String pendingName = pendingEnrollmentDisplayName;
+                        if (pendingName != null && !pendingName.trim().isEmpty()
+                                && !displayNameStore().save(personId, pendingName)) {
+                            AppLog.w("MainActivity", "completeEnrollment",
+                                    "显示名加密写入失败（注册仍成功，显示名降级为 personId）");
+                        }
                     }
                 }
             } catch (Throwable t) {
@@ -4217,6 +4258,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     if (regPersonIdInput != null) regPersonIdInput.setEnabled(true);
                     if (regDisplayNameInput != null) regDisplayNameInput.setEnabled(true);
                 }
+                // 任务 B：会话无论成败都已结束，清掉采集期的内存显示名（成功时已在后台写穿存储）。
+                pendingEnrollmentDisplayName = null;
                 refreshModelManagementStatus();
                 refreshRuntimeStatusIfDue(true);
                 updateDiagnosticsText();
@@ -4229,6 +4272,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         stopEnrollmentPoller();
         stopNativeEnrollmentCapture();  // #1 断开 native 特征源
         enrollmentInProgress = false;
+        // 任务 B：取消即丢弃采集期的内存显示名——从未落盘，故无需清理存储（这是延迟落盘的直接收益）。
+        pendingEnrollmentDisplayName = null;
         EnrollmentSession session = enrollmentSession;
         if (session != null) {
             session.cancel();
@@ -4305,6 +4350,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 AppLog.w("MainActivity", "refreshGalleryFromRepository",
                         "图库重建跳过损坏条目 skipped=" + skipped + "（成功 " + ids.size() + " 条）");
             }
+            // 任务 B：仓库 list() 成功即认为人员集合**权威**，此时才做显示名的预取与孤儿清理
+            // （prefetch 只清缓存不删文件；removeOrphans 会删文件，故必须以此为前提）。
+            // 本方法在后台线程调用，符合 PersonDisplayNameStore 的线程约定。
+            PersonDisplayNameStore store = displayNameStore();
+            store.prefetch(ids);
+            store.removeOrphans(new java.util.HashSet<>(ids));
+            migrateLegacyDisplayNames();
             return ok;
         } catch (Throwable t) {
             return false;
@@ -4384,26 +4436,78 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }, "FacePersonDelete").start();
     }
 
-    /** 展示名映射（仅 SharedPreferences，不含模板）；缺失时回退 personId。 */
+    /** 显示名缓存（惰性 + 双检锁，与 modelManager()/enrollmentRepository() 同法）。 */
+    @NonNull
+    private PersonDisplayNameStore displayNameStore() {
+        PersonDisplayNameStore s = displayNameStore;
+        if (s == null) {
+            synchronized (this) {
+                s = displayNameStore;
+                if (s == null) {
+                    // 与模板目录分开：孤儿清理只扫本目录，构造上不可能误删模板文件。
+                    File dir = new File(getFilesDir(), "face_names");
+                    if (!dir.exists()) dir.mkdirs();
+                    s = new PersonDisplayNameStore(dir);
+                    displayNameStore = s;
+                }
+            }
+        }
+        return s;
+    }
+
+    /**
+     * 展示名查询：**UI 线程安全**（纯读内存缓存，无 IO、无加解密）。
+     * 未命中（尚未预取 / 无该人员 / 密钥不可用 / 文件损坏）返回 personId 本身。
+     */
     @NonNull
     private String displayNameFor(@Nullable String personId) {
         if (personId == null || personId.isEmpty()) return "";
-        String name = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(PREF_PERSON_NAME_PREFIX + personId, "");
-        return (name == null || name.isEmpty()) ? personId : name;
-    }
-
-    private void persistDisplayName(@NonNull String personId, @Nullable String displayName) {
-        String name = displayName == null ? "" : displayName.trim();
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putString(PREF_PERSON_NAME_PREFIX + personId, name)
-                .apply();
+        return displayNameStore().get(personId);
     }
 
     private void removeDisplayName(@NonNull String personId) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .remove(PREF_PERSON_NAME_PREFIX + personId)
-                .apply();
+        displayNameStore().remove(personId);
+    }
+
+    /**
+     * 一次性迁移（任务 B）：把历史明文 {@code pref_person_name_*} 加密迁入显示名存储。
+     *
+     * <p>顺序严格为「加密 → **验证密文可读** → 删原值」；任一步失败都**保留原明文**并留待下次重试
+     * （不置 {@link #PREF_NAME_MIGRATED}）。可重入：中断后重跑对已迁移项是幂等的（写同值再删键）。
+     *
+     * <p><b>必须在后台线程调用</b>（含文件 IO 与加解密）。
+     */
+    private void migrateLegacyDisplayNames() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (prefs.getBoolean(PREF_NAME_MIGRATED, false)) return;
+
+        boolean allOk = true;
+        for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) {
+            String key = e.getKey();
+            if (key == null || !key.startsWith(PREF_PERSON_NAME_PREFIX)) continue;
+            if (!(e.getValue() instanceof String)) continue;
+
+            String personId = key.substring(PREF_PERSON_NAME_PREFIX.length());
+            String legacyName = ((String) e.getValue()).trim();
+            if (personId.isEmpty()) continue;
+            if (legacyName.isEmpty()) {
+                // 空值是旧实现写入的残留（displayName 为空也会 putString ""），直接清掉。
+                prefs.edit().remove(key).apply();
+                continue;
+            }
+
+            PersonDisplayNameStore store = displayNameStore();
+            if (!store.save(personId, legacyName) || !legacyName.equals(store.readFromDisk(personId))) {
+                allOk = false;   // 迁移或验证失败：保留原明文，下次重试
+                AppLog.w("MainActivity", "migrateLegacyDisplayNames",
+                        "显示名迁移未完成，保留原明文待重试 personId=" + personId);
+                continue;
+            }
+            prefs.edit().remove(key).apply();
+        }
+        if (allOk) {
+            prefs.edit().putBoolean(PREF_NAME_MIGRATED, true).apply();
+        }
     }
 
     // ==================== 任务18 / #1 结束 ====================
@@ -4603,6 +4707,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // 任务 B：销毁即丢弃采集期的内存显示名（从未落盘，故无存储残留需要清理）。
+        pendingEnrollmentDisplayName = null;
         monitoringCoordinator.onActivityDestroyed(snapshotMonitoringInputs());  // 递增代次使排程任务失效
         stopMonitoring();
         if (statsUpdater != null) {
