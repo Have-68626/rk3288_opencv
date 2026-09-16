@@ -263,3 +263,78 @@ TEST(TrackCoordinator, DisplacementBeyondFallbackRatioNeverConfirms) {
     // 逐帧新建 + 下一帧即删，故存续轨迹数不超过 1。
     EXPECT_LE(tc.trackCount(), 1) << "超出回退上限应无法复用同一条轨迹";
 }
+
+// ── 任务 C2：阈值提升为 TrackConfig 字段后的边界用例 ──────────────────────────
+// 此前三个阈值是 TrackCoordinator.cpp 匿名 namespace 里的编译期常量，**完全不可注入**，
+// 边界行为无法在测试里控制。现可注入，故补齐「尺寸比上下界」「TTL 边界」与「可注入性」三组。
+
+/**
+ * 尺寸比上下界（sizeRatioMin/Max=0.5/2.0）。
+ *
+ * <p><b>构造要点</b>：必须让 IoU **先**不足（否则 IoU 路径直接命中、根本走不到回退）。
+ * 用「大框完全包含小框」得到 IoU = 参照面积/检测面积：200×170 → 0.294、210×170 → 0.28，
+ * 均 < matchIouThreshold(0.3)；同时令检测框与参照**同心**（中心距离 0），
+ * 确保不会被中心距离判据先行拒绝——这样剩下的唯一变量就是尺寸比。
+ */
+TEST(TrackCoordinator, SizeRatioBoundsAreEnforced) {
+    // 上界恰好 2.0：宽 200/100 = 2.0 ∈ 界内，高 170/100 = 1.7 ∈ 界内 → 回退匹配同一轨迹
+    pipeline::TrackCoordinator atUpper;
+    EXPECT_TRUE(atUpper.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    EXPECT_TRUE(atUpper.update({face(0, 0, 100, 100)}, 1100, true).empty());
+    ASSERT_EQ(atUpper.update({face(0, 0, 100, 100)}, 1200, true).size(), 1u);
+    const auto atBound = atUpper.update({face(-50, -35, 200, 170)}, 1300, true);
+    ASSERT_EQ(atBound.size(), 1u);
+    EXPECT_EQ(atBound[0].trackId, 1) << "恰好 2.0 应仍在界内";
+    EXPECT_EQ(atUpper.trackCount(), 1) << "界内不应新建轨迹";
+
+    // 上界超出：宽 210/100 = 2.1 > 2.0 → 回退拒绝 → **新建**轨迹
+    // 注：被拒绝的检测不会并入旧轨迹，但旧轨迹（已确认 + 缺失 1 次）仍会输出，
+    //     故判据是「轨迹数变为 2」，而不是「输出里的 trackId 变化」。
+    pipeline::TrackCoordinator overUpper;
+    EXPECT_TRUE(overUpper.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    EXPECT_TRUE(overUpper.update({face(0, 0, 100, 100)}, 1100, true).empty());
+    ASSERT_EQ(overUpper.update({face(0, 0, 100, 100)}, 1200, true).size(), 1u);
+    overUpper.update({face(-55, -35, 210, 170)}, 1300, true);
+    EXPECT_EQ(overUpper.trackCount(), 2) << "超出尺寸比上界应新建轨迹（而非并入原轨迹）";
+
+    // 下界超出：宽 40/100 = 0.4 < 0.5 → 同样拒绝
+    pipeline::TrackCoordinator underLower;
+    EXPECT_TRUE(underLower.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    EXPECT_TRUE(underLower.update({face(0, 0, 100, 100)}, 1100, true).empty());
+    ASSERT_EQ(underLower.update({face(0, 0, 100, 100)}, 1200, true).size(), 1u);
+    underLower.update({face(0, 0, 40, 40)}, 1300, true);
+    EXPECT_EQ(underLower.trackCount(), 2) << "低于尺寸比下界应新建轨迹（而非并入原轨迹）";
+}
+
+/**
+ * 中心距离比可注入：把 centerMaxRatio 收紧到 0.5 后，**同一段位移序列不再确认**。
+ *
+ * <p>这条同时证明两件事：① 阈值确实可在不改源码的前提下调整（C2 的目的）；② 默认值 0.8 下
+ * 该序列能确认（见 ContinuouslyMovingTargetCompletesInitialConfirmation），故收紧确实改变了行为。
+ */
+TEST(TrackCoordinator, CenterMaxRatioIsInjectableAndChangesBehavior) {
+    pipeline::TrackConfig tight{};
+    tight.centerMaxRatio = 0.5f;   // 0.5*100=50 < 79 → 本序列不再匹配
+    pipeline::TrackCoordinator tc(tight);
+
+    EXPECT_TRUE(tc.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    EXPECT_TRUE(tc.update({face(79, 0, 100, 100)}, 1100, true).empty());
+    EXPECT_TRUE(tc.update({face(158, 0, 100, 100)}, 1200, true).empty())
+            << "收紧中心距离比后，79px/帧不应再完成首次确认";
+}
+
+/** TTL 边界：跳过检测时超过 ttlMs 仍应兜底清理（此前 ttlMs 也不可注入）。 */
+TEST(TrackCoordinator, TtlBoundaryIsEnforced) {
+    pipeline::TrackConfig shortTtl{};
+    shortTtl.ttlMs = 300;
+    pipeline::TrackCoordinator tc(shortTtl);
+
+    EXPECT_TRUE(tc.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    EXPECT_TRUE(tc.update({face(0, 0, 100, 100)}, 1100, true).empty());
+    ASSERT_EQ(tc.update({face(0, 0, 100, 100)}, 1200, true).size(), 1u);
+
+    // 恰好等于 TTL：仍保留（判据是 <=）
+    EXPECT_EQ(tc.update({}, 1500, false).size(), 1u) << "恰在 TTL 内不应清理";
+    // 超过 TTL 1ms：兜底清理
+    EXPECT_TRUE(tc.update({}, 1501, false).empty()) << "超过 TTL 应兜底清理已确认轨迹";
+}

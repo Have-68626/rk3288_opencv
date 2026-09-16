@@ -33,6 +33,23 @@ struct TrackConfig {
     long long ttlMs = 1200;
     float matchIouThreshold = 0.3f;
     int stableFrames = 3;
+
+    // 中心距离回退匹配的三个阈值（任务 C2）。此前是 TrackCoordinator.cpp 匿名 namespace 里的
+    // **编译期常量**——完全不可注入（无 CMake -D、无环境变量），阈值调优只能改源码重编。
+    // 提升为配置项后默认值**保持原值**，Engine 仍用默认构造 → **零行为变更**；
+    // 而「录像回放扫描阈值」与「边界用例」得以在不改源码的前提下进行。
+    //
+    // 取值依据（如实说明）：0.8/0.5/2.0 由 4e87023 引入，**尚无真实场景调优证据**。
+    // 已实测的失效边界是「单帧位移 ≈ 框宽的 0.8 倍」——见 test_track_coordinator.cpp 的
+    // ContinuouslyMovingTargetCompletesInitialConfirmation（79px/帧可持续确认）与
+    // DisplacementBeyondFallbackRatioNeverConfirms（81px/帧永不确认）。
+    //
+    // 语义：中心偏移超过 centerMaxRatio × max(refW,refH) 即不匹配（过松会让相邻脸被串到同一轨迹，
+    // 过紧则大位移目标每帧新建轨迹、永远达不到 stableFrames 而在 views() 中恒不显示）；
+    // 尺寸比需落在 [sizeRatioMin, sizeRatioMax] 内。
+    float centerMaxRatio = 0.8f;
+    float sizeRatioMin = 0.5f;
+    float sizeRatioMax = 2.0f;
 };
 
 class TrackCoordinator {
@@ -77,6 +94,12 @@ public:
 
 private:
     static float iou(const cv::Rect& a, const cv::Rect& b);
+
+    // 中心距离 + 尺寸比回退匹配（仅在 IoU 阈值不足时使用，避免相邻脸误合并）。
+    // 任务 C2：由匿名 namespace 的常量化自由函数改为**成员函数**，以便读取 config_ 里的阈值
+    // （阈值现为可注入配置；默认值与原常量相同）。
+    bool centerSizeMatched(const cv::Rect& ref, const cv::Rect& det) const;
+
     std::vector<TrackView> views() const;
 
     // 内部轨迹状态：对外 TrackView + 确认/缺失计数（任务5 确认与消失规则）

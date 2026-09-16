@@ -4,19 +4,11 @@
 
 namespace pipeline {
 
-namespace {
-
-// 中心距离 + 尺寸比 fallback（IoU 不足时的轻量跟踪，任务5）
-// 中心偏移 / max(宽,高) 上限：过松会让多脸靠近时相邻脸被回退匹配串到同一轨迹；
-// 但过度收紧（如 0.25）会使大位移/尺寸变化目标每帧新建 track、永远达不到 stableFrames
-// 确认而在 views() 中恒不显示（第三代理实证）。暂维持任务5 既有值 0.8——
-// **调优依据待用户/设计确认**（0.25 在代码/文档/测试中均无出处）。
-constexpr float kCenterMaxRatio = 0.8f;  // 中心偏移 / max(宽,高) 上限
-constexpr float kSizeRatioMin = 0.5f;
-constexpr float kSizeRatioMax = 2.0f;
-
-// 中心距离与尺寸比是否匹配（仅在 IoU 阈值不足时使用，避免相邻脸误合并）
-bool centerSizeMatched(const cv::Rect& ref, const cv::Rect& det) {
+// 中心距离 + 尺寸比回退匹配（IoU 不足时的轻量跟踪，任务5）。
+// 任务 C2：阈值由匿名 namespace 的编译期常量改为 TrackConfig 字段（默认值不变），
+// 故本函数改为成员函数以读取 config_。原注释所载的取舍（过松→相邻脸串轨；过紧→大位移目标
+// 每帧新建、永远达不到 stableFrames 而恒不显示）仍然成立，只是现在可注入以便调优与边界测试。
+bool TrackCoordinator::centerSizeMatched(const cv::Rect& ref, const cv::Rect& det) const {
     const float cx1 = ref.x + ref.width / 2.0f;
     const float cy1 = ref.y + ref.height / 2.0f;
     const float cx2 = det.x + det.width / 2.0f;
@@ -26,14 +18,12 @@ bool centerSizeMatched(const cv::Rect& ref, const cv::Rect& det) {
     const float dist = std::sqrt(dx * dx + dy * dy);
     const float refLen = static_cast<float>(std::max(ref.width, ref.height));
     if (refLen <= 0) return false;
-    if (dist > kCenterMaxRatio * refLen) return false;
+    if (dist > config_.centerMaxRatio * refLen) return false;
     const float wr = static_cast<float>(det.width) / std::max(1, ref.width);
     const float hr = static_cast<float>(det.height) / std::max(1, ref.height);
-    return wr >= kSizeRatioMin && wr <= kSizeRatioMax &&
-           hr >= kSizeRatioMin && hr <= kSizeRatioMax;
+    return wr >= config_.sizeRatioMin && wr <= config_.sizeRatioMax &&
+           hr >= config_.sizeRatioMin && hr <= config_.sizeRatioMax;
 }
-
-}  // namespace
 
 TrackCoordinator::TrackCoordinator(const TrackConfig& cfg) : config_(cfg) {}
 
