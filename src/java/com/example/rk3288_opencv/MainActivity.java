@@ -78,6 +78,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.nio.ByteBuffer;
@@ -112,20 +113,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private static final String PREF_INFERENCE_THROTTLE_MODE = "pref_inference_throttle_mode";
     private static final String PREF_INFERENCE_INTERVAL_MS = "pref_inference_interval_ms";
     /**
-     * 【历史】任务18 的 personId → 显示名映射前缀。**任务 B 起不再写入**，仅作一次性迁移的来源。
+     * 【历史】任务18 的 personId → 显示名明文映射前缀。**任务 B 起不再写入**。
      *
-     * <p>保护边界（旧注释称「仓库不存储展示名」属实但边界含混，易被读成「整个 App 不存显示名」）：
-     * <ul>
-     *   <li>{@code AndroidEnrollmentRepository}（{@code face_registry_v1.dat}）只存 userId 等
-     *       6 个元数据字段，**不含显示名**;</li>
-     *   <li>显示名自任务 B 起由 {@link PersonDisplayNameStore} **加密**存于
-     *       {@code files/face_names/n_<sha256(personId)>.enc};</li>
-     *   <li>模板向量由 {@code FeatureTemplateEncryptedStore} 加密存于
-     *       {@code files/face_templates/u_<sha256(userId)>.bin}。</li>
-     * </ul>
-     * <p>另注：{@code userId} 本身是**可逆 hex 编码**（非加密），故**不得**宣称「人员 PII 全部加密」。
+     * <p>前缀与「检测/清除」策略见 {@link LegacyDisplayNames}（那边有完整的保护边界说明）。
+     * 保护边界摘要：注册表（`face_registry_v1.dat`）只存 userId 等元数据、**不含显示名**；
+     * 显示名自任务 B 起由 {@link PersonDisplayNameStore} **加密**存于 `files/face_names/`；
+     * 模板向量加密存于 `files/face_templates/`。另注：`userId` 本身是**可逆 hex 编码**（非加密），
+     * 故**不得**宣称「人员 PII 全部加密」。
      */
-    private static final String PREF_PERSON_NAME_PREFIX = "pref_person_name_";
+    private static final String PREF_PERSON_NAME_PREFIX = LegacyDisplayNames.PREF_PREFIX;
 
     /** 任务 B：旧明文显示名是否已迁移完毕（迁移成功才置位；失败保留原值下次重试）。 */
     private static final String PREF_NAME_MIGRATED = "pref_person_name_migrated_v1";
@@ -4397,11 +4393,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     Toast.makeText(this, "人员列表读取失败：" + list.message, Toast.LENGTH_LONG).show();
                     return;
                 }
-                if (list.entries.isEmpty()) {
+                final List<AndroidEnrollmentRepository.Entry> entries = list.entries;
+                // 任务 B 决策：历史明文显示名默认保留、不自动删除，在此处（人员管理入口）提示并提供清除。
+                promptClearLegacyDisplayNamesIfAny();
+                if (entries.isEmpty()) {
                     Toast.makeText(this, "暂无已注册人员", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                final List<AndroidEnrollmentRepository.Entry> entries = list.entries;
                 String[] items = new String[entries.size()];
                 for (int i = 0; i < entries.size(); i++) {
                     AndroidEnrollmentRepository.Entry e = entries.get(i);
@@ -4484,6 +4482,61 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     private void removeDisplayName(@NonNull String personId) {
         displayNameStore().remove(personId);
+    }
+
+    // ── 历史明文显示名：默认保留 + 用户确认后清除（任务 B 决策，2026-09-16）──────────────
+    // 不自动删除的理由：保留是**避免未经同意丢失数据**，不是低估 PII 风险。只要历史键存在，
+    // 明文就在——**不得**宣称「设备上已无明文 PII」。
+
+    /** 检测到历史明文显示名时提示（在人员管理入口调用）。用户可保留，也可进入清除流程。 */
+    private void promptClearLegacyDisplayNamesIfAny() {
+        Map<String, ?> all = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getAll();
+        if (!LegacyDisplayNames.hasRetainedNames(all)) return;
+        int n = LegacyDisplayNames.retainedCount(all);
+        new AlertDialog.Builder(this)
+                .setTitle("历史显示名")
+                .setMessage("本设备仍保留 " + n + " 条未加密的历史显示名，当前不用于展示，"
+                        + "也不会被新增或使用。可手动清除。")
+                .setPositiveButton("清除", (d, w) -> confirmClearLegacyDisplayNames())
+                .setNegativeButton("保留", null)
+                .show();
+    }
+
+    /** 清除前的二次确认（不可逆操作必须显式确认，且说明影响范围）。 */
+    private void confirmClearLegacyDisplayNames() {
+        new AlertDialog.Builder(this)
+                .setTitle("确认清除历史显示名")
+                .setMessage("显示名记录不可恢复。\n人员 ID 与加密模板不受影响，识别功能不受影响。\n确认清除？")
+                .setPositiveButton("确认清除", (d, w) -> clearLegacyDisplayNames())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /**
+     * 只删除显示名映射键，**绝不**清空整个 SharedPreferences（其余 10 余个设置键必须原样保留）。
+     *
+     * <p>用 {@code commit()} 而非 {@code apply()}：只有前者是同步落盘且**返回是否成功**，符合
+     * 「持久化删除成功后才提示完成」的要求。
+     */
+    private void clearLegacyDisplayNames() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        Set<String> keys = LegacyDisplayNames.selectKeysForClearing(prefs.getAll());
+        if (keys.isEmpty()) {
+            Toast.makeText(this, "没有需要清除的历史显示名", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        SharedPreferences.Editor ed = prefs.edit();
+        for (String k : keys) {
+            ed.remove(k);
+        }
+        boolean ok = ed.commit();
+        Toast.makeText(this,
+                ok ? ("已清除 " + keys.size() + " 条历史显示名")
+                   : "清除失败（未能写入），请重试",
+                ok ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+        AppLog.w("MainActivity", "clearLegacyDisplayNames",
+                ok ? ("已清除历史明文显示名 count=" + keys.size())
+                   : "历史显示名清除失败（未落盘）");
     }
 
     /**

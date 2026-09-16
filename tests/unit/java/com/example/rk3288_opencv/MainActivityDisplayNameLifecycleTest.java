@@ -170,6 +170,44 @@ public class MainActivityDisplayNameLifecycleTest {
         assertTrue("removeOrphans 必须落在权威性门禁之内", remove > gate && remove - gate < 300);
     }
 
+    /**
+     * 契约 8（历史明文清除，任务 B 决策）：**只删显示名键、绝不整体清空、且以 `commit()` 落盘**。
+     *
+     * <p>三条都能造成用户可见损害：误清其他设置＝配置丢失；用 `apply()`＝异步写入、无法确认
+     * 是否真的落盘，却会提示「已清除」。
+     */
+    @Test
+    public void legacyClearTouchesOnlyDisplayNameKeysAndCommitsSynchronously() throws IOException {
+        String text = source();
+        int clear = text.indexOf("private void clearLegacyDisplayNames()");
+        assertTrue("应有历史显示名清除方法", clear >= 0);
+        int end = text.indexOf("\n    }", clear);
+        assertTrue(end > clear);
+        String body = text.substring(clear, end);
+
+        assertTrue("必须用 selectKeysForClearing 选定键（只匹配显示名前缀）",
+                body.contains("LegacyDisplayNames.selectKeysForClearing("));
+        assertTrue("必须用 commit() 同步落盘并取回结果", body.contains("ed.commit()"));
+        assertFalse("不得用异步的 apply()（无法确认是否落盘却会提示完成）", body.contains("apply()"));
+        assertFalse("不得整体清空 SharedPreferences（会误删其他设置）", body.contains(".clear()"));
+    }
+
+    /** 契约 9：清除前必须有二次确认（不可逆操作不得一步直达）。 */
+    @Test
+    public void legacyClearRequiresExplicitConfirmation() throws IOException {
+        String text = source();
+        int confirm = text.indexOf("private void confirmClearLegacyDisplayNames()");
+        assertTrue("应有清除的二次确认方法", confirm >= 0);
+        assertTrue("确认文案须说明不可恢复", text.contains("不可恢复"));
+        assertTrue("确认文案须说明模板与人员 ID 不受影响", text.contains("加密模板不受影响"));
+        // 提示入口只做「提示 + 提供清除」，不得直接删除。
+        int prompt = text.indexOf("private void promptClearLegacyDisplayNamesIfAny()");
+        assertTrue(prompt >= 0);
+        int promptEnd = text.indexOf("\n    }", prompt);
+        assertFalse("提示入口不得直接执行清除（须经用户确认）",
+                text.substring(prompt, promptEnd).contains("clearLegacyDisplayNames()"));
+    }
+
     private static File findRepoRoot() {
         File dir = new File(System.getProperty("user.dir", "."));
         while (dir != null) {
