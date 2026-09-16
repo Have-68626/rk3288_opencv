@@ -99,11 +99,7 @@ public final class FaceModelManager {
     /** Git LFS pointer 首行特征（模型未拉取）。 */
     private static final String LFS_MARKER = "version https://git-lfs.github.com/spec/v1";
 
-    /**
-     * 按规范化 storeDir 路径共享的静态锁：同目录多实例并发导入/切换会互相破坏指针与目录，
-     * 必须串行化（与 {@link AndroidEnrollmentRepository} 同一策略）。
-     */
-    private static final ConcurrentHashMap<String, Object> DIR_LOCKS = new ConcurrentHashMap<>();
+    // 目录锁与静默改名已收敛到 FileStoreUtils（任务 A4c）；本类的 dirLock() 走其共享锁表。
 
     /** native 运行时依赖；抽成接口以便纯 JVM 单测注入假实现（真实实现会加载 so）。 */
     public interface NativeRuntime {
@@ -564,7 +560,7 @@ public final class FaceModelManager {
     @VisibleForTesting
     @NonNull
     static Object dirLockForTesting(@NonNull File storeDir) {
-        return staticLockFor(storeDir);
+        return FileStoreUtils.dirLockFor(storeDir);
     }
 
     // ---------------- 校验 ----------------
@@ -1220,15 +1216,6 @@ public final class FaceModelManager {
         }
     }
 
-    /** 静默重命名（崩溃恢复用）；失败返回 false，由调用方决定后续语义。 */
-    private static boolean renameQuietly(@NonNull File from, @NonNull File to) {
-        try {
-            return from.renameTo(to);
-        } catch (SecurityException ex) {
-            return false;
-        }
-    }
-
     // ── 文件操作接缝（任务 A，2026-09-16 决策）────────────────────────────────────
     // 用途：目录替换的事务协议有大量**破坏性**步骤（改名 / 删除 / 落事务记录），其失败分支在纯 JVM
     // 下难以构造（本类是 final、原方法均为 private static，「非空目录占位」只覆盖得了少数情形）。
@@ -1250,7 +1237,7 @@ public final class FaceModelManager {
     private static final FileOps DEFAULT_FILE_OPS = new FileOps() {
         @Override
         public boolean rename(@NonNull File from, @NonNull File to) {
-            return renameQuietly(from, to);
+            return FileStoreUtils.renameQuietly(from, to);
         }
 
         @Override
@@ -1610,24 +1597,7 @@ public final class FaceModelManager {
 
     @NonNull
     private Object dirLock() {
-        return staticLockFor(storeDir);
-    }
-
-    @NonNull
-    private static Object staticLockFor(@NonNull File dir) {
-        String key;
-        try {
-            key = dir.getCanonicalPath();
-        } catch (Exception ex) {
-            key = dir.getAbsolutePath();
-        }
-        Object lock = DIR_LOCKS.get(key);
-        if (lock == null) {
-            Object fresh = new Object();
-            Object prev = DIR_LOCKS.putIfAbsent(key, fresh);
-            lock = (prev != null) ? prev : fresh;
-        }
-        return lock;
+        return FileStoreUtils.dirLockFor(storeDir);
     }
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
