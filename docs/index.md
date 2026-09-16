@@ -150,6 +150,7 @@ as_of=2026-09-15
 | `research/appendix-g.md` | snapshot | 稳定性治理审计修复计划 |
 | `research/appendix-h.md` | placeholder | 稳定性治理分阶段执行报告（内容未填充） |
 | `research/opensource-benchmark-2026-09-16.md` | snapshot | 开源对标调研（核实版）：重复开发 / 独有 / 可借鉴三分类与行动建议 |
+| `research/opensource-integration-feasibility-2026-09-16.md` | snapshot | 开源代码可集成性评估：四档可行性分级、语言适配矩阵、不建议清单、32 位移植代价 |
 
 ## 仓库根目录
 
