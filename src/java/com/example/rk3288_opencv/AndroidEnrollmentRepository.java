@@ -14,7 +14,6 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Android 人员注册仓库（任务 16）：通用作用域 + gallery 级注册表，并在其上接线
@@ -48,7 +47,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>并发</h2>
  * 实例方法不再使用实例级 {@code synchronized}：{@link #forDefaultGallery}/{@link #forScope}
  * 每次都会 {@code new}，同目录多实例并发读改写注册表会丢更新。改为按<b>规范化 scopeDir 路径</b>
-     * 共享静态锁（{@link FileStoreUtils#dirLockFor}），使同目录的所有实例串行化 add/remove/readTemplate/list/get。
+ * 共享静态锁（{@link FileStoreUtils#dirLockFor}），使同目录的所有实例串行化 add/remove/readTemplate/list/get。
  *
  * <h2>注册表容错</h2>
  * 单行条目损坏时<b>跳过并隔离该行</b>，保留其余可解析条目，{@link ListResult#skippedLineCount}
@@ -287,7 +286,7 @@ public final class AndroidEnrollmentRepository {
             Entry entry;
             byte[] raw = readFileQuietly(tpl);
             if (raw == null || raw.length == 0) {
-                tpl.delete();
+                FileStoreUtils.deleteWithBackup(tpl);
                 return new Result(Status.IO_ERROR, null, "写入后无法回读模板文件");
             }
             entry = new Entry(userId, modelVersion, templateSchemaVersion, raw.length,
@@ -298,7 +297,7 @@ public final class AndroidEnrollmentRepository {
             Status persisted = persistRegistry(next);
             if (persisted != Status.OK) {
                 // 注册表写失败 -> 回滚模板，保持模板文件与注册表一致。
-                tpl.delete();
+                FileStoreUtils.deleteWithBackup(tpl);
                 return new Result(persisted, null, "注册表写入失败，已回滚模板");
             }
             return new Result(Status.OK, entry, "");
@@ -370,7 +369,9 @@ public final class AndroidEnrollmentRepository {
             if (tpl.exists()) {
                 boolean deleted;
                 try {
-                    deleted = tpl.delete();
+                    // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时
+                    // 把**已删除**的模板复活（A2-Med3）。
+                    deleted = FileStoreUtils.deleteWithBackup(tpl);
                 } catch (SecurityException ex) {
                     deleted = false;
                 }

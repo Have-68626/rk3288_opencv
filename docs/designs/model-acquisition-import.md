@@ -39,10 +39,14 @@ as_of=2026-09-12
   ```
   face_models/
     active_profile            # 当前激活 profileId（纯文本指针）
+    active_profile.tmp/.bak   # 指针原子写的临时/备份
     <profileId>/manifest.json
     <profileId>/scrfd.param / scrfd.bin
     <profileId>/arcface.param / arcface.bin
-    .tmp_* / .bak_*           # 过渡目录，校验失败即清理
+    .tmp_<nano>/              # 解压临时目录（下次导入时清扫）
+    .bak_<profileId>/         # 目录替换时移开的旧配置备份
+    .txn_<profileId>          # 目录替换**事务记录**（任务 A，见 §4 步骤 7/8）
+    .rollback_<profileId>     # 旧版回滚意图标记（已非主路径，仅保留兼容与恢复）
   ```
 
 ## 4. `FaceModelManager.importZip` 校验链（顺序即安全边界）
@@ -60,8 +64,10 @@ as_of=2026-09-12
 4. **manifest 校验**（`FaceModelManifest.parse`，与 native 契约一致）：schemaVersion==1、ABI、路径、sha256 格式；`ABI_MISMATCH` 单独暴露，其余归 `MANIFEST_INVALID`；`profileId` 再查安全目录名与保留名。
 5. **模型文件校验**（`verifyModelFiles`）：canonical 包含性 → `MANIFEST_INVALID`；缺失 → `MISSING_MODEL_FILE`；Git LFS pointer（`version https://git-lfs.github.com/spec/v1`）→ `MISSING_MODEL_FILE`；SHA-256 与引脚不符 → `SHA256_MISMATCH`。
 6. **native 校验/暂存**（`nativeValidateProfile`，原 `nativeSelfCheck`，P1-2 澄清语义）：调 `NativeFaceBridge.loadProfile` 做格式/ABI 校验，只看 `validated:true`；失败 → `NATIVE_CHECK_FAILED`。此步**只校验暂存，不等于加载生效**，旧目录与激活指针完全未被触碰。
-7. **原子启用目录**（`swapInProfileDirs`）：基目录 rename 到 `face_models/<profileId>`（旧目录先 rename 为 `.bak_<profileId>`），同盘 rename 保证原子；**暂不**写激活指针。
-8. **激活并落定**（`nativeActivateRuntime`）：调 `activateRuntime`，仅当返回 `ok:true` 且 `effective || reason=="pending"` 才算受理；失败 → `RUNTIME_ACTIVATE_FAILED`，**保留新目录但不切指针**（旧配置继续生效），绝不静默报成功。最后 `persistActive(profileId)` 原子落定指针；指针落定失败则 `rollbackProfileSwap` + `bestEffortReactivate(previousActive)` → `ATOMIC_RENAME_FAILED`。`finally` 清理临时目录。
+7. **原子启用目录**（`swapInProfileDirs`）：**先在 `.txn_<profileId>` 落 `in_progress` 事务记录**（含 hadOld 与原激活指针；写不进去即中止，旧配置一动未动），再把基目录 rename 到 `face_models/<profileId>`（如有旧目录先 rename 为 `.bak_<profileId>`），同盘 rename 保证原子；**暂不**写激活指针。
+8. **激活并落定**（`nativeActivateRuntime`）：调 `activateRuntime`，仅当返回 `ok:true` 且 `effective || reason=="pending"` 才算受理；失败 → `RUNTIME_ACTIVATE_FAILED`，**保留新目录但不切指针**（旧配置继续生效），绝不静默报成功。最后 `persistActive(profileId)` 原子落定指针；成功后把事务记录改写为 `committed` → 清理 `.bak_` → 清事务记录（**仅在备份确已清掉时才清记录**）。指针落定失败则 `rollbackProfileSwap` + `bestEffortReactivate(previousActive)` → `ATOMIC_RENAME_FAILED`。`finally` 清理临时目录。
+
+**事务记录与崩溃恢复（任务 A）**：`.txn_<profileId>` 的 `state` 区分「替换进行中」与「已提交未清理」，恢复据此判定——`committed` ⇒ 保留新目录并继续清备份；`in_progress` + `hadOld` + `.bak_` 在 ⇒ 回滚旧目录**与原指针**；`in_progress` + `!hadOld` ⇒ 无事可做（新包保留、指针未改）。任一恢复步骤失败都**保持现场并保留记录**，状态报 ERROR 且**拒绝继续覆盖导入**；「无记录且新旧目录并存」按**歧义现场**处理（保留两份、不猜）。写入事务记录前保证 `.bak_` 已不存在，使「`in_progress` + `.bak_` 在」恒等于「本次替换已移开旧目录」。
 
 `activate(profileId)` 对已导入目录重跑第 4–6 步校验后原子改写指针，失败时指针不变；目标未导入 → `PROFILE_NOT_FOUND`。
 

@@ -18,7 +18,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -58,9 +57,13 @@ import java.util.zip.ZipInputStream;
  * <pre>
  * files/face_models/
  *   active_profile            当前激活的 profileId（纯文本）
+ *   active_profile.tmp/.bak   指针的原子写临时/备份
  *   &lt;profileId&gt;/manifest.json
  *   &lt;profileId&gt;/scrfd.param ...（模型文件）
- *   .tmp_* / .bak_*           过渡目录，任何校验失败都会被清理
+ *   .tmp_&lt;nano&gt;/              解压临时目录（下次导入时清扫）
+ *   .bak_&lt;profileId&gt;/         目录替换时移开的旧配置备份
+ *   .txn_&lt;profileId&gt;          目录替换**事务记录**（profileId/hadOld/prevActive/state，任务 A）
+ *   .rollback_&lt;profileId&gt;     旧版回滚意图标记（已非主路径，仅保留兼容与恢复）
  * </pre>
  *
  * <p>本类不写任何模型内容到日志；错误消息只含状态码语义与相对文件名。
@@ -426,16 +429,22 @@ public final class FaceModelManager {
                                         + swap.bak.getName() + tail + "）");
                     }
                     bestEffortReactivate(previousActive, currentAbi);
-                    return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已回滚配置");
+                    return fail(Status.ATOMIC_RENAME_FAILED, swap.hadOld
+                            ? "激活指针写入失败，已回滚配置"
+                            : "激活指针写入失败；已保留新导入的模型目录但未激活（可重新导入）");
                 }
                 // 事务提交（Codex 要求 3）：指针已落定 → 先把记录改写为 committed，再清备份，最后清记录。
                 // 改写失败时**继续**而**不回滚**：此刻激活确已成功（native 提交 + 指针落定都在前），
-                // 因「记录写失败」而回滚一个可用配置更糟。此举安全，理由见 recoverProfileDirIfNeeded
-                // 的状态推导规则——本路径随后会删掉 bak，而「in_progress + 无 bak」一律判为「未曾替换」，
-                // 故即便记录残留也会收敛到「保留新目录」。
+                // 因「记录写失败」而回滚一个可用配置更糟。
+                // **前提（A1-P2① 修正）**：上述「即便记录残留也会收敛到保留新目录」只在**备份确实
+                // 被清掉**时成立。故清记录必须以「bak 已不存在」为条件——否则现场会退化成
+                // 「target + bak + 无记录」，被当作**歧义**而永久阻塞该 profileId 的后续导入；
+                // 留下的 committed 记录正好让 recoverTxn 继续重试清理。
                 writeTxn(new DirTxn(swap.profileId, swap.hadOld, previousActive, true));
                 deleteRecursivelyQuietly(swap.bak);
-                clearTxn(swap.profileId);
+                if (!swap.bak.exists()) {
+                    clearTxn(swap.profileId);
+                }
 
                 return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
             } catch (ImportFailure f) {
@@ -896,6 +905,14 @@ public final class FaceModelManager {
             }
         }
         deleteRecursivelyQuietly(bak);
+        if (bak.exists()) {
+            // **写事务记录之前**必须保证 bak 已不存在（A1-P2②/A2-Med2）：否则下面的 target→bak 会因
+            // 目标已存在而失败，而那条已写入的 in_progress 记录会让恢复把「游离的陈旧 bak」误判为
+            // 「本次移开的旧目录」→ **静默回滚掉一次已提交的更新**。守住这条不变量后，
+            // 「in_progress + bak 在」恒等于「本次替换已把旧目录移开」，状态推导才成立。
+            throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
+                    "上次替换的备份无法清理（" + bak.getName() + "），已中止以保留现有配置");
+        }
         boolean hadOld = target.exists();
 
         // 事务记录（Codex 要求 1）：**破坏性改名前**可靠落 in_progress；写不进去就绝不动手，
@@ -966,10 +983,10 @@ public final class FaceModelManager {
     @NonNull
     private RollbackOutcome rollbackProfileSwap(@NonNull ProfileSwap swap) {
         if (!swap.hadOld) {
-            // 首次导入无旧配置可还原：删掉新目录即完成回滚。删除失败不影响对外语义——
-            // 该目录从未被激活指针引用，最坏只是磁盘残留。
-            deleteRecursivelyQuietly(swap.target);
-            clearTxn(swap.profileId);   // 已在进程内完成回滚，无需启动恢复
+            // 首次导入：新目录是**用户唯一的新包**，不得删除——与 importZip 的激活失败分支同口径
+            //（那里也是保留目录、不切指针）。此前这里无条件删除，会在「native 激活已成功、仅指针
+            //  写失败」时丢掉用户唯一的新包，且调用方文案谎称「已回滚配置」（根本没有可回滚的配置）。
+            clearTxn(swap.profileId);   // 无旧可还原、指针未改：事务无事可做
             return RollbackOutcome.RESTORED;
         }
         // 尽力记录回滚意图：它能覆盖「删除过程中崩溃」等窄窗口，但记录失败不应阻止还原。
@@ -1046,11 +1063,6 @@ public final class FaceModelManager {
             this.hadOld = hadOld;
             this.prevActive = prevActive;
             this.committed = committed;
-        }
-
-        @NonNull
-        DirTxn asCommitted() {
-            return new DirTxn(profileId, hadOld, prevActive, true);
         }
 
         @NonNull
@@ -1499,9 +1511,18 @@ public final class FaceModelManager {
         File[] files = storeDir.listFiles();
         if (files == null) return;
         for (File f : files) {
-            if (!f.getName().startsWith(".tmp_")) continue;
-            if (!f.isDirectory()) continue;
-            deleteRecursivelyQuietly(f);
+            String n = f.getName();
+            // ① 解压临时目录 .tmp_<nano>；② 事务记录的临时文件 .txn_<id>.tmp（崩在 writeSync 与
+            // rename 之间即永久残留，A2-Low4）。
+            boolean stale = n.startsWith(".tmp_")
+                    || (n.startsWith(".txn_") && n.endsWith(".tmp"));
+            if (!stale) continue;
+            if (f.isDirectory()) {
+                deleteRecursivelyQuietly(f);
+            } else {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
         }
     }
 

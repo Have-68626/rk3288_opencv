@@ -197,6 +197,9 @@ public class FeatureTemplateEncryptedStoreTest {
      *
      * <p>历史：修复前两条路径都是「自造 IV 传给 init」，在 API≥23 真机上会**恒失败**（本项目尚无
      * 实机留档，故一直未被发现）。
+     *
+     * <p><b>局限（A2-Low6，如实声明）</b>：本守卫是**字面匹配**——换行、空格或包装成辅助方法
+     *（如 {@code init(mode, key, params)}）都能绕过。它**不是**语义保证，只是把最容易复发的写法钉住。
      */
     @Test
     public void encryptionNeverPassesCallerProvidedIv() throws IOException {

@@ -151,8 +151,10 @@ final class PersonDisplayNameStore {
 
     /** 后台线程：删除映射（文件 + 缓存）。文件删除失败不影响缓存清理。 */
     void remove(@NonNull String personId) {
-        //noinspection ResultOfMethodCallIgnored
-        FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId).delete();
+        // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把已删除的
+        // 显示名复活（A2-Med3）。
+        FileStoreUtils.deleteWithBackup(
+                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId));
         byte[] removed = cache.remove(personId);
         if (removed != null) Arrays.fill(removed, (byte) 0);
     }

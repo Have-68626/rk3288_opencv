@@ -41,6 +41,26 @@ final class FileStoreUtils {
     }
 
     /**
+     * 删除主文件**及其写入器备份**（{@code <name>.bak}）。
+     *
+     * <p><b>为什么必须一起删</b>：写入器采用「tmp → fsync → dst→bak → tmp→dst → 删 bak」策略，
+     * 且读路径有「阶段 1 恢复基线」（主文件缺失时把 {@code .bak} 还原就位）。若删除逻辑只删主文件，
+     * 一个陈旧的 {@code .bak} 会在**下次读取时把已删除的数据复活**。
+     *
+     * @return 主文件是否确实已不存在
+     */
+    static boolean deleteWithBackup(@NonNull File main) {
+        File parent = main.getParentFile();
+        if (parent != null) {
+            //noinspection ResultOfMethodCallIgnored
+            new File(parent, main.getName() + ".bak").delete();
+        }
+        //noinspection ResultOfMethodCallIgnored
+        main.delete();
+        return !main.exists();
+    }
+
+    /**
      * 取某目录的共享锁对象：同规范化路径（canonical，失败则退化为 absolute）返回**同一个**锁，
      * 从而串行化同目录的多实例操作。
      */
