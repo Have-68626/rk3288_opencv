@@ -4497,6 +4497,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void migrateLegacyDisplayNames() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         if (prefs.getBoolean(PREF_NAME_MIGRATED, false)) return;
+        if (!PersonDisplayNameStore.isSupported()) {
+            // 本机没有加密能力（API<23 或密钥不可用）：迁移**永远不可能成功**，不做徒劳重试，
+            // 也不置完成标志。旧明文键的去留见 docs/designs/android-enrollment-design.md。
+            AppLog.w("MainActivity", "migrateLegacyDisplayNames",
+                    "本机不支持 Keystore AES，跳过显示名迁移（旧明文键保持原状）");
+            return;
+        }
 
         boolean allOk = true;
         for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) {

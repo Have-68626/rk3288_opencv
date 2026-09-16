@@ -176,6 +176,25 @@ public class PersonDisplayNameStoreTest {
         assertEquals("降级时目录内不得出现任何文件", 0, dir.listFiles().length);
     }
 
+    /**
+     * 预取必须**重新解密**而非「命中即跳过」（A2 审计 Low 修复）：文件被带外改动后，下一次预取
+     * 应反映磁盘现状，而不是一直显示陈旧名字。
+     */
+    @Test
+    public void prefetchRefreshesChangedFileInsteadOfServingStaleCache() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore cache = new PersonDisplayNameStore(dir);
+        assertTrue(cache.save("alice", "旧名"));
+        assertEquals("旧名", cache.get("alice"));
+
+        // 带外改写：另一个实例写入新值（模拟外部改动 / 密钥轮换后的重写）。
+        PersonDisplayNameStore writer = new PersonDisplayNameStore(dir);
+        assertTrue(writer.save("alice", "新名"));
+
+        cache.prefetch(Collections.singletonList("alice"));
+        assertEquals("预取应重新解密、反映磁盘现状", "新名", cache.get("alice"));
+    }
+
     /** 磁盘字节不得含明文显示名。 */
     @Test
     public void persistedFileHasNoPlaintext() throws Exception {
