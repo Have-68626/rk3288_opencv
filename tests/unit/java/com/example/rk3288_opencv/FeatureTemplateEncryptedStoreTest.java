@@ -249,6 +249,24 @@ public class FeatureTemplateEncryptedStoreTest {
                 FeatureTemplateEncryptedStore.readNameString(missing, "u", false).code);
     }
 
+    /**
+     * 提取边界差异修复（A3 确认 α2）：`userId == null` 时必须返回**错误码**而不是抛 NPE。
+     *
+     * <p>提取 {@code readEnvelope} 时曾把 {@code buildAad(...)} 作为实参提前求值，使 null userId
+     * 抛 NPE 穿透；改为 {@code AadSupplier} 延迟求值后恢复「在 try 内求值 → 归入错误映射」的原语义。
+     */
+    @Test
+    public void nullUserIdYieldsErrorCodeInsteadOfNpe() throws Exception {
+        File dst = new File(tmp.newFolder(), "u_x.bin");
+        assertEquals(FeatureTemplateEncryptedStore.Code.OK,
+                FeatureTemplateEncryptedStore.write(null, dst, "u1", new byte[]{1, 2}, 1, 1).code);
+
+        FeatureTemplateEncryptedStore.ReadResult rr =
+                FeatureTemplateEncryptedStore.read(null, dst, null, 1, 1, false);
+        assertNotNull("不得抛 NPE，应返回 ReadResult", rr);
+        assertTrue("null userId 应归为错误码而非成功", rr.code != FeatureTemplateEncryptedStore.Code.OK);
+    }
+
     private static File findRepoRoot() {
         File dir = new File(System.getProperty("user.dir", "."));
         while (dir != null) {
