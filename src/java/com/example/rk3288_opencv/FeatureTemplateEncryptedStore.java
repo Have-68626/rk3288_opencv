@@ -266,7 +266,7 @@ public final class FeatureTemplateEncryptedStore {
         }
         return readEnvelope(srcFile,
                 () -> platformKeyProvider.getOrCreateNameKey(),
-                buildNameAad(personId),
+                () -> buildNameAad(personId),
                 quarantineOnCorrupt);
     }
 
@@ -367,7 +367,7 @@ public final class FeatureTemplateEncryptedStore {
         }
         return readEnvelope(srcFile,
                 () -> platformKeyProvider.getOrCreateKeyV1(),
-                buildAad(userId, modelVersion, templateSchemaVersion),
+                () -> buildAad(userId, modelVersion, templateSchemaVersion),
                 quarantineOnCorrupt);
     }
 
@@ -375,6 +375,17 @@ public final class FeatureTemplateEncryptedStore {
     @FunctionalInterface
     private interface KeySupplier {
         SecretKey get() throws Exception;
+    }
+
+    /**
+     * 期望 AAD 的延迟求值口（任务 B 修复 A3 确认的边界差异）：AAD 必须在 **try 内**求值。
+     *
+     * <p>提取时曾把 {@code buildAad(...)} 作为实参在调用前求值，导致 {@code userId == null} 时
+     * 抛 NPE 穿透，而原实现会把它映射为错误码。改为延迟求值后与提取前一致。
+     */
+    @FunctionalInterface
+    private interface AadSupplier {
+        byte[] get();
     }
 
     /**
@@ -387,7 +398,7 @@ public final class FeatureTemplateEncryptedStore {
     @NonNull
     private static ReadResult readEnvelope(@NonNull File srcFile,
                                            @NonNull KeySupplier keySupplier,
-                                           @NonNull byte[] expectedAad,
+                                           @NonNull AadSupplier aadSupplier,
                                            boolean quarantineOnCorrupt) {
         if (!srcFile.exists()) {
             return new ReadResult(Code.NOT_FOUND, null);
@@ -413,6 +424,9 @@ public final class FeatureTemplateEncryptedStore {
 
         try {
             SecretKey key = keySupplier.get();
+            // 与原实现一致：AAD 在 try 内求值，故 null userId 之类会归入下面的错误映射，
+            // 而不是作为实参提前求值抛 NPE 穿透（A3 确认的提取边界差异）。
+            byte[] expectedAad = aadSupplier.get();
             if (!Arrays.equals(env.aad, expectedAad)) {
                 if (quarantineOnCorrupt) quarantine(srcFile);
                 return new ReadResult(Code.CORRUPTED, null);

@@ -150,6 +150,26 @@ public class MainActivityDisplayNameLifecycleTest {
                 text.contains("allRegisteredIds.add(e.userId);"));
     }
 
+    /**
+     * 契约 7（A3 确认代理点出的关键缺口）：`authoritative` 门禁的**使用点**必须有测试锁定。
+     *
+     * <p>缺口背景：`AndroidEnrollmentRepositoryTest` 只覆盖了该标志的**计算**，而 `MainActivity`
+     * 里的**使用点**无任何断言——若有人删掉 `if (list.authoritative)` 回退为无条件 `removeOrphans`，
+     * 当时的全部测试**仍然全绿**，而那条回退正是会造成数据丢失的写法。
+     *
+     * <p><b>局限（如实说明）</b>：与本文件其他守卫一样是**字面匹配**，等价重排即可绕开；
+     * 真正的行为级锁定需要能在 JVM 内构造 `MainActivity`（本仓无 Robolectric/Mockito）。
+     */
+    @Test
+    public void orphanCleanupIsGatedByRegistryAuthoritative() throws IOException {
+        String text = source();
+        int gate = text.indexOf("if (list.authoritative)");
+        assertTrue("孤儿清理必须以 list.authoritative 为门禁（否则损坏注册表会误删显示名）",
+                gate >= 0);
+        int remove = text.indexOf("store.removeOrphans(", gate);
+        assertTrue("removeOrphans 必须落在权威性门禁之内", remove > gate && remove - gate < 300);
+    }
+
     private static File findRepoRoot() {
         File dir = new File(System.getProperty("user.dir", "."));
         while (dir != null) {
