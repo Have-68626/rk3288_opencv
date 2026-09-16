@@ -4223,17 +4223,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                             personId, template, ENROLL_MODEL_VERSION, ENROLL_TEMPLATE_SCHEMA_VERSION);
                     if (!add.isOk()) {
                         error = "加密写入失败（" + add.status + "）：" + add.message;
-                    } else if (!refreshGalleryFromRepository()) {
-                        // 失败不更新运行中 gallery：数据已加密落盘，但内存图库保持旧状态。
-                        error = "已加密写入本地，但运行中图库替换失败（未更新）";
                     } else {
-                        // 任务 B：模板已加密落盘且图库已生效，此时才加密写入显示名（本线程即后台线程）。
-                        // 失败**不阻断注册**——显示名可降级为 personId，仅记日志。
+                        // 任务 B：显示名与**模板的持久化**对齐，而非与「内存图库替换」对齐——add 成功
+                        // 即注册已加密落盘，此时就该写显示名。否则图库替换失败会让显示名**永久丢失**
+                        // （模板已在盘中，人已注册，但名字永远显示不出来）。
+                        // 失败不阻断注册（可降级为 personId），仅记日志。
                         String pendingName = pendingEnrollmentDisplayName;
                         if (pendingName != null && !pendingName.trim().isEmpty()
                                 && !displayNameStore().save(personId, pendingName)) {
                             AppLog.w("MainActivity", "completeEnrollment",
                                     "显示名加密写入失败（注册仍成功，显示名降级为 personId）");
+                        }
+                        if (!refreshGalleryFromRepository()) {
+                            // 失败不更新运行中 gallery：数据已加密落盘，但内存图库保持旧状态。
+                            error = "已加密写入本地，但运行中图库替换失败（未更新）";
                         }
                     }
                 }
@@ -4361,7 +4364,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             // 本方法在后台线程调用，符合 PersonDisplayNameStore 的线程约定。
             PersonDisplayNameStore store = displayNameStore();
             store.prefetch(allRegisteredIds);
-            store.removeOrphans(new java.util.HashSet<>(allRegisteredIds));
+            // 删除孤儿文件是**破坏性**的：仅当注册表条目集**权威**（无损坏行、未从 .bak 恢复、
+            // 且确实存在注册表文件）时才允许。否则差集里会混入「仍在册但本次没读到」的人，
+            // 其显示名会被误删（A2 审计 H2；与先前「误传成功解码子集 ids」同类，只是更深一层）。
+            if (list.authoritative) {
+                store.removeOrphans(new java.util.HashSet<>(allRegisteredIds));
+            } else {
+                AppLog.w("MainActivity", "refreshGalleryFromRepository",
+                        "注册表条目集非权威（含损坏行 / 从备份恢复 / 无注册表），跳过显示名孤儿清理以免误删");
+            }
             migrateLegacyDisplayNames();
             return ok;
         } catch (Throwable t) {
