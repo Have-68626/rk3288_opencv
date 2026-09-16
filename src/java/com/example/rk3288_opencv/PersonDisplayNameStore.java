@@ -52,6 +52,29 @@ final class PersonDisplayNameStore {
     }
 
     /**
+     * 后台线程：**绕过缓存**直接从磁盘解密读回。
+     *
+     * <p>用于一次性迁移后的「验证密文可读」——必须先确认新写入的密文能读回，才允许删除旧明文
+     * （绝不先删后验）。也用于诊断与测试。
+     *
+     * @return 解密后的显示名；不可读（无文件 / 密钥不可用 / 损坏）返回 null
+     */
+    @Nullable
+    String readFromDisk(@NonNull String personId) {
+        FeatureTemplateEncryptedStore.ReadResult rr =
+                FeatureTemplateEncryptedStore.readNameString(
+                        FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), personId, false);
+        if (rr.code != FeatureTemplateEncryptedStore.Code.OK || rr.plaintext == null) {
+            return null;
+        }
+        try {
+            return new String(rr.plaintext, StandardCharsets.UTF_8);
+        } finally {
+            Arrays.fill(rr.plaintext, (byte) 0);
+        }
+    }
+
+    /**
      * 后台线程：为给定人员集合预取并解密；同时**丢弃缓存中已不在集合内的条目**（人员已被删除）。
      *
      * <p>只清缓存、**不删文件**——传入的集合未必权威（例如仓库读取失败时可能为空），
