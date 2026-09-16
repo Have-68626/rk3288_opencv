@@ -1002,6 +1002,172 @@ public class FaceModelManagerTest {
         deleteRecursively(marker);
     }
 
+    // ---------- ⑱ 任务 A：目录替换事务记录 ----------
+
+    /** 可注入失败的文件操作替身（任务 A 的 FileOps 接缝）。 */
+    private static final class FaultyFileOps implements FaceModelManager.FileOps {
+        boolean failWrite;
+        boolean failRename;
+        boolean failDelete;
+
+        @Override
+        public boolean rename(File from, File to) {
+            return !failRename && from.renameTo(to);
+        }
+
+        @Override
+        public boolean deleteRecursively(File f) {
+            return !failDelete && deleteRecursivelyReal(f);
+        }
+
+        @Override
+        public boolean writeSync(File f, byte[] data) {
+            if (failWrite) return false;
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
+                fos.write(data);
+                fos.flush();
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    }
+
+    private static boolean deleteRecursivelyReal(File f) {
+        if (!f.exists()) return true;
+        if (f.isDirectory()) {
+            File[] cs = f.listFiles();
+            if (cs != null) for (File c : cs) deleteRecursivelyReal(c);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+        return !f.exists();
+    }
+
+    /** 构造事务记录文件（与 DirTxn.encode() 同格式）。 */
+    private static void writeTxnFile(File dir, String profileId, boolean hadOld,
+                                     String prevActive, boolean committed) throws IOException {
+        String s = "profileId=" + profileId + "\n"
+                + "hadOld=" + hadOld + "\n"
+                + "prevActive=" + (prevActive == null ? "" : prevActive) + "\n"
+                + "state=" + (committed ? "committed" : "in_progress") + "\n";
+        java.nio.file.Files.write(new File(dir, ".txn_" + profileId).toPath(),
+                s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 未提交事务 + 备份存在 ⇒ 启动恢复**回滚到旧目录与原指针**。
+     *
+     * <p>这是事务记录的核心价值：`.rollback_` 只有「存在即回滚」语义，无法区分「替换进行中」与
+     * 「已提交未清理」；有 state 才能判定该退旧还是留新。
+     */
+    @Test
+    public void inProgressTxnRollsBackToOldModelAndPointer() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+        // 构造「替换已开始但未提交」现场：旧目录移开、新包占位、事务记录为 in_progress。
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false);
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue("未提交事务应恢复旧模型后就绪", st.isReady());
+        assertEquals("p1", st.profileId);
+        assertTrue("必须还原旧模型内容（不得保留未激活的新包）",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        assertFalse(".bak_p1 应已被消费", bak.exists());
+        assertFalse("事务了结后不得残留记录", new File(dir, ".txn_p1").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /** 已提交事务 ⇒ **保留新目录**、清理备份、清记录（绝不误回滚一次成功的更新）。 */
+    @Test
+    public void committedTxnKeepsNewModelAndCleansBackup() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", true);   // committed
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue(st.isReady());
+        assertTrue("已提交 ⇒ 保留新目录内容",
+                java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+        assertFalse("已提交 ⇒ 备份应被清理", bak.exists());
+        assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /** 事务记录**写失败** ⇒ 中止导入且**旧配置一动未动**（Codex 要求 1）。 */
+    @Test
+    public void txnWriteFailureAbortsImportWithoutTouchingOldConfig() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+            ops.failWrite = true;   // 事务记录写不进去
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+            assertTrue("旧模型内容必须原样保留",
+                    java.util.Arrays.equals(oldBin, readFile(new File(m.profileDir("p1"), DET_BIN))));
+            assertFalse("不得留下事务记录", new File(dir, ".txn_p1").exists());
+            assertFalse("不得残留备份", new File(dir, ".bak_p1").exists());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 「无事务记录且新旧目录并存」= **歧义现场**：不猜哪份应生效（Codex 要求 6）。
+     *
+     * <p>自动恢复 `bak` 会误撤销一次成功更新（成功路径的备份清理失败也会形成该并存），故只能报错。
+     */
+    @Test
+    public void ambiguousCoexistenceWithoutTxnIsReportedNotAutoResolved() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        // 无事务记录、无回滚标记 → 歧义
+
+        FaceRuntimeStatus st = m.status();
+        assertFalse("歧义现场不得报就绪", st.isReady());
+        assertTrue("应如实说明无法判定", st.message.contains("无法判定") || st.message.contains("并存"));
+        assertTrue("必须保留两份数据（target）", target.isDirectory());
+        assertTrue("必须保留两份数据（bak）", bak.isDirectory());
+    }
+
     // ---------- 夹具 ----------
 
     /** 按 flat 布局把 manifest 与模型文件写入目录（供构造磁盘现场使用）。 */
@@ -1132,6 +1298,7 @@ public class FaceModelManagerTest {
             String n = f.getName();
             assertFalse("残留临时/备份内容: " + n,
                     n.startsWith(".tmp_") || n.startsWith(".bak_") || n.startsWith(".rollback_")
+                            || n.startsWith(".txn_")
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".tmp")
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".bak"));
         }
