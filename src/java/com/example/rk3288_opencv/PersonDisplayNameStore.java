@@ -180,7 +180,10 @@ final class PersonDisplayNameStore {
             String n = f.getName();
             if (!n.startsWith("n_") || !n.endsWith(".enc")) continue;
             if (liveNames.contains(n)) continue;
-            if (f.delete()) removed++;
+            // 一并删掉写入器备份（n_*.enc.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把
+            // **已删除**的显示名复活（A2-Med3）。A3 确认此处是此前遗漏的删除路径——主文件删除已
+            // 统一走 deleteWithBackup，唯独本方法漏了。
+            if (FileStoreUtils.deleteWithBackup(f)) removed++;
         }
         return removed;
     }

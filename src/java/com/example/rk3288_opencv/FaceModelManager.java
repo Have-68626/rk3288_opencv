@@ -1129,7 +1129,7 @@ public final class FaceModelManager {
         if (!fileOps.writeSync(tmp, txn.encode())) {
             return false;
         }
-        if (!fileOps.rename(tmp, txnFileOf(txn.profileId))) {
+        if (!fileOps.moveReplace(tmp, txnFileOf(txn.profileId))) {
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
             return false;
@@ -1236,8 +1236,18 @@ public final class FaceModelManager {
 
     @androidx.annotation.VisibleForTesting
     interface FileOps {
-        /** 改名；语义同 {@link File#renameTo}（含吞 SecurityException）。 */
+        /** 改名；语义同 {@link File#renameTo}（含吞 SecurityException）。**目标已存在时失败**。 */
         boolean rename(@NonNull File from, @NonNull File to);
+
+        /**
+         * 替换式移动：**目标已存在时覆盖**。
+         *
+         * <p>为什么必须有它：{@code File.renameTo} 在 Windows 上遇已存在目标**必然失败**（POSIX 则覆盖）
+         * ——事务记录从 {@code in_progress} 改写为 {@code committed} 正是「覆盖既有文件」，
+         * 若走 renameTo 则在 Windows 上**恒失败**，记录会停在 in_progress，进而在备份清理也失败时
+         * 导致恢复把一次**成功**的导入误判为未提交而回滚。
+         */
+        boolean moveReplace(@NonNull File from, @NonNull File to);
 
         /** 递归删除；返回是否**确实已不存在**。 */
         boolean deleteRecursively(@NonNull File f);
@@ -1250,6 +1260,17 @@ public final class FaceModelManager {
         @Override
         public boolean rename(@NonNull File from, @NonNull File to) {
             return FileStoreUtils.renameQuietly(from, to);
+        }
+
+        @Override
+        public boolean moveReplace(@NonNull File from, @NonNull File to) {
+            // **不得**用 java.nio.file：Files / File#toPath / StandardCopyOption 均需 **API 26**，
+            // 而本项目 minSdk=21（lint 的 NewApi 已据此报错）。故用「先删目标再改名」实现覆盖语义。
+            // 已知窗口：两步之间崩溃会短暂「无记录」——此时 buildStatus 会把现场判为**歧义并如实报错**
+            //（不销毁数据），远优于「提交改写恒失败 → 恢复误回滚一次成功的导入」。
+            //noinspection ResultOfMethodCallIgnored
+            to.delete();
+            return from.renameTo(to);
         }
 
         @Override
@@ -1335,12 +1356,16 @@ public final class FaceModelManager {
     /**
      * 按事务记录恢复（Codex 要求 4）。
      *
-     * <p><b>状态推导</b>（无需额外状态字段——由记录 + 磁盘即可判定「替换是否已开始」）：
+     * <p><b>状态推导</b>（由记录 + 磁盘判定，无需额外状态字段）：
      * <ul>
-     *   <li>{@code hadOld} 且 bak 存在 ⇒ 已越过「旧目录移开」这一步，替换**已开始**；</li>
-     *   <li>{@code !hadOld} 且 target 存在 ⇒ 新目录已就位（此前 target 不存在），替换**已开始**。</li>
+     *   <li>{@code hadOld} 且 bak 存在 ⇒ 已越过「旧目录移开」这一步，替换**已开始**，须回滚；</li>
+     *   <li>{@code hadOld} 且 bak 不存在 ⇒ 未开始（旧目录仍在原位），磁盘即原状，清记录即可；</li>
+     *   <li>{@code !hadOld} ⇒ **一律无需回滚**：没有旧目录可还原，且指针未改动（{@code persistActive}
+     *       在提交记录之后才执行）。保留下来的新包只是一个「可激活但尚未激活」的目录，
+     *       {@code active} 仍为 null → 状态仍为 NOT_IMPORTED，故不存在「假 READY」问题。
+     *       （早先的注释曾写成「{@code !hadOld} 且 target 存在 ⇒ 替换已开始」，但代码并不据此分支
+     *       —— A3 确认该表述与实现不符，已按实际行为改写。）</li>
      * </ul>
-     * 未开始 ⇒ 磁盘即原状，清掉记录即可；已开始且**未提交** ⇒ 回滚到旧目录与原指针；
      * 已提交 ⇒ 保留新目录、继续清理备份。
      *
      * <p>任一步失败都**保持现场并保留记录**，由 {@code buildStatus} 报 ERROR 且拒绝继续覆盖导入。

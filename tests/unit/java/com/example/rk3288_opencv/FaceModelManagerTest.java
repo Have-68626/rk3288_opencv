@@ -1020,6 +1020,14 @@ public class FaceModelManagerTest {
         }
 
         @Override
+        public boolean moveReplace(File from, File to) {
+            if (failRename) return false;
+            //noinspection ResultOfMethodCallIgnored
+            to.delete();
+            return from.renameTo(to);
+        }
+
+        @Override
         public boolean deleteRecursively(File f) {
             return !failDelete && deleteRecursivelyReal(f);
         }
@@ -1387,6 +1395,91 @@ public class FaceModelManagerTest {
             FaceModelManager.Result r =
                     m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v3, "lic"), v3)), ABI, true);
             assertTrue("已提交记录不应阻塞后续导入", r.isOk());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * **γ3 判别性用例**（A3 确认此前缺失）：成功路径下**备份清理失败**时，必须**保留 committed 记录**。
+     *
+     * <p>若无条件 `clearTxn`，磁盘会留下「target + bak + 无记录」——被 `buildStatus` 当**歧义**报 ERROR，
+     * 且 `unresolvedSwapReason` 会**永久阻塞**该 profileId 的后续导入。留下 committed 记录则让恢复
+     * 继续重试清理：既不报错、也不阻塞。
+     */
+    @Test
+    public void failedBackupCleanupKeepsCommittedTxnInsteadOfLeavingAmbiguity() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            ops.failDelete = true;   // 备份清不掉
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertTrue("导入本身应成功（激活确已完成）", r.isOk());
+            File txn = new File(dir, ".txn_p1");
+            assertTrue("备份未清掉时**必须保留**事务记录，否则退化成「无记录的歧义现场」", txn.exists());
+            assertTrue("记录应仍为 committed", new String(readFile(txn), StandardCharsets.UTF_8)
+                    .contains("state=committed"));
+            assertTrue("备份仍在（清理待重试）", new File(dir, ".bak_p1").exists());
+
+            // 且不阻塞后续：恢复会重试清理，清掉后记录随之消失、状态仍就绪
+            ops.failDelete = false;
+            FaceRuntimeStatus st = m.status();
+            assertTrue("已提交状态应报就绪（不得被误判为歧义）", st.isReady());
+            assertFalse("清理完成后记录应被清除", txn.exists());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * **γ2 判别性用例**（A3 确认此前缺失）：**陈旧备份无法清理时，必须在写事务记录之前中止**。
+     *
+     * <p>否则会写入 `in_progress` 记录，随后 `target→bak` 因目标已存在而失败，留下
+     * 「`in_progress` + 陈旧 bak + 好 target」——下次恢复会把**已提交的新模型**误判为「未提交替换」
+     * 而回滚到陈旧备份（静默回退一次有效更新）。
+     *
+     * <p><b>现场构造</b>：`committed` 记录 + 删不掉的 `.bak_p1`（这正是 A1-P2②/A2-Med2 的触发链）。
+     * 之所以需要 committed 记录，是因为「无记录 + 新旧并存」会更早被 `unresolvedSwapReason` 判为歧义而拦下。
+     */
+    @Test
+    public void staleBackupBlocksSwapBeforeTxnIsWritten() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            // 造出「陈旧 .bak + committed 记录」现场
+            File target = m.profileDir("p1");
+            File staleBak = new File(dir, ".bak_p1");
+            assertTrue(target.renameTo(staleBak));
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+            writeTxnFile(dir, "p1", true, "p1", true);   // committed
+
+            ops.failDelete = true;   // 陈旧备份清不掉
+            Map<String, byte[]> v3 = defaultFiles("v3");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v3, "lic"), v3)), ABI, true);
+
+            assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+            assertTrue("应如实说明备份无法清理，实际=" + r.message, r.message.contains("备份无法清理"));
+            File txn = new File(dir, ".txn_p1");
+            assertTrue("记录必须仍存在", txn.exists());
+            assertTrue("**不得**被降级为 in_progress（否则恢复会误回滚到陈旧备份）",
+                    new String(readFile(txn), StandardCharsets.UTF_8).contains("state=committed"));
         } finally {
             FaceModelManager.setFileOpsForTesting(null);
         }
