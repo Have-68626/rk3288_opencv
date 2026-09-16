@@ -697,12 +697,12 @@ public class FaceModelManagerTest {
      * 所依赖、并对外承诺「将由启动恢复」的保证：{@code status()}-&gt;{@code recoverProfileDirIfNeeded()}
      * 必须把滞留的**旧模型**目录还原就位，绝不误报就绪、绝不加载到失败/空目录。
      *
-     * <p><b>为何不引入文件操作接缝来注入 rename 失败</b>：{@code FaceModelManager} 是 {@code final} 类，
-     * {@code rollbackProfileSwap()}/{@code deleteRecursivelyQuietly()} 均为 {@code private static}，
-     * 不存在可覆盖的 delete/rename 接缝；且 {@code bak.renameTo(target)} 发生在「删除新 target →
-     * 还原旧 bak」之间的极短窗口，纯 JVM 无法注入句柄令其失败（改用文件锁/权限构造则依赖平台语义、
-     * 跨平台 flaky）。故与 {@link #rollbackRenameFailureStrandedBackupIsRecoveredByStatus()} 同法，
-     * 直接构造「回滚失败后的磁盘现场」，验证新分支所依赖的启动恢复契约。
+     * <p><b>为何本用例直接构造磁盘现场</b>：写它的时候（第三波审查）尚无文件操作接缝。**该理由现已过期**
+     * ——任务 A 引入了 {@code FaceModelManager.FileOps}（{@code setFileOpsForTesting}），
+     * {@code rollbackProfileSwap} 的 rename 现走 {@code fileOps.rename}，本文件后续的
+     * {@code renameFailureDuringDirSwapRestoresOldConfigAndClearsTxn} 等用例正是用它注入失败。
+     * 本用例保留「构造终态」的写法，仅因它验证的是**恢复契约**（读出该现场后如何收敛），
+     * 而非写入器自身的失败分支。
      */
     @Test
     public void sameNameRollbackFailureStrandsBackupThenStatusRecoversOldModel() throws Exception {
@@ -1292,6 +1292,104 @@ public class FaceModelManagerTest {
 
         assertFalse("下次导入应清扫掉残留的解压临时目录", stale.exists());
         assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * A2-Med1 回归：**首次导入**在「激活已成功、仅指针写失败」时，必须**保留用户唯一的新包**。
+     *
+     * <p>此前 `rollbackProfileSwap` 的 `!hadOld` 分支会 `deleteRecursivelyQuietly(swap.target)`，
+     * 把用户唯一的新包删掉，且文案谎称「已回滚配置」（根本没有可回滚的配置）。与激活失败分支
+     *（那里刻意保留新目录）语义也不一致。
+     */
+    @Test
+    public void firstImportPointerWriteFailureKeepsTheOnlyNewPackage() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+
+        // 制造 persistActive 失败现场：dst 与 dst.bak 都占为非空目录 → dst→bak 的 rename 必然失败。
+        File dst = new File(dir, FaceModelManager.ACTIVE_POINTER_FILE);
+        assertTrue(dst.mkdirs());
+        assertTrue(new File(dst, "keep").createNewFile());
+        File stubbornBak = new File(dir, FaceModelManager.ACTIVE_POINTER_FILE + ".bak");
+        assertTrue(stubbornBak.mkdirs());
+        assertTrue(new File(stubbornBak, "keep").createNewFile());
+
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        FaceModelManager.Result r =
+                m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true);
+
+        assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+        assertTrue("首次导入失败必须保留用户唯一的新包", m.profileDir("p1").isDirectory());
+        assertTrue("内容应是刚导入的新包",
+                java.util.Arrays.equals(v1.get(DET_BIN),
+                        readFile(new File(m.profileDir("p1"), DET_BIN))));
+        assertFalse("事务应已了结", new File(dir, ".txn_p1").exists());
+        assertTrue("文案应说明是保留而非回滚", r.message.contains("保留"));
+    }
+
+    /** A1-P2① / A2-Low7(a)：未了结的歧义现场必须**拒绝后续导入**（要求 5 的强制点）。 */
+    @Test
+    public void ambiguousCoexistenceBlocksFurtherImport() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        // 无事务记录、无回滚标记，却新旧目录并存 → 歧义
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+
+        Map<String, byte[]> v3 = defaultFiles("v3");
+        FaceModelManager.Result r =
+                m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v3, "lic"), v3)), ABI, true);
+
+        assertEquals("歧义现场必须拒绝继续覆盖导入", FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+        assertTrue("必须保留两份数据（target）", target.isDirectory());
+        assertTrue("必须保留两份数据（bak）", bak.isDirectory());
+        assertTrue("应如实说明无法判定", r.message.contains("无法判定"));
+    }
+
+    /** A2-Low7(d)：已提交事务 + 备份删不掉 ⇒ 仍报 READY，且**不阻塞**后续导入（记录交给重试清理）。 */
+    @Test
+    public void committedTxnWithUndeletableBackupStillReportsReady() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            File target = m.profileDir("p1");
+            File bak = new File(dir, ".bak_p1");
+            assertTrue(target.renameTo(bak));
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+            writeTxnFile(dir, "p1", true, "p1", true);   // committed
+
+            ops.failDelete = true;   // 备份清不掉
+            FaceRuntimeStatus st = m.status();
+            assertTrue("已提交的新模型应仍报就绪（不得被误回滚）", st.isReady());
+            assertTrue("已提交 ⇒ 保留新目录内容",
+                    java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+            assertTrue("清理未完成 ⇒ 保留记录以重试", new File(dir, ".txn_p1").exists());
+            assertTrue("备份仍在（清理待重试）", bak.isDirectory());
+
+            // 不阻塞后续导入（与「无记录歧义」不同：committed 是有据可依的）
+            ops.failDelete = false;
+            Map<String, byte[]> v3 = defaultFiles("v3");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v3, "lic"), v3)), ABI, true);
+            assertTrue("已提交记录不应阻塞后续导入", r.isOk());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
     }
 
     // ---------- 夹具 ----------
