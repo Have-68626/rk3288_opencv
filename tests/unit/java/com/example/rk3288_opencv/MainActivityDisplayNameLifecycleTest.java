@@ -121,6 +121,24 @@ public class MainActivityDisplayNameLifecycleTest {
                 text.contains("PREF_NAME_MIGRATED"));
     }
 
+    /**
+     * 契约 6：孤儿清理必须传**注册表完整人员集合**，不得传「成功解码模板的子集」。
+     *
+     * <p>回归背景：若误传 ids（只含解码成功的条目），模板损坏而被 {@code skipped} 的人会被当成
+     * 「已注销」，其显示名文件被当作孤儿删除——**这是数据丢失**。
+     */
+    @Test
+    public void orphanCleanupUsesFullRegistrySetNotDecodedSubset() throws IOException {
+        String text = source();
+        assertTrue("应存在孤儿清理调用", text.contains("store.removeOrphans("));
+        assertTrue("孤儿清理必须传注册表完整集合 allRegisteredIds",
+                text.contains("store.removeOrphans(new java.util.HashSet<>(allRegisteredIds))"));
+        assertFalse("不得用成功解码子集 ids 做孤儿清理（模板损坏者会被误删显示名）",
+                text.contains("store.removeOrphans(new java.util.HashSet<>(ids))"));
+        assertTrue("应构造注册表完整人员集合（与 ids 并存）",
+                text.contains("allRegisteredIds.add(e.userId);"));
+    }
+
     private static File findRepoRoot() {
         File dir = new File(System.getProperty("user.dir", "."));
         while (dir != null) {

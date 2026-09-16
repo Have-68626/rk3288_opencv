@@ -4311,8 +4311,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             if (!list.isOk()) return false;
             List<String> ids = new ArrayList<>();
             List<ByteBuffer> embeddings = new ArrayList<>();
+            // 注册表的**完整**人员集合：与 ids 不同——ids 只含成功解码模板的条目，而本集合含全部
+            // 已注册者。显示名的预取与孤儿清理必须用它：若误用 ids，模板损坏（skipped）的人会被
+            // 当成「已注销」而删掉其显示名——那是数据丢失。
+            List<String> allRegisteredIds = new ArrayList<>();
             int skipped = 0;
             for (final AndroidEnrollmentRepository.Entry e : list.entries) {
+                allRegisteredIds.add(e.userId);
                 final float[][] decoded = new float[1][];
                 AndroidEnrollmentRepository.Result rr;
                 try {
@@ -4352,10 +4357,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             // 任务 B：仓库 list() 成功即认为人员集合**权威**，此时才做显示名的预取与孤儿清理
             // （prefetch 只清缓存不删文件；removeOrphans 会删文件，故必须以此为前提）。
+            // 传入的是**注册表完整集合** allRegisteredIds，而非成功解码子集 ids —— 见其声明处注释。
             // 本方法在后台线程调用，符合 PersonDisplayNameStore 的线程约定。
             PersonDisplayNameStore store = displayNameStore();
-            store.prefetch(ids);
-            store.removeOrphans(new java.util.HashSet<>(ids));
+            store.prefetch(allRegisteredIds);
+            store.removeOrphans(new java.util.HashSet<>(allRegisteredIds));
             migrateLegacyDisplayNames();
             return ok;
         } catch (Throwable t) {
