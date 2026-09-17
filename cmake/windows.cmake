@@ -224,6 +224,40 @@ target_link_libraries(win_face_bench_cli
     crypt32
 )
 
+# ── 视频 → 检测序列 导出器（任务 C1 离线回放载体的最后一环）──
+# 依赖 OpenCV videoio 解码；序列化器 (pipeline::ReplayScriptWriter) 零 OpenCV 依赖，
+# 与 tests/cpp/test_track_replay.cpp 的解析器共用同一文本格式。
+add_executable(win_replay_export_cli
+    "src/win/tools/win_replay_export_cli.cpp"
+    "src/cpp/src/pipeline/ReplayScriptWriter.cpp"
+    "src/cpp/src/FileHash.cpp"
+    "src/win/src/WinConfig.cpp"
+    "src/win/src/JsonLite.cpp"
+    "src/win/src/WinCrypto.cpp"
+    "src/win/src/WinJsonConfig.cpp"
+    "src/win/src/JsonSchemaValidator.cpp"
+    "src/win/src/FaceDetector.cpp"
+    "src/win/src/LbphEmbedder.cpp"
+    "src/win/src/FaceDatabase.cpp"
+    "src/win/src/FaceRecognizer.cpp"
+    "src/win/src/StructuredLogger.cpp"
+)
+target_include_directories(win_replay_export_cli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+)
+target_compile_definitions(win_replay_export_cli PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+if(MSVC)
+    target_compile_options(win_replay_export_cli PRIVATE /utf-8)
+endif()
+target_link_libraries(win_replay_export_cli
+    ${RK_OPENCV_FULL_LIBS}
+    shlwapi
+    shell32
+    bcrypt
+    crypt32
+)
+
 # ── Windows 单元测试 ──
 
 enable_testing()
@@ -330,4 +364,7 @@ if(TARGET win_face_eval_cli)
 endif()
 if(TARGET win_face_bench_cli)
     install(TARGETS win_face_bench_cli RUNTIME DESTINATION bin)
+endif()
+if(TARGET win_replay_export_cli)
+    install(TARGETS win_replay_export_cli RUNTIME DESTINATION bin)
 endif()

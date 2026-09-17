@@ -25,6 +25,10 @@ set(RK_PIPELINE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ScrfdDecoder.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/ResultPublisher.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/pipeline/PerfReporter.cpp
+# 注意：pipeline/ReplayScriptWriter.{h,cpp} **刻意不列入本表**。它在本仓库的唯一消费者是
+# 「视频 → 检测序列」导出 CLI（cmake/windows.cmake 显式列源）与 core_unit_tests
+#（下方测试源列表显式列源）。列入本表会把它无谓地拉进 rk3288_cli / core_gtest_tests /
+# Android native-lib 等并不引用它的 target，平白多出编译单元（A2 审计 L-2）。
 )
 
 # rk_core 接口库（无编译对象，仅传播包含路径和编译定义）
@@ -73,6 +77,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_native_log_redaction.cpp"
         "tests/cpp/test_track_coordinator.cpp"
         "tests/cpp/test_track_replay.cpp"
+        "tests/cpp/test_replay_script_writer.cpp"
         "tests/cpp/test_face_post_processor.cpp"
         "tests/cpp/test_scrfd_decoder.cpp"
         "tests/cpp/test_realtime_face_pipeline.cpp"
@@ -81,6 +86,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "src/cpp/src/pipeline/FacePostProcessor.cpp"
         "src/cpp/src/pipeline/ScrfdDecoder.cpp"
         "src/cpp/src/pipeline/RealtimeFacePipeline.cpp"
+        "src/cpp/src/pipeline/ReplayScriptWriter.cpp"
         "src/cpp/src/FaceRuntimeProfile.cpp"
         "src/cpp/src/EventManager.cpp"
         "tests/win/test_http_faces_server.cpp"
