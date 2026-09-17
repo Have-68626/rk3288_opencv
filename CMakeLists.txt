@@ -93,7 +93,7 @@ set(RK_ENGINE_TARGETS
     core_unit_tests rk3288_cli opencv_verify_cli native-lib
     win_local_service win_camera_face_recognition
     face_infer_unit_tests ncnn_precision_test
-    inference_bench_cli win_face_eval_cli win_face_bench_cli
+    inference_bench_cli win_face_eval_cli win_face_bench_cli win_replay_export_cli
     win_unit_tests win_face_database_perf
 )
 
