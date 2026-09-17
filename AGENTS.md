@@ -29,6 +29,24 @@ merge_strategy=squash_and_merge
 
 rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
 
+## 开发目标平台
+
+**当前只开发 Android 与 Windows 两个子系统；Linux 暂不作为开发目标。**
+
+- 「不作为开发目标」= 不为它写代码、不要求为它做本地编译验证；**不等于删除 Linux CI**。
+- 判断是否属于「Linux 开发」要看**是否把 Linux 当目标平台**，而不是看 runner 的操作系统：
+  `.github/workflows/ci.yml` 中有 6 个 job 跑在 `ubuntu-latest`，其中只有 **`unit-tests`** 具有
+  Linux 目标性质（CMake + Ninja 编译 `core_unit_tests`，并用 `g++` 跨平台编译检查
+  `src/win/src/*.cpp`）；`changes` / `repo-hygiene` / `docs-audit` / `web` / `android` 只是
+  Node / Gradle 工具链借用了 ubuntu runner，**不在「Linux 开发」之列**。
+- `unit-tests` job **保留**：此时它的身份是「`core_unit_tests` 的快通道」
+  （`RK_SKIP_OPENCV=ON`，1–2 分钟出结果）。删除它不会丢覆盖——`windows` job 同样构建并运行
+  `core_unit_tests`——但会让 PR 反馈明显变慢。
+- 相应地，该 job 中 `g++` 对 `src/win/src/*.cpp` 的跨平台编译检查**不再作为验收依据**；
+  新增 C++ 代码只须在 Windows（MSVC）与 Android 两侧验证。
+- ⚠️ **不要**把 `CMakeLists.txt:121` 的 `if(UNIX AND NOT APPLE)` 当作 Linux 残留删掉——
+  **Android 也是 UNIX**，该分支在为 Android 加 `-fPIE -pie` 安全加固，删掉会让加固静默失效。
+
 ## 四个独立子系统
 
 | 子系统 | 构建 | 入口 | 测试 |
