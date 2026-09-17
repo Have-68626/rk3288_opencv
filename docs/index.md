@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-15
+as_of=2026-09-17
 -->
 
 # 文档索引
@@ -95,6 +95,12 @@ as_of=2026-09-15
 | `../loop-budget.md` | living | loop 预算上限与超额处置 |
 | `../loop-run-log.md` | living | loop 运行记录（按 run 追加） |
 | `../STATE.md` | living | loop 运行时状态快照 |
+
+## Claude Code 工具链
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `claude-code-permission-approval.md` | living | 权限自动审批：弹窗规模实测、auto 模式诊断、`PermissionRequest` 官方规格、安全设计与验证方案 |
 
 ## plans/（时点快照）
 
