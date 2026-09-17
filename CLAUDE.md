@@ -39,9 +39,12 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
   Linux 目标性质（CMake + Ninja 编译 `core_unit_tests`，并用 `g++` 跨平台编译检查
   `src/win/src/*.cpp`）；`changes` / `repo-hygiene` / `docs-audit` / `web` / `android` 只是
   Node / Gradle 工具链借用了 ubuntu runner，**不在「Linux 开发」之列**。
-- `unit-tests` job **保留**：此时它的身份是「`core_unit_tests` 的快通道」
-  （`RK_SKIP_OPENCV=ON`，1–2 分钟出结果）。删除它不会丢覆盖——`windows` job 同样构建并运行
-  `core_unit_tests`——但会让 PR 反馈明显变慢。
+- `unit-tests` job **保留，但已降级为非门禁参考信号**：已在 `.github/workflows/ci.yml` 中给该
+  job 加 job 级 `continue-on-error: true`，Linux/GCC 侧不再作为验收依据，其失败只作提示、不阻断。
+- **为什么不删除该 job**：它的 name 仍在经典分支保护与仓库 ruleset 的 required checks 中，直接
+  删除会让每个 PR 永久卡在「Expected — waiting for status to be reported」。它仍以
+  `RK_SKIP_OPENCV=ON` 提供 `core_unit_tests` 的快通道（1–2 分钟出结果）。
+- 覆盖不丢——`windows` job 同样构建并运行 `core_unit_tests`。
 - 相应地，该 job 中 `g++` 对 `src/win/src/*.cpp` 的跨平台编译检查**不再作为验收依据**；
   新增 C++ 代码只须在 Windows（MSVC）与 Android 两侧验证。
 - ⚠️ **不要**把 `CMakeLists.txt:121` 的 `if(UNIX AND NOT APPLE)` 当作 Linux 残留删掉——
@@ -133,7 +136,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 
 1. **changes**（`classify-changes`）—— 比对变更路径并输出 `docs_only`；纯 `docs/` + `*.md` 变更时为 `true`。无法可靠比对时（手动触发、首个 push）保守地置 `false`。
 2. **repo-hygiene** —— `node scripts/clean-repo-junk.js scan --ci`，另跑 `node --test tests/scripts/*.test.js` 与量化配对 pytest。
-3. **unit-tests** —— Linux CMake + Ninja，`RK_SKIP_OPENCV=ON`，构建并运行 `core_unit_tests`，同时对 `src/win/src/*.cpp` 做 `g++` 跨平台编译检查。
+3. **unit-tests** —— **非门禁**（job 级 `continue-on-error: true`）：Linux CMake + Ninja，`RK_SKIP_OPENCV=ON`，构建并运行 `core_unit_tests`，同时对 `src/win/src/*.cpp` 做 `g++` 跨平台编译检查。
 4. **docs-audit** —— `node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit`。门禁要求 high=0 且 medium=0，不满足时以退出码 2 阻断。**本 job 不因 `docs_only` 跳过**——docs 变更正是它的审查对象（其余 job 在 pure-docs 变更时全部跳过）。
 5. **web** —— `pnpm install` → `lint` → `build` → `e2e:run:coverage`（E2E 失败非阻断）。
 6. **android** —— `./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`（Temurin Java 21）。
@@ -239,7 +242,7 @@ JNI 函数按领域拆分到 `src/cpp/jni/`（`camera.cpp` / `engine.cpp` / `pre
 
 1. **审查 comments** —— 逐条阅读 PR 的 review 与 issue comments，全部解决或明确忽略后方可合并。
 2. **解决冲突** —— `git merge origin/master`，所有冲突必须解决。
-3. **等待 CI** —— CI 必需检查全部通过（见上方 CI pipeline 一节）。
+3. **等待 CI** —— CI 必需检查全部通过（见上方 CI pipeline 一节）；其中 `unit-tests` 已降级为非门禁（恒报 success），其失败不再阻断合并，需人工留意其日志/artifact。
 4. **合并方式** —— 仅用 **squash and merge**；禁止 merge commit 与 rebase merge。
 5. **删除已合并的源分支**。
 6. **不绕过分支保护** —— 不修改分支保护规则；`--admin` 仅限紧急修复使用。
