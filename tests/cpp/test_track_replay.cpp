@@ -465,7 +465,12 @@ struct ReplayMetrics {
     int neverConfirmed = 0;       // 脚本中出现过、但整段回放从未被对外显示的身份数
     // 新增（任务 #2/#5）：三条改写路径的可观测计数，**旧字段语义未变**。
     int clearedFrames = 0;        // 模型缺失（@ missing）帧数：对外视图被清空、未调用 update
-    int revokedIdentityFrames = 0;// @ revoke 累计撤销掉的「当前对外可见身份」数（按帧间可见集计）
+    // ⚠️ 刻意**不**带 `Frames` 后缀：本字段不是帧计数（`staleIdentityFrames` /
+    // `clearedFrames` / `unattributedFrames` 才是），而是「被撤销的**对外可见**身份」的
+    // **累计个数**——一次 `@ revoke` 可以撤销多个身份，按个数累加，不是按步数。
+    // 未确认轨迹的内部身份对外不可观测，故不计入（审计 L-9：原名字 revokedIdentityFrames
+    // 会让人读成帧计数）。
+    int revokedIdentities = 0;
 };
 
 
@@ -494,7 +499,7 @@ ReplayMetrics runReplay(const ReplayScript& script,
                     if (id == k) { keep = true; break; }
                 }
                 if (keep) surviving.insert(id);
-                else m.revokedIdentityFrames += 1;
+                else m.revokedIdentities += 1;
             }
             lastViewIds.swap(surviving);
             continue;
@@ -603,7 +608,7 @@ std::string formatMetrics(const ReplayMetrics& m) {
        << " duplicateIdCases=" << m.duplicateIdCases
        << " unattributedFrames=" << m.unattributedFrames << " neverConfirmed=" << m.neverConfirmed
        << " clearedFrames=" << m.clearedFrames
-       << " revokedIdentityFrames=" << m.revokedIdentityFrames;
+       << " revokedIdentities=" << m.revokedIdentities;
 
     auto appendMap = [&os](const char* label, const std::map<std::string, int>& kv) {
         if (kv.empty()) return;
@@ -1130,7 +1135,7 @@ TEST(TrackReplay, GenerationInvalidationDelaysIdentityAcquisition) {
     EXPECT_EQ(m.identityRewrites, 0);
     EXPECT_EQ(m.neverConfirmed, 0);
     EXPECT_EQ(m.clearedFrames, 0);
-    EXPECT_EQ(m.revokedIdentityFrames, 0);
+    EXPECT_EQ(m.revokedIdentities, 0);
 }
 
 // ── 身份撤销（@ revoke）：撤销后同一轨迹可被**另一个**身份改写（identityRewrites 非零）──
@@ -1157,7 +1162,7 @@ TEST(TrackReplay, RevocationAllowsIdentityRewriteAcrossSameTrack) {
 
     EXPECT_EQ(m.identityRewrites, 1)
         << "同一 trackId 的报告身份由 alice 直接跳到 bob，即一次身份改写";
-    EXPECT_EQ(m.revokedIdentityFrames, 1) << "@ revoke - 撤销了当前对外可见的 alice";
+    EXPECT_EQ(m.revokedIdentities, 1) << "@ revoke - 撤销了当前对外可见的 alice";
     EXPECT_EQ(metricOf(m.trackIdsCarried, "alice"), 1);
     EXPECT_EQ(metricOf(m.trackIdsCarried, "bob"), 1);
     EXPECT_EQ(m.rebuilds, 0) << "撤销只清身份、不丢轨迹，故不构成重建";
