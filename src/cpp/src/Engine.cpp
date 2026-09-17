@@ -1269,8 +1269,17 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
 
 void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool detectionRan,
                         uint64_t frameGalleryGen) {
-    // 任务5/12：detectionRan = 本次是否实际执行检测。实时路径成功检测时恒为 true
-    //（含空结果，使旧框按连续缺失规则消失）；模型缺失跳过检测时为 false。
+    // 任务5/12：detectionRan = 本次是否实际执行检测。
+    // ⚠️ 生产路径**恒传 true**，本参数当前是恒真入参，理由有三：
+    //   ① 实时路径只在 runRealtimeDetect 成功时调用本函数，而该函数仅在「真实检测已执行」
+    //      的唯一成功出口把 detectionRan 置 true（含 boxes 为空的**实际空检测**，使旧框按
+    //      连续缺失规则消失，区别于「跳过检测」）；
+    //   ② 兼容路径显式传 true；
+    //   ③ 模型缺失 / 管线不可用 → runRealtimeDetect 返回 false，**根本不调用本函数**，而是走
+    //      processFrameRealtime 的 currentTracks_.clear()（清空**对外视图**；coordinator 内部
+    //      轨迹不动，仍受 TTL 约束）。故**不存在**「模型缺失时 detectionRan=false」这条路径。
+    // 由此：TrackCoordinator::update 中 `if (!detectionRan) return views();` 的早退分支在生产
+    // 路径上不可达，仅测试可构造。改动调用点前请先确认这三条是否仍成立。
     // 持 tracksMu_ 覆盖 trackCoordinator_->update 与 currentTracks_ 的更新：update 读写
     // coordinator 内部轨迹，而 applyGalleryUpdate()（JNI 线程）会在同一把锁下换库并精准改身份，
     // 二者必须互斥，否则对 tracks_ 形成数据竞争（第三波审查 #2）。
