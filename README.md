@@ -120,7 +120,7 @@ pnpm -C web e2e:run     # Cypress E2E
 |:----|:----:|:-----|
 | changes | PR/push → master | 变更分类，输出 `docs_only`（纯 docs 变更时其余 job 跳过） |
 | repo-hygiene | PR/push → master，非纯 docs | 仓库垃圾文件扫描 + `tests/scripts/*.test.js` |
-| unit-tests | PR/push → master，非纯 docs | CMake + Ninja, `RK_SKIP_OPENCV=ON` |
+| unit-tests | PR/push → master，非纯 docs | CMake + Ninja, `RK_SKIP_OPENCV=ON`（**非门禁**，job 级 `continue-on-error`） |
 | docs-audit | PR/push → master，**含纯 docs** | 文档同步门禁（high=0 且 medium=0） |
 | web | PR/push → master，非纯 docs | `pnpm install` → `lint` → `build` → `e2e:run:coverage` |
 | android | PR/push → master，非纯 docs | `assembleDebug` + `testDebugUnitTest` + `lintDebug` |

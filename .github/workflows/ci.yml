@@ -100,6 +100,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    # 本 job 已降级为「非门禁的参考信号」（job 级 continue-on-error）：
+    # 1) 为什么降级——开发目标已收窄为 Android + Windows（见 AGENTS.md / CLAUDE.md 的
+    #    「开发目标平台」一节），Linux/GCC 侧不再作为验收依据。
+    # 2) 为什么不删除 job——它的 name 仍在经典分支保护
+    #    （required_status_checks.contexts=["repo-hygiene","unit-tests"]）与仓库 ruleset
+    #    的 required checks 中；直接删掉会让每个 PR 永久卡在
+    #    「Expected — waiting for status to be reported」。
+    # 3) 覆盖不丢——`windows` job 同样构建并运行 core_unit_tests。
+    # ⚠️ 不确定性：job 级 continue-on-error 会让该 job 对分支保护报告 success，此行为来自
+    #    actions/toolkit issue #1739 / #581 的实测报告，不是 GitHub 官方文档的明文承诺。
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -403,9 +414,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # 只构建并运行单元测试套件。win_face_database_perf 是性能基准
-          # （约 80s 且依赖 OpenCV FileStorage 往返，环境敏感），不参与 PR 门禁。
-          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests -- /m
+          # 构建单元测试套件 + win_replay_export_cli（仅编译，不运行）。
+          # win_face_database_perf 是性能基准（约 80s 且依赖 OpenCV FileStorage 往返，
+          # 环境敏感），不参与 PR 门禁。
+          # 为何纳入这个 CLI：它是「视频 → 检测序列」导出器，源码不被任何单测 target 引用
+          # （其序列化器部分由 core_unit_tests 覆盖，CLI 外壳自身没有）。不在此编译，它的
+          # 编译期错误会一路静默到有人本地全量构建——本 job 已具备完整 OpenCV，增量成本低。
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests win_replay_export_cli -- /m
 
       - name: Run ctest
         shell: pwsh
