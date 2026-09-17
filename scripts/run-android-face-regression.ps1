@@ -418,6 +418,12 @@ if (-not $steadyEnabled) {
     }
 }
 
+# 采集来源：adb=真机采集；logcat_file=离线测试接缝（不接触设备、不读媒体）。
+# 提到哈希表外定义是刻意的：JSON（下方 summary）与 stdout 两处都要用。下游常只读 stdout，
+# 若 stdout 不带模式标记，误用 -LogcatFile 跑出的报告会被当成真机采集结果——
+# 而该模式下 device_id_hash/abi 为空、media.file_count 恒为 0，单看指标是看不出来的。
+$inputMode = if ($fileMode) { "logcat_file" } else { "adb" }
+
 $metricRows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 
 $summary = [ordered]@{
@@ -434,8 +440,7 @@ $summary = [ordered]@{
         file_count = $mediaCount      # 仅数量/字节数，绝不含文件名或路径
         total_bytes = $mediaBytes
     }
-    # 采集来源：adb=真机采集；logcat_file=离线测试接缝（不接触设备/媒体）。
-    input_mode            = if ($fileMode) { "logcat_file" } else { "adb" }
+    input_mode            = $inputMode
     # 全量样本口径（与既有报告完全一致）。
     metrics               = $metricObj
     # 稳态口径（新增，可 -NoSteadyState 关闭）：剔除暖机窗口后的样本统计。
@@ -479,6 +484,7 @@ $summary = [ordered]@{
 $summary | ConvertTo-Json -Depth 10 | Set-Content -Path $jsonPath -Encoding UTF8
 
 Write-Output "regression_report_dir=$outDir"
+Write-Output "input_mode=$inputMode"
 Write-Output "summary_json=$jsonPath"
 Write-Output "metrics_csv=$csvPath"
 Write-Output "sample_count=$sampleCount"

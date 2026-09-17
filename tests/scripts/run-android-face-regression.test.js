@@ -111,3 +111,18 @@ test("数据源与采样节奏口径固定：指向 inferenceAutoTune 与 ~30s/�
   assert.ok(/missing_fps_samples/.test(doc), "文档 A1 未写明不开 auto 模式会报 missing_fps_samples");
   assert.ok(/insufficient_steady_samples/.test(doc), "文档 A1 未写明短窗口会报 insufficient_steady_samples");
 });
+
+test("采集模式可从 stdout 判别：input_mode 单点定义并同时进 JSON 与 stdout", () => {
+  // 模式值必须单点计算：JSON 与 stdout 各算一次会出现两处漂移。
+  assert.ok(
+    /\$inputMode\s*=\s*if\s*\(\s*\$fileMode\s*\)\s*\{\s*"logcat_file"\s*\}\s*else\s*\{\s*"adb"\s*\}/.test(ps),
+    "缺少 $inputMode 单点定义"
+  );
+  assert.ok(/input_mode\s*=\s*\$inputMode/.test(ps), "JSON 的 input_mode 未引用单点定义");
+  // 下游常只读 stdout；不带模式标记时，误用 -LogcatFile 跑出的报告会被当成真机采集结果
+  //（该模式下 device_id_hash/abi 为空、media.file_count 恒为 0，单看指标看不出来）。
+  assert.ok(
+    /Write-Output\s+"input_mode=\$inputMode"/.test(ps),
+    "stdout 缺少 input_mode= —— 只读 stdout 的下游无法判别是 adb 采集还是 -LogcatFile 接缝"
+  );
+});
