@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=process
 status=living
-as_of=2026-09-15
+as_of=2026-09-17
 -->
 
 # RK3288 AI Engine — Agent Guide
@@ -46,6 +46,29 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
   新增 C++ 代码只须在 Windows（MSVC）与 Android 两侧验证。
 - ⚠️ **不要**把 `CMakeLists.txt:121` 的 `if(UNIX AND NOT APPLE)` 当作 Linux 残留删掉——
   **Android 也是 UNIX**，该分支在为 Android 加 `-fPIE -pie` 安全加固，删掉会让加固静默失效。
+
+## 已评估但不采纳的技术方向
+
+以下方向经调研后**明确不采纳**，附理由。完整论证与出处见
+`docs/research/opensource-integration-feasibility-2026-09-16.md`。
+**不要重新论证这些结论，除非有新的实测数据。**
+
+- **1:N 检索引入 ANN（hnswlib / faiss）** —— 10,000×512 维全库余弦仅约 10 MFLOP，
+  Cortex-A17 走 NEON 是**几毫秒**量级，ANN 换不到加速。且 hnswlib 在 `armeabi-v7a`
+  上索引加载失败（issue #516，32 位 `size_t` 所致），faiss 维护者亦明确 32 位平台
+  「更麻烦」。**保持 `FaceSearchLinearIndex` 线性检索**；底库超约 10 万条再议。
+- **替换加密库（libsodium / mbedTLS / OpenSSL）** —— `libsodium` 的 AES-256-GCM 要求
+  Intel AES-NI 或 **ARM Crypto Extensions**，Cortex-A17 二者皆无，官方明确「无计划支持
+  非硬件加速实现」；RK3288 硬件加密引擎支持 AES 的 ECB/CBC/OFB/CTR/CMAC/XTS/**CCM**，
+  **独缺 GCM**。三个库在本平台给出的 GCM 都是纯软件实现，**不会更快**。
+- **替换视频传输层** —— MJPEG/SSE 分帧本身不是瓶颈（瓶颈在每帧 JPEG 编码）。另
+  `jacksonliam/mjpg-streamer` **无任何许可证声明**，法律上属「保留所有权利」，
+  仅可参考、不可用于产品。
+- **`libfacedetection` 作为检测器** —— 纯 C++/无依赖/BSD-3 看着很美，但其模型以
+  **C 数组内嵌**，编进 `.so` 会**绕过「APK 不内置模型」策略**与 `checkApkFaceModels` 断言。
+- **把非 C/C++ 实现「翻译」成 C++ 以换取性能** —— 实测反例：`mudler/face-detect.cpp`
+  的 C++17 重写版**比 onnxruntime 慢**（检测 0.69–0.83x、嵌入 0.61–0.84x）。语言替换的
+  量级只有 **1.0–1.1x**；真正的收益在**模型选择**与**拷贝消除**（后者属架构缺陷，与语言无关）。
 
 ## 四个独立子系统
 
@@ -98,6 +121,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 - **Android**：`NCNN_DIR_ARMv7` / `NCNN_DIR_ARM64` 按 ABI 分别指定 ncnn 路径（`app/build.gradle` 默认 `D:/ProgramData/NCNN/ncnn-20260113-android-vulkan`）。默认 ABI 仅 `armeabi-v7a` + `arm64-v8a`；传 `-PRK_ENABLE_X86_64=true` 才追加 x86_64。Java source/target **11**。
 - **FFmpegKit AAR**（`app/libs/ffmpeg-kit.aar`）为可选件；缺失时 RTMP 推流禁用，不影响核心人脸识别。
 - **RK MPP**：设置 `RK_MPP_HOME` 环境变量，否则查找 `deps/rk_mpp/include`、`deps/rk_mpp/inc`（本机已知路径 `D:\ProgramData\rkmpp\mpp-1.0.11`）。缺头文件时置 `RK_HAVE_MPP=0` 并自动回落 CPU。
+  - ⚠️ **目标设备实测（2026-09-17）**：设备暴露的是**旧 `vpu-service` / `hevc-service` 设备节点**，**没有** `/dev/mpp*`，也**没有** `/proc/mpp_service` —— **设备侧并非新版 MPP 框架**。`mpp-1.0.11` 与设备驱动的匹配性**未经真机验证**；不要把「本机能编过」当作「设备上能跑」。详见 `docs/research/rk3288-device-capability-survey-2026-09-17.md`。
 - **Gradle wrapper** 为 `gradle-9.0`（wrapper 已锁定 `distributionSha256Sum`）；CI 用 Temurin Java 21。始终传 `--no-daemon`。
 - **Web 构建产物**输出到 `src/win/app/webroot/`（由 Windows 本地服务托管），**产物已纳入 git**。`pnpm -C web dev` 把 `/api` 代理到 `http://127.0.0.1:8080`，可用 `VITE_DEV_PROXY_TARGET` 覆盖。
 

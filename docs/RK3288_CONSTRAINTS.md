@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-07-21
+as_of=2026-09-17
 -->
 
 # RK3288 目标设备画像与约束清单
@@ -12,7 +12,7 @@ as_of=2026-07-21
 
 ## 0. 目标设备画像（Target Device Profile）
 
-以下画像是当前工程采用的目标输入（RK3288 工控机、Android 7.1.2、2GB RAM、8GB 存储、前置摄像头 1 路），尚未由可追溯的设备采集记录完整证明。仓库内 `kernel.config` 可证明一组 Linux 4.4.143 配置值，但缺少设备序列脱敏标识、构建指纹、采集时间和采集命令记录，不能单独证明它来自当前目标机。
+以下画像是当前工程采用的目标输入（RK3288 工控机、Android 7.1.2、2GB RAM、8GB 存储、前置摄像头 1 路）。**2026-09-17 已在两台同类实机上完成一次性采集**——构建指纹、脱敏序列号、采集时间与全部原始命令均已记录，完整实测见 `docs/research/rk3288-device-capability-survey-2026-09-17.md`。**本文只保留工程约束口径；实测细节一律引用该文，不在此重复。**
 
 ### 0.0 证据状态
 
@@ -21,7 +21,7 @@ as_of=2026-07-21
 | `docs/bsp/kernel-config/kernel.config` | 有内容，显示 Linux/arm 4.4.143；来源元数据缺失 | 可用于配置项静态比对，不可作为目标设备身份凭据 |
 | `docs/bsp/defconfig/rk3288_defconfig` | 临时基准，由运行态快照摘录 | 不等同于厂商 BSP 原始 defconfig |
 | `docs/bsp/BSP_EVIDENCE_STATUS.md` | 占位，版本、交付编号与补丁摘要未填写 | 不得据此断言 BSP 版本或驱动修复状态 |
-| 真机画像（Android、内存、存储、相机、GPU） | 尚未在仓库固化完整采集结果 | 下列数值均按目标输入管理，最终以第 2 节采集结果为准 |
+| 真机画像（Android、内存、存储、相机、GPU、外设） | **已固化**（2026-09-17，两台同类机）——构建指纹、脱敏序列号、采集时间与原始命令齐备，见 `docs/research/rk3288-device-capability-survey-2026-09-17.md` | 可作为目标机**身份与能力**的依据；不宜外推到其它批次 |
 
 ### 0.1 硬件（目标输入，待真机溯源）
 - **SoC**：Rockchip RK3288
@@ -41,10 +41,29 @@ as_of=2026-07-21
 - **计算前提**：仅 CPU + GPU；**不依赖 NPU/NNAPI 硬件加速**
 
 ### 0.3 运行时画像（需在设备上采集）
+
+> **采集状态（2026-09-17）**：以下四项**已采集**，原始命令与输出见 `docs/research/rk3288-device-capability-survey-2026-09-17.md` §1、§5。
+
 - **Camera2 硬件级别**：`LEGACY/FULL/LEVEL_3`（决定 CameraX/Camera2 可用能力与稳定性）
 - **相机输出能力**：`YUV_420_888`/`JPEG` 是否可用，720p 是否可用，FPS range
 - **GPU/驱动可用性**：OpenGL ES 版本字符串、OpenCL 运行库是否存在
 - **内存/存储实际可用量**：`dumpsys meminfo`、`df /data`
+
+### 0.4 外设与硬件能力实测清单（2026-09-17，两台同类机）
+
+> **本节是约束级摘要**，用于选型与实现判断；完整证据链、命令与阴性对照见 `docs/research/rk3288-device-capability-survey-2026-09-17.md` §2–§3。**不要在本文重复展开实测细节。**
+
+| 项 | 实测结论 | 对工程的影响 |
+|---|---|---|
+| **摄像头** | **USB UVC**（`05a3:9230`，Sonix），`uvcvideo` 驱动，`Facing: FRONT`，**仅 1 路**，`Resource Cost: 100` | 独占性强，不可假设可并行多路；UVC 属通用接口 |
+| **面板** | 1920×1080 @ **60.000004 fps**（**唯一支持模式**），带触摸（ILITEK，USB HID） | 60fps 是显示上限 |
+| **指纹** | **存在且端到端可用**：`WINUIM WMR06/WMM06`，走 `/dev/sg0`（**SCSI-over-USB**，厂商 SDK 为 Futronic 系） | 可纳入能力矩阵；但 `/dev/sg0` 为 `crw------- root root`，**应用须经 root helper** |
+| **读卡器** | **硬件在、软件为零**：能独立读卡并蜂鸣（13.56MHz 亦可），但对 Android 主机**零流量**；无任何读卡应用与卡片库 | 启用须厂商门禁固件或逆向，否则不可用 |
+| **NFC** | **无 Android NFC 协议栈**（无 feature / 服务 / HAL） | **不能**用 `NfcAdapter`；读卡能力即便可用也须绕开系统框架 |
+| **视频硬解** | `/dev/vpu-service`、`/dev/hevc-service` 均 `crw-rw-rw-`（**无需 root**）；实测 **1080p ≈ 31fps / 720p ≈ 55fps**，解码时 `media.codec` 仅约 1% CPU | 硬解可用且便宜。**但设备侧是旧 `vpu_service` 驱动、非 MPP 框架**（无 `/dev/mpp*`、无 `/proc/mpp_service`），与 `mpp-1.0.11` 的匹配性未验证 |
+| **GPU** | Mali-T764，闭源驱动 `r18p0-01rel0`，GLES 3.0 | OpenCL 是否存在**未验证**，不得作为强依赖 |
+| **NPU** | **确认不存在** | 与既有约束一致，维持 CPU-only |
+| **设备性质** | 厂商 ROM 为**数字标牌**栈（56iq / Signway），另带门禁测试程序 | 通用工控用途需自行补软件 |
 
 ## 1. 工程约束清单（Constraints）
 
