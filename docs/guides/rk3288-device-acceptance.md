@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=runbook
 status=living
-as_of=2026-09-15
+as_of=2026-09-17
 -->
 
 # RK3288 Android 设备验收清单（人工执行）
@@ -11,7 +11,7 @@ as_of=2026-09-15
 
 **适用对象**: RK3288（`armeabi-v7a`）与 ARM64 高精度机型；Android App 主链路。
 
-**自动化边界**: 数据采集可用 `scripts/run-android-face-regression.ps1`（私有媒体回归，仅聚合并匿名化报告）；**判定与留档仍由人工完成**。性能口径亦可参考 `docs/guides/windows-service/performance.md` 的留档要求。
+**自动化边界**: 数据采集可用 `scripts/run-android-face-regression.ps1`（私有媒体回归，仅聚合并匿名化报告；其中 A1 的稳态 FPS 判据已能自动给出显式结论行，口径见 A1）；**判定与留档仍由人工完成**。性能口径亦可参考 `docs/guides/windows-service/performance.md` 的留档要求。
 
 ## 0. 前置条件
 
@@ -28,7 +28,14 @@ as_of=2026-09-15
 
 - **步骤**：使用 `rk3288_light` profile，前摄 720p 预览，画面含 1 张大脸；稳定运行 ≥ 60s。
 - **判据**：稳态处理帧率 **≥ 15 FPS**（`ui_fps`/`FPS` 序列的稳态中位数；剔除启动前 5s）。
-- **证据**：`StatusService` 的 FPS 序列或 `PerfReporter` 汇总；记录原始值。
+- **证据**：logcat 中 `MainActivity … inferenceAutoTune … ui_fps=<v>` 行（经 `AppLog.i` 落入 logcat），记录逐次原始值。**注意**：`StatusService` 的 `FPS: … | CAP: …` 只 `setText` 到悬浮窗、不进 logcat，`PerfReporter` 也无 fps 字段——这两者都不是 logcat 侧的 FPS 来源。
+
+**自动化边界（本项已部分自动化）**：`scripts/run-android-face-regression.ps1` 已把「暖机剔除 + 稳态中位数 + 判据结论」落地。报告 `summary.json` 新增 `steady_state`（稳态样本数、每指标稳态 `count/min/p50/p95/max`）与 `fps_criterion`（`metric`/`threshold_fps`/`steady_sample_count`/`steady_p50`/`satisfied`/`conclusion`）；stdout 另输出 `steady_sample_count=`、`fps_steady_p50=` 与显式结论行 `fps_criterion=`。`conclusion` 取值 `satisfied` / `not_satisfied` / `insufficient_steady_samples` / `missing_fps_samples` / `steady_state_disabled`——**采不到样本或稳态样本不足时显式标注，绝不安静地判为通过**。
+
+- **稳态口径（可复现，但为采样计数近似）**：暖机窗口按**采样计数近似**剔除——`warmup_fraction = WarmupSec / 采集窗口`，对每个指标按采集顺序丢弃前 `floor(count × warmup_fraction)` 个样本，其余为稳态样本。**采集窗口由主机时钟（Stopwatch）测量，不使用设备 wall-clock**：RK3288 测试设备时钟未校准（停在 2017 年），且 `adb logcat -d -v brief` 输出不含时间戳、App 日志没有帧计数等单调量，逐行时间映射不可得，故只能按采样计数近似（采样密度不均匀时会有偏差，已在报告 `steady_state.excluded_note` 写明）。相关参数：`-WarmupSec`（默认 `5`，对齐本判据的“剔除启动前 5s”）、`-FpsThreshold`（默认 `15`，对齐轻量档）、`-MinSteadySamples`（默认 `5`，稳态样本下限）、`-NoSteadyState`（显式关闭稳态块，回到仅全量口径）。脚本另有 `-LogcatFile <路径>` 离线测试接缝（默认空 = 走 adb 真机采集），供无设备时验证该口径。
+- **采样节奏与前置条件（决定脚本是否“看起来坏了”）**：`ui_fps` 仅由 `MainActivity` 的 `inferenceAutoTune` 日志产生，**且仅在识别节流为 auto 模式**下才有——非 auto 模式会移除该 updater（`MainActivity.java` 在 `!"auto".equals(recMode)` 时 `return`），**一个样本都不产生**。其节奏为**约 30s 一个样本**（同处心跳阈值 `30_000ms`，进入 auto 时初始化、之后每满 30s 输出一次）。据此以默认 `-MinSteadySamples 5` 反推：需要采集窗口 **≳ 150s**（默认 `SettleSec=3` 时 `-DurationSec ≳ 147s`；因 5s 暖机小于单个 30s 采样间隔，暖机剔除通常为 0 个样本，稳态数 ≈ 窗口/30，故 5 个稳态样本 ≈ 150s）。考虑 auto 激活延迟与抖动，建议 `-DurationSec ≥ 180s` 留裕量。对照：默认 `-DurationSec 60` 只有约 2 个样本，脚本会**正确地**报 `insufficient_steady_samples`；**未开启 auto 模式则报 `missing_fps_samples`**。这两种结论都是**显式标注、不是脚本故障**——是本项自动化的已知前置。
+- **短窗口会硬失败（`exit 7`，本项自动化的行为变更）**：当 `-WarmupSec`（默认 `5`）**≥** 采集窗口（默认 `SettleSec 3 + DurationSec`）时，脚本以 `Fail 7` 退出——即 `-DurationSec ≤ 2` 这样短到暖机窗口都装不下的运行，**不再产出报告**。这是刻意的：稳态样本数为 0 时若仍出报告，等于用一个空集合的中位数冒充「稳态帧率」，正是本项目零容忍的静默假绿。需要旧行为（只出全量口径）时显式传 `-NoSteadyState`。
+- **仍须人工**：profile/预览分辨率/画面内容（1 张大脸）等场景条件、设备温度与后台负载控制、原始数值留档与最终签署。脚本只做采集与聚合，`fps_criterion` 结论行只是辅助，**不替代人工验收判定**。
 
 ### A2. 人脸框首现 p95 ≤ 800ms
 
