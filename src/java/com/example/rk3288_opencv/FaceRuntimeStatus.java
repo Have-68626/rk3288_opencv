@@ -70,6 +70,15 @@ public final class FaceRuntimeStatus {
     public final int nativeEmbeddingDim;
     /** 可直接展示的中文提示（引导或错误原因），不含敏感内容。 */
     @NonNull public final String message;
+    /**
+     * 出现「新旧配置并存且无法判定哪份应生效」的**歧义现场**时，这里是那个 profileId；
+     * 其余情况为 null。
+     *
+     * <p>为什么需要机器可读字段而不是让 UI 匹配 {@link #message} 文案：歧义现场需要用户在两个
+     * 选项间**显式了结**（见 {@code FaceModelManager.resolveAmbiguousSwap}），UI 必须能在
+     * ERROR 的多种原因里准确识别出这一种并给出操作入口；靠文案匹配会在任何措辞调整时静默失效。
+     */
+    @Nullable public final String ambiguousSwapProfileId;
 
     FaceRuntimeStatus(@NonNull State state, @NonNull String profileId, @NonNull String displayName,
                       @NonNull String modelVersion, @NonNull String licenseId,
@@ -83,6 +92,15 @@ public final class FaceRuntimeStatus {
                       @NonNull String modelVersion, @NonNull String licenseId,
                       int importedProfileCount, boolean nativeProfileValidated,
                       boolean nativeProfileActive, int nativeEmbeddingDim, @NonNull String message) {
+        this(state, profileId, displayName, modelVersion, licenseId, importedProfileCount,
+                nativeProfileValidated, nativeProfileActive, nativeEmbeddingDim, message, null);
+    }
+
+    FaceRuntimeStatus(@NonNull State state, @NonNull String profileId, @NonNull String displayName,
+                      @NonNull String modelVersion, @NonNull String licenseId,
+                      int importedProfileCount, boolean nativeProfileValidated,
+                      boolean nativeProfileActive, int nativeEmbeddingDim, @NonNull String message,
+                      @Nullable String ambiguousSwapProfileId) {
         this.state = state;
         this.profileId = profileId;
         this.displayName = displayName;
@@ -93,6 +111,7 @@ public final class FaceRuntimeStatus {
         this.nativeProfileActive = nativeProfileActive;
         this.nativeEmbeddingDim = nativeEmbeddingDim;
         this.message = message;
+        this.ambiguousSwapProfileId = ambiguousSwapProfileId;
     }
 
     public boolean isReady() {
@@ -179,6 +198,21 @@ public final class FaceRuntimeStatus {
     }
 
     /**
+     * 歧义现场错误态工厂：新旧配置并存、无法判定哪份应生效，需用户显式了结。
+     *
+     * <p>与 {@link #error} 的唯一区别是携带 {@link #ambiguousSwapProfileId}，供 UI 准确地
+     * 在多种 ERROR 原因中识别出「可人工了结」的这一种并给出操作入口。
+     */
+    @NonNull
+    public static FaceRuntimeStatus errorAmbiguousSwap(@NonNull String profileId,
+                                                       int importedProfileCount,
+                                                       @NonNull String reason,
+                                                       @NonNull String ambiguousSwapProfileId) {
+        return new FaceRuntimeStatus(State.ERROR, profileId, "", "", "",
+                importedProfileCount, false, false, 0, reason, ambiguousSwapProfileId);
+    }
+
+    /**
      * 合并 native {@code getRuntimeStatus()} 的 JSON，补全 {@link #nativeProfileValidated}
      * 与 {@link #nativeProfileActive}/{@link #nativeEmbeddingDim}。
      *
@@ -215,8 +249,10 @@ public final class FaceRuntimeStatus {
             // 就绪只看 effective：仅 manifest 校验通过不得被判为「已加载生效」。
             boolean active = effective != null && effective;
             int d = (dim != null) ? dim.intValue() : 0;
+            // 必须把 ambiguousSwapProfileId 一并带过：withNativeStatus 是重建对象，
+            // 丢掉它会让 UI 在 native 状态合并后失去「可人工了结」的操作入口。
             return new FaceRuntimeStatus(state, profileId, displayName, modelVersion, licenseId,
-                    importedProfileCount, validatedFlag, active, d, message);
+                    importedProfileCount, validatedFlag, active, d, message, ambiguousSwapProfileId);
         } catch (Exception ex) {
             return this;
         }

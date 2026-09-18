@@ -56,13 +56,18 @@ import java.util.zip.ZipInputStream;
  * <h2>存储布局</h2>
  * <pre>
  * files/face_models/
- *   active_profile            当前激活的 profileId（纯文本）
+ *   active_profile            当前激活的 profileId；本版本起为 `profileId=<id>` 两行格式，
+ *                             第二行可选 `txnId=<32hex>`（本次事务的提交代次）。旧格式
+ *                             （纯 profileId 一行）仍可读，视为「无提交证据」。
  *   active_profile.tmp/.bak   指针的原子写临时/备份
  *   &lt;profileId&gt;/manifest.json
  *   &lt;profileId&gt;/scrfd.param ...（模型文件）
  *   .tmp_&lt;nano&gt;/              解压临时目录（下次导入时清扫）
  *   .bak_&lt;profileId&gt;/         目录替换时移开的旧配置备份
- *   .txn_&lt;profileId&gt;          目录替换**事务记录**（profileId/hadOld/prevActive/state，任务 A）
+ *   .txn_&lt;profileId&gt;          目录替换**事务记录**（profileId/hadOld/prevActive/state[/txnId]，任务 A）
+ *   .commit_&lt;profileId&gt;       **提交见证**（profileId/txnId）：本次替换已提交的持久证据。
+ *                             按 profileId 固定命名、**不随激活指针移动**——指针里的代次会被下一次
+ *                             导入/切换覆盖，见证不会（2026-09-18 修复「静默回滚」缺口）。
  *   .rollback_&lt;profileId&gt;     旧版回滚意图标记（已非主路径，仅保留兼容与恢复）
  * </pre>
  *
@@ -92,6 +97,14 @@ public final class FaceModelManager {
      * {@code .bak_<id>}，必须在启动/状态查询时先删新目录、再把备份还原就位。
      */
     private static final String ROLLBACK_MARKER_PREFIX = ".rollback_";
+
+    /**
+     * 提交见证文件名前缀：{@code <storeDir>/.commit_<profileId>}（点号前缀 → 被 {@code listProfiles}
+     * 忽略）。内容 {@code profileId=} + {@code txnId=}，与事务记录同格式。
+     *
+     * <p>包级可见：单元测试用它构造/断言见证现场（与 {@link #ACTIVE_POINTER_FILE} 同例）。
+     */
+    static final String COMMIT_WITNESS_PREFIX = ".commit_";
 
     /** 默认存储目录名（相对 {@code files/}）。 */
     private static final String DEFAULT_STORE_DIR = "face_models";
@@ -348,14 +361,17 @@ public final class FaceModelManager {
                 // ⑥ native 校验/暂存：只判 manifest 格式/ABI，失败时磁盘/指针未被改动。
                 nativeValidateProfile(manifestJson, currentAbi);
 
-                // 记录旧激活指针：激活/落定失败时保留旧配置。
-                String previousActive = readActive();
-
                 // Codex 要求 5：存在未了结的替换现场时**禁止继续覆盖导入**（先尽力恢复一次）。
                 String blocked = unresolvedSwapReason(profile.profileId);
                 if (blocked != null) {
                     return fail(Status.ATOMIC_RENAME_FAILED, blocked);
                 }
+
+                // 记录旧激活指针：激活/落定失败时保留旧配置。
+                // ⚠️ **必须在上面那次恢复之后读**（与 activate() 的既有顺序一致）：恢复可能改写指针
+                //（旧格式「补做指针还原」这条路径），提前读会把**陈旧值**写进事务记录的 prevActive、
+                //并交给 bestEffortReactivate，使回滚目标偏差一次。（A2 审计 M-1）
+                String previousActive = readActive();
 
                 // ⑦ 目录原子替换（rename 基目录到 <profileId>），但**先不写激活指针**：
                 //    只有实时管线激活成功才落定指针（#2）。
@@ -405,7 +421,7 @@ public final class FaceModelManager {
                         // 首次导入无旧配置：新目录保留（不切指针 → 仍为未导入引导态），事务就地了结——
                         // 否则残留的未提交记录会让 buildStatus 误报「事务未完成」。
                         deleteRecursivelyQuietly(swap.bak);
-                        clearTxn(profile.profileId);
+                        finishTxn(profile.profileId);
                     }
                     // #1-Low-2（第三波审查）：按是否有旧同名配置区分失败文案，避免首次导入也误报
                     // 「已保留原配置」（此时并无旧配置）。
@@ -415,8 +431,39 @@ public final class FaceModelManager {
                     return new Result(Status.RUNTIME_ACTIVATE_FAILED, buildStatus(nativeStatusOrNull()),
                             "模型已导入，但实时管线激活失败：" + ao.reason + "，" + tail);
                 }
+                // ⑧.5 提交见证：把「本次替换已提交」这条事实先落到一个**不随激活指针移动**的位置。
+                //   为什么必须先于 ⑨：⑨ 写入的指针会被下一次导入/切换覆盖，一旦被覆盖，「本次已提交」
+                //   就再无任何盘上证据——此后触碰本 profile 只能判「未提交」，把一次成功的替换**静默
+                //   回滚**（第三代理 2026-09-18 实证复现）。见证按 profileId 固定命名，与指针无关。
+                //   写不进去 ⇒ 与「in_progress 记录写不进去就绝不动手」同一条原则：**绝不越过提交点**。
+                if (!writeCommitWitness(swap.profileId, swap.txnId)) {
+                    RollbackOutcome ro = rollbackProfileSwap(swap);
+                    if (ro != RollbackOutcome.RESTORED) {
+                        // 与下方 ⑨ 分支同口径：区分「已留意图标记，启动可收尾」与「未能记录意图」。
+                        // 不承诺自动恢复，也不谎称已回滚。注意文案直接呈现给用户，不得含 Markdown 强调符号。
+                        String tail = (ro == RollbackOutcome.FAILED_RECORDED)
+                                ? "，将由启动恢复"
+                                : "，且未能记录恢复意图（请排除磁盘/权限问题后重试导入）";
+                        return fail(Status.ATOMIC_RENAME_FAILED,
+                                "无法记录提交见证，且旧配置回滚失败（旧目录滞留于 "
+                                        + swap.bak.getName() + tail + "）");
+                    }
+                    bestEffortReactivate(previousActive, currentAbi);
+                    return fail(Status.ATOMIC_RENAME_FAILED, swap.hadOld
+                            ? "无法记录提交见证，已回滚配置"
+                            : "无法记录提交见证；已保留新导入的模型目录但未激活（可重新导入）");
+                }
+
                 // ⑨ 生效后才原子落定激活指针；落定失败则回滚目录到导入前状态。
-                if (!persistActive(profile.profileId)) {
+                // 传入本次事务代次：它与 ⑧.5 的见证共同构成提交证据，恢复据此判定「已提交」。
+                if (!persistActive(profile.profileId, swap.txnId)) {
+                    // 见证已落盘 ⇒ 按本协议**不得回滚**：回滚会让「盘上证据说已提交」与「现场已回滚」
+                    // 自相矛盾，下一次恢复会据此把已回滚的现场再翻成「保留新目录」。故先撤销见证，
+                    // 撤销成功才回滚；撤销不掉就保留新目录、如实报「未激活」（可重新导入）。
+                    if (!clearCommitWitness(swap.profileId)) {
+                        return fail(Status.ATOMIC_RENAME_FAILED,
+                                "激活指针写入失败，且提交见证未能撤销——已保留新导入的模型目录且未激活（可重新导入）");
+                    }
                     RollbackOutcome ro = rollbackProfileSwap(swap);
                     if (ro != RollbackOutcome.RESTORED) {
                         // 与 importZip 分支同口径：区分「已留意图标记，启动可收尾」与「未能记录意图」。
@@ -436,14 +483,21 @@ public final class FaceModelManager {
                 // 事务提交（Codex 要求 3）：指针已落定 → 先把记录改写为 committed，再清备份，最后清记录。
                 // 改写失败时**继续**而**不回滚**：此刻激活确已成功（native 提交 + 指针落定都在前），
                 // 因「记录写失败」而回滚一个可用配置更糟。
-                // **前提（A1-P2① 修正）**：上述「即便记录残留也会收敛到保留新目录」只在**备份确实
-                // 被清掉**时成立。故清记录必须以「bak 已不存在」为条件——否则现场会退化成
-                // 「target + bak + 无记录」，被当作**歧义**而永久阻塞该 profileId 的后续导入；
-                // 留下的 committed 记录正好让 recoverTxn 继续重试清理。
-                writeTxn(new DirTxn(swap.profileId, swap.hadOld, previousActive, true));
+                // **约束 1（2026-09-17 外部审查 P1 #1）**：上述「记录残留也会收敛到保留新目录」不再
+                // 依赖「备份确实被清掉」这一前提。旧实现依赖它，一旦**备份也删不掉**，现场就退化成
+                // 「in_progress + target + bak」，恢复按「未提交」把**一次成功的导入静默回滚**（而 native
+                // 仍在跑新模型 → 磁盘/指针/native 三方不一致）。现在提交证据是 ⑧.5 的见证 + 指针里的
+                // txnId：记录即便停在 in_progress，恢复也能据「见证/指针代次 == 事务代次」判定为已提交，
+                // 只重试清理备份。**两处记录保留时见证也必须保留**（清记录一律走 finishTxn），否则证据
+                // 会随指针移动再次丢失——那正是 2026-09-18 补上见证的原因。
+                if (!writeTxn(new DirTxn(swap.profileId, swap.hadOld, previousActive, swap.txnId, true))) {
+                    // 刻意**无操作**，也不据此回滚（理由见上）。显式写出分支而非忽略返回值，是为了让
+                    // 「此处考虑过改写失败」在代码里可见。备份清理与记录清除照常执行：若备份也删不掉，
+                    // 记录会留在 in_progress，但恢复仍不会回滚（提交证据已就位）。
+                }
                 deleteRecursivelyQuietly(swap.bak);
                 if (!swap.bak.exists()) {
-                    clearTxn(swap.profileId);
+                    finishTxn(swap.profileId);
                 }
 
                 return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
@@ -503,7 +557,12 @@ public final class FaceModelManager {
                             "实时管线激活失败：" + ao.reason + "，已保留原配置");
                 }
                 // 生效后才落定指针；落定失败则 best-effort 把运行态回滚到旧 profile。
-                if (!persistActive(profile.profileId)) {
+                // 约束 2-2：始终以**实参 profileId** 为目标，绝不改用 readActive() —— 上一次
+                // recoverProfileDirIfNeeded 可能刚把指针改成别的配置，若改用它就会把用户明确选择的
+                // 目标偷换成恢复结果。代次用**新生成的**（本次切换没有事务记录）：这样其它 profileId
+                // 的残留事务在恢复时必然看到「指针代次 != 自己的代次」→ 判未提交 → 只回滚目录、
+                // 不动指针，不会把用户刚选的配置翻回去。
+                if (!persistActive(profile.profileId, newTxnId())) {
                     bestEffortReactivate(previousActive, currentAbi);
                     return fail(Status.ATOMIC_RENAME_FAILED, "激活指针写入失败，已保留原配置");
                 }
@@ -518,6 +577,117 @@ public final class FaceModelManager {
             } catch (Exception | StackOverflowError ex) {
                 return fail(Status.IO_ERROR, "切换过程发生未预期错误");
             }
+        }
+    }
+
+    /** {@link #recoverForStartup()} 的结果。 */
+    public static final class StartupRecovery {
+        /** 恢复**之后**重新读到的激活 profileId；null = 未导入或恢复未完成（见 {@link #blockedReason}）。 */
+        @Nullable public final String activeProfileId;
+        /** 非 null 表示恢复未完成，调用方**不得**继续自动激活。 */
+        @Nullable public final String blockedReason;
+
+        StartupRecovery(@Nullable String activeProfileId, @Nullable String blockedReason) {
+            this.activeProfileId = activeProfileId;
+            this.blockedReason = blockedReason;
+        }
+    }
+
+    /**
+     * 启动自动激活闸门：**先完成目录事务恢复，再重新读取激活指针**，并对重读到的目标再确认一次
+     * 无未决事务（约束 2-1）。
+     *
+     * <p>为什么需要这个入口：启动流程原先「先读指针拿目标、再调 {@link #activate}」，而恢复发生在
+     * {@code activate} 内部——若恢复把指针改回旧配置，调用方手里仍是恢复前的值，它会把这个旧值
+     * 重新激活并写回，**抵消掉恢复**（外部审查 P1 #2）。
+     *
+     * <p><b>用户主动切换不得使用本方法</b>：它重读指针，会把用户明确选择的目标替换为恢复结果
+     * （约束 2-2）。显式切换请直接调 {@code activate(用户选择, ...)}。
+     *
+     * @return {@link StartupRecovery}；{@code blockedReason} 非 null 时调用方**必须停止**自动激活
+     *         并如实报错——不猜测哪个配置该生效。
+     */
+    @NonNull
+    public StartupRecovery recoverForStartup() {
+        synchronized (dirLock()) {
+            ActivePointer p0 = readActivePointer();
+            if (p0 == null) {
+                return new StartupRecovery(null, null);   // 未导入
+            }
+            recoverProfileDirIfNeeded(p0.profileId);
+            // 恢复可能改写了指针（旧格式回滚会补做指针还原）→ **必须重读**，并对重读到的目标做
+            // 未决事务检查（约束 2-1「先完成恢复，再重新读取」+ 约束 2-3）。
+            //
+            // 只在这里检查**一次**即可，前面再加一次同样的检查是冗余分支：恢复改写指针的唯一途径
+            // 是旧格式的「补做指针还原」，而它一旦成功就清记录。所以「p0 的记录仍在」必然意味着
+            // 指针没被改写（p1 == p0），本次检查必然命中。该冗余分支无法被任何用例区分（实测：
+            // 删掉它全部用例仍绿），故刻意只保留一处判据。
+            ActivePointer p1 = readActivePointer();
+            if (p1 == null) {
+                return new StartupRecovery(null, "恢复后激活指针缺失，无法确定应激活的配置");
+            }
+            String reason = unresolvedSwapReason(p1.profileId);
+            if (reason != null) {
+                return new StartupRecovery(null, reason);
+            }
+            return new StartupRecovery(p1.profileId, null);
+        }
+    }
+
+    /**
+     * 人工了结一个**歧义现场**（新旧配置并存、无法判定哪份应生效）：保留用户选定的那一份、
+     * 删除另一份，并清除未决事务记录。
+     *
+     * <p>为什么必须有它（约束 1「证据不足时保留现场并报错，不猜测、不删除任一副本」）：只报错会把
+     * 该 profileId **永久卡死**——{@code unresolvedSwapReason} 会拒绝后续所有导入。本方法把决定权
+     * 交回用户，且**只在用户显式确认后才删除副本**。
+     *
+     * <p>前置：备份 {@code .bak_<id>} 必须存在——否则返回 {@code INVALID_ARGUMENT}，防止本方法被
+     * 当成通用的删除入口误用。**当前目录缺失**时只允许「还原为备份」（此刻备份是唯一完整副本，
+     * 而 {@code buildStatus} 会同时报歧义与目录缺失，若不允许了结就形成「报错却点了没用」的死角，
+     * 见 A1 审计 N3）。
+     *
+     * <p>刻意**不**改写激活指针：目录内容换了，但「哪个 profile 处于激活位」没变，指针无需改动；
+     * 且未决记录会在同一个临界区内被清掉，故不会留下「指针代次与某条记录相等」的假证据。
+     *
+     * @param keepNew true = 保留当前目录（删备份）；false = 还原为备份（删当前目录后把备份就位）
+     */
+    @NonNull
+    public Result resolveAmbiguousSwap(@NonNull String profileId, boolean keepNew) {
+        synchronized (dirLock()) {
+            if (isReservedProfileId(profileId)) {
+                return fail(Status.INVALID_ARGUMENT, "非法 profileId");
+            }
+            File target = profileDir(profileId);
+            File bak = bakDirOf(profileId);
+            if (!bak.exists()) {
+                return fail(Status.INVALID_ARGUMENT, "该配置不存在「新旧并存」现场，无需了结");
+            }
+            if (!target.exists() && keepNew) {
+                // 目标目录已缺失（外部删除 / 磁盘异常）：「保留当前目录」无从谈起——备份是唯一
+                // 完整副本，只能还原它。显式拒绝并指出可用选项，避免用户「点了没反应」。
+                return fail(Status.INVALID_ARGUMENT, "当前目录已缺失，只能选择「还原为备份」");
+            }
+            if (keepNew) {
+                if (!fileOps.deleteRecursively(bak)) {
+                    return fail(Status.ATOMIC_RENAME_FAILED,
+                            "无法删除备份目录 " + bak.getName() + "，已保留现场");
+                }
+            } else {
+                if (target.exists() && !fileOps.deleteRecursively(target)) {
+                    return fail(Status.ATOMIC_RENAME_FAILED, "无法删除当前目录，已保留现场");
+                }
+                if (!fileOps.rename(bak, target)) {
+                    return fail(Status.ATOMIC_RENAME_FAILED,
+                            "备份目录无法还原就位（" + bak.getName() + "），已保留现场");
+                }
+            }
+            // 了结即现场消失：未决事务记录、**提交见证**与**旧版回滚意图标记**都要清掉——否则
+            // buildStatus 会因残留标记继续报「上次模型回滚未完成」ERROR（A1 审计 N7）；见证残留则
+            // 会把「本次已提交」的假证据留给下一次同名事务。
+            finishTxn(profileId);
+            clearRollbackMarker(profileId);
+            return new Result(Status.OK, buildStatus(nativeStatusOrNull()), "");
         }
     }
 
@@ -916,8 +1086,10 @@ public final class FaceModelManager {
         boolean hadOld = target.exists();
 
         // 事务记录（Codex 要求 1）：**破坏性改名前**可靠落 in_progress；写不进去就绝不动手，
-        // 旧配置保持原位。记录里的 hadOld + 原激活指针供恢复时「退旧」使用。
-        if (!writeTxn(new DirTxn(profileId, hadOld, prevActive, false))) {
+        // 旧配置保持原位。记录里的 hadOld + 原激活指针供恢复时「退旧」使用，txnId 则是提交证据
+        // ——它在提交点被盖进激活指针，使恢复能区分「未提交」与「已提交但 committing 改写失败」。
+        String txnId = newTxnId();
+        if (!writeTxn(new DirTxn(profileId, hadOld, prevActive, txnId, false))) {
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED,
                     "无法记录目录替换事务，已中止以保留旧配置（未做任何破坏性改动）");
         }
@@ -934,13 +1106,13 @@ public final class FaceModelManager {
                         "临时目录无法原子重命名，且旧配置恢复失败（旧目录滞留于 " + bak.getName() + "）");
             }
             // 已就地还原到替换前状态 → 事务了结（否则残留记录会让 buildStatus 误报「事务未完成」）。
-            clearTxn(profileId);
+            finishTxn(profileId);
             throw new ImportFailure(Status.ATOMIC_RENAME_FAILED, "临时目录无法原子重命名");
         }
         // 替换已成功落定：目录语义完全由本 swap 承担，此前遗留的回滚意图标记随之失效，必须清除，
         // 否则 buildStatus 会因残留标记把本次新配置误判为「回滚未完成」而报 ERROR。
         clearRollbackMarker(profileId);
-        return new ProfileSwap(target, bak, hadOld, profileId);
+        return new ProfileSwap(target, bak, hadOld, profileId, txnId);
     }
 
     /** 目录替换句柄：记录旧目录备份，供激活指针落定成功时清理、失败时回滚。 */
@@ -950,12 +1122,20 @@ public final class FaceModelManager {
         final boolean hadOld;
         /** 本次替换的 profileId——回滚写入意图标记时需要（target/bak 名称已被改写，不能反推）。 */
         final String profileId;
+        /**
+         * 本次替换的**提交代次**：与 in_progress 记录里写的是同一个值，提交点由
+         * {@code persistActive(profileId, txnId)} 盖进激活指针。回滚/清理路径不需要它，
+         * 但 importZip 的两个后续步骤（落定指针、改写 committed 记录）都必须复用它——
+         * 重新生成一个会让「指针代次 == 记录代次」这条提交证据失效。
+         */
+        final String txnId;
 
-        ProfileSwap(File target, File bak, boolean hadOld, String profileId) {
+        ProfileSwap(File target, File bak, boolean hadOld, String profileId, String txnId) {
             this.target = target;
             this.bak = bak;
             this.hadOld = hadOld;
             this.profileId = profileId;
+            this.txnId = txnId;
         }
     }
 
@@ -986,7 +1166,7 @@ public final class FaceModelManager {
             // 首次导入：新目录是**用户唯一的新包**，不得删除——与 importZip 的激活失败分支同口径
             //（那里也是保留目录、不切指针）。此前这里无条件删除，会在「native 激活已成功、仅指针
             //  写失败」时丢掉用户唯一的新包，且调用方文案谎称「已回滚配置」（根本没有可回滚的配置）。
-            clearTxn(swap.profileId);   // 无旧可还原、指针未改：事务无事可做
+            finishTxn(swap.profileId);   // 无旧可还原、指针未改：事务无事可做
             return RollbackOutcome.RESTORED;
         }
         // 尽力记录回滚意图：它能覆盖「删除过程中崩溃」等窄窗口，但记录失败不应阻止还原。
@@ -994,7 +1174,7 @@ public final class FaceModelManager {
         deleteRecursivelyQuietly(swap.target);
         if (!swap.target.exists() && fileOps.rename(swap.bak, swap.target)) {
             clearRollbackMarker(swap.profileId);  // 回滚完整完成，意图标记使命结束
-            clearTxn(swap.profileId);             // 事务亦然：现场已回到替换前
+            finishTxn(swap.profileId);             // 事务亦然：现场已回到替换前
             return RollbackOutcome.RESTORED;
         }
         return recorded ? RollbackOutcome.FAILED_RECORDED : RollbackOutcome.FAILED_UNRECORDED;
@@ -1045,33 +1225,86 @@ public final class FaceModelManager {
     // 「已成功提交但尚未清理备份」。故引入带 **state** 的记录：任何破坏性改名前先落
     // `in_progress`，指针落定后再改写为 `committed`。恢复据此判定「退旧」还是「留新」，
     // 不再依赖目录存在性猜测（那正是「把从未激活成功的新包报成 READY」的根因）。
+    //
+    // **2026-09-17 外部审查后的加强（约束 1）**：仅有 state 是不够的——**写 state 本身可能失败**，
+    // 于是「未提交」与「已提交但 committed 改写失败」会留下同一份 in_progress 记录，恢复无法区分
+    // （同名覆盖时连激活指针都前后相同）。故引入**事务代次 txnId**：随机 nonce，写在记录里、并由
+    // persistActive 在**唯一提交点**盖进激活指针。判定式：`指针.txnId == txn.txnId ⇒ 已提交`。
+    //
+    // **2026-09-18 第三代理实证后的补强**：把代次只放在指针里仍不够——**指针会被下一次导入/切换
+    // 覆盖**，证据随之被摧毁（见下方「提交见证」一节）。现在多一份**不随指针移动**的见证
+    // `.commit_<profileId>`，且判定式放宽为「见证代次 == 事务代次 **或** 指针代次 == 事务代次」。
 
     /** 事务记录文件名前缀：{@code <storeDir>/.txn_<profileId>}（点号前缀 → 被 listProfiles 忽略）。 */
     private static final String TXN_PREFIX = ".txn_";
     private static final String TXN_STATE_IN_PROGRESS = "in_progress";
     private static final String TXN_STATE_COMMITTED = "committed";
 
+    /**
+     * 生成**事务代次**：本次目录替换唯一，写在事务记录里、并在提交点由 {@link #persistActive}
+     * 盖进激活指针。
+     *
+     * <p>为什么必须是「每次都不同的 nonce」而不是「当前激活的 profileId」：同名覆盖时
+     * profileId 在事务前后**完全相同**，用它作提交证据无法区分「尚未提交」与「已提交但记录
+     * 改写失败」——会把一个失败的新包误判为提交成功。（UUID 自 API 1 起可用；去横线后是
+     * 32 位 hex，便于用「长度 + 字符集」做完整性校验。）
+     */
+    @NonNull
+    private static String newTxnId() {
+        return java.util.UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /**
+     * 代次格式校验：不合法的代次一律按「**无证据**」处理，绝不把损坏内容当成可比较的 id
+     * ——否则脏内容可能碰巧相等而伪造出一次「已提交」判定。
+     */
+    private static boolean isSafeTxnId(@Nullable String s) {
+        if (s == null || s.length() != 32) return false;
+        for (int i = 0; i < 32; i++) {
+            char c = s.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!hex) return false;
+        }
+        return true;
+    }
+
     /** 目录替换事务记录（Codex 要求 2：目标 profile / 是否有旧目录 / 原激活指针 / 提交状态）。 */
     private static final class DirTxn {
         @NonNull final String profileId;
         final boolean hadOld;
         @Nullable final String prevActive;
+        /**
+         * 本次替换的提交代次；{@code null} = **旧格式记录**（本版本之前写入的），按旧语义恢复。
+         *
+         * <p>代次行**必须同样出现在 in_progress 记录里**：`writeTxn(committed)` 改写失败而备份
+         * 又删不掉时，磁盘上留下的恰好是 in_progress 形态，代次是判定它「其实已提交」的唯一依据。
+         */
+        @Nullable final String txnId;
         final boolean committed;
 
-        DirTxn(@NonNull String profileId, boolean hadOld, @Nullable String prevActive, boolean committed) {
+        DirTxn(@NonNull String profileId, boolean hadOld, @Nullable String prevActive,
+               @Nullable String txnId, boolean committed) {
             this.profileId = profileId;
             this.hadOld = hadOld;
             this.prevActive = prevActive;
+            this.txnId = txnId;
             this.committed = committed;
         }
 
         @NonNull
         byte[] encode() {
-            return ("profileId=" + profileId + "\n"
-                    + "hadOld=" + hadOld + "\n"
-                    + "prevActive=" + (prevActive == null ? "" : prevActive) + "\n"
-                    + "state=" + (committed ? TXN_STATE_COMMITTED : TXN_STATE_IN_PROGRESS) + "\n")
-                    .getBytes(StandardCharsets.UTF_8);
+            StringBuilder sb = new StringBuilder();
+            sb.append("profileId=").append(profileId).append('\n');
+            sb.append("hadOld=").append(hadOld).append('\n');
+            sb.append("prevActive=").append(prevActive == null ? "" : prevActive).append('\n');
+            // txnId == null（旧格式构造）时**不写该行**，产出与旧版本逐字节相同的记录，
+            // 供测试构造「旧版本遗留现场」并验证旧语义兼容。
+            if (txnId != null) {
+                sb.append("txnId=").append(txnId).append('\n');
+            }
+            sb.append("state=").append(committed ? TXN_STATE_COMMITTED : TXN_STATE_IN_PROGRESS)
+                    .append('\n');
+            return sb.toString().getBytes(StandardCharsets.UTF_8);
         }
     }
 
@@ -1084,6 +1317,10 @@ public final class FaceModelManager {
     /**
      * 读事务记录。
      *
+     * <p>缺 {@code txnId} 行（或代次不合法）→ {@link DirTxn#txnId} 为 null，即**旧格式记录**：
+     * 由本版本之前的代码写入，按 {@code recoverTxnLegacy} 的旧语义恢复。本版本写入的记录
+     * 一定带代次，故「新记录 + 指针无代次」只可能是「提交点从未成功落定」。
+     *
      * @return 记录；无文件或内容不可解析（含 profileId 不匹配）时返回 null——
      *         调用方必须把 null 当作「**无记录**」而非「无事务」，后者需按歧义现场处理。
      */
@@ -1092,16 +1329,18 @@ public final class FaceModelManager {
         File f = txnFileOf(profileId);
         if (!f.isFile()) return null;
         String text;
-        try (FileInputStream fis = new FileInputStream(f)) {
-            byte[] buf = new byte[512];   // 记录 < 200 字节，单次读足够
-            int n = fis.read(buf);
-            if (n <= 0) return null;
-            text = new String(buf, 0, n, StandardCharsets.UTF_8);
+        try {
+            // 必须**完整**读回：profileId 没有长度上限（isSafeDirName 只拒绝空/./../分隔符），
+            // 而记录里 profileId 与 prevActive 各出现一次、且 txnId 行排在 state 行之前。
+            // 截断会先吃掉 txnId 行 → 记录被降级为「旧格式」→ 提交证据丢失 → 一次已提交的替换
+            // 被误判为未提交而回滚。失败的代价是单向的（丢证据 → 回滚），故读全比省一次分配重要。
+            text = readTextFile(f, 4096);
         } catch (Exception e) {
             return null;
         }
         String id = null;
         String prev = "";
+        String txnId = null;
         boolean hadOld = false;
         boolean committed = false;
         for (String line : text.split("\n")) {
@@ -1112,10 +1351,13 @@ public final class FaceModelManager {
             if ("profileId".equals(k)) id = v;
             else if ("hadOld".equals(k)) hadOld = "true".equals(v);
             else if ("prevActive".equals(k)) prev = v;
+            // 非法/损坏的代次降级为 null（= 无提交证据），**不**当成可比较的 id：
+            // 脏内容一旦参与相等比较，可能伪造出一次「已提交」判定。
+            else if ("txnId".equals(k)) txnId = isSafeTxnId(v) ? v : null;
             else if ("state".equals(k)) committed = TXN_STATE_COMMITTED.equals(v);
         }
         if (id == null || !id.equals(profileId)) return null;
-        return new DirTxn(id, hadOld, prev.isEmpty() ? null : prev, committed);
+        return new DirTxn(id, hadOld, prev.isEmpty() ? null : prev, txnId, committed);
     }
 
     /**
@@ -1137,14 +1379,149 @@ public final class FaceModelManager {
         return true;
     }
 
-    /** 清除事务记录（无可清除时静默）。 */
+    /**
+     * 清除事务记录（无可清除时静默）。
+     *
+     * <p>⚠️ <b>不要直接调用本方法</b>：事务了结请走 {@link #finishTxn(String)}。只清记录而把
+     * 见证留在盘上，会留下「证据在、记录不在」的中间态——虽不会碰巧匹配（代次是每次不同的
+     * nonce），但它是无谓的垃圾，也是后人误读的来源。
+     */
     private void clearTxn(@NonNull String profileId) {
         //noinspection ResultOfMethodCallIgnored
         txnFileOf(profileId).delete();
     }
 
-    /** 原子写激活指针：tmp + bak 替换（与注册表落盘同策略）。 */
-    private boolean persistActive(@NonNull String profileId) {
+    // ── 提交见证（2026-09-18 修复：提交证据随指针移动而丢失）─────────────────────────
+    // 缺口：`txnId` 原先只存在**激活指针**里，而指针会被下一次导入/切换覆盖。于是「本次替换
+    // 已提交」这条事实会随指针移动而**彻底消失**；此后触碰该 profile 只能判「未提交」→ 把一次
+    // 成功的替换**静默回滚**，而 native 仍在跑新模型（磁盘/指针/native 三方不一致）。
+    //
+    // 为什么不按「指针不在本 profile ⇒ 保留现场」简单修：cross-profile 的**崩溃**回滚（合法，
+    // 已有用例 inProgressTxnRollsBackToOldModelAndPointer 覆盖）观察到的指针形态与它**完全相同**
+    // ——两种历史用「仅指针」这一种见证不可区分，所以才需要一份**不随指针移动**的见证。
+    //
+    // 为什么见证必须先于提交点写入：证据的持久性若依赖后续某次写入成功，那次写入失败就会把
+    // 我们打回原形。见证写在提交动作最前沿，指针怎么移动、后续改写是否失败，都与它无关。
+
+    /** 提交见证路径：{@code <storeDir>/.commit_<profileId>}。 */
+    @NonNull
+    private File commitWitnessOf(@NonNull String profileId) {
+        return new File(storeDir, COMMIT_WITNESS_PREFIX + profileId);
+    }
+
+    /**
+     * 原子落提交见证（临时文件 + writeSync/fsync + 改名），与 {@link #writeTxn} 同构。
+     *
+     * <p><b>返回值必须被检查</b>：见证落不下就**绝不越过提交点**——与「{@code in_progress} 记录
+     * 写不进去就绝不动手」同一条原则。落不下却继续提交，等于把本次事务交回给一份注定会被指针
+     * 移动摧毁的证据，正是本方法要消灭的那个缺口。
+     */
+    private boolean writeCommitWitness(@NonNull String profileId, @NonNull String txnId) {
+        File tmp = new File(storeDir, COMMIT_WITNESS_PREFIX + profileId + ".tmp");
+        StringBuilder sb = new StringBuilder();
+        sb.append("profileId=").append(profileId).append('\n');
+        sb.append("txnId=").append(txnId).append('\n');
+        if (!fileOps.writeSync(tmp, sb.toString().getBytes(StandardCharsets.UTF_8))) {
+            // 必须删临时文件：DEFAULT_FILE_OPS.writeSync 先建/截断文件再写，写到一半失败（如磁盘满）
+            // 会留下半截文件；而 `.commit_*.tmp` **刻意不进 sweepStaleTempDirs**（见其 javadoc 的
+            // 同名歧义论证），不在这里删就永久滞留。
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            return false;
+        }
+        if (!fileOps.moveReplace(tmp, commitWitnessOf(profileId))) {
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 读提交见证里的代次；见证缺失 / 不可读 / profileId 不符 / 代次不合法 → {@code null}
+     * （= **无证据**，而不是「未提交」以外的任何含义）。
+     *
+     * <p>损坏内容一律降级为「无证据」，绝不参与相等比较——否则脏内容碰巧相等就会伪造出一次
+     * 「已提交」，把**未提交**的新目录留在激活位（理由与 {@link #isSafeTxnId} 同）。
+     */
+    @Nullable
+    private String readCommitWitness(@NonNull String profileId) {
+        File f = commitWitnessOf(profileId);
+        if (!f.isFile()) return null;
+        String text;
+        try {
+            // 必须**完整**读回，不能只读一个定长缓冲：profileId 没有长度上限（isSafeDirName 只拒绝
+            // 空/./../分隔符），截断会让 txnId 行丢失 → 见证被判「无证据」→ 在「指针已移走」的现场
+            // 把一次**成功**的导入静默回滚，正是本机制要消灭的失败模式。
+            // 上界取 4096：见证文件名是 `.commit_<id>`，受文件系统 255 字节的**文件名**上界约束，
+            // 故 profileId ≤ 247 字节、内容 ≤ 约 300 字节——4096 在实践中不可达，只是防御。
+            text = readTextFile(f, 4096);
+        } catch (Exception e) {
+            return null;
+        }
+        String id = null;
+        String txnId = null;
+        for (String line : text.split("\n")) {
+            int eq = line.indexOf('=');
+            if (eq <= 0) continue;
+            String k = line.substring(0, eq).trim();
+            String v = line.substring(eq + 1).trim();
+            if ("profileId".equals(k)) id = v;
+            else if ("txnId".equals(k)) txnId = isSafeTxnId(v) ? v : null;
+        }
+        return (id != null && id.equals(profileId)) ? txnId : null;
+    }
+
+    /**
+     * 撤销提交见证。
+     *
+     * <p>用于「见证已落盘、提交点最终却没能落定」的收尾（{@code persistActive} 失败）：此时若不
+     * 撤销，盘上会留下一条「本次事务已提交」的证据，而下一次恢复会据此把**已经回滚**的现场再翻成
+     * 「保留新目录」——证据与现场自相矛盾。
+     *
+     * @return 见证是否**确实已不在盘上**：调用方据此决定能否回滚（见 {@code importZip}）
+     */
+    private boolean clearCommitWitness(@NonNull String profileId) {
+        File f = commitWitnessOf(profileId);
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+        return !f.exists();
+    }
+
+    /**
+     * 了结一条事务：**记录与见证一并清除**。
+     *
+     * <p>所有「事务已无事可做」的路径都必须走这里（而不是 {@link #clearTxn}），使「见证在 ⟺ 记录在」
+     * 成为一条不变量。反过来，**记录被保留时见证也必须保留**——那正是下次恢复判「已提交」的依据。
+     */
+    private void finishTxn(@NonNull String profileId) {
+        clearTxn(profileId);
+        clearCommitWitness(profileId);
+    }
+
+    /**
+     * 原子写激活指针：tmp + bak 替换（与注册表落盘同策略）。
+     *
+     * <p><b>本方法是唯一允许写「带提交代次的」激活指针的方法</b>（两个调用点：{@code importZip}
+     * 的提交点、{@code activate} 的显式切换）。任何**新增**的写入点都必须传入本次事务的
+     * {@code txnId}——指针里的代次是与事务记录比对、判定「提交点是否已落定」的证据之一；
+     * 漏盖代次会让一次已提交的事务在恢复时被误判为未提交而被回滚。
+     *
+     * <p>**刻意不盖代次**的例外只有一处：{@link #restoreActivePointer}——它不属于任何事务（旧格式
+     * 恢复路径），伪造一个代次会让「指针代次 == 事务代次」这条判据失真。
+     *
+     * <p>另有 {@link #readActivePointer} 在崩溃恢复时把 {@code active_profile.bak} rename 回主指针：
+     * 那只是把**先前由本方法或 {@code restoreActivePointer} 写下的内容**就位，不制造新代次，
+     * 故不在上述限制之内。除此之外不得再有绕过本方法写 {@code active_profile} 的地方。
+     *
+     * <p>⚠️ 但**不能只靠它**：指针会被下一次导入/切换覆盖，证据随之丢失。{@code importZip} 必须在
+     * 调用本方法**之前**先落 {@code .commit_<id>} 见证（见 {@link #writeCommitWitness}）——那份
+     * 证据不随指针移动，是判定「已提交」的**主**证据，本方法盖进指针的代次只是第二份。
+     *
+     * @param txnId 本次事务的提交代次；{@code null} 表示这是一次**没有所属事务**的写入
+     *              （当前无此调用点，保留参数形态以备将来），写出的指针将被视为「无提交证据」。
+     */
+    private boolean persistActive(@NonNull String profileId, @Nullable String txnId) {
         File dst = new File(storeDir, ACTIVE_POINTER_FILE);
         File tmp = new File(storeDir, ACTIVE_POINTER_FILE + ".tmp");
         File bak = new File(storeDir, ACTIVE_POINTER_FILE + ".bak");
@@ -1154,14 +1531,13 @@ public final class FaceModelManager {
         if (!dst.exists() && bak.exists() && !fileOps.rename(bak, dst)) {
             return false;
         }
-        try (FileOutputStream fos = new FileOutputStream(tmp, false)) {
-            fos.write(profileId.getBytes(StandardCharsets.UTF_8));
-            fos.flush();
-            try {
-                fos.getFD().sync();
-            } catch (Exception ignored) {
-            }
-        } catch (Exception ex) {
+        // 内容写入走 fileOps.writeSync（写 + flush + fsync，与事务记录同一条接缝）：
+        // ① 让**提交点写入失败**成为可注入、可测的失败点（否则该分支在纯 JVM 下无法构造，
+        //    而「提交写失败」恰是本次修复要覆盖的组合之一）；
+        // ② 消除「事务记录走接缝、指针自己走裸流」的策略分裂。
+        // 语义与原先的裸 FileOutputStream + getFD().sync() 等价（DEFAULT_FILE_OPS.writeSync 同语义）。
+        if (!fileOps.writeSync(tmp, encodeActivePointer(profileId, txnId))) {
+            //noinspection ResultOfMethodCallIgnored
             tmp.delete();
             return false;
         }
@@ -1186,46 +1562,117 @@ public final class FaceModelManager {
     }
 
     /**
+     * 激活指针的内容（profileId + 可选的提交代次）。
+     *
+     * <p>{@link #txnId} 为 null 有两种来源：解析出的是**旧格式**指针（裸 profileId，本版本之前
+     * 写入），或代次不合法而被降级为「无证据」。**后者不得参与相等比较**——脏内容一旦相等，
+     * 会伪造出一次「已提交」判定。
+     */
+    private static final class ActivePointer {
+        @NonNull final String profileId;
+        @Nullable final String txnId;
+
+        ActivePointer(@NonNull String profileId, @Nullable String txnId) {
+            this.profileId = profileId;
+            this.txnId = txnId;
+        }
+    }
+
+    /** 指针文件内容：两行同处一个文件 → 一次 rename 原子落定，profileId 与代次不可能分离。 */
+    @NonNull
+    private static byte[] encodeActivePointer(@NonNull String profileId, @Nullable String txnId) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("profileId=").append(profileId).append('\n');
+        if (txnId != null) {
+            sb.append("txnId=").append(txnId).append('\n');
+        }
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
      * 读取当前激活指针；#3 崩溃恢复：主指针缺失/不可读时回退 {@code active_profile.bak}
      * 并把备份 rename 回主指针（复用 {@link AndroidEnrollmentRepository} 的 .bak 恢复模式）。
      * 主指针与备份都不可用时返回 null（未导入）。
      */
     @Nullable
-    private String readActive() {
+    private ActivePointer readActivePointer() {
         File dst = new File(storeDir, ACTIVE_POINTER_FILE);
         File bak = new File(storeDir, ACTIVE_POINTER_FILE + ".bak");
         if (!dst.isFile()) {
             if (bak.isFile()) {
                 // 崩溃恢复：主指针缺失但备份是唯一完整副本，先解析备份再 rename 回主。
-                String id = parseActiveFile(bak);
-                if (id != null) {
+                ActivePointer p = parseActivePointer(bak);
+                if (p != null) {
                     fileOps.rename(bak, dst);
-                    return id;
+                    return p;
                 }
             }
             return null;
         }
-        String id = parseActiveFile(dst);
-        if (id == null && bak.isFile()) {
+        ActivePointer p = parseActivePointer(dst);
+        if (p == null && bak.isFile()) {
             // 主指针存在但不可读/非法：从备份恢复，避免退化为「未导入」丢失激活。
-            String fromBak = parseActiveFile(bak);
+            ActivePointer fromBak = parseActivePointer(bak);
             if (fromBak != null) {
                 fileOps.rename(bak, dst);
                 return fromBak;
             }
         }
-        return id;
+        return p;
     }
 
-    /** 解析指针文件内容为安全 profileId；缺失/不可读/非法返回 null。 */
+    /**
+     * 当前激活的 profileId；语义与调用方契约与升级前**完全一致**
+     * （{@code activeProfileId()} 等全部调用点不需要改动）。需要提交代次时用
+     * {@link #readActivePointer()}。
+     */
     @Nullable
-    private static String parseActiveFile(@NonNull File f) {
+    private String readActive() {
+        ActivePointer p = readActivePointer();
+        return p == null ? null : p.profileId;
+    }
+
+    /**
+     * 解析指针文件为 {@link ActivePointer}；缺失/不可读/非法（profileId 不是安全目录名）返回 null。
+     *
+     * <p>两种格式都接受：
+     * <ul>
+     *   <li>本版本：含 {@code profileId=<id>} 行（+ 可选 {@code txnId=<32hex>} 行）——按 key=value 解析；</li>
+     *   <li>旧版本：整串即裸 {@code <id>}——保持可读，{@code txnId} 解析为 null（无提交证据）。</li>
+     * </ul>
+     */
+    @Nullable
+    private static ActivePointer parseActivePointer(@NonNull File f) {
+        String text;
         try {
-            String id = readTextFile(f, 4096).trim();
-            return FaceModelManifest.isSafeDirName(id) ? id : null;
+            text = readTextFile(f, 4096);
         } catch (Exception ex) {
             return null;
         }
+        String trimmed = text.trim();
+        if (!trimmed.contains("profileId=")) {
+            // 旧格式：整串即 profileId。**不**因为有换行就当损坏——旧实现的 trim() 语义照旧。
+            //
+            // ⚠️ **刻意不「收紧」成「含换行即视为损坏」**（A2 审计 Low-4 提过这个方向）：
+            // 把整串交给 isSafeDirName 会让这类**损坏显式暴露**——后续按该 profileId 找目录必然
+            // 找不到，buildStatus 遂报「激活配置目录缺失」ERROR（**不触发任何删除**）。若在这里
+            // 拒绝，损坏文件会退化成「未导入」这一**静默**状态，反而更难发现。收紧是**更糟**的行为。
+            return FaceModelManifest.isSafeDirName(trimmed)
+                    ? new ActivePointer(trimmed, null)
+                    : null;
+        }
+        String id = null;
+        String txnId = null;
+        for (String line : trimmed.split("\n")) {
+            int eq = line.indexOf('=');
+            if (eq <= 0) continue;
+            String k = line.substring(0, eq).trim();
+            String v = line.substring(eq + 1).trim();
+            if ("profileId".equals(k)) id = v;
+            else if ("txnId".equals(k)) txnId = isSafeTxnId(v) ? v : null;
+        }
+        if (id == null || !FaceModelManifest.isSafeDirName(id)) return null;
+        return new ActivePointer(id, txnId);
     }
 
     // ── 文件操作接缝（任务 A，2026-09-16 决策）────────────────────────────────────
@@ -1356,56 +1803,219 @@ public final class FaceModelManager {
     /**
      * 按事务记录恢复（Codex 要求 4）。
      *
-     * <p><b>状态推导</b>（由记录 + 磁盘判定，无需额外状态字段）：
+     * <p><b>提交判定（约束 1）</b>：提交证据有两份——提交点前落的 {@code .commit_<id>} 见证，以及
+     * {@link #persistActive} 盖进激活指针的代次。故：
      * <ul>
-     *   <li>{@code hadOld} 且 bak 存在 ⇒ 已越过「旧目录移开」这一步，替换**已开始**，须回滚；</li>
-     *   <li>{@code hadOld} 且 bak 不存在 ⇒ 未开始（旧目录仍在原位），磁盘即原状，清记录即可；</li>
-     *   <li>{@code !hadOld} ⇒ **一律无需回滚**：没有旧目录可还原，且指针未改动（{@code persistActive}
-     *       在提交记录之后才执行）。保留下来的新包只是一个「可激活但尚未激活」的目录，
-     *       {@code active} 仍为 null → 状态仍为 NOT_IMPORTED，故不存在「假 READY」问题。
-     *       （早先的注释曾写成「{@code !hadOld} 且 target 存在 ⇒ 替换已开始」，但代码并不据此分支
-     *       —— A3 确认该表述与实现不符，已按实际行为改写。）</li>
+     *   <li>记录自述 {@code committed}，**或**记录带代次且**见证或指针**的代次与之相等 ⇒ **已提交**
+     *       ——保留新目录，只重试清理备份；</li>
+     *   <li>其余 ⇒ **未提交** ——回滚目录，且**绝不触碰激活指针**。</li>
      * </ul>
-     * 已提交 ⇒ 保留新目录、继续清理备份。
+     *
+     * <p><b>为什么不能只看指针</b>：指针会被下一次导入/切换覆盖；一旦覆盖，「本次已提交」就再无
+     * 盘上证据，而 cross-profile 的**崩溃**回滚（合法）观察到的指针形态与之完全相同——两种历史
+     * 用「仅指针」这一种见证不可区分，恢复只能猜，猜错就是静默回滚一次成功的替换。
+     *
+     * <p><b>为什么回滚路径不再还原指针</b>：{@code persistActive} 是唯一写指针的方法，所以
+     * 「未提交」等价于「本事务从未成功改写过指针」——指针根本无需还原。这条不变量一次消掉两处
+     * 历史歧义：同名覆盖时指针在事务前后都指向同一个 profileId（无法据它区分提交前后），而
+     * 代次每次都不同，据代次可以判定。
+     *
+     * <p><b>为什么不按 bak 是否存在推断历史</b>：`bak` 被上一次恢复消费掉（rename 回 target）
+     * 与「从未创建过 bak」在磁盘上**完全同形**。旧实现据「bak 不在」断言「替换尚未开始」并清
+     * 记录，会把「指针还原意图」永久丢弃（P2）。新实现不再用 bak 的存在性做历史推断。
      *
      * <p>任一步失败都**保持现场并保留记录**，由 {@code buildStatus} 报 ERROR 且拒绝继续覆盖导入。
      */
     private void recoverTxn(@NonNull DirTxn txn, @NonNull File target, @NonNull File bak) {
-        if (txn.committed) {
-            // 已提交：保留新目录，继续清理备份；备份确实清掉后才清记录（否则下次继续重试清理）。
-            if (bak.exists()) {
-                fileOps.deleteRecursively(bak);
-            }
-            if (!bak.exists()) {
-                clearTxn(txn.profileId);
-            }
+        if (txn.txnId == null) {
+            // 旧格式记录（本版本之前写入）：没有代次可比对，走旧语义。
+            recoverTxnLegacy(txn, target, bak);
             return;
         }
-        // 未提交：恢复到替换前的状态。
-        //
-        // !hadOld 特例：**无需回滚**——没有旧目录可还原，且指针未改动（persistActive 在提交记录之后
-        // 才执行）。保留下来的新包只是一个「可激活但尚未激活」的目录，不影响状态（active 仍为 null
-        // → NOT_IMPORTED）。这与首次导入失败时的非崩溃语义一致（那里也是保留目录、不切指针）。
-        if (!txn.hadOld) {
-            clearTxn(txn.profileId);
+        if (isCommitted(txn, readActivePointer(), readCommitWitness(txn.profileId))) {
+            commitSide(txn, target, bak);
             return;
         }
-        // hadOld：bak 不存在 ⇒ 尚未越过「旧目录移开」，磁盘即原状。
+        rollbackDirOnly(txn, target, bak);
+    }
+
+    /**
+     * 是否为「**证据不足的旧格式歧义现场**」：旧记录（无代次、未自述提交）+ 同名覆盖
+     * （{@code prevActive} 为空或等于本 profileId）+ 备份仍在 + 指针已指向本 profileId。
+     *
+     * <p>此时「替换未提交」与「已提交但记录改写失败且备份也没删掉」两种历史在磁盘上同形，
+     * 而旧记录没有代次可比对 → 只能保留全部副本与记录、报错，交由
+     * {@link #resolveAmbiguousSwap} 显式了结（约束 1）。
+     *
+     * <p>抽成单一判据供 {@link #recoverTxnLegacy} / {@link #unresolvedSwapReason} /
+     * {@link #buildStatus} 共用：三处若各写一份，会出现「恢复保留了记录、状态却报别的错」
+     * 或「状态给了人工入口、恢复又把副本删了」这类自相矛盾。
+     */
+    private static boolean isAmbiguousLegacySite(@NonNull DirTxn txn, @Nullable ActivePointer p,
+                                                @NonNull File bak) {
+        if (txn.txnId != null || txn.committed || !txn.hadOld || !bak.exists()) return false;
+        if (p == null || !txn.profileId.equals(p.profileId)) return false;
+        return txn.prevActive == null || txn.prevActive.equals(txn.profileId);
+    }
+
+    /**
+     * 事务是否**在效果上**已提交：记录自述已提交，或提交证据成立。
+     *
+     * <p><b>证据有两份，任一份成立即可</b>：
+     * <ol>
+     *   <li>{@code .commit_<profileId>} 见证里的代次 == 事务代次——**独立于激活指针**，是本轮修复
+     *       的核心证据：指针会被下一次导入/切换覆盖，见证不会；</li>
+     *   <li>激活指针里的代次 == 事务代次——{@code persistActive} 成功的直接痕迹，作为第二份见证。</li>
+     * </ol>
+     * 两份都用「与本次事务代次相等」判定；代次是每次不同的 nonce，脏内容不可能碰巧相等（不合法的
+     * 代次在读入时已被降级为 {@code null}）。
+     *
+     * <p>抽成单一判据供 {@link #recoverTxn} / {@link #unresolvedSwapReason} / {@link #buildStatus}
+     * 共用。三处若各写一份，会出现「恢复认为已提交、状态却报未完成」的自相矛盾。
+     *
+     * @param witnessTxnId {@code .commit_<profileId>} 里的代次（无见证时为 {@code null}）
+     */
+    private static boolean isCommitted(@NonNull DirTxn txn, @Nullable ActivePointer p,
+                                       @Nullable String witnessTxnId) {
+        if (txn.committed) return true;
+        if (txn.txnId == null) return false;   // 旧格式记录：没有代次可比对
+        return txn.txnId.equals(witnessTxnId) || (p != null && txn.txnId.equals(p.txnId));
+    }
+
+    /**
+     * 已提交侧：保留新目录，只重试清理备份；**任何情况下不动指针**。
+     *
+     * <p>⚠️ **target 缺失时直接保留现场、不删备份**：此刻备份是唯一完整副本，删掉它等于把配置
+     * 彻底丢失。「已提交」只说明**提交点已落定**，并不蕴含「新目录仍在」——新目录可能被外部删除
+     * 或遭磁盘异常。这两件事必须分开判断。（A1 审计 N2）
+     *
+     * <p>保持现场后 {@code buildStatus} 会因目录缺失报 ERROR，用户可经
+     * {@link #resolveAmbiguousSwap} 选「还原为备份」把配置救回来。
+     */
+    private void commitSide(@NonNull DirTxn txn, @NonNull File target, @NonNull File bak) {
+        if (!target.exists()) {
+            return;
+        }
+        if (bak.exists()) {
+            fileOps.deleteRecursively(bak);
+        }
+        // 备份确实清掉才清记录；清不掉则保留记录，下次继续重试清理。
         if (!bak.exists()) {
-            clearTxn(txn.profileId);
+            finishTxn(txn.profileId);
+        }
+    }
+
+    /**
+     * 未提交侧：回滚目录（删新目录 → 还原备份），**不动指针**。
+     *
+     * <p>{@code hadOld=false} 或 bak 不存在时无事可做：前者没有旧目录可还原；后者说明替换尚未
+     * 越过「旧目录移开」，或被上一次回滚把 bak 消费掉了——两种情形该做的动作都是「清记录」，
+     * 因为本事务从未改写过指针（否则会走已提交分支）。
+     */
+    private void rollbackDirOnly(@NonNull DirTxn txn, @NonNull File target, @NonNull File bak) {
+        if (!txn.hadOld) {
+            finishTxn(txn.profileId);
             return;
         }
-        // 已越过「旧目录移开」且未提交 ⇒ 回滚到旧目录与原指针。先删新目录，备份才有位置还原。
+        if (!bak.exists()) {
+            finishTxn(txn.profileId);
+            return;
+        }
         if (target.exists() && !fileOps.deleteRecursively(target)) {
             return;   // 删不掉 → 保持现场，记录保留 → buildStatus 报 ERROR
         }
         if (!fileOps.rename(bak, target)) {
             return;   // 还原失败 → 保持现场，记录保留
         }
-        if (!restoreActivePointer(txn.prevActive)) {
+        finishTxn(txn.profileId);
+    }
+
+    /**
+     * 旧格式记录（无提交代次，由本版本之前的代码写入）的恢复：**沿用旧语义**，仅对可判定的
+     * 子情形加强（约束 2-4：不整体重写旧版兼容逻辑）。
+     *
+     * <p><b>四个分支（与代码逐条对应）</b>，记 {@code P} = 指针当前值：
+     * <ol>
+     *   <li>自述 {@code committed} ⇒ 同 {@link #commitSide}（且 target 缺失时不删备份）；</li>
+     *   <li>{@code !hadOld} ⇒ 清记录（没有旧目录可还原，指针也未被本事务写过）；</li>
+     *   <li>备份**不在**：
+     *     <ul>
+     *       <li>{@code P == profileId} 且 {@code prevActive} 是另一配置 ⇒ 判为「回滚已把备份还原成
+     *           target、仅指针还原失败」，**补做** {@code restoreActivePointer(prevActive)}（失败则
+     *           保留记录待重试）。这是相对旧实现的**加强**：旧实现据「备份不在」直接清记录，会把
+     *           这次还原意图永久丢弃（P2）；</li>
+     *       <li>其余 ⇒ 清记录（未越过「旧目录移开」，或没有需要还原的指针）。</li>
+     *     </ul>
+     *   </li>
+     *   <li>备份**在**：
+     *     <ul>
+     *       <li>同名覆盖且 {@code P == profileId} ⇒ **证据不足**（见下），保留现场与记录；</li>
+     *       <li>{@code P == profileId} 但 {@code prevActive} 是另一配置 ⇒ 判为**已提交**
+     *           （未提交的事务不会写指针），走 {@link #commitSide}；</li>
+     *       <li>否则 ⇒ 回滚目录（删 target → 还原备份），且仅当 {@code prevActive} 是另一配置时
+     *           才还原指针。</li>
+     *     </ul>
+     *   </li>
+     * </ol>
+     *
+     * <p>「补做指针还原」的正确性：{@code prevActive} 与 {@code profileId} 不同、而指针**已经是**
+     * {@code profileId}——未提交的事务不可能把指针改成 {@code profileId}（旧实现只在提交点写指针，
+     * 而提交成功会留下 {@code committed} 记录），故只能是「回滚已就位、指针没还原回去」，补做它
+     * 并非猜测。
+     *
+     * <p><b>唯一保留的歧义（同名覆盖 + 备份在 + 指针已是本 profileId）</b>：此时「未提交」与
+     * 「已提交但记录改写失败且备份也没删掉」两历史同形，而旧记录没有代次可判 → **保留全部副本
+     * 与记录并报 ERROR，不猜测、不删除任一副本**（约束 1），由 {@link #resolveAmbiguousSwap}
+     * 供用户显式了结。
+     */
+    private void recoverTxnLegacy(@NonNull DirTxn txn, @NonNull File target, @NonNull File bak) {
+        if (txn.committed) {
+            commitSide(txn, target, bak);
+            return;
+        }
+        if (!txn.hadOld) {
+            finishTxn(txn.profileId);
+            return;
+        }
+        ActivePointer p = readActivePointer();
+        boolean pointerIsTarget = p != null && txn.profileId.equals(p.profileId);
+        boolean distinctPrev = txn.prevActive != null && !txn.prevActive.equals(txn.profileId);
+
+        if (!bak.exists()) {
+            // 「替换尚未开始」与「回滚已消费 bak、仅指针还原失败」同形。后者用指针值识别出来
+            // （见方法注释的论证），补做那次失败的指针还原；失败则保留记录待下次重试。
+            if (pointerIsTarget && distinctPrev) {
+                if (!restoreActivePointer(txn.prevActive)) {
+                    return;
+                }
+            }
+            finishTxn(txn.profileId);
+            return;
+        }
+        // bak 在。
+        if (isAmbiguousLegacySite(txn, p, bak)) {
+            // 同名覆盖：两历史同形（未提交 / 已提交但记录改写失败且备份没删掉），证据不足 →
+            // 保留现场与记录、报 ERROR，由 resolveAmbiguousSwap 交用户了结。
+            return;
+        }
+        if (pointerIsTarget) {
+            // 指针已成了本 profileId，而 prevActive 是**另一个**配置：未提交的事务不会写指针
+            // （旧实现只在提交点写指针，且提交成功会留下 committed 记录），故提交点必已落定，
+            // 记录停在 in_progress 只因 committed 改写失败 → **保留新目录**，只重试清理备份。
+            commitSide(txn, target, bak);
+            return;
+        }
+        // 指针不是本 profileId ⇒ 未提交：回滚目录；仅当 prevActive 是另一个配置时才还原指针。
+        if (target.exists() && !fileOps.deleteRecursively(target)) {
+            return;
+        }
+        if (!fileOps.rename(bak, target)) {
+            return;
+        }
+        if (distinctPrev && !restoreActivePointer(txn.prevActive)) {
             return;   // 指针还原失败 → 保留记录待下次重试
         }
-        clearTxn(txn.profileId);
+        finishTxn(txn.profileId);
     }
 
     /**
@@ -1420,12 +2030,20 @@ public final class FaceModelManager {
     private String unresolvedSwapReason(@NonNull String profileId) {
         recoverProfileDirIfNeeded(profileId);
 
-        DirTxn txn = readTxn(profileId);
-        if (txn != null && !txn.committed) {
-            return "上次目录替换未完成（未提交事务），已保留现场，请先排除磁盘占用再导入";
-        }
         File target = profileDir(profileId);
         File bak = bakDirOf(profileId);
+        DirTxn txn = readTxn(profileId);
+        ActivePointer p = readActivePointer();
+        // 证据不足的旧格式歧义现场：必须走人工了结，文案要指向它（而不是含糊地说「未完成」）。
+        if (txn != null && isAmbiguousLegacySite(txn, p, bak)) {
+            return "检测到同名覆盖且无提交证据的歧义现场（新旧配置并存），已保留两份数据；"
+                    + "请用「处理未决替换」选择保留当前目录或还原为备份";
+        }
+        // 用**统一判据**（记录自述 或 提交证据成立）：只看 txn.committed 会把「已提交但记录改写
+        // 失败」误判为未完成，从而把一个可用配置永久阻塞。
+        if (txn != null && !isCommitted(txn, p, readCommitWitness(profileId))) {
+            return "上次目录替换未完成（未提交事务），已保留现场，请先排除磁盘占用再导入";
+        }
         if (txn == null && !rollbackMarkerOf(profileId).exists() && target.exists() && bak.exists()) {
             return "检测到新旧配置并存且无事务记录，无法判定哪份应生效，请人工确认后再导入";
         }
@@ -1434,6 +2052,10 @@ public final class FaceModelManager {
 
     /**
      * 把激活指针写回指定值（{@code null} = 清除指针文件）。
+     *
+     * <p><b>本方法故意不写提交代次</b>：它不属于任何事务，伪造一个代次会让「指针代次 == 事务代次」
+     * 这条提交证据失去意义。因此它**只允许被旧格式恢复路径调用**（那条路径的事务本就没有代次）。
+     * 新的事务若要写指针，必须走 {@link #persistActive(String, String)} 并传入本次事务的代次。
      *
      * @return 是否确实落盘；失败时调用方**不得**清除事务记录，留待下次重试
      */
@@ -1458,44 +2080,82 @@ public final class FaceModelManager {
             base = FaceRuntimeStatus.notImported(count);
         } else {
             // #3 崩溃恢复 + 第五轮审查 P1：回滚未完成 / 目录替换窗口的残留现场先恢复就位，再判状态。
-            recoverProfileDirIfNeeded(active);
-            File dir = profileDir(active);
-            File mf = new File(dir, MANIFEST_FILE_NAME);
-            DirTxn pendingTxn = readTxn(active);
-            if (pendingTxn != null && !pendingTxn.committed) {
-                // 未提交的事务仍在 = 恢复未能完成（删不掉新目录 / 还原失败 / 指针写不回）。
-                // 既不能报 ready（会让人以为新模型在跑），也不能承诺「已回滚」——如实报错并要求人工介入。
-                base = FaceRuntimeStatus.error(active, count,
-                        "目录替换事务未完成（未提交），已保留现场；请排除磁盘占用后重试，勿反复导入");
-            } else if (rollbackMarkerOf(active).exists() && bakDirOf(active).exists()) {
-                // 仅当「意图标记在**且**旧模型仍在备份目录」才是真正卡住的回滚：此时既不能报 ready
-                //（会掩盖真实故障、让人以为新模型在跑），也不能承诺「已回滚」——如实报 ERROR 并指出
-                // 原模型位置。若备份已被消费，说明还原其实已经完成（仅标记删除失败，A3' γ7），
-                // 落入下方常规目录判定即可；否则会误报 ERROR 并谎称旧模型仍在备份里。
-                base = FaceRuntimeStatus.error(active, count,
-                        "上次模型回滚未完成：原模型仍滞留在 " + bakDirOf(active).getName() + "，当前配置未生效");
-            } else if (pendingTxn == null && !rollbackMarkerOf(active).exists()
-                    && dir.isDirectory() && mf.isFile() && bakDirOf(active).exists()) {
-                // 无事务记录、无回滚标记，却「新目录与旧备份并存」：**无法判定哪份应生效**
-                //（旧版本遗留；自动恢复 bak 会误撤销一次成功更新，故绝不猜）。保留两份数据（Codex 要求 6）。
-                base = FaceRuntimeStatus.error(active, count,
-                        "检测到未完成的目录替换（新旧配置并存且无事务记录），已保留两份数据，请人工确认");
-            } else if (!dir.isDirectory() || !mf.isFile()) {
-                base = FaceRuntimeStatus.error(active, count, "激活配置目录缺失：" + active);
-            } else {
-                try {
-                    String json = readTextFile(mf, limits.maxManifestBytes);
-                    // 展示态不传 ABI，跳过 ABI 匹配（导入时已校验过）。
-                    FaceModelManifest.ParseResult pr = FaceModelManifest.parse(json, null);
-                    if (!pr.isOk()) {
-                        base = FaceRuntimeStatus.error(active, count, "激活配置 manifest 无效：" + pr.message);
-                    } else {
-                        base = FaceRuntimeStatus.ready(pr.profile.profileId, pr.profile.displayName,
-                                pr.profile.modelVersion, pr.profile.licenseId, count, false, 0);
-                    }
-                } catch (Exception ex) {
-                    base = FaceRuntimeStatus.error(active, count, "激活配置读取失败");
+            // 约束 2-3：恢复**可能改写或清除**激活指针（旧格式恢复会补做指针还原），故恢复后必须
+            // **重新读取**——否则会把恢复前的配置状态报给 UI。有界两跳，不引入循环：恢复链实际最多
+            // 一跳，但代码**不保证**这一点；两跳后仍变化即按当前值如实判定，绝不空转。
+            // （A1 审计 N6：原注释写成「最多一跳」，那是关于实现的断言而非代码保证，已改为诚实表述。）
+            for (int pass = 0; pass < 2 && active != null; pass++) {
+                recoverProfileDirIfNeeded(active);
+                String after = readActive();
+                if (after == null) {
+                    active = null;
+                    break;
                 }
+                if (after.equals(active)) {
+                    break;
+                }
+                active = after;
+            }
+        }
+        if (active == null) {
+            // 未导入；或恢复把指针清掉了（旧格式回滚到「无激活配置」）——两者对外同语义。
+            return FaceRuntimeStatus.notImported(count).withNativeStatus(nativeJson);
+        }
+        File dir = profileDir(active);
+        File mf = new File(dir, MANIFEST_FILE_NAME);
+        File bak = bakDirOf(active);
+        DirTxn pendingTxn = readTxn(active);
+        ActivePointer pendingPtr = readActivePointer();
+        if (pendingTxn != null && bak.exists() && !dir.isDirectory()) {
+            // 记录仍在 + **目标目录缺失** + 备份在：备份是此刻**唯一完整副本**。可能是「已提交但新
+            // 目录被外部删除」，也可能是「未提交且 target 被删」——两历史同形，**不猜**。保留两份
+            // 数据与记录，并给出人工了结入口：此时唯一可行的选择是「还原为备份」。
+            // （A1 审计 N2/N3：修了「commitSide 不许删唯一副本」之后，必须同时给出这条出路，否则
+            //   用户会看到 ERROR 却没有任何可执行动作。）
+            base = FaceRuntimeStatus.errorAmbiguousSwap(active, count,
+                    "目标目录缺失但存在备份（" + bak.getName() + "），已保留现场；"
+                            + "请选择「还原为备份」把配置救回", active);
+        } else if (pendingTxn != null && isAmbiguousLegacySite(pendingTxn, pendingPtr, bak)) {
+            // 证据不足的旧格式歧义现场：恢复了「保留两份数据」，需用户显式了结。带机器可读的
+            // ambiguousSwapProfileId，供 UI 在多种 ERROR 原因中准确识别并给出操作入口（约束 1）。
+            base = FaceRuntimeStatus.errorAmbiguousSwap(active, count,
+                    "检测到同名覆盖且无提交证据的歧义现场（新旧配置并存），已保留两份数据；"
+                            + "请选择保留当前目录或还原为备份（" + bak.getName() + "）", active);
+        } else if (pendingTxn != null && !isCommitted(pendingTxn, pendingPtr, readCommitWitness(active))) {
+            // 未提交的事务仍在 = 恢复未能完成（删不掉新目录 / 还原失败 / 指针写不回）。
+            // 既不能报 ready（会让人以为新模型在跑），也不能承诺「已回滚」——如实报错并要求人工介入。
+            base = FaceRuntimeStatus.error(active, count,
+                    "目录替换事务未完成（未提交），已保留现场；请排除磁盘占用后重试，勿反复导入");
+        } else if (rollbackMarkerOf(active).exists() && bak.exists()) {
+            // 仅当「意图标记在**且**旧模型仍在备份目录」才是真正卡住的回滚：此时既不能报 ready
+            //（会掩盖真实故障、让人以为新模型在跑），也不能承诺「已回滚」——如实报 ERROR 并指出
+            // 原模型位置。若备份已被消费，说明还原其实已经完成（仅标记删除失败，A3' γ7），
+            // 落入下方常规目录判定即可；否则会误报 ERROR 并谎称旧模型仍在备份里。
+            base = FaceRuntimeStatus.error(active, count,
+                    "上次模型回滚未完成：原模型仍滞留在 " + bak.getName() + "，当前配置未生效");
+        } else if (pendingTxn == null && !rollbackMarkerOf(active).exists()
+                && dir.isDirectory() && mf.isFile() && bak.exists()) {
+            // 无事务记录、无回滚标记，却「新目录与旧备份并存」：**无法判定哪份应生效**
+            //（旧版本遗留；自动恢复 bak 会误撤销一次成功更新，故绝不猜）。保留两份数据（Codex 要求 6），
+            // 同样带机器可读标记给出人工了结入口。
+            base = FaceRuntimeStatus.errorAmbiguousSwap(active, count,
+                    "检测到未完成的目录替换（新旧配置并存且无事务记录），已保留两份数据；"
+                            + "请选择保留当前目录或还原为备份（" + bak.getName() + "）", active);
+        } else if (!dir.isDirectory() || !mf.isFile()) {
+            base = FaceRuntimeStatus.error(active, count, "激活配置目录缺失：" + active);
+        } else {
+            try {
+                String json = readTextFile(mf, limits.maxManifestBytes);
+                // 展示态不传 ABI，跳过 ABI 匹配（导入时已校验过）。
+                FaceModelManifest.ParseResult pr = FaceModelManifest.parse(json, null);
+                if (!pr.isOk()) {
+                    base = FaceRuntimeStatus.error(active, count, "激活配置 manifest 无效：" + pr.message);
+                } else {
+                    base = FaceRuntimeStatus.ready(pr.profile.profileId, pr.profile.displayName,
+                            pr.profile.modelVersion, pr.profile.licenseId, count, false, 0);
+                }
+            } catch (Exception ex) {
+                base = FaceRuntimeStatus.error(active, count, "激活配置读取失败");
             }
         }
         return base.withNativeStatus(nativeJson);
@@ -1531,6 +2191,20 @@ public final class FaceModelManager {
      * <p>安全性：本方法只在**持 {@code dirLock}** 时调用，而 `importZip` 全程持锁，故不会误删
      * 正在使用的临时目录。前缀 {@code .tmp_} 在本目录内唯一标识解压临时目录（事务记录是
      * {@code .txn_*}、指针临时文件是 {@code active_profile.tmp}，均不匹配）。
+     *
+     * <p>⚠️ {@code .commit_<id>.tmp}（提交见证的临时文件）**刻意不扫**：清扫只能按名字前缀匹配，
+     * 而 {@code isSafeDirName} 放行点号，故 profileId 恰为 {@code x.tmp} 时，它的**活见证**
+     * {@code .commit_x.tmp} 与「profileId 为 x 的见证临时文件」**同名**——扫掉它就等于静默销毁
+     * 一份提交证据，正是本机制要防的事。见证临时文件不被任何读路径引用，崩溃残留只是无害垃圾，
+     * 所以宁可留着。{@code writeCommitWitness} 在写入与改名两个失败分支都会自行删除它，
+     * 正常路径无残留；只有「进程恰好死在 writeSync 与 moveReplace 之间」才留下一个惰性文件。
+     *
+     * <p>⚠️ **已知遗留（非本批引入）**：下面②清扫的 {@code .txn_<id>.tmp} 有**同一种**同名歧义
+     * ——profileId 恰为 {@code foo.tmp} 时，它的**活事务记录** {@code .txn_foo.tmp} 会被当成
+     * 「profileId 为 foo 的记录临时文件」删掉，于是「已提交但记录改写失败」的现场会丢失提交状态，
+     * 退化成需要人工了结的歧义现场。可达性极低（要求 profileId 以 {@code .tmp} 结尾）。本批只在
+     * {@code .commit_} 一侧避开了这个坑，**未**改动②（那会回退上一批 A2-Low4 的清理）。
+     * 彻底的修法是把临时文件放进**名字恒定**的暂存子目录（profileId 不含分隔符，故无歧义）。
      */
     private void sweepStaleTempDirs() {
         File[] files = storeDir.listFiles();
