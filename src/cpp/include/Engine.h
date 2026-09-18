@@ -187,8 +187,10 @@ public:
      * 的 keepIds 无物可保（撤销先行）。「换模型必撤销」语义不变：换到新对象或启停
      *（null ↔ 非 null）仍完整撤销。
      * 线程安全：可与 run() 并发调用（内部加锁取共享指针）。
+     * @return true = 已生效（注入/清除完成，含同对象幂等注入）；false = 被拒绝——仅发生在**结果
+     *         回调内同步重入**时（本 API 会取 tracksMu_，见 FACE-PIPE-015 发射门重入检测）。
      */
-    void setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline);
+    bool setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline);
 
     /** 是否处于实时路径（已注入/启用管线）。 */
     bool hasRealtimePipeline() const { return realtimeEnabled_.load(); }
@@ -222,9 +224,12 @@ public:
      * @param gallery 新图库不可变索引（nullptr = 清除覆盖，回退到快照自带图库）
      * @param keepIds 本次提交后**仍有效**的身份集合（新图库 personIds）；未命中者身份清为
      *                "Unknown"（保留轨迹本体与 bbox，不丢框）
+     * @return true = 已换库并精准撤销；false = 被拒绝——仅发生在**结果回调内同步重入**时（本 API 会
+     *         取 tracksMu_，见 FACE-PIPE-015 发射门重入检测：从发射临界区内的回调同步回入本 API 会
+     *         与撤销路径构成 ABBA 死锁，故拒绝而非挂死；该路径当前生产不可达，对现有使用者零行为变化）。
      * 线程安全：可与 run() 并发调用（内部持 tracksMu_，与 trackFaces 的 update() 互斥）。
      */
-    void applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
+    bool applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
                             const std::vector<std::string>& keepIds);
 
     /**
@@ -236,6 +241,8 @@ public:
     /**
      * @brief 当前对外跟踪视图（已确认轨迹）的线程安全快照。
      * 与发布渲染帧同源，供 JNI 状态展示与单元测试断言。
+     * @note 若在结果回调内同步重入（此时本线程持有 identityEmitMu_），返回**空快照**并记录 reason
+     *       （见 FACE-PIPE-015），**不取 tracksMu_**——避免与撤销路径 ABBA 死锁。
      */
     std::vector<pipeline::TrackView> getTrackViews() const;
 
@@ -278,6 +285,8 @@ public:
      *
      * 供宿主同步驱动与单元测试；不可与 run() 并发调用（会并发写
      * processedFrame_/currentTracks_ 等非线程安全状态）。
+     * @return false = 帧处理被拒绝——仅发生在**结果回调内同步重入**时（本 API 经 trackFaces/
+     *         renderResults 会取 tracksMu_，见 FACE-PIPE-015 发射门重入检测）。
      */
     bool processFrameOnce(const cv::Mat& rawFrame, double decodeMs = 0.0);
 
@@ -342,7 +351,10 @@ protected:
      * WHY（第五轮审查 P1）：需要一个**确定性**窗口来验证「撤销无法插在最终校验与事件发射之间」。
      * 测试把引擎线程钉在此处（此时必已持 identityEmitMu_），再令另一线程调用 applyGalleryUpdate，
      * 断言其**在放行前无法返回**——缺该门时 applyGalleryUpdate 会立即返回（RED）。
-     * 注意：本钩子在持锁状态下调用，覆写实现**不得**再取 identityEmitMu_ 或调用会取该门的 API。
+     * 注意：本钩子在**持有 identityEmitMu_** 的状态下调用，覆写实现**不得**再取 identityEmitMu_
+     *（std::mutex 非递归，必自死锁）。调用会取 tracksMu_ 的公开 API（applyGalleryUpdate /
+     * setRealtimePipeline / getTrackViews / processFrameOnce）则已被 FACE-PIPE-015 重入检测**拒绝**
+     *（返回 false / 空快照），不会死锁——本条重入用例正据此在同一线程内确定性地回归「拒绝而非挂死」。
      */
     virtual void onBeforePublishLocked() {}
 #endif
@@ -449,9 +461,30 @@ private:
     // → 无环、无死锁。
     //
     // 门内会经 publish 调用结果回调（Android 侧为 JNI 上行调用）。当前 onNativeResult 仅
-    // runOnUiThread 投递后立即返回，**不同步回入 Engine**。若将来回调改为同步调用任何取 tracksMu_
-    // 的 API（如 replaceGallery/applyGalleryUpdate），将与撤销路径构成 ABBA 死锁——回调实现处必须
-    // 保持「只投递、不回调」的约定。
+    // runOnUiThread 投递后立即返回，**不同步回入 Engine**，故无死锁。此前「回调不得同步回入」仅靠
+    // 注释约束，无任何强制；现由 **FACE-PIPE-015 重入检测**升级为可执行约束：
+    //   · renderResults 在持本门的临界区内经 RAII 置位 thread_local 标记（t_insideIdentityEmitGate，
+    //     实现见 Engine.cpp）表示「本线程正处发射门内」；
+    //   · 所有会取 tracksMu_ 的**公开入口**——run / processFrameOnce / applyGalleryUpdate /
+    //     setRealtimePipeline / getTrackViews（A1 审计枚举 Engine.cpp 全部加锁点后得出的穷尽集；
+    //     A2 审计独立复核同一结论）——均入口即检查：命中重入 → 立即返回并记录固定 reason
+    //     "re-entered from result callback while holding identity emit gate"，绝不进入取锁流程。
+    //
+    // ⚠️ **检测的边界（不得读成无条件保证）**：
+    //   · 只覆盖**同一线程**的回入——标记是 thread_local 且只在 renderResults 内置位。**跨线程**的
+    //     同步回入（回调把工作丢给另一线程并阻塞等待，如 `std::thread t(...); t.join();`）**绕开检测**，
+    //     仍构成真实 ABBA 死锁。该形态当前生产不可达，但也**未**被本机制拦住。
+    //   · 标记是**进程级 thread_local**、不是 per-Engine：同线程上 Engine A 处于发射门内时，调用
+    //     Engine B 的上述 API 会被**误拒**。生产为单 Engine，无实际影响。
+    //   · 拒绝的返回值并非都为调用方新增的可区分信号：applyGalleryUpdate / setRealtimePipeline 的
+    //     false 只可能来自本拒绝（无歧义）；但 getTrackViews 的 {} 与「确实无已确认轨迹」同值、
+    //     processFrameOnce 的 false 与「preprocessFrame 失败」同值，唯一诊断通道是那条 warn 日志。
+    //   · **刻意不加 `[[nodiscard]]`**（子代理4 建议过）：拒绝对调用方是 **best-effort** 语义——防死锁
+    //     这个主要收益与「调用方是否读返回值」无关（拒绝发生在取锁之前），而 4 个生产调用点本就有意
+    //     忽略；加 `[[nodiscard]]` 只会逼它们写 `(void)` 噪声，且与本条「诊断通道是日志」的定性相矛盾。
+    //
+    // 于是「回调**同线程**同步回入」不再构成 ABBA 死锁，而是立刻得到明确错误。该路径当前**生产不可达**
+    //（Android onNativeResult 仅投递、不同步回入；src/win/ 未注册结果回调），故对现有使用者**零行为变化**。
     mutable std::mutex identityEmitMu_;
 
     // #1 注册采集：enabled 为原子快速分支；回调在锁内复制快照、锁外调用，避免回调同步重入

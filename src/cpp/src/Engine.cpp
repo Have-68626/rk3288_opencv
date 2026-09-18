@@ -45,6 +45,46 @@ constexpr std::size_t kEmbeddingDim = 512;
 // 跳过「等待本线程在途回调」——自等必然死锁；跨线程关闭仍照常等待。
 thread_local bool t_inEnrollmentCaptureCallback = false;
 
+// ── FACE-PIPE-015：事件发射门「免死锁契约」的可执行化 ──
+// 背景：renderResults 在**持有 identityEmitMu_** 的临界区内经 publisher_->publish 调用结果回调
+//（Android 侧为 JNI 上行）。撤销路径 revokeTrackIdentitiesLocked 走 tracksMu_ → identityEmitMu_。
+// 若回调**同步**回入任何取 tracksMu_ 的公开 API，即与此构成 ABBA 死锁。此前该约定仅存在于注释。
+//
+// 机制：以 thread_local 标记「本线程正处发射门内」，并让会取 tracksMu_ 的**全部 5 个公开入口**
+//（run / processFrameOnce / setRealtimePipeline / applyGalleryUpdate / getTrackViews，穷尽集经审计枚举）
+// 在入口处检测重入——命中即拒绝执行、返回明确的失败结果，绝不进入取锁流程。
+// ⚠️ **边界（勿读成无条件保证）**：①**只有同一线程**的回入能被检测到——**跨线程**的同步回入（回调把工作
+// 丢给另一线程并阻塞等待，如 `std::thread t(...); t.join();`）**绕开本机制**，仍构成真实 ABBA 死锁；
+// ②标记是**进程级 thread_local**、非 per-Engine，同线程多 Engine 时会误拒另一个实例的调用。
+// 详见 Engine.h 中 identityEmitMu_ 的完整条目。
+// 该路径当前**生产不可达**（Android onNativeResult 仅 runOnUiThread 投递、不同步回入 Engine；
+// src/win/ 未注册结果回调），故此举把「将来会死锁」变成「立刻得到明确错误」，对现有使用者零行为变化。
+thread_local bool t_insideIdentityEmitGate = false;
+
+// RAII：进入发射临界区即置位、退出**恢复原值**（异常/提前返回均安全）。
+// 为什么保存/恢复而不是无条件置 false：标记是**进程级 thread_local**（非 per-Engine），一旦出现嵌套或
+// 跨 Engine 的发射门，无条件清零会把外层尚未结束的标记提前抹掉。当前不可达（5 个入口已挡住重入的
+// renderResults），但保存/恢复让它在未来守卫集收缩时不会变成锐边。（子代理4 指出）
+class IdentityEmitGateScope {
+public:
+    IdentityEmitGateScope() : prev_(t_insideIdentityEmitGate) { t_insideIdentityEmitGate = true; }
+    ~IdentityEmitGateScope() { t_insideIdentityEmitGate = prev_; }
+    IdentityEmitGateScope(const IdentityEmitGateScope&) = delete;
+    IdentityEmitGateScope& operator=(const IdentityEmitGateScope&) = delete;
+
+private:
+    const bool prev_;
+};
+
+// 取 tracksMu_ 的公开入口统一调用：命中「结果回调内同步重入」则记录固定 reason 并返回 true
+//（调用方应据返回类型以 false / 空快照拒绝执行）。
+bool reenteredFromIdentityEmitGate(const char* api) {
+    if (!t_insideIdentityEmitGate) return false;
+    rklog::logWarn("Engine", api,
+                   "re-entered from result callback while holding identity emit gate");
+    return true;
+}
+
 static bool getEnvBool(const char* envName);
 static const char* throttleModeName(InferenceThrottleMode mode);
 
@@ -634,6 +674,12 @@ void Engine::clearCancelInit() {
 }
 
 void Engine::run() {
+    // FACE-PIPE-015：run() 是本类的**阻塞主循环**，但同为「会取 tracksMu_ 的公开入口」——它经
+    // processFrame → processFrameRealtime 取 tracksMu_，随后 renderResults 会在**同线程**再取
+    // identityEmitMu_（非递归）。故若被结果回调（已持 identityEmitMu_）同步调用，即构成自锁。
+    // 与 applyGalleryUpdate / setRealtimePipeline / getTrackViews / processFrameOnce 一致地拒绝：
+    // 直接返回、不进入循环（A1 审计指出此前漏了本入口，与注释宣称的「所有」不符）。
+    if (reenteredFromIdentityEmitGate(__func__)) return;
     RKLOG_ENTER("Engine");
     isRunning_ = true;
     cv::Mat frame;
@@ -750,7 +796,10 @@ bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
     return true;
 }
 
-void Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline) {
+bool Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline) {
+    // FACE-PIPE-015：本 API 会取 tracksMu_。若从结果回调（持发射门）同步重入，将与撤销路径构成
+    // ABBA 死锁；入口检测命中即拒绝执行（返回 false + 固定 reason），绝不进入取锁流程。
+    if (reenteredFromIdentityEmitGate(__func__)) return false;
     bool enabled = false;
     bool changed = false;
     {
@@ -791,6 +840,7 @@ void Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline)
     rklog::logInfo("Engine", __func__,
                    std::string("实时推理管线") + (enabled ? "已注入/启用" : "已清除，回退兼容路径") +
                    (changed ? "" : "（同对象重复注入，幂等跳过撤销）"));
+    return true;
 }
 
 uint64_t Engine::getRealtimeGeneration() const {
@@ -823,8 +873,12 @@ void Engine::setRealtimeReason(const std::string& reason) {
     }
 }
 
-void Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
+bool Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
                                 const std::vector<std::string>& keepIds) {
+    // FACE-PIPE-015：本 API 会取 tracksMu_（并在其内等待 identityEmitMu_）。若从结果回调（持发射门）
+    // 同步重入，将与撤销路径构成 ABBA 死锁；入口检测命中即拒绝执行（返回 false + 固定 reason），绝不
+    // 进入取锁流程。该路径当前生产不可达，故对现有使用者零行为变化。
+    if (reenteredFromIdentityEmitGate(__func__)) return false;
     // 第三波审查 #4 残留竞态闭合：把「换图库覆盖」与「按新库有效身份精准撤销跟踪身份」放进
     // **同一个 tracksMu_ 临界区**，使引擎线程的 trackFaces/update 无法插入二者之间——它要么在
     // 换库前完成（撤销随后覆盖其结果），要么在换库后完成（据新库处理），绝不出现「已撤身份又
@@ -848,6 +902,7 @@ void Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gal
     rklog::logInfo("Engine", __func__,
                    "实时图库覆盖已更新并精准撤销身份 count=" + std::to_string(count) +
                    " keep=" + std::to_string(keepIds.size()));
+    return true;
 }
 
 void Engine::revokeTrackIdentitiesLocked(const std::vector<std::string>& keepIds) {
@@ -1081,11 +1136,18 @@ bool Engine::getRealtimeEffective() const {
     return snap && snap->effective;
 }
 
-std::vector<pipeline::TrackView> Engine::getTrackViews() const {    std::lock_guard<std::mutex> lock(tracksMu_);
+std::vector<pipeline::TrackView> Engine::getTrackViews() const {
+    // FACE-PIPE-015：本 API 会取 tracksMu_。若从结果回调（持发射门）同步重入，将并入 ABBA 死锁环；
+    // 入口检测命中即返回空快照（明确的失败结果），不取锁。
+    if (reenteredFromIdentityEmitGate(__func__)) return {};
+    std::lock_guard<std::mutex> lock(tracksMu_);
     return currentTracks_;
 }
 
 bool Engine::processFrameOnce(const cv::Mat& rawFrame, double decodeMs) {
+    // FACE-PIPE-015：本 API 经 trackFaces/renderResults 会取 tracksMu_。若从结果回调（持发射门）
+    // 同步重入（属误用——回调本应只投递），将与撤销路径构成 ABBA 死锁；入口检测命中即拒绝执行。
+    if (reenteredFromIdentityEmitGate(__func__)) return false;
     return processFrame(rawFrame, decodeMs);
 }
 
@@ -1356,6 +1418,12 @@ void Engine::renderResults() {
     // 版本使本处校验失败→先清身份再发布。两条路径都不会在撤销返回后发出旧 VERIFIED。
     {
         std::lock_guard<std::mutex> emitGate(identityEmitMu_);
+        // FACE-PIPE-015：进入发射临界区即置位本线程标记（RAII）。此后经 publish 触发的结果回调若
+        // 同步回入取 tracksMu_ 的公开 API，将被入口检测拒绝，而非 ABBA 死锁。
+        // 声明顺序写在 emitGate 之后，只为与「先持门、后标记」的语义读起来自洽；因两者析构之间**没有
+        // 任何代码**，标记在门之前构造其实等价——**不要**把这里的顺序当作某个真实窗口的屏障
+        //（A1 审计指出先前的注释作了一条不承重的「构造顺序 ⇒ 反向析构」论证）。
+        IdentityEmitGateScope emitScope;
 #if defined(RK_ENABLE_TEST_SEAMS)
         // 测试接缝：钉在发射临界区内（见 onBeforePublishLocked 注释）。
         onBeforePublishLocked();
