@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-17
+as_of=2026-09-18
 -->
 
 # 文档索引
@@ -26,6 +26,7 @@ as_of=2026-09-17
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `RK3288_CONSTRAINTS.md` | living | RK3288 目标设备画像与工程硬约束清单 |
+| `RK3288_OPTIMIZATION.md` | living | RK3288 基准口径与优化方向（受控前提、判据阈值、降级阶梯、坑清单） |
 | `capability-matrix.md` | living | 终端能力矩阵（产物、能力、限制） |
 
 ## architecture/
@@ -44,6 +45,7 @@ as_of=2026-09-17
 | `designs/personnel-enrollment-design.md` | living | 人员注册与权限系统顶层设计 |
 | `designs/android-enrollment-design.md` | living | Android 端人员注册设计 |
 | `designs/model-acquisition-import.md` | living | 模型获取与导入流程 |
+| `designs/rk3288-fingerprint-integration-design.md` | living | RK3288 指纹/读卡外设接入设计（**未落地设计稿**，含未定论项） |
 
 ## guides/
 

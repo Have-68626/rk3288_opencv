@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-15
+as_of=2026-09-18
 -->
 
 # RK3288 机器视觉引擎 (AI Engine)
@@ -14,7 +14,7 @@ as_of=2026-09-15
 
 ## 项目简介与运行模式
 
-跨平台机器视觉应用，支持在资源受限设备（RK3288, Cortex-A17, 2GB RAM）上进行稳定的视频监控与边缘生物识别：
+跨平台机器视觉应用，支持在资源受限设备（RK3288, Cortex-A17, 2GB RAM，实测 MemTotal ≈1.95GiB）上进行稳定的视频监控与边缘生物识别：
 
 - **Android App (Gradle)**: `app/` + `src/java/` — 摄像头预览、人脸识别 UI、JNI 引擎绑定
 - **C++ 核心引擎 (CMake)**: `src/cpp/` — 人脸检测/识别/追踪管线、帧处理、性能监控
@@ -68,6 +68,8 @@ rk3288_opencv/
 **必需**：OpenCV 4.10.0（源码构建）、Android NDK 27.0、CMake 3.22.1+、Gradle 9.0、Node.js 22.x、pnpm
 
 **可选**：ncnn（推理加速）、RK MPP（硬解码）、Qualcomm SNPE、libyuv
+
+> ⚠️ **RK MPP 的设备侧警告**：目标机实测为旧 `vpu_service` 驱动、**并非 MPP 框架**（无 `/dev/mpp*`、无 `/proc/mpp_service`），`mpp-1.0.11` 与设备驱动的匹配性**从未真机验证**——**"本机能编过" ≠ "设备上能跑"**。详见 `AGENTS.md` 的 MPP 条目与 `docs/RK3288_CONSTRAINTS.md` §0.4。
 
 > 完整依赖清单与模型台账见 [CREDITS.md](CREDITS.md)。
 
@@ -151,6 +153,7 @@ pnpm -C web e2e:run     # Cypress E2E
 | `check-raii-violations.sh` | 架构契约 #1 RAII 合规检查 |
 | `run-web-e2e.ps1` | Web E2E 测试 + 覆盖率 |
 | `bench_camera_adb.ps1` / `.sh` | Android 摄像头基准测试 |
+| `run-android-face-regression.ps1` | Android 人脸回归采集（私有媒体，匿名化聚合报告；含稳态 FPS 判据） |
 | `stability_switch_50_adb.ps1` | Android 前后台 50 次稳定性验收 |
 
 ## 许可证

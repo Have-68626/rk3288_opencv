@@ -22,6 +22,8 @@ as_of=2026-09-17
 
 ## 1. 设备与系统
 
+> **机号标注**：本节除随行注明外均为**机 A** 实测（构建指纹 `guo12011713`）；机 B 的差异值随行标注。
+
 | 项 | 实测值 | 来源 |
 |---|---|---|
 | 型号 | `yx_rk3288`（product / model / device 均为 `rk3288`） | `getprop` |
@@ -30,8 +32,8 @@ as_of=2026-09-17
 | 构建指纹 | `Android/rk3288/rk3288:7.1.2/SUNSHINE/guo12011713:userdebug/release` | `getprop ro.build.fingerprint` |
 | 构建类型 | **`userdebug`**、`ro.build.tags=release`，构建时间 2020-12-01 | `getprop` |
 | ABI | `armeabi-v7a` | `getprop ro.product.cpu.abi` |
-| 内存 | 2045240 kB（≈1.95 GiB） | `/proc/meminfo` |
-| 存储 | `/data` 4.5G（余 **1.7G**）、`/system` 1.9G、`/cache` 122M | `df -h` |
+| 内存 | 机 A 2045240 kB、机 B 2045216 kB（≈1.95 GiB） | `/proc/meminfo` |
+| 存储 | 机 A `/data` 4.5G（余 **1.7G**，61%）；机 B `/data` 4.5G（**余 624M，87%**）；`/system` 1.9G；`/cache` 122M | `df -h` |
 | 面板 | **1920×1080 @ 60.000004 fps（唯一支持模式）**，density 160，带触摸 | `dumpsys display` |
 | 显示接口 | `ro.rk.hdmi_enable=true`；`lcdlightservice` 运行中 | `getprop` |
 
@@ -89,7 +91,7 @@ vendor0 112M · vendor1 112M · userdata ≈4.5G
 
 > **背景**：本机曾被描述为"有摄像头、麦克风、指纹模块、NFC（疑似一块可刷卡区域）"。**首版本文档的结论（"指纹不存在、刷卡区是 USB 读卡器"）已被实测推翻**，修正版见下表。
 
-> **⚠️ 关于机型与采集出处**：本文数据来自**两台同型号、同类设备**——`192.168.5.2`（构建 `guo12011713`，下文记 **机 A**）与 `192.168.5.3`（构建 `guo08051520`，序列号 `EJT8XPA9JA`，下文记 **机 B**）。**二者属同一类设备**，但 ROM 构建与外设装配存在差异：
+> **⚠️ 关于机型与采集出处**：本文数据来自**两台同型号、同类设备**——`192.168.5.2`（构建 `guo12011713`，`device_id_hash=69d83c2ce659`，下文记 **机 A**）与 `192.168.5.3`（构建 `guo08051520`，`device_id_hash=f09acaca146d`，下文记 **机 B**）。**二者属同一类设备**，但 ROM 构建与外设装配存在差异：
 >
 > | | 机 A (.2) | 机 B (.3) |
 > |---|---|---|
@@ -98,13 +100,13 @@ vendor0 112M · vendor1 112M · userdata ≈4.5G
 > | 厂商测试工具 | 无 | **有**（`com.genee.hw_test`、`com.yx.factorytest`、`winuim.fingerprint.sample`） |
 > | Magisk / TWRP | 已装 | 未装 |
 >
-> **同类设备，结论可相互参考**；但涉及具体外设是否装配时，仍应注明采集机号。**§2 与 §5 的结论来自机 B**（外设齐全、含厂商测试工具的那台）；**§3、§4 的编解码与串流测量来自机 A**。
+> **同类设备，结论可相互参考**；但涉及具体外设是否装配时，仍应注明采集机号。**§1 除随行注明外为机 A**；**§2 与 §5 的结论来自机 B**（外设齐全、含厂商测试工具的那台）；**§3、§4 的编解码与串流测量来自机 A**。
 
 ### 2.1 结论表（机 B）
 
 | 外设 | 实测结论 | 证据 |
 |---|---|---|
-| **指纹** | ✅ **存在且完全可用**（型号 `WINUIM WMR06` / `WMM06`） | 见 §2.3 |
+| **指纹** | ✅ **已确认存在，且在机 B 上经厂商示例应用端到端验证可用**（型号 `WINUIM WMR06` / `WMM06`）；**两台是否都可用未验证** | 见 §2.3 |
 | **刷卡区** | ⚠️ **读卡硬件存在且能独立读卡（刷卡有蜂鸣），但主机侧无任何软件消费该数据** | 见 §2.2 |
 | **NFC** | ⚠️ **无 Android NFC 协议栈**；但刷卡硬件对 13.56MHz（手机 NFC）有响应，属 NFC 家族技术 | 见 §2.2 |
 | **摄像头** | **USB UVC 前置单摄**（`05a3:9230`，Sonix "bftv smart camera"），`uvcvideo` 驱动 | `dumpsys media.camera`、`/sys/kernel/debug/usb/devices` |
@@ -114,9 +116,9 @@ vendor0 112M · vendor1 112M · userdata ≈4.5G
 | 传感器 | 加速度计、陀螺仪（`gs_lis3dh`） | `pm list features`、`/sys/bus/i2c/devices` |
 | 以太网 | `eth0` up，MAC `28:52:f9:17:fc:f0`（机 A） | `/sys/class/net` |
 | WiFi | `wlan0`（**SDIO**，vendor `0x02d0`），MAC `70:4a:0e:0b:6e:e2`（机 A） | `/sys/bus/sdio/devices` |
-| 蓝牙 | `/dev/rtk_btusb` 存在（Realtek 信号），但与 SDIO 的 Broadcom 信号**矛盾，未核实** | `/dev` 列表 |
+| 蓝牙 | **硬件与协议栈存在、当前未启用**（用户通常关闭）：`/sys/class/bluetooth/` 空、rfkill `bt_default` `soft=1`、无 HCI 控制器注册；板级声明见 `rfkill0` 的 DT `bluetooth-platdata`、`DRIVER=rfkill_bt`、`ro.rk.bt_enable=true`。`/dev/rtk_btusb` 是 ROM 携带的 Realtek **软件栈**（`devices/virtual/rtk_btusb`、零接口绑定、`insmod` 在 rc 中被注释），**不是硬件、不构成芯片归属证据** | `/sys/class/bluetooth/`、`/sys/bus/sdio` |
 | HDMI | `ro.rk.hdmi_enable=true`、`/dev/cec0`、`/dev/hdmi_hdcp1x`；**未发现 HDMI 输入桥接芯片**（`tc358*` 无命中）→ **输出only** | `getprop`、`/dev` |
-| GPU | Mali-T764，闭源驱动 `r18p0-01rel0`，GLES 3.0 | `getprop sys.gmali.version` |
+| GPU | 芯片实际型号 **ARM Mali-T764 MP4**；驱动自报名字面量 `Mali-T760`；`sys.gmali.version=r18p0-01rel0-x-4@0`；GLES 实测 **`OpenGL ES 3.2`**（`v1.r18p0-01rel0.…`） | `dumpsys SurfaceFlinger` 的 GLES 行、`getprop sys.gmali.version` |
 
 **I2C 总线挂载**（找芯片的最快途径）：`syr827`/`syr828`/`act8846`（电源）、`hym8563`（RTC）、`at24`（EEPROM）、`gs_lis3dh`（加速度计）、`es8323`/`rt5640`（音频）、`ilitek_ts` 与 `Goodix-TS`（**均为触摸控制器，非指纹**）。**无任何读卡器芯片。**
 
@@ -144,6 +146,8 @@ com.yx.factorytest : /system/app/FactoryTest（v7.1.2）
 | # | 事实 | 来源 |
 |---|---|---|
 | 1 | 刷卡**有蜂鸣**，读卡器能独立读卡并本地反馈 | 用户观察 |
+| 1a | **刷卡区在机身底部最左侧；指纹模块在底部最右侧**——两者是**两处独立的物理位置**，**不是同一设备** | 用户观察 |
+| 1b | 卡片为**感应卡（非接触式）**，无接触/插入区域 | 用户观察 |
 | 2 | **用手机 NFC（13.56MHz）刷也能触发蜂鸣** → 读头支持 13.56MHz | 用户观察 |
 | 3 | 刷卡在 **USB 中断**上零活动：`ehci_hcd:usb2` 在 120 秒窗口内恒定 1372 | 实测 |
 | 4 | 刷卡在 **HID 事件节点**（event2/3）零字节 | 实测 |
@@ -159,11 +163,11 @@ com.yx.factorytest : /system/app/FactoryTest（v7.1.2）
 
 **结论**：读卡器是**能独立工作的自带模块**（读卡 + 本地蜂鸣不需主机参与），但**当前 ROM 里没有任何软件消费卡数据**，因此刷卡对 Android 主机完全不可见。这不是硬件故障，也不是接口未找到。
 
-**可能的连接路径（均未证实）**：① 与指纹共用 `22bc:2009` 模块、走其 SCSI 通道；② **Wiegand 接口（GPIO 数据线）**——门禁读头最常见做法，**不产生任何串口/USB 流量**，与本观察完全吻合；③ 挂在某 UART 上但由缺失的门禁服务驱动。
+**可能的连接路径（均未证实）**：① 与指纹共用 `22bc:2009` 模块、走其 SCSI 通道——**2026-09-18 起不倾向此路径**：`/dev/sg0`（`22bc:2009`）已认定为**指纹仪**（§2.3、§7.8），而读卡区在机身底部**最左侧**、指纹在**最右侧**，两者是**独立的物理位置**（见上表 1a）；② **Wiegand 接口（GPIO 数据线）**——门禁读头最常见做法，**不产生任何串口/USB 流量**，与本观察完全吻合；③ 挂在某 UART 上但由缺失的门禁服务驱动。
 
 **启用它的可行路径**：取得厂商门禁应用/固件，或逆向读卡器协议（见 §2.4）。
 
-### 2.3 指纹：存在且端到端可用（**修正版**）
+### 2.3 指纹：已确认是指纹仪，且机 B 上端到端可用（**修正版**）
 
 **首版判"未发现任何软件或硬件证据"，已推翻。** 关键线索是**厂商自带指纹 SDK 一直在设备上**，且其界面首启为黑屏导致未能识别。
 
@@ -201,7 +205,7 @@ libserial_port.so        串口支持
 | 图像 | **真实指纹图像已渲染**（脊线可见），标注「采集成功」 |
 | 模板内容 | 十六进制串，**头部 `57494E55494D` = ASCII "WINUIM"** |
 
-**结论**：**指纹模块确认存在且完全可用**，链路为 设备打开 → 读 SN → 采原始图 → 转 BMP → 生成模板。
+**结论**：**该模块已确认是指纹仪**（读卡器不可能产出带脊线的指纹图像），链路为 设备打开 → 读 SN → 采原始图 → 转 BMP → 生成模板。**但**：`/dev/sg0` 权限为 `crw------- root root`，接入仍**须经 root 通道**；且**两台是否都可用未验证**（端到端仅机 B 测过）。
 
 ### 2.4 读卡器逆向计划（非破坏性，待执行）
 
@@ -248,7 +252,7 @@ libserial_port.so        串口支持
 
 **未加载任何 `libstagefright_soft_*` / `OMX.google.*` 软件解码器。**
 
-设备节点：`/dev/vpu-service`(244,0)、`/dev/hevc-service`(245,0)，**权限均为 `crw-rw-rw-`（无需 root）**。另有 `/dev/iep`（图像增强）、`/dev/rga`（2D 加速）、`/dev/mali0`。
+设备节点：`/dev/hevc-service`(244,0)、`/dev/vpu-service`(245,0)，**权限均为 `crw-rw-rw-`（无需 root）**（2026-09-18 复核更正 major/minor，见 §7.7）。另有 `/dev/iep`（图像增强）、`/dev/rga`（2D 加速）、`/dev/mali0`。
 
 ### 3.2 声明上限（换算后的可用工作点）
 
@@ -426,8 +430,8 @@ adb shell "logcat -d | grep -E 'FPDev|jniFP|GenerateTemplate'"       # 采集时
 1. **读卡器的宿主接口未确定**（最高优先待查）。已**排除**：USB 中断活动、USB HID 事件节点（event2/3）、HID 原始报告（hidraw0/1）、全部 SoC UART（ttyS1–ttyS4）、I2C 芯片、SPI 设备、设备树节点（无 `wiegand`/`card`/`rfid`）、GPIO 导出线（仅有 gpiochip，无导出项）。**待查**：是否与指纹共用 `22bc:2009` 模块的 SCSI 通道；是否走 Wiegand（GPIO 双线）但由**独立 MCU** 解码（故本机内核无感知）；是否存在未枚举的内部 USB 口。逆向计划见 §2.4。
 2. **`c0f4:06f5` "Usb KeyBoard" 的用途未确定**：其报告描述符为完整 104 键标准键盘（非"只发数字"的读卡器伪装），且**机 A 上不存在该设备**。它是否为读卡器的 HID 化身？——**刷卡期间它在 event2/3 与 hidraw0/1 上均为零字节，故该假设不成立**；其真实用途仍未知。
 3. **`WMR06`（指纹）是否兼具读卡功能未验证**：理论上可通过 `/dev/sg0` + SG_IO 发送私有 SCSI 命令探测，但那属于**向硬件写入**，按 §2.4 约束须单独确认后执行。
-4. **设备曾在采集期间重启一次**：uptime 归零，但 `pstore`/ramoops **无任何崩溃记录**，`dmesg` 仅存开机后日志 → **原因无法确定**。可能是硬件看门狗（采集早期见厂商 `wdt` 服务持续输出 `time_cnt==0 ,wdt_timer==-1`）、供电波动或用户态崩溃后重启。**不能确认由采集操作引起，也不能排除**。若计划长时间连续运行，这是需要留意的稳定性信号。
-5. **蓝牙芯片归属**：SDIO 侧报 vendor `0x02d0`（Broadcom 系），但 `/dev` 存在 `rtk_btusb`（Realtek 系），**两者矛盾**，未进一步核实。
+4. **设备曾在采集期间重启一次（2026-09-18 已确认关闭）**：uptime 归零，但 `pstore`/ramoops **无任何崩溃记录**。**已由用户澄清**：那是**到熄灯时间用户手动操作设备断电**造成的，**不是设备故障**（断电不会留下崩溃记录，与"uptime 归零 + pstore 无记录"完全一致）。→ 原文"若计划长时间连续运行，这是需要留意的稳定性信号"的担忧**予以撤销**——它不是稳定性问题。另：dmesg 里刷屏的 `time_cnt==0 ,wdt_timer==-1` 并**不是**看门狗故障线索（详见 §7）。
+5. **蓝牙（2026-09-18 已定论）**：**设备有蓝牙硬件与协议栈、当前未启用**（用户通常关闭）——`/sys/class/bluetooth/` 空、rfkill `bt_default` `soft=1`、无 HCI 控制器注册；板级声明见 `rfkill0` 的 DT `bluetooth-platdata`、`DRIVER=rfkill_bt`、`ro.rk.bt_enable=true`。原"两者矛盾"的表述**作废**：`/dev/rtk_btusb` 是 ROM 携带的 Realtek **软件栈**（`devices/virtual/`、零接口绑定、`insmod` 在 rc 中被注释、驱动编进内核），**不是硬件、不构成芯片归属证据**；芯片确切型号**仍未定论**（SDIO 侧枚举 Broadcom `02D0:A9A6`，与 ROM 的 Realtek 栈**层级不同、不能互相推断**），启用态可用性**未取证**。
 6. **WiFi/BT 在主线 Linux 下的驱动可用性**——未测。
 7. **`libjpeghwdec.so` 是否实际参与 spacedesk 的解码**：库已加载，但无对应硬件中断增长；其"hw"之名与实测行为未对齐，未查清。
 8. **spacedesk 的实际传输编码**（是否确为帧内 JPEG）：由"无任何硬件解码块 + 帧率随内容变化面积波动"强烈提示，但**未抓包验证**。
@@ -437,8 +441,79 @@ adb shell "logcat -d | grep -E 'FPDev|jniFP|GenerateTemplate'"       # 采集时
 
 ---
 
-## 7. 与其他文档的关系
+## 7. 2026-09-18 复核与补遗
 
-- [RK3288_CONSTRAINTS.md](../RK3288_CONSTRAINTS.md) —— 目标设备画像与工程硬约束；本文为其 §0.3「需在设备上采集」字段的一次性补齐，**但不改变该文档"待真机溯源"的证据姿态**（本文未记录脱敏设备序列号）
+2026-09-18 对两台同类实机（`192.168.5.2` / `192.168.5.3`）做了一次**只读取证**复核（主机时钟窗 11:54–12:15 +0800；对设备的写操作为零，未 `adb root` / `remount` / `setprop`，未 push/install）。逐条修正与补全如下（均为"原值 → 修正值"）：
+
+> **`as_of` 说明**：本快照 `as_of=2026-09-17` **保持不变**——那是**采集日**。本节及正文中由 2026-09-18 复核引入的更正（例如 §1 新增的机 B `2045216 kB` / `624M`）**以本节为准**；**头部日期 09-17 不覆盖 09-18 的复核口径**。
+
+### 7.1 序列号去标识 与 机号归属补全
+
+- **明文序列号**：原文 §2 前言记有**明文**设备序列号 → 改为去标识 `device_id_hash`（SHA-256 前 12 位小写 hex，口径同 `scripts/run-android-face-regression.ps1` 的 `Get-Sha256Short`）：**机 A `69d83c2ce659`**、**机 B `f09acaca146d`**。此后全文只出现 `device_id_hash`，不再出现明文序列号。
+- **§1 整表机号**：原文 §1 落在"仅机 A / 仅机 B"的归属空白里；实测其构建指纹 `guo12011713` 属**机 A**，已在 §1 加机号标注。
+- **内存 `MemTotal`**：原只记 `2045240 kB`（机 A）→ 新增机 B `2045216 kB`。
+- **`/data` 容量**：原只记 `4.5G 余 1.7G`（机 A）→ 新增机 B `4.5G 已用 3.9G、**余 624M（87%）**`。这正是"按 1.7G 规划落盘"会在机 B 踩坑的原因；`RK3288_CONSTRAINTS.md` 的"`/data` 空间不足导致落盘失败"在机 B 属现实约束。
+
+### 7.2 GPU / GLES 需分两层（原文把两层混为一谈）
+
+- **GLES 版本**：原 `3.0` → 实测两台逐字一致：`GLES: ARM, Mali-T760, OpenGL ES 3.2 v1.r18p0-01rel0.5ff61f1c424963a640f75d9e10d6cb79`，即 **`OpenGL ES 3.2`**。`GLES 3.0` 只是本项目自设的保守渲染基线。
+- **GPU 名称**：驱动/SurfaceFlinger **自报名字面量为 `Mali-T760`**，而芯片实际型号是 **`Mali-T764 MP4`** → 二者必须分列，否则引用时互相打架。
+- `sys.gmali.version` = `r18p0-01rel0-x-4@0`（两台）。
+
+### 7.3 蓝牙：不是"不存在"，是"存在但未启用"
+
+- 原表述（§2.1 与 §6-5）：`/dev/rtk_btusb`（Realtek）与 SDIO 的 Broadcom "**矛盾，未核实**" → **作废**。
+- **用户澄清（2026-09-18）**：**设备本身有蓝牙功能，用户通常直接关闭不用。**
+- 板级确实声明了蓝牙支持：`rfkill0` 的 DT compatible 为 `bluetooth-platdata`、`DRIVER=rfkill_bt`、`ro.rk.bt_enable=true`。
+- 测量时看到的是**未启用态**：`/sys/class/bluetooth/` 为空、rfkill `bt_default` `soft=1` 软阻塞、无 HCI 控制器注册。→ **正确表述是"蓝牙硬件与协议栈存在、当前未启用"，不得写成"无蓝牙"或"无可用控制器"。**
+- `rtk_btusb` 的结论**保留**：其 sysfs 路径为 `devices/virtual/rtk_btusb`（virtual 总线，背后无物理设备）、零接口绑定、`insmod` 行在 rc 中被注释（驱动编进内核）→ 它是 ROM 携带的 Realtek 蓝牙**软件栈**，**不构成芯片归属证据**。
+- **芯片确切型号仍未定论**：SDIO 侧枚举到 Broadcom `02D0:A9A6`（`SDIO_CLASS=00`），而 ROM 携带的 BT 栈是 Realtek（`bt_vendor.conf: UartPort=/dev/ttyS0`、`rtkbt.conf: BtDeviceNode=/dev/rtk_btusb`）——**两者层级不同，不能互相推断**。启用态可用性**未取证**。
+
+### 7.4 外设补遗
+
+- **指纹设备两台都有**：`sg0` 的 SCSI INQUIRY 两台均为 `WINUIM` / `WMR06` / `type 5` / `rev 0110`；原文给人的印象是"机 B 独有"。
+- **`/dev/sg0` 接口真相**：声明为 USB Mass Storage / Bulk-Only（`08/06/50`），但**内核无 `sd_mod`** → `usb-storage` 绑定后**不产出任何块设备**，只剩 `/dev/sg0` 一个 SCSI generic 节点。
+- **读卡器"零流量"的内核级硬证据**：机 B `/sys/class/scsi_device/0:0:0:0/device/` 的 `iorequest_cnt=0x1`（自开机只收到枚举那 1 条 INQUIRY）。
+- **`scaling_governor` 两台四核全为 `interactive`** → 基准的受控前提**当前不满足**；本轮未写该值（对设备的写操作未授权）。
+- **`WINUIM WMR06` 的身份：已可认定为「指纹仪」**（口径收敛见 §7.8）。依据是 2026-09-17 机 B 用厂商示例应用**端到端采到了指纹**——读 SN、采集原始图、转 BMP、生成模板，且界面**渲染出了带脊线的真实指纹图像**（§2.3）；**读卡器不可能产出指纹图像**。另有厂商 SDK 的 Futronic 系证据：`libftrScanAPI.so`、错误串含 `CFs80CompatibleDevice` / `CFsUsb20t80HDevice`。
+- **仍未验证的是**：① 它**是否兼具读卡功能**（§6-3）；② **两台是否都可用**（端到端仅机 B 测过）。另两个指纹相关 APK（`winuim.fingerprint.sample`、`com.genee.hw_test`）装在 `/data/app/`、时间戳 `2021-08-25` 晚于 ROM 构建 `2021-08-05`，说明机器**事后被侧载过**。
+
+### 7.5 §6-4 的重启悬案：已由用户澄清关闭（不是设备故障）
+
+- **结论**：2026-09-17 采集期间的那次重启 = **用户到熄灯时间手动操作设备断电**，**非设备故障**；uptime 归零 + `pstore`/ramoops 无崩溃记录与此完全一致（断电不会留下崩溃记录）。→ 原文"若计划长时间连续运行，这是需要留意的稳定性信号"**予以撤销**。
+- **`check_boot()` 的行为仍要记录**（已读源脚本逐行核实、属**已核实的潜在风险**，但**不是**那次重启的原因，勿混为一谈）：开机动画持续 **≥120 秒**时走**正常分支** `rm -r /data/camera; rm /etc/media_profiles.xml; sync; reboot`（**主动 reboot**）；异常分支（`/data` 未挂载/只读、或 `ro.crypto.state=encrypted`）才是 `rm -rf /data/*` + `mke2fs` 重建 userdata。触发条件在"接了多个 OTG 设备"或"`/data` 接近写满导致挂载变慢"时更易满足。
+- ⚠️ **易误读点（必须写清）**：脚本的 `unit` 判据取的是 `df -h` **第 2 列（Size 列）**的末字符，**不是剩余空间**；两台 Size 均为 `4.5G` 故 `unit=G`，**不触发清空分支**。**不要**写成"剩余空间小就会清空"。
+- **dmesg 刷屏的线索更正**：`time_cnt==0 ,wdt_timer==-1` 来自 `ping_test()` 每 30 次轮询执行的 `echo wdt > /proc/oem_gpio`，是**该 ROM 的普通周期行为，不是故障信号**（原文把它列为"可能是硬件看门狗"的线索）。
+- **方法学**：dmesg 环形缓冲已回绕（两台最早一行分别是 `[5999.216154]` 与 `[6180.837065]`）→ **"dmesg 查不到" ≠ "没发生过"**，开机期证据必须交叉验证。
+
+### 7.6 本轮两台均未重启
+
+- 2026-09-18 复核期间**两台均未重启**：机 A uptime `15684.10`，机 B uptime `15707.97` → `16814.09`（主机墙钟 Δ≈1106s 与 uptime Δ≈1106s 完全吻合）；`adb devices` 首尾 transport_id 不变。
+
+### 7.7 设备节点 major/minor 更正（本轮现场查实）
+
+- **原值**（§3.1）：`/dev/vpu-service`(244,0)、`/dev/hevc-service`(245,0)。
+- **修正值**：`/dev/hevc-service`(244,0)、`/dev/vpu-service`(245,0)——二者**对调**。
+- **依据**：2026-09-18 两台设备只读复核 `ls -l /dev/ | grep -E "vpu-service|hevc-service"`，逐字输出为：
+
+```text
+crw-rw-rw- 1 media media 244,   0 hevc-service
+crw-rw-rw- 1 media media 245,   0 vpu-service
+```
+
+- **权限位与"无需 root"的结论不变**（两个节点均为 `crw-rw-rw-`）。
+
+### 7.8 指纹身份口径收敛（本轮修正原"身份未定论"）
+
+- **原值**（§7.4 首版与本节末的"仍未定论"清单）：`WINUIM WMR06` 是"指纹仪还是读卡器**仍未定论**"，并要求"不得把'是指纹模块'写成单向结论"。
+- **修正值**：**身份已可认定为「指纹仪」**。依据是 2026-09-17 机 B 用厂商示例应用**端到端采到了指纹**——读 SN、采集原始图、转 BMP、生成模板，界面**渲染出带脊线的真实指纹图像**（§2.3）；**读卡器不可能产出指纹图像**。厂商 SDK 亦为 Futronic 系（`libftrScanAPI.so`、错误串含 `CFs80CompatibleDevice` / `CFsUsb20t80HDevice`）。
+- **未验证项收窄为两项**：① 它**是否兼具读卡功能**（§6-3）；② **两台是否都可用**（端到端仅机 B 测过）。
+- **依据出处**：§2.3 的端到端指纹图像证据 + 厂商 SDK 的 Futronic 系证据 + **物理位置独立**（§2.2 表 1a：读卡区在底部最左侧、指纹在底部最右侧，两者不是同一设备）。
+
+> **本轮仍未取证/未定论（不得当结论）**：`WINUIM WMR06` 是否兼具读卡功能、两台是否都可用（**身份已认定为指纹仪**，见 §7.8）；`c0f4:06f5` 是否为读卡器的"键盘楔"；读卡器的宿主接口；蓝牙芯片确切型号与启用态可用性；WiFi/BT 在主线 Linux 下的驱动可用性；`libjpeghwdec.so` 是否参与 spacedesk 解码；HDMI 是否真的只输出；`/data/camera` 与 `/etc/media_profiles.xml` 当前是否存在。
+
+## 8. 与其他文档的关系
+
+- [RK3288_CONSTRAINTS.md](../RK3288_CONSTRAINTS.md) —— 目标设备画像与工程硬约束；本文为其 §0.3「需在设备上采集」字段的一次性补齐，**该文档 §0.x 已随之改为『已固化』口径**（去标识序列号见本文 §7.1）
 - [capability-matrix.md](../capability-matrix.md) —— 各终端能力矩阵
 - [opensource-integration-feasibility-2026-09-16.md](opensource-integration-feasibility-2026-09-16.md) —— 开源可集成性评估
