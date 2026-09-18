@@ -221,15 +221,27 @@ TEST(ReplayScriptWriter, CommentHeaderPrefixesBody) {
     EXPECT_EQ(parsed[0].dets[0].id, "carol");
 }
 
-// ── 确定性：同一输入序列化两次，输出逐字节相同（无隐藏状态/未初始化读取）───────
+// ── 确定性：交错输入后，同一输入序列化的输出仍逐字节相同（无跨调用隐藏状态/静态缓冲）──
+// 为什么必须**交错**：连续两次对**同一**输入调用同一个纯函数几乎必然相等（无参差输入），
+// 该断言结构上接近恒真、判别力弱。真正的风险是**跨调用隐藏状态**（static 缓冲/缓存未复位）。
+// 故在两次对 s 的序列化之间插入一次**不同输入** s2 的序列化，再比对两次 s 的输出——
+// 只有「无跨调用状态」才能通过。golden 比对（CommentHeaderPrefixesBody）抓不到这一维度。
 TEST(ReplayScriptWriter, SerializationIsDeterministic) {
     const ReplayScriptData s{
         frame(0, 100, {det(1, 2, 3, 4, true, "x"), det(5, 6, 7, 8, false)}),
         frame(1, 200, {}),
     };
+    // 交错用的**不同**输入（帧号/时间戳/检测/ran 均不同）。
+    const ReplayScriptData s2{
+        frame(9, 9000, {det(100, 110, 120, 130, true, "other"), det(0, 0, 1, 1, false)}),
+        frame(10, 9100, {}, /*ran=*/false),
+        frame(11, 9200, {det(7, 7, 7, 7, true, "y")}),
+    };
     const std::string a = serialize(s);
+    const std::string s2out = serialize(s2);  // 交错：不同输入夹在两次 s 之间
     const std::string b = serialize(s);
-    EXPECT_EQ(a, b);
+    EXPECT_EQ(a, b) << "交错不同输入后，两次对 s 的输出必须逐字节一致（无跨调用隐藏状态）";
+    EXPECT_NE(a, s2out) << "参照非空：s2 必须是**不同**输入，交错才有意义";
 }
 
 // ── 兼容性：序列化器输出必须能被（镜像的）解析器无损接受 ──────────────────────

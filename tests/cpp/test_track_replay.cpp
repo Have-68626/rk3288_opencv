@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -1168,6 +1169,38 @@ TEST(TrackReplay, RevocationAllowsIdentityRewriteAcrossSameTrack) {
     EXPECT_EQ(m.rebuilds, 0) << "撤销只清身份、不丢轨迹，故不构成重建";
     EXPECT_EQ(m.staleIdentityFrames, 0) << "bob 帧的真值就是 bob";
     EXPECT_EQ(metricOf(m.firstConfirmSteps, "bob"), 0) << "轨迹已确认，写入身份即显示";
+    EXPECT_EQ(m.neverConfirmed, 0);
+}
+
+// ── 撤销计数按**身份个数**计、非按步/帧计（C-10b）：一次 @ revoke 撤销两人 → 2 ──────
+// 动机：identityRewrites 与 revokedIdentities 两个指标的**唯一非零覆盖**原都在上一条用例里
+//（各断言 ==1），任一被删则另一个也失去非零覆盖。本用例**独立**钉住 revokedIdentities 的语义。
+//
+// 字段刻意**不带** `Frames` 后缀（见其声明处注释）：它不是帧计数——一次 @ revoke 可撤销**多个**
+// 身份，按**个数**累加，不是按 @ revoke 步数、也不是按帧。故本用例让「步数(1) ≠ 个数(2)」：
+// 构造：alice 与 bob 在**不同 y 带**并行确认（互不串轨），末帧对外视图同时含两人；随后**一条**
+// `@ revoke -`（空 keep）把两人一并撤销。若计数被误实现为「每步 +1」，本用例立即变红。
+TEST(TrackReplay, RevocationCountsIdentitiesNotRevokeSteps) {
+    ReplayScript s;
+    // alice 在上带、bob 在下带；竖直中心间距 200 > centerMaxRatio×100，IoU/中心判据都不会并轨。
+    for (int i = 0; i < 3; ++i) {
+        s.push_back(frameAt(i, 1000 + i * 100,
+                            {det(0, 0, 100, 100, "alice"), det(0, 200, 100, 100, "bob")}));
+    }
+    s.push_back(revokeStep({}));  // 空图库：**一条** @ revoke 清掉 alice 与 bob **两个**身份
+
+    const auto m = runReplay(s);
+
+    const int revokeSteps = static_cast<int>(std::count_if(
+        s.begin(), s.end(), [](const ReplayStep& st) { return st.kind == StepKind::Revoke; }));
+    EXPECT_EQ(revokeSteps, 1) << "脚本里恰有 1 条 @ revoke 步";
+    EXPECT_EQ(m.revokedIdentities, 2)
+        << "一条 @ revoke 撤销两个对外可见身份 → 计数为 2（按身份个数，非按步/帧）";
+    // 两人并行确认、互不串轨的对照读数。
+    EXPECT_EQ(metricOf(m.firstConfirmSteps, "alice"), 2);
+    EXPECT_EQ(metricOf(m.firstConfirmSteps, "bob"), 2);
+    EXPECT_EQ(m.staleIdentityFrames, 0) << "上下两带不得互相串轨";
+    EXPECT_EQ(m.duplicateIdCases, 0);
     EXPECT_EQ(m.neverConfirmed, 0);
 }
 
