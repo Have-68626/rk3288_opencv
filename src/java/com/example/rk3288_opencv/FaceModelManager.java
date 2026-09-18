@@ -62,7 +62,12 @@ import java.util.zip.ZipInputStream;
  *   active_profile.tmp/.bak   指针的原子写临时/备份
  *   &lt;profileId&gt;/manifest.json
  *   &lt;profileId&gt;/scrfd.param ...（模型文件）
- *   .tmp_&lt;nano&gt;/              解压临时目录（下次导入时清扫）
+ *   .tmp_&lt;nano&gt;/              解压临时目录（下次导入时清扫；动态名）
+ *   .staging/                  临时/暂存文件目录（**名字恒定**，不含 profileId）：
+ *     .staging/txn/&lt;profileId&gt;      事务记录落盘前的临时文件（原 .txn_&lt;id&gt;.tmp）
+ *     .staging/commit/&lt;profileId&gt;   提交见证落盘前的临时文件（原 .commit_&lt;id&gt;.tmp）
+ *                              下次导入时**整体清空**——里面只可能是临时文件，故清扫是纯正语义。
+ *                              （名字不含 profileId ⇒ 结构上不可能与任何 profile 的正式产物同名。）
  *   .bak_&lt;profileId&gt;/         目录替换时移开的旧配置备份
  *   .txn_&lt;profileId&gt;          目录替换**事务记录**（profileId/hadOld/prevActive/state[/txnId]，任务 A）
  *   .commit_&lt;profileId&gt;       **提交见证**（profileId/txnId）：本次替换已提交的持久证据。
@@ -105,6 +110,26 @@ public final class FaceModelManager {
      * <p>包级可见：单元测试用它构造/断言见证现场（与 {@link #ACTIVE_POINTER_FILE} 同例）。
      */
     static final String COMMIT_WITNESS_PREFIX = ".commit_";
+
+    /**
+     * 暂存目录名：{@code <storeDir>/.staging}（点号前缀 → 被 {@code listProfiles} 忽略）。
+     *
+     * <p>所有**由 profileId 拼成的临时文件**都放进这里（{@code .staging/txn/<profileId>}、
+     * {@code .staging/commit/<profileId>}）。子目录名与文件名都不含额外的点号后缀，而 {@code .staging}
+     * 以点号开头（不可能等于任何合法 profileId 目录），故**结构上**不可能与任何 profile 的正式产物
+     * （{@code <profileId>/}、{@code .txn_<id>}、{@code .commit_<id>}）同名——这正是旧方案
+     * （顶层 {@code .txn_<id>.tmp}）的漏洞：{@code isSafeDirName} 放行点号，profileId 恰为
+     * {@code foo.tmp} 时，它的活记录 {@code .txn_foo.tmp} 与「profileId 为 foo 的记录临时文件」逐字同名。
+     *
+     * <p>包级可见：单元测试用它断言「暂存目录无残留」（与 {@link #COMMIT_WITNESS_PREFIX} 同例）。
+     */
+    static final String STAGING_DIR = ".staging";
+
+    /** 暂存目录内的事务记录临时文件子目录：{@code .staging/txn/<profileId>}。 */
+    private static final String STAGING_TXN_DIR = "txn";
+
+    /** 暂存目录内的提交见证临时文件子目录：{@code .staging/commit/<profileId>}。 */
+    private static final String STAGING_COMMIT_DIR = "commit";
 
     /** 默认存储目录名（相对 {@code files/}）。 */
     private static final String DEFAULT_STORE_DIR = "face_models";
@@ -1314,6 +1339,38 @@ public final class FaceModelManager {
         return new File(storeDir, TXN_PREFIX + profileId);
     }
 
+    /** 暂存根目录 {@code <storeDir>/.staging}（不保证存在）。 */
+    @NonNull
+    private File stagingRoot() {
+        return new File(storeDir, STAGING_DIR);
+    }
+
+    /** 事务记录落盘前的临时文件：{@code <storeDir>/.staging/txn/<profileId>}。 */
+    @NonNull
+    private File stagingTxnFileOf(@NonNull String profileId) {
+        return new File(new File(stagingRoot(), STAGING_TXN_DIR), profileId);
+    }
+
+    /** 提交见证落盘前的临时文件：{@code <storeDir>/.staging/commit/<profileId>}。 */
+    @NonNull
+    private File stagingCommitFileOf(@NonNull String profileId) {
+        return new File(new File(stagingRoot(), STAGING_COMMIT_DIR), profileId);
+    }
+
+    /**
+     * 确保 {@code f} 的父目录存在（写暂存文件前必调）。
+     *
+     * <p><b>必须在 {@code dirLock} 内调用</b>：{@code writeTxn} / {@code writeCommitWitness} 的调用点
+     * 都在 {@code importZip} 的持锁段内（{@code swapInProfileDirs} 与 {@code importZip} 主体），
+     * 故此处裸 {@code mkdirs} 不会与并发导入竞争。
+     *
+     * @return 父目录是否可用；失败时调用方按「写失败」处理（绝不继续）
+     */
+    private static boolean ensureParentDir(@NonNull File f) {
+        File parent = f.getParentFile();
+        return parent == null || parent.isDirectory() || parent.mkdirs();
+    }
+
     /**
      * 读事务记录。
      *
@@ -1367,8 +1424,17 @@ public final class FaceModelManager {
      * 否则会留下「改了一半、且无任何记录可依」的现场。
      */
     private boolean writeTxn(@NonNull DirTxn txn) {
-        File tmp = new File(storeDir, TXN_PREFIX + txn.profileId + ".tmp");
+        // 临时文件放进**名字恒定**的暂存子目录 `.staging/txn/<profileId>`（文件名即 profileId）：
+        // 旧的顶层 `.txn_<id>.tmp` 与「profileId 恰为 <id>.tmp 的**正式记录**」逐字同名，此处的
+        // 截断写会把它**覆盖销毁**——只修清扫救不了这条独立破坏路径。改名目标 `.txn_<id>` 仍在
+        // storeDir 之下，故 moveReplace 依旧是同盘 rename（原子、覆盖语义见 FileOps.moveReplace）。
+        File tmp = stagingTxnFileOf(txn.profileId);
+        if (!ensureParentDir(tmp)) {
+            return false;
+        }
         if (!fileOps.writeSync(tmp, txn.encode())) {
+            // 保留原有自删策略（仅 moveReplace 失败时删）：writeSync 失败可能留下半截文件，但它
+            // 位于 `.staging/` 下——下次导入整体清空该目录即回收，不构成同名歧义，也不漏检。
             return false;
         }
         if (!fileOps.moveReplace(tmp, txnFileOf(txn.profileId))) {
@@ -1417,14 +1483,19 @@ public final class FaceModelManager {
      * 移动摧毁的证据，正是本方法要消灭的那个缺口。
      */
     private boolean writeCommitWitness(@NonNull String profileId, @NonNull String txnId) {
-        File tmp = new File(storeDir, COMMIT_WITNESS_PREFIX + profileId + ".tmp");
+        // 与 writeTxn 同构：临时文件放进 `.staging/commit/<profileId>`（文件名即 profileId），
+        // 不再用顶层 `.commit_<id>.tmp`——那个名字与「profileId 恰为 <id>.tmp 的**活见证**」同名。
+        // 迁入暂存目录后，即使留下半截文件也可被 sweepStaleTempDirs 安全清扫（见其 javadoc）。
+        File tmp = stagingCommitFileOf(profileId);
         StringBuilder sb = new StringBuilder();
         sb.append("profileId=").append(profileId).append('\n');
         sb.append("txnId=").append(txnId).append('\n');
+        if (!ensureParentDir(tmp)) {
+            return false;
+        }
         if (!fileOps.writeSync(tmp, sb.toString().getBytes(StandardCharsets.UTF_8))) {
             // 必须删临时文件：DEFAULT_FILE_OPS.writeSync 先建/截断文件再写，写到一半失败（如磁盘满）
-            // 会留下半截文件；而 `.commit_*.tmp` **刻意不进 sweepStaleTempDirs**（见其 javadoc 的
-            // 同名歧义论证），不在这里删就永久滞留。
+            // 会留下半截文件。（迁入 `.staging/` 后它已可被清扫，但此处仍显式删除，正常路径零残留。）
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
             return false;
@@ -2183,7 +2254,7 @@ public final class FaceModelManager {
     }
 
     /**
-     * 清理遗留的解压临时目录 {@code .tmp_<nano>}（任务 A4）。
+     * 清理遗留临时残留：解压临时目录 {@code .tmp_<nano>} 与暂存目录 {@code .staging/}（任务 A4）。
      *
      * <p>此前**没有任何清理路径**：解压阶段（或其后任何时刻）进程被杀，临时目录就永久滞留在
      * `files/face_models/` 下——只被 `listProfiles()` 的点号前缀规则忽略，磁盘上却一直占着。
@@ -2192,33 +2263,31 @@ public final class FaceModelManager {
      * 正在使用的临时目录。前缀 {@code .tmp_} 在本目录内唯一标识解压临时目录（事务记录是
      * {@code .txn_*}、指针临时文件是 {@code active_profile.tmp}，均不匹配）。
      *
-     * <p>⚠️ {@code .commit_<id>.tmp}（提交见证的临时文件）**刻意不扫**：清扫只能按名字前缀匹配，
-     * 而 {@code isSafeDirName} 放行点号，故 profileId 恰为 {@code x.tmp} 时，它的**活见证**
-     * {@code .commit_x.tmp} 与「profileId 为 x 的见证临时文件」**同名**——扫掉它就等于静默销毁
-     * 一份提交证据，正是本机制要防的事。见证临时文件不被任何读路径引用，崩溃残留只是无害垃圾，
-     * 所以宁可留着。{@code writeCommitWitness} 在写入与改名两个失败分支都会自行删除它，
-     * 正常路径无残留；只有「进程恰好死在 writeSync 与 moveReplace 之间」才留下一个惰性文件。
+     * <p><b>已修复（同名歧义）</b>：事务记录 / 提交见证的临时文件原先放在 <b>顶层</b>，名字由
+     * profileId 拼成（{@code .txn_<id>.tmp} / {@code .commit_<id>.tmp}）。而清扫只能按名字前缀匹配，
+     * {@code isSafeDirName} 又放行点号——于是 profileId 恰为 {@code foo.tmp} 时，它的**活事务记录**
+     * {@code .txn_foo.tmp} 与「profileId 为 foo 的临时文件」**同名**，按「{@code .txn_} 前缀 +
+     * {@code .tmp} 后缀」清扫就会静默销毁一份活证据，把本可自动收敛的现场退化为必须人工了结的
+     * 歧义现场。提交见证一侧当时只能靠「**刻意不进清扫**」自保，代价是「进程死在写入与改名之间」
+     * 留下的半截文件永久滞留（一笔欠债）。
      *
-     * <p>⚠️ **已知遗留（非本批引入）**：下面②清扫的 {@code .txn_<id>.tmp} 有**同一种**同名歧义
-     * ——profileId 恰为 {@code foo.tmp} 时，它的**活事务记录** {@code .txn_foo.tmp} 会被当成
-     * 「profileId 为 foo 的记录临时文件」删掉，于是「已提交但记录改写失败」的现场会丢失提交状态，
-     * 退化成需要人工了结的歧义现场。可达性极低（要求 profileId 以 {@code .tmp} 结尾）。本批只在
-     * {@code .commit_} 一侧避开了这个坑，**未**改动②（那会回退上一批 A2-Low4 的清理）。
-     * 彻底的修法是把临时文件放进**名字恒定**的暂存子目录（profileId 不含分隔符，故无歧义）。
+     * <p>现在临时文件已迁入**名字恒定**的暂存子目录 {@code .staging/}（{@code .staging/txn/<profileId>}、
+     * {@code .staging/commit/<profileId>}），子目录名与文件名都不含额外的点号后缀、且 {@code .staging}
+     * 以点号开头，故**结构上**不可能与任何正式产物同名。因此 {@code .staging/} 里只可能是临时文件，
+     * **整体清空**是纯正语义，也能安全地连带清掉提交见证的临时文件——上面那笔欠债就此还清。
+     * （{@code .tmp_<nano>/} 的解压临时目录语义不变，仍单独清扫。）
      */
     private void sweepStaleTempDirs() {
         File[] files = storeDir.listFiles();
         if (files == null) return;
         for (File f : files) {
             String n = f.getName();
-            // ① 解压临时目录 .tmp_<nano>；② 事务记录的临时文件 .txn_<id>.tmp（崩在 writeSync 与
-            // rename 之间即永久残留，A2-Low4）。
-            boolean stale = n.startsWith(".tmp_")
-                    || (n.startsWith(".txn_") && n.endsWith(".tmp"));
-            if (!stale) continue;
+            // ① 解压临时目录 .tmp_<nano>（动态名）；② 暂存目录 .staging（里面只可能是临时文件）。
+            if (!n.startsWith(".tmp_") && !STAGING_DIR.equals(n)) continue;
             if (f.isDirectory()) {
                 deleteRecursivelyQuietly(f);
             } else {
+                // 万一被占成同名文件（非目录）：一并删掉，否则仍会挡路。
                 //noinspection ResultOfMethodCallIgnored
                 f.delete();
             }
