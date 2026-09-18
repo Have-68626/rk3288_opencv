@@ -627,6 +627,19 @@
                 android:textSize="12sp"
                 android:layout_marginBottom="16dp" />
 
+            <!-- 未决目录替换的人工了结入口：仅在状态报告「新旧配置并存」时可见（默认 gone）。
+                 没有这个入口，FaceModelManager.resolveAmbiguousSwap 就是死代码，而那段现场会永久
+                 阻塞该 profile 的后续导入。 -->
+            <Button
+                android:id="@+id/btn_resolve_swap"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="@string/ui_model_resolve_swap"
+                android:backgroundTint="#8A4B00"
+                android:textColor="#FFFFFF"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp" />
+
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

@@ -208,6 +208,18 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Button btnManagePersons;
     private TextView tvModelManagement;
     /**
+     * 「处理未决替换」按钮（2026-09-17 外部审查修复）：仅当状态报告「新旧配置并存且无提交证据」
+     * 时可见。它的存在使 {@code resolveAmbiguousSwap} 不会成为死代码——没有它，那种现场会永久
+     * 阻塞该 profile 的后续导入。
+     */
+    private Button btnResolveSwap;
+    /**
+     * 当前需要人工了结的 profileId（由 {@link #refreshModelManagementStatus()} 在 UI 线程写、
+     * 由按钮点击时在 UI 线程读，故无需 volatile；后台刷新线程不触碰它）。
+     */
+    @Nullable
+    private String ambiguousSwapProfileId;
+    /**
      * #3-High（第三波审查）：UI 线程（{@code statusSnapshot()}）与后台刷新线程（{@code status()}）
      * 首次会几乎同时调用 {@link #modelManager()}。字段必须 volatile 配合双检锁，保证二者共享
      * <b>同一</b>实例——否则会各建一个 {@link FaceModelManager}、各自独立的 statusCache，UI 侧
@@ -3633,11 +3645,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         btnManagePersons = findViewById(R.id.btn_manage_persons);
         tvModelManagement = findViewById(R.id.tv_model_management);
         btnRegisterFace = findViewById(R.id.btn_register_face);
+        btnResolveSwap = findViewById(R.id.btn_resolve_swap);
 
         if (btnImportModel != null) btnImportModel.setOnClickListener(v -> confirmLicenseThenPickModelZip());
         if (btnSwitchModel != null) btnSwitchModel.setOnClickListener(v -> showSwitchModelDialog());
         if (btnManagePersons != null) btnManagePersons.setOnClickListener(v -> showPersonManagementDialog());
         if (btnRegisterFace != null) btnRegisterFace.setOnClickListener(v -> showFaceRegisterDialog());
+        if (btnResolveSwap != null) btnResolveSwap.setOnClickListener(v -> {
+            final String id = ambiguousSwapProfileId;
+            if (id != null) showResolveSwapDialog(id);
+        });
 
         refreshModelManagementStatus();
     }
@@ -3663,8 +3680,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         try {
             new Thread(() -> {
                 String text;
+                String ambiguous = null;
                 try {
                     FaceRuntimeStatus s = modelManager().status();
+                    ambiguous = s.ambiguousSwapProfileId;
                     text = "模型: " + s.sourceLabel()
                             + (s.isUserImported() ? (" profile=" + s.profileId) : "")
                             + " 已导入=" + s.importedProfileCount
@@ -3677,6 +3696,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 }
                 // lambda 捕获要求 effectively final：先求值到 text，再转 final 供 UI 线程使用
                 final String summary = text;
+                final String ambiguousId = ambiguous;
                 runOnUiThread(() -> {
                     // #2：Activity 已销毁时丢弃陈旧 UI 回调，避免窗口 token 失效。
                     if (isFinishing() || isDestroyed()) return;
@@ -3685,6 +3705,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     if (refreshSeq != modelStatusRefreshSeq.get()) return;
                     if (tvModelManagement == target) {
                         target.setText(summary);
+                    }
+                    // 未决替换入口随状态一起更新：只有状态确实报告「新旧并存」时才可见，且携带
+                    // 它报告的 profileId（点击时才不会去动一个猜出来的目标）。
+                    ambiguousSwapProfileId = ambiguousId;
+                    if (btnResolveSwap != null) {
+                        btnResolveSwap.setVisibility(
+                                ambiguousId == null ? View.GONE : View.VISIBLE);
                     }
                 });
             }, "FaceModelStatus").start();
@@ -3708,13 +3735,60 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     /**
+     * 未决目录替换的人工了结对话框（2026-09-17 外部审查修复）。
+     *
+     * <p>约束 1：新旧两份模型目录并存且无提交证据时，**保留现场并报错、不猜测、不删除任一副本**。
+     * 决定权交回用户——这也是 {@code resolveAmbiguousSwap} 唯一的调用入口。
+     */
+    private void showResolveSwapDialog(@NonNull String profileId) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.ui_model_resolve_swap_title)
+                .setMessage(getString(R.string.ui_model_resolve_swap_message)
+                        + "\n\nprofile=" + profileId)
+                .setPositiveButton(R.string.ui_model_resolve_swap_keep_new,
+                        (d, w) -> resolveSwap(profileId, true))
+                .setNegativeButton(R.string.ui_model_resolve_swap_keep_old,
+                        (d, w) -> resolveSwap(profileId, false))
+                .setNeutralButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** 后台线程执行了结（含递归删除目录 + fsync），不阻塞 UI；结果如实回显并刷新状态。 */
+    private void resolveSwap(@NonNull String profileId, boolean keepNew) {
+        new Thread(() -> {
+            FaceModelManager.Result r;
+            try {
+                r = modelManager().resolveAmbiguousSwap(profileId, keepNew);
+            } catch (Throwable t) {
+                r = null;
+            }
+            final FaceModelManager.Result res = r;
+            final boolean ok = res != null && res.isOk();
+            final String detail = (res == null || res.message == null) ? "" : res.message;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (ok) {
+                    showModelStatusToUser(getString(R.string.ui_model_resolve_swap) + "：" + profileId, false);
+                } else {
+                    showModelStatusToUser(getString(R.string.ui_model_resolve_swap_failed) + "：" + detail, true);
+                }
+                refreshModelManagementStatus();
+                refreshRuntimeStatusIfDue(true);
+            });
+        }, "FaceModelResolveSwap").start();
+    }
+
+    /**
      * #1（第二波审查 P1）+ 任务18 冷启动恢复：恢复模型激活态与已注册图库。
      *
      * <p>此前生产 Java 零 {@code activate} 调用，导致「导入过的模型重启后不生效（恒 missing_model
      * 仅预览）」；同时重启后内存图库为空，已注册人员无法被识别。此处：
      * <ol>
      *   <li>先从加密仓库重建内存图库并 {@code replaceGallery}（喂入 native gallery 槽）；</li>
-     *   <li>读取 {@code active_profile}，存在则调用 {@code activate(activeProfileId, currentAbi, true)}
+     *   <li>先调 {@code recoverForStartup()} 完成目录事务恢复，**再**取回恢复后的
+     *       {@code active_profile}——恢复未完成则停止自动激活并如实报错（约束 2-1，勿改回
+     *       「先读指针再 activate」：那样恢复会被随后写回的旧值抵消）。</li>
+     *   <li>取到目标后调用 {@code activate(target, currentAbi, true)}
      *       绑定实时管线（Engine 未创建时 native 侧登记待激活，创建后自动补激活）。</li>
      * </ol>
      * 全程后台线程执行、失败不阻塞启动；结果只更新状态区文本，reason 如实展示。
@@ -3725,15 +3799,31 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             // 步骤 1：重建图库（先于 activate，使 native reload 的 loadGallery 钩子能取到该快照）。
             final boolean galleryOk = refreshGalleryFromRepository();
 
-            final String active;
+            // 约束 2-1（外部审查 P1 #2）：**先完成目录事务恢复，再重新读取激活指针**。
+            // 原实现先 activeProfileId() 拿目标、再 activate()，而恢复发生在 activate() 内部——
+            // 若恢复把指针改回旧配置，手里那个「恢复前的值」会被重新激活并写回，抵消掉恢复。
+            // recoverForStartup() 内部即「先恢复、后重读」，并在恢复未完成时返回 blockedReason。
+            final FaceModelManager.StartupRecovery sr;
             try {
-                active = modelManager().activeProfileId();
+                sr = modelManager().recoverForStartup();
             } catch (Throwable t) {
                 runOnUiThread(() -> {
                     showModelStatusToUser(buildRestoreNote("模型启动恢复失败：状态读取异常", galleryOk), true);
                 });
                 return;
             }
+            if (sr.blockedReason != null) {
+                // 恢复未完成 → **停止**自动激活并如实报错，绝不猜测哪个配置该生效。
+                runOnUiThread(() -> {
+                    showModelStatusToUser(buildRestoreNote(
+                            "模型启动恢复未完成：" + sr.blockedReason, galleryOk), true);
+                    refreshModelManagementStatus();
+                    refreshRuntimeStatusIfDue(true);
+                    updateDiagnosticsText();
+                });
+                return;
+            }
+            final String active = sr.activeProfileId;
             if (active == null) {
                 // 未导入：保持未导入态，交由「导入模型」入口引导。
                 runOnUiThread(() -> {
