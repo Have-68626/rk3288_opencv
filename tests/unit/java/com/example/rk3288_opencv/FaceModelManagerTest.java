@@ -47,6 +47,14 @@ public class FaceModelManagerTest {
     private static final String TXN_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private static final String TXN_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+    /**
+     * 暂存目录名（与生产实现 {@code FaceModelManager.STAGING_DIR} 同名）。
+     *
+     * <p>此处用**字面量**而非引用生产常量：回归用例必须能在**旧实现**（尚无 {@code STAGING_DIR}）
+     * 上编译并跑出断言失败（而非编译失败），否则无法呈现「先红后绿」。
+     */
+    private static final String STAGING_DIR = ".staging";
+
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
 
@@ -1018,7 +1026,6 @@ public class FaceModelManagerTest {
     private static final class FaultyFileOps implements FaceModelManager.FileOps {
         // ── 既有全局开关（语义逐字不变，既有用例零改动）────────────────────────────
         boolean failWrite;
-        boolean failRename;
         boolean failDelete;
         /** 只让「从 .tmp_ 解压目录改名到目标」这一步失败（迁就其它改名，如回滚的 bak→target）。 */
         boolean failRenameFromTmp;
@@ -1032,10 +1039,49 @@ public class FaceModelManagerTest {
         private final Set<String> failWriteIfContains = new HashSet<>();
         /** 只匹配**源文件名**的 rename 闸门（见 {@link #failRenameFromName}）。 */
         private final Set<String> failRenameFrom = new HashSet<>();
+        /**
+         * 只匹配 writeSync 目标**路径**（以 {@code '/'} 归一化）子串的闸门。
+         *
+         * <p>为什么需要它：临时文件迁入 {@code .staging/txn/<id>} 与 {@code .staging/commit/<id>} 后，
+         * 二者的**文件名都是 profileId**，{@link #failWriteForName} 无法区分「事务记录的暂存文件」与
+         * 「提交见证的暂存文件」，故改按所在子目录（{@code .staging/commit/...}）区分。
+         */
+        private final Set<String> failWritePathContains = new HashSet<>();
+        /**
+         * 只匹配 writeSync 目标**路径**子串、且要求「**先落半截内容再失败**」的闸门。
+         *
+         * <p>为什么需要它：{@code DEFAULT_FILE_OPS.writeSync} 是「先 {@code new FileOutputStream(f,false)}
+         * 建/截断文件，再 {@code write}」，故真实的写失败（如磁盘写满）会**留下半截文件**；而普通闸门
+         * （{@link #gated} 命中即 {@code return false}）**根本不建文件**，表达不了这一现场。临时文件
+         * 迁入 {@code .staging/} 后，「半截文件由下次导入的清扫回收」是设计的承重前提，必须能构造它。
+         */
+        private final Set<String> failWritePartialPathContains = new HashSet<>();
 
-        /** 只让写往该文件名（如 "active_profile.tmp"、".txn_p1.tmp"）的 writeSync 失败。 */
+        /**
+         * 只让写往该文件名（如 "active_profile.tmp"）的 writeSync 失败。
+         *
+         * <p>⚠️ 不能用来区分 {@code .staging/txn/<id>} 与 {@code .staging/commit/<id>}（同名）；
+         * 那种场合请用 {@link #failWriteForPathContains}。
+         */
         void failWriteForName(String name) {
             failNameByOp.computeIfAbsent("write", k -> new HashSet<>()).add(name);
+        }
+
+        /**
+         * 只让写往**路径**（{@code '/'} 归一化）包含该子串（如 {@code ".staging/commit/p2"}）的操作失败。
+         *
+         * <p>⚠️ 闸门看的是 {@link #gated} 的 {@code to} 参数，故对**任何**传入非空 {@code to} 的操作都生效
+         * ——不止 {@code writeSync}，{@code moveReplace} 也一样。当前唯一用法 {@code ".staging/commit/p2"}
+         * 只命中暂存路径（{@code moveReplace} 的目标是顶层正式名 {@code .commit_p2}，不含该子串），故不误伤。
+         * 将来若改用更短的子串（如 {@code "commit"}），务必先确认它不会命中别处的 {@code to}。
+         */
+        void failWriteForPathContains(String pathSubstring) {
+            failWritePathContains.add(pathSubstring.replace('\\', '/'));
+        }
+
+        /** 让写往路径含该子串的 writeSync **先落半截内容再失败**（还原真实写失败的磁盘现场）。 */
+        void failWritePartialForPathContains(String pathSubstring) {
+            failWritePartialPathContains.add(pathSubstring.replace('\\', '/'));
         }
 
         /** 只让内容包含该子串的 writeSync 失败（如 "state=committed"）。 */
@@ -1046,6 +1092,17 @@ public class FaceModelManagerTest {
         /** 只让删除该名字（如 ".bak_p1"）的 deleteRecursively 失败。 */
         void failDeleteForName(String name) {
             failNameByOp.computeIfAbsent("delete", k -> new HashSet<>()).add(name);
+        }
+
+        /**
+         * 只让**改名目标**为该名字的 {@code moveReplace} 失败（如记录 {@code .txn_p1}、见证
+         * {@code .commit_p2}）。
+         *
+         * <p>闸门读的是 {@link #gated} 的 {@code to.getName()}/{@code from.getName()}——{@code moveReplace}
+         * 的源是暂存文件（名即 profileId）、目标是正式记录名，故用**正式名**注册即可唯一命中。
+         */
+        void failMoveReplaceForName(String name) {
+            failNameByOp.computeIfAbsent("moveReplace", k -> new HashSet<>()).add(name);
         }
 
         /**
@@ -1065,6 +1122,8 @@ public class FaceModelManagerTest {
             failNameByOp.clear();
             failWriteIfContains.clear();
             failRenameFrom.clear();
+            failWritePathContains.clear();
+            failWritePartialPathContains.clear();
         }
 
         /** 本次调用是否命中闸门。 */
@@ -1074,6 +1133,7 @@ public class FaceModelManagerTest {
                 if (from != null && names.contains(from.getName())) return true;
                 if (to != null && names.contains(to.getName())) return true;
             }
+            if (matchesPath(failWritePathContains, to)) return true;
             if (data != null && !failWriteIfContains.isEmpty()) {
                 String text = new String(data, StandardCharsets.UTF_8);
                 for (String needle : failWriteIfContains) {
@@ -1085,16 +1145,13 @@ public class FaceModelManagerTest {
 
         @Override
         public boolean rename(File from, File to) {
-            if (failRename) return false;
             if (failRenameFromTmp && from.getName().startsWith(".tmp_")) return false;
             if (failRenameFrom.contains(from.getName())) return false;
-            if (gated("rename", from, to, null)) return false;
             return from.renameTo(to);
         }
 
         @Override
         public boolean moveReplace(File from, File to) {
-            if (failRename) return false;
             // **闸门命中时不得执行 to.delete()**：默认实现是先删目标再改名，但被闸门拦下时必须
             // 完全不动作——否则接缝自身会制造出生产路径不存在的破坏。
             if (gated("moveReplace", from, to, null)) return false;
@@ -1110,9 +1167,29 @@ public class FaceModelManagerTest {
             return deleteRecursivelyReal(f);
         }
 
+        /** 目标路径（{@code '/'} 归一化）是否含集合中任一子串。 */
+        private static boolean matchesPath(Set<String> needles, File f) {
+            if (f == null || needles.isEmpty()) return false;
+            String p = f.getPath().replace('\\', '/');
+            for (String needle : needles) {
+                if (p.contains(needle)) return true;
+            }
+            return false;
+        }
+
         @Override
         public boolean writeSync(File f, byte[] data) {
             if (failWrite) return false;
+            if (matchesPath(failWritePartialPathContains, f)) {
+                // 先落半截再失败：还原 DEFAULT_FILE_OPS.writeSync 的真实语义（先建/截断文件再 write），
+                // 普通闸门命中时**根本不建文件**，表达不了「留下半截临时文件」这一现场。
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
+                    fos.write(data, 0, Math.max(1, data.length / 2));
+                    fos.flush();
+                } catch (Exception ignored) {
+                }
+                return false;
+            }
             if (gated("write", null, f, data)) return false;
             try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
                 fos.write(data);
@@ -2346,7 +2423,9 @@ public class FaceModelManagerTest {
             // 记录导入前的指针代次：profileId 在两种结果下都是 "p2"（同名覆盖），**不具判别力**；
             // 能判别「有没有越过提交点」的是代次——越过则 persistActive 会盖上**新鲜**代次。
             String pointerTxnBefore = readPointerTxnId(dir);
-            ops.failWriteForName(FaceModelManager.COMMIT_WITNESS_PREFIX + "p2.tmp");
+            // 见证的暂存文件已迁入 .staging/commit/p2——它与事务记录的暂存文件**同名**（都是 p2），
+            // 故不能按文件名注入，改按**子目录路径**注入：只命中见证这一侧的 writeSync。
+            ops.failWriteForPathContains(STAGING_DIR + "/commit/p2");
             Map<String, byte[]> v2 = defaultFiles("v2");
             FaceModelManager.Result r =
                     m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
@@ -2454,6 +2533,259 @@ public class FaceModelManagerTest {
         } finally {
             FaceModelManager.setFileOpsForTesting(null);
         }
+    }
+
+    // ---------- ⑲ 布局改造：临时文件迁入恒定名暂存目录 .staging/ ----------
+
+    /**
+     * A 路径回归（清扫误删）：profileId 以 {@code .tmp} 结尾时，其**活事务记录** {@code .txn_<id>}
+     * 与「profileId 去掉 .tmp 后缀后的记录临时文件」**同名**（{@code p.tmp} 的记录即 {@code .txn_p.tmp}）。
+     * 旧清扫按「{@code .txn_} 前缀 + {@code .tmp} 后缀」猜测，会把这份**活证据**当成临时文件删掉，
+     * 使本可自动收敛的事务退化为必须人工了结的歧义现场。
+     *
+     * <p>临时文件迁入恒定名暂存目录 {@code .staging/} 后，清扫不再据名猜测（只清 {@code .staging/} 与
+     * {@code .tmp_*}），活记录安然无恙。
+     */
+    @Test
+    public void sweepDoesNotDeleteLiveTxnRecordOfDotTmpProfileId() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+
+            // 构造 profileId="p.tmp" 的**未了结**替换现场：新旧目录并存 + in_progress 记录（未提交）。
+            Map<String, byte[]> vNew = defaultFiles("new");
+            Map<String, byte[]> vOld = defaultFiles("old");
+            writeProfileDir(m.profileDir("p.tmp"),
+                    manifest("p.tmp", "[\"arm64-v8a\"]", vNew, "lic"), vNew);
+            writeProfileDir(new File(dir, ".bak_p.tmp"),
+                    manifest("p.tmp", "[\"arm64-v8a\"]", vOld, "lic"), vOld);
+            writeTxnFile(dir, "p.tmp", true, "pX", false, TXN_A);   // 记录名恰为 .txn_p.tmp
+
+            // 让恢复无法自行收敛（bak→target 改名失败），以保住这份「未了结」现场供判定。
+            ops.failRenameFromName(".bak_p.tmp");
+
+            // 触发清扫：对**另一个** profile 导入（importZip 开头即 sweepStaleTempDirs）。
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                    ABI, true).isOk());
+
+            assertTrue("活事务记录不得被清扫误删（它与「profileId 为 p 的临时文件」同名）",
+                    new File(dir, ".txn_p.tmp").exists());
+
+            // 现场判定正确：仍据 in_progress 记录报「未提交事务」，而非退化成「无记录 → 无法判定」。
+            FaceModelManager.Result r = m.activate("p.tmp", ABI, true);
+            assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+            assertTrue("应据事务记录判为未提交事务，实际=" + r.message,
+                    r.message.contains("未提交事务"));
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * B 路径回归（写入覆盖，与清扫无关）：写 profile {@code p} 的事务记录**临时文件**不得破坏
+     * profileId {@code p.tmp} 的**正式记录** {@code .txn_p.tmp}。
+     *
+     * <p>旧实现把临时文件放在顶层、名字由 profileId 拼成（{@code .txn_p.tmp}），与 {@code p.tmp} 的
+     * 正式记录逐字同名，写入即以**截断**方式覆盖销毁它。临时文件迁入 {@code .staging/txn/p} 后，
+     * 这条独立破坏路径被结构性消除。
+     */
+    @Test
+    public void writeTxnTempFileDoesNotClobberDotTmpProfileRecord() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+
+        // 先造 p.tmp 的活记录，并记下其逐字节内容。
+        writeTxnFile(dir, "p.tmp", true, "pX", false, TXN_A);
+        File live = new File(dir, ".txn_p.tmp");
+        assertTrue(live.isFile());
+        byte[] before = readFile(live);
+
+        // 让 p 走一次真实导入（其 writeTxn 会写暂存文件 → 改名落到 .txn_p）。
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                ABI, true).isOk());
+
+        assertTrue("p.tmp 的正式事务记录必须完好存在", live.isFile());
+        assertTrue("p.tmp 的记录内容必须逐字节未被覆盖",
+                java.util.Arrays.equals(before, readFile(live)));
+        assertTrue("记录仍应被解析为 p.tmp 的现场",
+                new String(readFile(live), StandardCharsets.UTF_8).contains("profileId=p.tmp"));
+    }
+
+    /** 正常路径结束后暂存目录 {@code .staging} 不得残留任何文件。 */
+    @Test
+    public void stagingDirLeavesNoFilesAfterSuccessfulImport() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                ABI, true).isOk());
+        assertNoStagingFiles(dir);
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * writeTxn 的 {@code moveReplace} 失败 ⇒ **绝不越过破坏性改名**：导入中止、旧配置一字未动、
+     * 无正式记录/备份/暂存残留。（此前该失败分支零用例覆盖。）
+     */
+    @Test
+    public void writeTxnMoveReplaceFailureAbortsBeforeAnyDestructiveChange() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                    ABI, true).isOk());
+
+            // 只让「暂存文件 → .txn_p1」这一步改名失败（源是暂存文件、目标是正式记录名）。
+            ops.failMoveReplaceForName(".txn_p1");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+            assertTrue("应说明无法记录事务而中止：" + r.message,
+                    r.message.contains("无法记录目录替换事务"));
+            assertTrue("旧配置必须一字未动",
+                    java.util.Arrays.equals(v1.get(DET_BIN),
+                            readFile(new File(m.profileDir("p1"), DET_BIN))));
+            assertFalse("不得残留正式记录", new File(dir, ".txn_p1").exists());
+            assertFalse("不得残留备份", new File(dir, ".bak_p1").exists());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * writeCommitWitness 的 {@code moveReplace} 失败 ⇒ 与「见证写不进去」同一条原则：**绝不越过
+     * 提交点**，回滚到旧配置并失败返回，不留见证/记录/备份/暂存残留。（此前该失败分支零用例覆盖。）
+     */
+    @Test
+    public void commitWitnessMoveReplaceFailureDoesNotCrossCommitPoint() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                    ABI, true).isOk());
+            assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                    ABI, true).isOk());
+
+            String pointerTxnBefore = readPointerTxnId(dir);
+            // 只让「暂存文件 → .commit_p2」这一步改名失败（见证那侧）。
+            ops.failMoveReplaceForName(".commit_p2");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertFalse("见证落不下就不该越过提交点：" + r.message, r.isOk());
+            assertTrue("旧配置必须回滚就位",
+                    java.util.Arrays.equals(v1.get(DET_BIN),
+                            readFile(new File(m.profileDir("p2"), DET_BIN))));
+            assertFalse("不得残留见证", commitWitnessOf(dir, "p2").exists());
+            assertFalse("不得残留记录", new File(dir, ".txn_p2").exists());
+            assertFalse("不得残留备份", new File(dir, ".bak_p2").exists());
+            assertEquals("提交点未越过 ⇒ 指针不得被改动", pointerTxnBefore, readPointerTxnId(dir));
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 「{@code writeTxn} 的 {@code writeSync} **中途失败会留下半截临时文件**，由下次导入的清扫回收」
+     * ——这条设计前提必须有**行为验证**（A2 审计 Low-2），不能只由注释承担。
+     *
+     * <p>前提为何成立：{@code DEFAULT_FILE_OPS.writeSync} 先 {@code new FileOutputStream(f,false)}
+     * 建/截断文件再 {@code write}，故磁盘写满之类的失败会留下半截文件；而普通失败闸门命中时**根本不建
+     * 文件**，所以既有用例从未构造过这个现场。{@code writeTxn} **刻意保留**了旧的自删策略（只在
+     * {@code moveReplace} 失败时删），半截文件的回收**完全依赖**「下次导入整体清空 {@code .staging/}」
+     * ——本用例把这条链路钉死。
+     *
+     * <p>注意与 {@code writeCommitWitness} 的分工：后者在 {@code writeSync} 失败时**显式删除**临时文件
+     * （早先 A2-F4 的修复），故见证侧不留半截文件。本用例只钉 {@code writeTxn} 这一侧。
+     */
+    @Test
+    public void partialWriteFailureLeavesStagingFileThatNextImportSweeps() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            // 只让事务记录的暂存文件写一半就失败（该分支刻意不自删）
+            ops.failWritePartialForPathContains(STAGING_DIR + "/txn/p2");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+            assertFalse("记录写失败应失败返回：" + r.message, r.isOk());
+
+            File partial = new File(dir, STAGING_DIR + "/txn/p2");
+            assertTrue("设计前提：真实的写失败会留下半截临时文件（" + partial + "）", partial.isFile());
+            assertTrue("半截文件应非空", partial.length() > 0);
+
+            // 下一次导入的清扫必须回收它——这正是「.staging 可安全整体清空」的收益
+            ops.resetGates();
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            assertFalse("下次导入的清扫必须回收半截临时文件", partial.exists());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * **存量暴露**：升级前导入、profileId 含内部控制字符的 profile，状态查询会由 READY 变为
+     * 「激活配置 manifest 无效」——因为 `isImportSafeProfileId` 接在 `parse` 上，而 `parse` 也被
+     * `buildStatus` 使用。这条后果此前只在文档与 javadoc 里陈述、**无常驻用例**（第三代理指出的
+     * 覆盖缺口），本用例把它钉住。
+     *
+     * <p>用 DEL(0x7F) 而非 {@code \n}/{@code \t}：后者属 Win32 **文件名禁用字符**（0x00-0x1F），
+     * 在本机 Windows 测试宿主上根本建不出该目录；DEL 不在禁用集内，故夹具在两平台都能建。判据对
+     * 二者一视同仁（都是「C0 控制字符或 DEL」这一条）。
+     *
+     * <p>对照组用同一夹具结构 + 干净 id，证明 ERROR 确由字符集判据引起，而非夹具本身有问题。
+     */
+    @Test
+    public void existingProfileWithControlCharIdIsReportedAsInvalidManifest() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+
+        // 对照组：干净 id ⇒ 就绪
+        String cleanId = "p1";
+        writeProfileDir(m.profileDir(cleanId), manifest(cleanId, "[\"arm64-v8a\"]", v1, "lic"), v1);
+        writeActivePointer(dir, cleanId);
+        FaceRuntimeStatus ok = m.status();
+        assertTrue("对照组应就绪：" + ok.message, ok.isReady());
+
+        // 含 DEL 的 id：manifest 里用 JSON 转义写法，解析后才是真实 DEL
+        String badId = "a" + (char) 0x7F + "b";
+        String badIdJson = "a\\u007fb";
+        writeProfileDir(m.profileDir(badId), manifest(badIdJson, "[\"arm64-v8a\"]", v1, "lic"), v1);
+        writeActivePointer(dir, badId);
+
+        FaceRuntimeStatus st = m.status();
+        assertFalse("存量含控制字符的 profile 应报 ERROR（不得谎报 READY）", st.isReady());
+        assertTrue("应归为 manifest 无效，实际=" + st.message, st.message.contains("manifest 无效"));
+        assertTrue("应指出是 profileId 字符非法，实际=" + st.message, st.message.contains("非法字符"));
     }
 
     // ---------- 夹具 ----------
@@ -2578,6 +2910,9 @@ public class FaceModelManagerTest {
 
     /** 断言无临时/备份/指针残留，防半成品配置泄漏。 */
     private static void assertNoTempArtifacts(File storeDir) {
+        // 暂存目录独立判：它本身就带点号、名字合法，不能靠下面的前缀列表拦住；且必须**递归**检查，
+        // 否则残缺临时文件会「躲进子目录」而漏检（会让「.staging 已空」这类断言变弱）。
+        assertNoStagingFiles(storeDir);
         File[] ch = storeDir.listFiles();
         if (ch == null) {
             return;
@@ -2591,6 +2926,34 @@ public class FaceModelManagerTest {
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".tmp")
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".bak"));
         }
+    }
+
+    /**
+     * 暂存目录 {@code .staging} 要么不存在、要么**递归地不含任何文件**（允许残留空目录）。
+     *
+     * <p>为何必须递归：临时文件迁入 {@code .staging/txn/} 与 {@code .staging/commit/}，若只查顶层
+     * 就会漏掉躲在子目录里的半截文件——正是本次布局改造要防的「漏检」。
+     */
+    private static void assertNoStagingFiles(File storeDir) {
+        File staging = new File(storeDir, STAGING_DIR);
+        assertFalse("暂存目录下不得残留任何文件（残缺临时文件不得躲进子目录漏检）",
+                staging.exists() && containsRegularFile(staging));
+    }
+
+    /** {@code f} 自身或其任意后代是否为普通文件。 */
+    private static boolean containsRegularFile(File f) {
+        if (f.isFile()) {
+            return true;
+        }
+        File[] ch = f.listFiles();
+        if (ch != null) {
+            for (File c : ch) {
+                if (containsRegularFile(c)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** 可编程 native 假实现：ok=false 时 loadProfile 返回失败 JSON，validated=false 时只校验不通过。 */
