@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-15
+as_of=2026-09-18
 -->
 
 ﻿# RK3288 AI Engine - 开发指南 (Development Guide)
@@ -14,7 +14,7 @@ as_of=2026-09-15
 
 ### 1.1 背景与目标 (Background & Objectives)
 本项目旨在为 **Rockchip RK3288** 平台（ARM Cortex-A17 四核、Mali-T764 GPU；目标设备不含 NPU，仅 CPU+GPU）提供一套高性能、低资源的机器视觉解决方案。
-核心目标是**在有限的算力下（< 60% CPU, < 512MB RAM）实现实时的视频监控（720p@30fps）与生物识别（< 100ms 延迟）**。
+核心工程目标是**在有限的算力下（目标值：< 60% CPU、< 512MB RAM）实现实时的视频监控（720p@30fps）与生物识别（目标值：< 100ms 延迟）**。上述 CPU 占用与延迟数字均为**工程目标值（非验收判据）**；**验收判据的权威阈值口径与出处**见 [RK3288_OPTIMIZATION.md](docs/RK3288_OPTIMIZATION.md) 的 §5「判据阈值表（唯一事实源）」。
 
 目标设备画像与硬约束入口：[RK3288_CONSTRAINTS.md](docs/RK3288_CONSTRAINTS.md)。
 
@@ -187,7 +187,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 
 > `win_unit_tests` 是混合 target：runner 为自定义 `bool` 表驱动，同时链接了 `tests/win/test_http_faces_server.cpp` 的 GoogleTest 用例。
 
-> 早期使用自定义 `bool TestCase` 的测试仍存在但不再新增。新测试统一使用 `TEST(Group, Name)` 宏。
+> **新增测试必须沿用所在 target 的既有框架，不能假定全项目统一**——`bool` 表驱动与 `TEST(Group, Name)` 两种形态都仍在用，各自归属各自 target，不存在"全项目统一用某一种"的规则；口径同 `AGENTS.md` 的 Test framework 一节。
 
 ### 4.4 构建要点
 

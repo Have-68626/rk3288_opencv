@@ -16,6 +16,36 @@ as_of=2026-09-15
 
 ---
 
+## 2026-09-18 复核修正
+
+本节由 2026-09-18 两台 RK3288 真机只读复核引入；本快照 `as_of` 保持不变；
+正文已按下方「2026-09-18 复核修正」更新，**逐条标原值 → 修正值**。
+
+| 位置 | 原值 | 修正值 | 依据 |
+|------|------|--------|------|
+| § 一 GPU 行 | `Mali-T760 (r18p0-01rel0, GLES 3.1)` | `OpenGL ES 3.2`；并注明"驱动自报名 `Mali-T760`，芯片实际型号 `Mali-T764`" | 实测 `GLES:` 行两台逐字一致 |
+| § 3.5 OpenGL ES 行 | `3.1（由 Mali-T760 支持）` | `3.2（由 Mali-T760 驱动支持，芯片实际为 Mali-T764）` | 同上 |
+| § 3.1 MPP Decoder 行 | `❌ CPU fallback`（原未限定） | 保留结论，但**限定为构建配置**：该次构建 `RK_HAVE_MPP=0`，**非平台结论** | 见下 |
+| § 3.1 OpenCL 行 | `❌ 不可用 / 设备不支持` | 限定为构建/运行态：该次构建 `haveOpenCL=0`、`effective=0`；**目标设备是否存在 OpenCL 未取证**（非平台结论） | 与 MPP 行同一范式，见下 |
+| § 3.1 发现段 | "所有硬件加速路径均不可用 …… 这是 RK3288 平台的根本性性能瓶颈" | 该结论**只对该次构建成立** | 见下 |
+| § 5.1 / § 5.2 P1 行 | "**所有硬件加速路径均不可用（CPU-only）**"／影响范围"全局性能瓶颈" | 降为**该次构建级**："该次构建所有硬件加速路径均未生效（CPU-only）"／"**该次构建**的性能瓶颈（**非平台结论**）" | 同 §3.1 口径，见下 |
+| § 二 时间线 `OpenGL ES 3.1 初始化` | `3.1` | **保留逐字转录**（2017 年日志原文即写 `3.1`，**不得改写日志**）；仅补注：设备实测报告为 `OpenGL ES 3.2` | 转录不可篡改；设备值见 § 一 GPU 行 |
+
+**结论口径（照 [appendix-b.md](appendix-b.md) 的历史证据法律）**：
+§ 3.1 的"CPU-only"只说明该次采集时 `RK_HAVE_MPP=0`、`RK_HAVE_QUALCOMM=0`、OpenCL `effective=0`，
+即"历史上曾经没有任何硬件加速实际生效"；它**不能**读作"该平台没有视频硬件能力"。
+
+**真机反证（2026-09-17 采集 / 2026-09-18 复核）**：
+目标设备的 **VPU 硬解通路存在且可用** —— `/dev/vpu-service`、`/dev/hevc-service`
+两台设备节点均在，权限为 `crw-rw-rw-`（**免 root**）；
+实测 **1080p ≈ 31fps / 720p ≈ 55fps**，解码时 `media.codec` 仅约 1% CPU。
+**但**设备侧是**旧 `vpu_service` 驱动，不是 MPP 框架**（无 `/dev/mpp*`、无 `/proc/mpp_service`），
+与本项目 `RK_HAVE_MPP` 路径的匹配性**从未真机验证**。
+设备画像细节引用 [rk3288-device-capability-survey-2026-09-17.md](rk3288-device-capability-survey-2026-09-17.md)
+与 [RK3288_CONSTRAINTS.md](../RK3288_CONSTRAINTS.md)，本文件不复述整张外设表。
+
+---
+
 ## 一、设备与运行环境
 
 | 参数 | 值 |
@@ -26,7 +56,7 @@ as_of=2026-09-15
 | 应用包名 | com.example.rk3288_opencv |
 | 进程 PID | 16315 |
 | 屏幕分辨率 | 1920x1080 |
-| GPU | Mali-T760 (r18p0-01rel0, GLES 3.1) |
+| GPU | Mali-T760 (r18p0-01rel0, GLES 3.2)（驱动自报名 `Mali-T760`，芯片实际型号 `Mali-T764`；2026-09-18 复核修正） |
 | OpenCL | 不可用（effective=0） |
 | 总内存 | ~2.0 GB（2094325760B） |
 | 可用存储 | ~4.5 GB（4879515648B） |
@@ -104,14 +134,18 @@ as_of=2026-09-15
 
 | 组件 | 结果 | 说明 |
 |------|------|------|
-| Qualcomm SDK | ❌ CPU fallback | RK_HAVE_QUALCOMM 未定义，HMSS 不可用 |
-| MPP Decoder | ❌ CPU fallback | RK_HAVE_MPP 未定义，硬件视频解码不可用 |
-| OpenCL | ❌ 不可用 | 设备不支持 |
+| Qualcomm SDK | ❌ CPU fallback | RK_HAVE_QUALCOMM 未定义，HMSS 不可用（**限定**：该次构建 `RK_HAVE_QUALCOMM=0`，**非平台结论**） |
+| MPP Decoder | ❌ CPU fallback | RK_HAVE_MPP 未定义，硬件视频解码不可用（**限定**：该次构建 `RK_HAVE_MPP=0`，非平台结论；真机 VPU 硬解通路可用，见上文「2026-09-18 复核修正」） |
+| OpenCL | ❌ 该次构建不可用 | 该次构建 `haveOpenCL=0` / `effective=0`；**目标设备是否存在 OpenCL 未取证**（非平台结论，见上文「2026-09-18 复核修正」） |
 | VideoManager | ✅ 外部帧模式 | cameraId=-1，跳过本地相机打开 |
 | OpenCV Parallel | ✅ ONETBB/TBB/OPENMP | 三者按优先级注册 |
 
 **发现：**
-- **所有硬件加速路径均不可用**：Qualcomm SDK、MPP 硬件解码、OpenCL 全部回退到 CPU。这意味着所有图像处理（帧解码、预处理、推理）完全依赖 CPU 计算，这是 RK3288 平台的根本性性能瓶颈。
+- **该次构建所有硬件加速路径均未生效**：Qualcomm SDK、MPP 硬件解码、OpenCL 全部回退到 CPU
+  （`RK_HAVE_MPP=0`、`RK_HAVE_QUALCOMM=0`、OpenCL `effective=0`）。
+  这意味着**该次采集**的图像处理（帧解码、预处理、推理）完全依赖 CPU 计算。
+  **该结论只对该次构建成立，不能读作"该平台没有视频硬件能力"**——真机 VPU 硬解通路存在且可用，
+  详见上文「2026-09-18 复核修正」。
 - Engine.initialize() 在 `initEngine()` 中被调用了**两次**（03:50:47.742 和 03:50:47.762），均为 cameraId=-1（外部帧输入模式）。
 
 **问题：**
@@ -199,7 +233,7 @@ as_of=2026-09-15
 | GPU 型号 | Mali-T760 |
 | 驱动版本 | r18p0-01rel0 |
 | EGL 版本 | 1.4 |
-| OpenGL ES | 3.1（由 Mali-T760 支持） |
+| OpenGL ES | 3.2（由 Mali-T760 驱动支持，芯片实际为 Mali-T764；2026-09-18 复核修正） |
 
 **行为：**
 - `mali_winsys.new_window_surface` 超过 100 次，**全部返回 0x3000**（EGL_SUCCESS）。
@@ -262,7 +296,7 @@ logcat_20170115_035423.log 在 03:54:23 导出（与第三次 loadLogs 时间吻
 
 | 编号 | 问题 | 严重度 | 影响范围 | 状态变化 |
 |------|------|--------|---------|---------|
-| P1 | **所有硬件加速路径均不可用（CPU-only）** | 🔴 严重 | 全局性能瓶颈 | **新增** |
+| P1 | **该次构建所有硬件加速路径均未生效（CPU-only）** | 🔴 严重 | **该次构建**的性能瓶颈（**非平台结论**） | **新增** |
 | ~~原 P1~~ | ~~帧未被消费为有效 capture~~ | — | — | **已排除**（捕获链路正常） |
 | P2 | **handleAbnormalEvent 过度频繁触发（50+ 次）** | 🟡 高 | CPU 干扰 | 维持，可信度提高 |
 | P3 | 偶发帧分析延迟尖峰（max 37.6ms） | 🟡 中 | 帧率稳定性 | 维持，根因更清晰（CPU-only + GC） |
@@ -270,7 +304,16 @@ logcat_20170115_035423.log 在 03:54:23 导出（与第三次 loadLogs 时间吻
 | P5 | ARC（CPU-only）在 25fps 下余量不足 | 🟡 中 | 高负载场景稳定性 | **新增/合并** |
 | P6 | Legacy Camera HAL 功能受限 | 🟢 低 | 不影响基础功能 | 维持 |
 
-### 5.2 P1 详细诊断：CPU-only 性能瓶颈（核心根因）
+> **限定（照 [appendix-b.md](appendix-b.md) 的历史证据法律）**：上表 P1 的「CPU-only」只说明**该次构建**
+> 采集时 `RK_HAVE_MPP=0`、`RK_HAVE_QUALCOMM=0`、OpenCL `effective=0`，即「该次构建没有任何硬件加速
+> 实际生效」；**不得读作「该平台没有硬件加速能力」**。真机 **VPU 硬解通路存在且可用**
+> （`/dev/vpu-service`、`/dev/hevc-service`，实测 1080p ≈ 31fps / 720p ≈ 55fps），
+> 详见本文件上文「2026-09-18 复核修正」与 [rk3288-device-capability-survey-2026-09-17.md](rk3288-device-capability-survey-2026-09-17.md)。
+
+### 5.2 P1 详细诊断：该次构建 CPU-only 性能瓶颈（核心根因）
+
+> **本节结论只对**该次构建**成立**（`RK_HAVE_MPP=0`、`RK_HAVE_QUALCOMM=0`、OpenCL `effective=0`），
+> **非平台结论**；真机 VPU 硬解通路存在且可用，见上文「2026-09-18 复核修正」。
 
 **证据链：**
 1. Qualcomm SDK → CPU fallback（RK_HAVE_QUALCOMM=0）

@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-12
+as_of=2026-09-18
 -->
 
 # 终端能力矩阵（Android / Windows / Web / CLI）
@@ -39,7 +39,10 @@ as_of=2026-09-12
 - **产物 / 构建**：`app/build/outputs/apk/debug/app-debug.apk`；`gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`。默认只打 `armeabi-v7a` + `arm64-v8a`，`x86_64` 需 `-PRK_ENABLE_X86_64=true`；`splits.abi.enable=false`、`universalApk=false`。
 - **入口**：`src/cpp/native-lib.cpp` 与拆分后的 `src/cpp/jni/{engine,camera,config,preview,registry,native_face_bridge}.cpp`（`System.loadLibrary("native-lib")`，`JNINativeMethod` 注册）；Java 入口 `src/java/com/example/rk3288_opencv/MainActivity.java`，前台服务 `StatusService.java`，相机 CameraX 1.3.4。
 - **能力**：相机预览、人脸检测/识别、八样本注册会话与加密模板仓库、外部/模拟输入（`nativeConfigureExternalInput`）、运行时加速能力文本（`buildRuntimeCapabilityText`）、可选 RTMP 推流（仅当 `app/libs/ffmpeg-kit.aar` 存在）。
-- **限制**：目标机 RK3288 为 32 位 `armeabi-v7a`、Cortex-A17、2GB RAM、Android 7.1.2，**无 NPU/NNAPI**，实际 CPU-only；内存峰值预算 ≤512MB；Gradle 显式传 `-DRK_ENABLE_LIBYUV=OFF`，故不启用 libyuv；**APK 默认不内置模型**（`checkApkFaceModels` 会在 APK 中出现 `assets/face_models/` 时让构建失败）；`ncnn_precision_test` 不在 Android 构建；Java source/target 11。
+- **限制**：目标机 RK3288 为 32 位 `armeabi-v7a`、Cortex-A17、2GB RAM、Android 7.1.2，**无 NPU/NNAPI**；内存峰值预算 ≤512MB；Gradle 显式传 `-DRK_ENABLE_LIBYUV=OFF`，故不启用 libyuv；**APK 默认不内置模型**（`checkApkFaceModels` 会在 APK 中出现 `assets/face_models/` 时让构建失败）；`ncnn_precision_test` 不在 Android 构建；Java source/target 11。
+- **"CPU-only" 的口径（2026-09-18 实测）**：**无 NPU/NNAPI，CPU-only 仅指推理路径**。设备另有两类可用通路（结论，不重述实测细节，见 `docs/RK3288_CONSTRAINTS.md` §0.4 与 `docs/research/rk3288-device-capability-survey-2026-09-17.md`）：
+  - **VPU 硬解码**：设备节点 `/dev/vpu-service`、`/dev/hevc-service` 均存在且权限 `crw-rw-rw-`（**免 root**，设备节点路径）；实测 1080p 约 31fps / 720p 约 55fps，解码时 `media.codec` 仅约 1% CPU。
+  - **Mali GPU**：驱动自报名 `Mali-T760`（芯片实际型号 `Mali-T764 MP4`），报告 `OpenGL ES 3.2`；**OpenCL 是否存在未验证**，不得作强依赖。
 - **模型策略**：模型由使用者自行获取并经 ZIP 导入，详见 `docs/designs/model-acquisition-import.md`。
 
 ### 2.2 Windows 本地服务（主控端）
@@ -63,6 +66,17 @@ as_of=2026-09-12
 - **产物 / 入口**：`win_camera_face_recognition.exe`，源码 `src/win/app/win_camera_face_recognition_main.cpp`（WIN32 target）。
 - **启用**：默认关闭，需 `-DRK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI=ON`。
 - **状态**：旧版原生窗口 UI，仅作回归/回滚保留；现行主链路为 `win_local_service.exe` + Web SPA（`docs/windows-web-spa/architecture.md`）。不应作为新功能落点。
+
+### 2.5 目标设备外设能力（Android 现场端，2026-09-18 实测）
+
+以下只写"是否可用"的结论；外设表、命令与阴性对照不在此重述，统一引用 `docs/RK3288_CONSTRAINTS.md` §0.4 与 `docs/research/rk3288-device-capability-survey-2026-09-17.md`。
+
+- **指纹 / 外设模块**：`WINUIM WMR06`，走设备节点 `/dev/sg0`（SCSI-over-USB）；`/dev/sg0` 权限为 `crw------- root root`，**应用须经 root 通道**。接入设计（**未落地**）见 `docs/designs/rk3288-fingerprint-integration-design.md`。**身份为指纹仪**（端到端采到带脊线的指纹图像；厂商 SDK 为 Futronic 系）；**是否兼具读卡功能未验证**。⚠️ **读卡区与指纹是两处独立的物理位置**（读卡在底部最左、指纹在底部最右），**不是同一设备**。
+- **读卡器**：硬件存在（能独立读卡并蜂鸣），但对 Android 主机**零流量**——机 B（`device_id_hash` = `f09acaca146d`）内核计数 `iorequest_cnt=0x1`（自开机只收到枚举时的 1 条 INQUIRY）；**无任何进程持有** `/dev/sg0`；两台厂商 APK 与 rc/init 中**零读卡关键字**。→ **当前不可用**。
+- **NFC**：**无 Android NFC 协议栈**（无 feature / 服务 / HAL）→ **不能用 `NfcAdapter`**。
+- **蓝牙**：**硬件与协议栈存在、当前未启用**（用户通常关闭）——板级声明见 `rfkill` 的 DT
+  `bluetooth-platdata` 与 `ro.rk.bt_enable=true`；芯片确切型号未定论。**不得写成"无蓝牙/无可用控制器"**。
+  见 `docs/RK3288_CONSTRAINTS.md` §0.4。
 
 ## 3. 命令行工具
 
@@ -109,6 +123,7 @@ as_of=2026-09-12
 
 - **模型不随产品分发**：APK 不内置模型，Windows/CLI 需本地具备模型文件；模型缺失时不得静默回退 LBP，应显式给出 `missing_model`（见 `docs/designs/model-acquisition-import.md` 与加速契约 reason 码）。
 - **加速契约**：MPP、ncnn、libyuv、Qualcomm、OpenCL 一律遵循 `requested`/`effective`/`evidence`/`reason`，reason 取固定码 `ok`、`build_disabled`、`unsupported_platform`、`missing_dependency`、`missing_model`、`runtime_init_failed`、`unsupported_input`。
+- **加速契约的设备侧警告（2026-09-18 实测）**：目标机是旧 `vpu_service` 驱动、**不是 MPP 框架**（无 `/dev/mpp*`、无 `/proc/mpp_service`），`mpp-1.0.11` 与设备驱动的匹配性**从未真机验证**——**"本机能编过" ≠ "设备上能跑"**。
 - **平台目标**：RK3288 目标 ABI 为 `armeabi-v7a`、NEON 必需、无 NPU；任何终端不得引入 rknn/rknpu 依赖。
 - **测试框架**：`core_unit_tests`/`core_gtest_tests` 用 GoogleTest；`face_infer_unit_tests`/`win_unit_tests`/`ncnn_precision_test` 用自定义 `bool` 测试；新增测试沿用所在 target 框架。
 - **相关文档**：`docs/RK3288_CONSTRAINTS.md`、`docs/windows-web-spa/architecture.md`、`docs/windows-web-spa/feature_parity.md`、`docs/guides/windows-service/performance.md`、`DEVELOP.md`、`CREDITS.md`。

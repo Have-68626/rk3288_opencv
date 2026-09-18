@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=runbook
 status=living
-as_of=2026-09-17
+as_of=2026-09-18
 -->
 
 # RK3288 Android 设备验收清单（人工执行）
@@ -56,6 +56,29 @@ as_of=2026-09-17
 
 - **步骤**：标准样本中，人脸框面积占画面面积约 **6.25%**（约宽高各 25%）；在标准距离/光照下连续测试 ≥ 30 帧。
 - **判据**：稳定检出（无持续漏检；允许的抖动需记录比例，不得出现整段丢失）。
+
+### A5. 冷启动首帧（TTFF）P50 < 600ms / P95 < 900ms
+
+- **步骤**：冷启动（`force-stop` 后首次）应用并触发打开前摄；重复 ≥ 20 次（或用脚本驱动），记录每次首帧耗时。
+- **判据**：**P50 < 600ms**，**P95 < 900ms**（目标设备：RK3288 工控机 + 指定摄像头模组）。
+- **证据**：`scripts/bench_camera_adb.ps1`（Windows）/ `scripts/bench_camera_adb.sh`（Linux/macOS）采集；应用须稳定输出日志标记 `BENCH_CAMERA TTFF_MS=<n>`（Tag/键名须稳定）与 `BENCH_CAMERA CAPTURE_OK=<n> CAPTURE_FAIL=<n>`。
+- **出处**：`docs/research/appendix-c.md` §5.6.2。
+
+### A6. 内存预算 ≤ 512MB
+
+- **步骤**：稳定运行 ≥ 60s（满档），读取应用进程内存峰值（`dumpsys meminfo <pkg>` 的 PSS，或 logcat 的 `MEM:` 字段）。
+- **判据**：**应用常态运行内存峰值 ≤ 512MB**（给系统与相机栈留余量）。
+- **⚠️ 无自动断言**：本项**当前没有任何自动断言**——`≤ 512MB` 仅在 `docs/RK3288_CONSTRAINTS.md` §1.2 作为建议值存在，**无对应验收脚本或 CI 检查在跑**；引用与留档时**不得假定它「已被验证」**，必须人工测量并记录原始值。
+- **出处**：`docs/RK3288_CONSTRAINTS.md` §1.2。
+
+### A7. 前后台切换稳定性（50 次切换）
+
+- **步骤**：用 `scripts/stability_switch_50_adb.ps1` 执行 50 轮前后台切换（或手工等价操作）。
+- **判据**：**50 次切换后仍可恢复预览与分析；CameraService 重启次数 = 0**。
+- **证据**：脚本输出 + logcat 关键词统计（`cameraserver` / `CameraService` / `restarting`）；应用须输出 `BENCH_CAMERA CAMERA_SERVICE_RESTART=<n>`。
+- **出处**：`docs/research/appendix-c.md` §5.6.2。
+
+> A5 / A6 / A7 的判据值集中口径与出处另见 [RK3288_OPTIMIZATION.md](../RK3288_OPTIMIZATION.md) §5「判据阈值表（唯一事实源）」；本清单保留可执行的步骤与数字。
 
 ## 2. 检测与跟踪正确性
 
@@ -138,3 +161,14 @@ as_of=2026-09-17
 | 注册/重启/识别/删除完整 | C1 |
 | 无明文模板/照片/注册库泄露 | C2 |
 | 未导入模型时降级预览 + 显式 `missing_model` | D1 |
+| 冷启动首帧 TTFF（P50 < 600ms / P95 < 900ms） | A5 |
+| 内存预算 ≤ 512MB（无自动断言） | A6 |
+| 前后台切换稳定性（50 次，CameraService 重启次数 = 0） | A7 |
+
+**采集工具对照**（判据由人工判定，脚本只做采集与聚合）：
+
+- A1 稳态 FPS 判据：`scripts/run-android-face-regression.ps1`（**A1 的唯一自动判据实现者**，结论落在 `summary.json` 的 `fps_criterion`；`-LogcatFile` 为离线接缝）。
+- A5 TTFF 采集：`scripts/bench_camera_adb.ps1` / `scripts/bench_camera_adb.sh`。
+- A7 前后台切换：`scripts/stability_switch_50_adb.ps1`。
+
+A1 / A2 / A3 / A5 / A6 / A7 的判据值集中口径与出处见 [RK3288_OPTIMIZATION.md](../RK3288_OPTIMIZATION.md) §5。
