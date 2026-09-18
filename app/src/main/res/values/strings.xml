@@ -60,6 +60,14 @@
     <string name="ui_model_import">导入模型 (ZIP)</string>
     <string name="ui_model_switch">切换已有模型</string>
     <string name="ui_model_status_placeholder">模型状态：--</string>
+    <!-- 未决目录替换的人工了结入口（2026-09-17 外部审查 P1/P2 修复）：
+         新旧两份模型目录并存且无法判定哪份应生效时，必须由用户显式选择，程序不猜测、不自动删副本。 -->
+    <string name="ui_model_resolve_swap">处理未决替换</string>
+    <string name="ui_model_resolve_swap_title">处理未决的目录替换</string>
+    <string name="ui_model_resolve_swap_message">检测到新旧两份模型目录并存，无法自动判定哪一份应生效（自动猜测可能撤销一次成功的更新），已完整保留两份数据。请选择保留哪一份：</string>
+    <string name="ui_model_resolve_swap_keep_new">保留当前目录（删除备份）</string>
+    <string name="ui_model_resolve_swap_keep_old">还原为备份（删除当前目录）</string>
+    <string name="ui_model_resolve_swap_failed">了结未决替换失败</string>
     <string name="ui_person_management_title">人员管理</string>
     <string name="ui_person_manage">人员列表 / 删除</string>
     <string name="ui_register_person_id_hint">人员标识 (personId)</string>
