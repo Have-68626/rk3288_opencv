@@ -31,7 +31,7 @@ as_of=2026-09-17
 - `manifest.json` 必填/关键字段（示例见 `models/android/rk3288_light/manifest.json`）：
   - `schemaVersion` 必须为 `1`。
   - `supportedAbis`：必须包含设备当前 ABI，否则 `ABI_MISMATCH`。
-  - `profileId`：可作目录名的安全串，且不得以 `.` 开头、不得为保留名 `active_profile`。
+  - `profileId`：可作目录名的安全串，且不得以 `.` 开头、不得为保留名 `active_profile`；另不得含控制字符（`< 0x20` 或 `0x7F`）、首尾不得为空格（见 §4 步骤 4）。
   - `detector.param` / `detector.bin`、`embedder.param` / `embedder.bin`：安全相对路径，`sha256` 可为空（空即跳过该项校验）。
   - `detector.outputs`：若给出必须恰好 9 个（SCRFD 多尺度头）。
   - 其他：`displayName`、`inputWidth/Height`、`decodeMode`、`anchorsPerPos`、`outputLayout`、`embeddingDim`、`detectionConfidence`、`nmsIou`、`identitySimilarity`、`modelVersion`、`licenseId`。
@@ -45,7 +45,13 @@ as_of=2026-09-17
     <profileId>/manifest.json
     <profileId>/scrfd.param / scrfd.bin
     <profileId>/arcface.param / arcface.bin
-    .tmp_<nano>/              # 解压临时目录（下次导入时清扫）
+    .tmp_<nano>/              # 解压临时目录（动态名；下次导入时清扫）
+    .staging/                 # 临时/暂存文件目录（**名字恒定，不含 profileId**；下次导入时整体清空）
+      .staging/txn/<profileId>     # 事务记录落盘前的临时文件（原 .txn_<id>.tmp）
+      .staging/commit/<profileId>  # 提交见证落盘前的临时文件（原 .commit_<id>.tmp）
+                              # 子目录名与文件名都不含额外的点号后缀、且 .staging 以点号开头 ⇒ 结构上
+                              # 不可能与任何 profile 的正式产物同名（旧顶层 .txn_<id>.tmp 在 profileId
+                              # 恰为 foo.tmp 时与活记录 .txn_foo.tmp 同名，会被清扫误删 / 被写入覆盖）。
     .bak_<profileId>/         # 目录替换时移开的旧配置备份
     .txn_<profileId>          # 目录替换**事务记录**（profileId/hadOld/prevActive/state[/txnId]，任务 A，见 §4 步骤 7/8）
     .commit_<profileId>       # **提交见证**（profileId/txnId）：本次替换已提交的持久证据。
@@ -77,7 +83,7 @@ as_of=2026-09-17
    - streaming 写出时累计 `> MAX_TOTAL_BYTES(256 MiB)` → `TOO_LARGE`（边写边判，不先落盘全量）；
    - 单条 `manifest.json` `> MAX_MANIFEST_BYTES(1 MiB)` → `TOO_LARGE`。
 3. **唯一定位 manifest**：0 个 → `MISSING_MANIFEST`；多于 1 个 → `MANIFEST_INVALID`。
-4. **manifest 校验**（`FaceModelManifest.parse`，与 native 契约一致）：schemaVersion==1、ABI、路径、sha256 格式；`ABI_MISMATCH` 单独暴露，其余归 `MANIFEST_INVALID`；`profileId` 再查安全目录名与保留名。
+4. **manifest 校验**（`FaceModelManifest.parse`，与 native 契约一致）：schemaVersion==1、ABI、路径、sha256 格式；`ABI_MISMATCH` 单独暴露，其余归 `MANIFEST_INVALID`；`profileId` 再查安全目录名、保留名，以及 `isImportSafeProfileId`（拒控制字符与首尾空格，C++ 侧 `FaceRuntimeProfile.cpp` 逐字镜像）。该判据**刻意不并入 `isSafeDirName`**：后者与读路径共享，收紧会让盘上**已存在**的含控制字符目录从「按原名显式报错」退化成「静默未导入」。⚠️ 但它接在 `parse` 里、而 `parse` **也被状态读取路径（`buildStatus`）使用**，故它**不止作用于新导入**：升级前导入的、profileId 含**内部**控制字符的 profile 会由 READY 变为「激活配置 manifest 无效」——此类 profileId 的 `.txn_*` / `.commit_*` 本就无法原样往返（含 `\n` 时被截断读回），如实报错比报 READY 诚实。
 5. **模型文件校验**（`verifyModelFiles`）：canonical 包含性 → `MANIFEST_INVALID`；缺失 → `MISSING_MODEL_FILE`；Git LFS pointer（`version https://git-lfs.github.com/spec/v1`）→ `MISSING_MODEL_FILE`；SHA-256 与引脚不符 → `SHA256_MISMATCH`。
 6. **native 校验/暂存**（`nativeValidateProfile`，原 `nativeSelfCheck`，P1-2 澄清语义）：调 `NativeFaceBridge.loadProfile` 做格式/ABI 校验，只看 `validated:true`；失败 → `NATIVE_CHECK_FAILED`。此步**只校验暂存，不等于加载生效**，旧目录与激活指针完全未被触碰。
 7. **原子启用目录**（`swapInProfileDirs`）：**先在 `.txn_<profileId>` 落 `in_progress` 事务记录**（含 hadOld 与原激活指针；写不进去即中止，旧配置一动未动），再把基目录 rename 到 `face_models/<profileId>`（如有旧目录先 rename 为 `.bak_<profileId>`），同盘 rename 保证原子；**暂不**写激活指针。
