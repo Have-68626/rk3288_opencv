@@ -11,8 +11,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -36,6 +39,13 @@ public class FaceModelManagerTest {
     private static final String DET_BIN = "scrfd.bin";
     private static final String EMB_PARAM = "arcface.param";
     private static final String EMB_BIN = "arcface.bin";
+
+    /**
+     * 事务代次测试常量。必须是 32 位小写 hex —— {@code isSafeTxnId} 会拒绝其它形态，
+     * 而非法的代次会被降级为「无提交证据」，用错会静默改变用例语义。
+     */
+    private static final String TXN_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private static final String TXN_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
@@ -1006,22 +1016,88 @@ public class FaceModelManagerTest {
 
     /** 可注入失败的文件操作替身（任务 A 的 FileOps 接缝）。 */
     private static final class FaultyFileOps implements FaceModelManager.FileOps {
+        // ── 既有全局开关（语义逐字不变，既有用例零改动）────────────────────────────
         boolean failWrite;
         boolean failRename;
         boolean failDelete;
         /** 只让「从 .tmp_ 解压目录改名到目标」这一步失败（迁就其它改名，如回滚的 bak→target）。 */
         boolean failRenameFromTmp;
 
+        // ── 新增：可编程闸门（2026-09-17 外部审查修复）─────────────────────────────
+        // 为什么需要：全局布尔**无法表达「第 1 次 writeSync 成功、第 2 次失败」**，而
+        // 「提交改写失败 + 备份删除也失败」这个组合（P1 #1 的主证据）恰恰需要它。
+        // 用「按内容匹配」而非「按调用序号」：与调用顺序解耦，重构不会让它悄悄失效。
+        // （刻意**不**提供按序号的闸门：既无用例需要，又要求「失败也计数」才不漂移，是个隐患。）
+        private final Map<String, Set<String>> failNameByOp = new HashMap<>();
+        private final Set<String> failWriteIfContains = new HashSet<>();
+        /** 只匹配**源文件名**的 rename 闸门（见 {@link #failRenameFromName}）。 */
+        private final Set<String> failRenameFrom = new HashSet<>();
+
+        /** 只让写往该文件名（如 "active_profile.tmp"、".txn_p1.tmp"）的 writeSync 失败。 */
+        void failWriteForName(String name) {
+            failNameByOp.computeIfAbsent("write", k -> new HashSet<>()).add(name);
+        }
+
+        /** 只让内容包含该子串的 writeSync 失败（如 "state=committed"）。 */
+        void failWriteIfContains(String needle) {
+            failWriteIfContains.add(needle);
+        }
+
+        /** 只让删除该名字（如 ".bak_p1"）的 deleteRecursively 失败。 */
+        void failDeleteForName(String name) {
+            failNameByOp.computeIfAbsent("delete", k -> new HashSet<>()).add(name);
+        }
+
+        /**
+         * 只让**源文件名**为该名字的 rename 失败（如回滚的 {@code .bak_p2 → p2}）。
+         *
+         * <p>为什么必须只匹配源名：{@code .bak_<id>} 这个名字在两侧都出现——替换是
+         * {@code <id> → .bak_<id>}（源名 {@code <id>}）、回滚是 {@code .bak_<id> → <id>}（源名
+         * {@code .bak_<id>}）。按「源或目标」匹配会连替换那一步一起打断，导入在**替换之前**就中止，
+         * 根本走不到要考的回滚分支。这里沿用既有 {@code failRenameFromTmp} 的「只看源名」口径。
+         */
+        void failRenameFromName(String name) {
+            failRenameFrom.add(name);
+        }
+
+        /** 清空闸门（用例中途解除故障、再断言收敛时用）。 */
+        void resetGates() {
+            failNameByOp.clear();
+            failWriteIfContains.clear();
+            failRenameFrom.clear();
+        }
+
+        /** 本次调用是否命中闸门。 */
+        private boolean gated(String op, File from, File to, byte[] data) {
+            Set<String> names = failNameByOp.get(op);
+            if (names != null) {
+                if (from != null && names.contains(from.getName())) return true;
+                if (to != null && names.contains(to.getName())) return true;
+            }
+            if (data != null && !failWriteIfContains.isEmpty()) {
+                String text = new String(data, StandardCharsets.UTF_8);
+                for (String needle : failWriteIfContains) {
+                    if (text.contains(needle)) return true;
+                }
+            }
+            return false;
+        }
+
         @Override
         public boolean rename(File from, File to) {
             if (failRename) return false;
             if (failRenameFromTmp && from.getName().startsWith(".tmp_")) return false;
+            if (failRenameFrom.contains(from.getName())) return false;
+            if (gated("rename", from, to, null)) return false;
             return from.renameTo(to);
         }
 
         @Override
         public boolean moveReplace(File from, File to) {
             if (failRename) return false;
+            // **闸门命中时不得执行 to.delete()**：默认实现是先删目标再改名，但被闸门拦下时必须
+            // 完全不动作——否则接缝自身会制造出生产路径不存在的破坏。
+            if (gated("moveReplace", from, to, null)) return false;
             //noinspection ResultOfMethodCallIgnored
             to.delete();
             return from.renameTo(to);
@@ -1029,12 +1105,15 @@ public class FaceModelManagerTest {
 
         @Override
         public boolean deleteRecursively(File f) {
-            return !failDelete && deleteRecursivelyReal(f);
+            if (failDelete) return false;
+            if (gated("delete", f, null, null)) return false;
+            return deleteRecursivelyReal(f);
         }
 
         @Override
         public boolean writeSync(File f, byte[] data) {
             if (failWrite) return false;
+            if (gated("write", null, f, data)) return false;
             try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
                 fos.write(data);
                 fos.flush();
@@ -1056,15 +1135,84 @@ public class FaceModelManagerTest {
         return !f.exists();
     }
 
-    /** 构造事务记录文件（与 DirTxn.encode() 同格式）。 */
+    /**
+     * 构造**旧格式**事务记录（**无 txnId 行**）：等同于本版本之前的代码写入的现场，
+     * 恢复时走 {@code recoverTxnLegacy}（无提交证据可比对）。
+     */
     private static void writeTxnFile(File dir, String profileId, boolean hadOld,
                                      String prevActive, boolean committed) throws IOException {
-        String s = "profileId=" + profileId + "\n"
-                + "hadOld=" + hadOld + "\n"
-                + "prevActive=" + (prevActive == null ? "" : prevActive) + "\n"
-                + "state=" + (committed ? "committed" : "in_progress") + "\n";
+        writeTxnFile(dir, profileId, hadOld, prevActive, committed, null);
+    }
+
+    /** 构造事务记录文件（与 DirTxn.encode() 同格式）；{@code txnId == null} 时不写该行。 */
+    private static void writeTxnFile(File dir, String profileId, boolean hadOld,
+                                     String prevActive, boolean committed, String txnId)
+            throws IOException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("profileId=").append(profileId).append('\n');
+        sb.append("hadOld=").append(hadOld).append('\n');
+        sb.append("prevActive=").append(prevActive == null ? "" : prevActive).append('\n');
+        if (txnId != null) {
+            sb.append("txnId=").append(txnId).append('\n');
+        }
+        sb.append("state=").append(committed ? "committed" : "in_progress").append('\n');
         java.nio.file.Files.write(new File(dir, ".txn_" + profileId).toPath(),
+                sb.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 旧格式激活指针：裸 profileId（无提交证据）。 */
+    private static void writeActivePointer(File dir, String profileId) throws IOException {
+        java.nio.file.Files.write(new File(dir, FaceModelManager.ACTIVE_POINTER_FILE).toPath(),
+                profileId.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 新格式激活指针：{@code profileId=} + 可选 {@code txnId=}。 */
+    private static void writeActivePointer(File dir, String profileId, String txnId)
+            throws IOException {
+        String s = "profileId=" + profileId + "\n" + (txnId == null ? "" : "txnId=" + txnId + "\n");
+        java.nio.file.Files.write(new File(dir, FaceModelManager.ACTIVE_POINTER_FILE).toPath(),
                 s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 读回指针里的提交代次（断言用）；无该行或指针缺失返回 null。 */
+    private static String readPointerTxnId(File dir) throws IOException {
+        File f = new File(dir, FaceModelManager.ACTIVE_POINTER_FILE);
+        if (!f.isFile()) {
+            return null;
+        }
+        for (String line : new String(readFile(f), StandardCharsets.UTF_8).split("\n")) {
+            if (line.startsWith("txnId=")) {
+                return line.substring("txnId=".length()).trim();
+            }
+        }
+        return null;
+    }
+
+    /** 提交见证文件路径（与生产实现同名；实现若换名，夹具类用例会因「找不到见证」而判未提交 → 红）。 */
+    private static File commitWitnessOf(File dir, String profileId) {
+        return new File(dir, FaceModelManager.COMMIT_WITNESS_PREFIX + profileId);
+    }
+
+    /** 构造提交见证文件；{@code txnId == null} 时不写该行（等价于「无证据」）。 */
+    private static void writeCommitWitness(File dir, String profileId, String txnId)
+            throws IOException {
+        String s = "profileId=" + profileId + "\n" + (txnId == null ? "" : "txnId=" + txnId + "\n");
+        java.nio.file.Files.write(commitWitnessOf(dir, profileId).toPath(),
+                s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 读回见证里的提交代次（断言用）；无该行或见证缺失返回 null。 */
+    private static String readCommitWitnessTxnId(File dir, String profileId) throws IOException {
+        File f = commitWitnessOf(dir, profileId);
+        if (!f.isFile()) {
+            return null;
+        }
+        for (String line : new String(readFile(f), StandardCharsets.UTF_8).split("\n")) {
+            if (line.startsWith("txnId=")) {
+                return line.substring("txnId=".length()).trim();
+            }
+        }
+        return null;
     }
 
     /**
@@ -1081,18 +1229,26 @@ public class FaceModelManagerTest {
         Map<String, byte[]> v1 = defaultFiles("v1");
         assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
         byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+        // 另有一个配置处于激活位，使「替换前的激活指针」与本 profileId **不同**：同名覆盖时
+        // 「未提交」与「已提交但记录改写失败」两历史同形（见 ambiguousSameNameLegacySite...
+        // 用例），而本用例要验的是**可判定**的未提交回滚，故必须有另一个激活配置。
+        Map<String, byte[]> va = defaultFiles("va");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", va, "lic"), va)), ABI, true).isOk());
+        assertTrue(m.activate("pA", ABI, true).isOk());
 
         // 构造「替换已开始但未提交」现场：旧目录移开、新包占位、事务记录为 in_progress。
+        // 记录带代次 TXN_A，而指针上是导入/切换时留下的**另一个**代次 ⇒ 提交点未落定 ⇒ 回滚目录。
         File target = m.profileDir("p1");
         File bak = new File(dir, ".bak_p1");
         assertTrue(target.renameTo(bak));
         Map<String, byte[]> v2 = defaultFiles("v2");
         writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
-        writeTxnFile(dir, "p1", true, "p1", false);
+        writeTxnFile(dir, "p1", true, "pA", false, TXN_A);
 
-        FaceRuntimeStatus st = m.status();
-        assertTrue("未提交事务应恢复旧模型后就绪", st.isReady());
-        assertEquals("p1", st.profileId);
+        // 未提交事务只会在**触碰该 profile 时**被恢复（buildStatus 只恢复当前激活的 profile），
+        // 故用 activate("p1") 触发 —— 这也正是真实可达路径：用户在该现场下选择切到 p1。
+        FaceModelManager.Result r = m.activate("p1", ABI, true);
+        assertTrue("恢复后 p1 应可正常激活：" + r.message, r.isOk());
         assertTrue("必须还原旧模型内容（不得保留未激活的新包）",
                 java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
         assertFalse(".bak_p1 应已被消费", bak.exists());
@@ -1235,8 +1391,7 @@ public class FaceModelManagerTest {
             assertTrue(target.renameTo(bak));
             Map<String, byte[]> v2 = defaultFiles("v2");
             writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
-            writeTxnFile(dir, "p1", true, "p1", false);
-
+            writeTxnFile(dir, "p1", true, "p1", false, TXN_B);   // 代次与指针不符 ⇒ 未提交
             ops.failDelete = true;   // 新目录删不掉
             FaceRuntimeStatus st = m.status();
 
@@ -1245,9 +1400,8 @@ public class FaceModelManagerTest {
             assertTrue("必须保留新目录现场", target.isDirectory());
             assertTrue("必须保留旧备份", bak.isDirectory());
             assertTrue("必须保留事务记录以待重试", new File(dir, ".txn_p1").exists());
-            assertFalse("删除失败时不得误报已回滚（内容仍是新包）",
-                    java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN)))
-                            && !target.isDirectory());
+            assertTrue("删除失败时内容必须仍是新包（不得声称已回滚）",
+                    java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
         } finally {
             FaceModelManager.setFileOpsForTesting(null);
         }
@@ -1268,7 +1422,7 @@ public class FaceModelManagerTest {
         assertTrue(target.renameTo(bak));
         Map<String, byte[]> v2 = defaultFiles("v2");
         writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
-        writeTxnFile(dir, "p1", true, "p1", false);
+        writeTxnFile(dir, "p1", true, "p1", false, TXN_B);   // 代次与指针不符 ⇒ 未提交
 
         for (int i = 0; i < 3; i++) {
             FaceRuntimeStatus st = m.status();
@@ -1485,6 +1639,823 @@ public class FaceModelManagerTest {
         }
     }
 
+    // ══ 2026-09-17 外部审查修复：提交点证据（txnId）/ 恢复顺序 / 人工了结 ══════════════
+    // 背景：仅有 state 是不够的——**写 state 本身可能失败**，于是「未提交」与「已提交但
+    // committed 改写失败」会留下同一份 in_progress 记录；同名覆盖时连激活指针都前后相同，
+    // 旧实现无法区分，会把一次**成功**的导入静默回滚。现在提交证据 = 指针里的 txnId。
+
+    /**
+     * 同名覆盖 + **记录代次与指针代次不符** ⇒ 提交点未落定 ⇒ 回滚目录，且**指针不得被动过**
+     * （约束 1：提交点之前失败则回滚；未提交的事务从未写过指针，故回滚不还原指针）。
+     *
+     * <p>「不动指针」在这里是**可观测**的：断言恢复后指针里的代次与恢复前**逐字相同**。
+     * 同时覆盖「重复启动」——再调一次 {@code recoverForStartup()} 结果一致。
+     */
+    @Test
+    public void sameNameOverwriteWithStaleTxnIdRollsBackAndLeavesPointerUntouched() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("p1", ABI, true).isOk());
+        String pointerTxn = readPointerTxnId(dir);
+        assertNotNull("切换成功后指针应带提交代次", pointerTxn);
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false, TXN_A);   // 代次 ≠ 指针代次 ⇒ 未提交
+
+        FaceModelManager.StartupRecovery sr = m.recoverForStartup();
+        assertNull("恢复应可完成，不应阻塞：" + sr.blockedReason, sr.blockedReason);
+        assertEquals("p1", sr.activeProfileId);
+        assertTrue("必须还原旧模型内容（不得保留未激活的新包）",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        assertFalse(".bak_p1 应已被消费", bak.exists());
+        assertFalse("事务了结后不得残留记录", new File(dir, ".txn_p1").exists());
+        assertEquals("回滚不得改写指针（代次应原样保留）", pointerTxn, readPointerTxnId(dir));
+
+        // 重复启动：幂等
+        FaceModelManager.StartupRecovery again = m.recoverForStartup();
+        assertNull(again.blockedReason);
+        assertEquals("p1", again.activeProfileId);
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 同名覆盖 + **记录代次与指针相等** ⇒ 提交点已落定（即便记录因改写失败停在 in_progress）
+     * ⇒ **保留新目录**、清理备份、清记录。这是外部审查 P1 #1 的核心消解。
+     */
+    @Test
+    public void sameNameOverwriteWithMatchingTxnIdKeepsNewModel() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("p1", ABI, true).isOk());
+        String pointerTxn = readPointerTxnId(dir);
+        assertNotNull(pointerTxn);
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        // 记录停在 in_progress，但代次与指针一致 = 提交点已落定
+        writeTxnFile(dir, "p1", true, "p1", false, pointerTxn);
+
+        FaceModelManager.StartupRecovery sr = m.recoverForStartup();
+        assertNull(sr.blockedReason);
+        assertTrue("必须保留新模型内容（不得回滚一次已提交的更新）",
+                java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+        assertFalse(".bak_p1 应已被清理", bak.exists());
+        assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+        assertEquals("已提交侧不得改写指针", pointerTxn, readPointerTxnId(dir));
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * **旧格式**记录 + 指针已是本 profileId + prevActive 是**另一个**配置 ⇒ 提交点必已落定
+     * （未提交的事务不会写指针）⇒ 保留新目录。旧格式兼容路径中「可判定」的加强项。
+     */
+    @Test
+    public void legacyTxnWithPointerOnTargetKeepsNewModel() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> va = defaultFiles("va");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", va, "lic"), va)), ABI, true).isOk());
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("pA", ABI, true).isOk());
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        // 旧格式记录（无代次）：prevActive 是 pA，而指针已是 p1 ⇒ 提交点已落定
+        writeTxnFile(dir, "p1", true, "pA", false);
+        writeActivePointer(dir, "p1");
+
+        // 触碰该 profile 触发恢复（未提交事务只在其所属 profile 被触碰时恢复）
+        assertTrue(m.activate("p1", ABI, true).isOk());
+        assertTrue("必须保留新模型内容", java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+        assertFalse("备份应被清理", bak.exists());
+        assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 旧格式 + 「回滚已消费备份、**仅指针还原失败**」⇒ 补做指针还原；还原失败必须**保留记录**
+     * （P2 #3：旧实现据「备份不存在」直接清记录，会永久丢失这次还原意图）。
+     *
+     * <p>顺带覆盖约束 2-3：恢复改写指针后，状态必须按**重读到的**配置报——解除故障后应报
+     * {@code pX}，而不是恢复前的 {@code pA}。
+     */
+    @Test
+    public void legacyPointerRestoreFailureRetainsTxnThenSelfHeals() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> vx = defaultFiles("vx");
+        assertTrue(m.importZip(stream(zip("", manifest("pX", "[\"arm64-v8a\"]", vx, "lic"), vx)), ABI, true).isOk());
+        Map<String, byte[]> va = defaultFiles("va");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", va, "lic"), va)), ABI, true).isOk());
+        assertTrue(m.activate("pA", ABI, true).isOk());
+
+        // 现场：pA 的旧格式未提交记录，prevActive = pX，**备份已被消费**（不存在），指针仍是 pA
+        writeTxnFile(dir, "pA", true, "pX", false);
+
+        FaultyFileOps ops = new FaultyFileOps();
+        ops.failWriteForName(FaceModelManager.ACTIVE_POINTER_FILE);   // 指针还原写不进去
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FaceRuntimeStatus st = m.status();
+            assertFalse("指针还原失败不得报就绪", st.isReady());
+            assertTrue("必须保留记录以待重试", new File(dir, ".txn_pA").exists());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+
+        // 解除故障后自愈。**判别点（约束 2-3）**：这里必须由**状态查询本身**触发那次补做的指针
+        // 还原——若 buildStatus 不重读指针，它会按恢复前的 pA 报状态，而磁盘已指向 pX。
+        // （因此本用例中 status() 必须排在任何 recoverForStartup() 之前，否则修复会先被后者做掉、
+        // 把判别点遮住；启动闸门的同名判别见 startupRecoveryReturnsPostRecoveryPointer。）
+        FaceRuntimeStatus st2 = m.status();
+        assertTrue("恢复完成后应就绪", st2.isReady());
+        assertEquals("状态必须按**重读后**的配置报（约束 2-3）", "pX", st2.profileId);
+        assertFalse("事务了结后不得残留记录", new File(dir, ".txn_pA").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 启动闸门必须返回**恢复之后**重读到的指针，而不是恢复前的值（约束 2-1）。
+     *
+     * <p>与 {@code legacyPointerRestoreFailureRetainsTxnThenSelfHeals} 互为镜像：那条让状态查询
+     * 先触发修复以判别 buildStatus 的重读，本条让**闸门**先触发以判别 recoverForStartup 的重读。
+     */
+    @Test
+    public void startupRecoveryReturnsPostRecoveryPointer() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> vx = defaultFiles("vx");
+        assertTrue(m.importZip(stream(zip("", manifest("pX", "[\"arm64-v8a\"]", vx, "lic"), vx)), ABI, true).isOk());
+        Map<String, byte[]> va = defaultFiles("va");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", va, "lic"), va)), ABI, true).isOk());
+        assertTrue(m.activate("pA", ABI, true).isOk());
+        assertEquals("pA", m.activeProfileId());
+
+        // 旧格式未提交记录 + 备份已被消费 + 指针仍是 pA ⇒ 恢复会补做指针还原为 pX
+        writeTxnFile(dir, "pA", true, "pX", false);
+
+        FaceModelManager.StartupRecovery sr = m.recoverForStartup();
+        assertNull(sr.blockedReason);
+        assertEquals("闸门必须返回恢复**之后**的指针（pX），而非恢复前的 pA", "pX", sr.activeProfileId);
+        assertEquals("指针本身也应已落到 pX", "pX", m.activeProfileId());
+        assertFalse("事务了结后不得残留记录", new File(dir, ".txn_pA").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 同名覆盖 + **旧格式**记录（无代次）+ 新旧并存 ⇒ **证据不足**：保留两份数据与记录、报 ERROR，
+     * 并带机器可读的 {@code ambiguousSwapProfileId} 供 UI 给出人工了结入口；
+     * 且**不整机砖死**——另一个 profile 的导入不受影响。
+     */
+    @Test
+    public void ambiguousSameNameLegacySiteIsPreservedAndBlocked() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("p1", ABI, true).isOk());
+
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false);   // 旧格式 + 同名 ⇒ 两历史同形
+
+        FaceRuntimeStatus st = m.status();
+        assertFalse("证据不足不得自动收敛", st.isReady());
+        assertEquals("必须带机器可读的歧义标记供 UI 给入口", "p1", st.ambiguousSwapProfileId);
+        assertTrue("两份数据都必须保留", target.isDirectory() && bak.isDirectory());
+        assertTrue("记录必须保留（不得丢弃还原意图）", new File(dir, ".txn_p1").exists());
+        assertTrue("文案应指向人工了结，实际=" + st.message,
+                st.message.contains("并存") || st.message.contains("歧义"));
+
+        // 不整机砖死：另一个 profile 仍可导入
+        Map<String, byte[]> v3 = defaultFiles("v3");
+        assertTrue("p1 的歧义不得阻塞 p2",
+                m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v3, "lic"), v3)), ABI, true).isOk());
+        assertTrue(new File(m.profileDir("p2"), DET_BIN).isFile());
+    }
+
+    /** 人工了结：选「保留当前目录」⇒ 删备份、清记录、解除阻塞。 */
+    @Test
+    public void resolveAmbiguousSwapKeepingNewUnblocks() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("p1", ABI, true).isOk());
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false);
+
+        assertTrue(m.resolveAmbiguousSwap("p1", true).isOk());
+        assertTrue("当前目录应保留", target.isDirectory());
+        assertTrue("保留的是新模型内容",
+                java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+        assertFalse("备份应被删除", bak.exists());
+        assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+        FaceRuntimeStatus st = m.status();
+        assertTrue("了结后应就绪", st.isReady());
+        assertNull("不应再带歧义标记", st.ambiguousSwapProfileId);
+        assertNoTempArtifacts(dir);
+    }
+
+    /** 人工了结：选「还原为备份」⇒ 内容换回旧版、备份被消费、清记录、解除阻塞。 */
+    @Test
+    public void resolveAmbiguousSwapRestoringBackupUnblocks() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("p1", ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false);
+
+        assertTrue(m.resolveAmbiguousSwap("p1", false).isOk());
+        assertTrue("内容应还原为旧模型",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        assertFalse("备份已被消费", bak.exists());
+        assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+        assertTrue("了结后应就绪", m.status().isReady());
+        assertNoTempArtifacts(dir);
+    }
+
+    /** 无「新旧并存」现场时 {@code resolveAmbiguousSwap} 必须拒绝——防止被当成通用删除入口。 */
+    @Test
+    public void resolveAmbiguousSwapRejectsWhenNoScene() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        FaceModelManager.Result r = m.resolveAmbiguousSwap("p1", true);
+        assertEquals("无现场应拒绝", FaceModelManager.Status.INVALID_ARGUMENT, r.status);
+        assertTrue("拒绝时不得删除任何东西", new File(m.profileDir("p1"), DET_BIN).isFile());
+
+        FaceModelManager.Result r2 = m.resolveAmbiguousSwap("p1", false);
+        assertEquals(FaceModelManager.Status.INVALID_ARGUMENT, r2.status);
+        assertTrue(new File(m.profileDir("p1"), DET_BIN).isFile());
+    }
+
+    /**
+     * **目标目录缺失、备份是唯一副本**（A1 审计 N2 + N3）：已提交侧**不得**顺手删掉那份唯一副本；
+     * 状态必须给出**可执行**的人工了结入口（只允许「还原为备份」），把配置救回来。
+     *
+     * <p>N2：`commitSide` 原实现无条件 `deleteRecursively(bak)`——「已提交」只说明提交点落定，
+     * 不蕴含「新目录仍在」，target 被外部删除时删备份 = 配置彻底丢失。
+     * N3：`resolveAmbiguousSwap` 原来要求 target 与 bak **都**存在，于是这种现场会「报错却点了没用」
+     * ——死路。现改为 target 缺失时只允许「还原为备份」。
+     */
+    @Test
+    public void missingTargetKeepsOnlyCopyAndOffersBackupRestore() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> va = defaultFiles("va");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", va, "lic"), va)), ABI, true).isOk());
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
+
+        // 现场：target 被外部删除、备份仍在、指针已指向本 profileId、prevActive 是另一配置。
+        // 旧格式记录 ⇒ 走 recoverTxnLegacy 的「判为已提交」分支 ⇒ commitSide。
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        writeTxnFile(dir, "p1", true, "pA", false);
+        assertFalse("target 应已缺失", target.exists());
+
+        FaceRuntimeStatus st = m.status();
+        assertTrue("唯一副本（备份）绝不能被删", bak.isDirectory());
+        assertTrue("记录必须保留", new File(dir, ".txn_p1").exists());
+        assertFalse("不得报就绪", st.isReady());
+        assertEquals("必须给出可执行的人工了结入口", "p1", st.ambiguousSwapProfileId);
+
+        // 目标缺失时「保留当前目录」无从谈起：显式拒绝，而不是静默无反应
+        FaceModelManager.Result keepNew = m.resolveAmbiguousSwap("p1", true);
+        assertEquals("目标缺失时不得接受「保留当前目录」",
+                FaceModelManager.Status.INVALID_ARGUMENT, keepNew.status);
+        assertTrue("拒绝时更要保住唯一副本", bak.isDirectory());
+
+        // 唯一可行且正确的选择：还原为备份
+        assertTrue("应能经「还原为备份」把配置救回",
+                m.resolveAmbiguousSwap("p1", false).isOk());
+        assertTrue("内容应为原模型",
+                java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
+        assertFalse("备份已被消费", bak.exists());
+        assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+        assertTrue("救回后应就绪", m.status().isReady());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 启动闸门：恢复未完成时 {@code recoverForStartup} 必须返回 blockedReason 且 activeProfileId
+     * 为空——调用方据此**停止**自动激活，绝不猜测哪个配置该生效（约束 2-1）。
+     */
+    @Test
+    public void startupRecoveryBlocksAutoActivationWhenRecoveryIncomplete() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(m.activate("p1", ABI, true).isOk());
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false, TXN_A);   // 未提交
+
+        FaultyFileOps ops = new FaultyFileOps();
+        ops.failDeleteForName("p1");   // 新目录删不掉 ⇒ 回滚失败
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FaceModelManager.StartupRecovery sr = m.recoverForStartup();
+            assertNull("恢复未完成时不得给出激活目标", sr.activeProfileId);
+            assertNotNull("必须给出阻塞理由", sr.blockedReason);
+            assertTrue("必须保留记录以待重试", new File(dir, ".txn_p1").exists());
+            assertTrue("必须保留两份数据", target.isDirectory() && bak.isDirectory());
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 约束 2-2：用户**显式选择**的目标不得被恢复结果偷换。另一个 profile 的未决现场只会在
+     * 它自己被触碰时处理，不得改写用户刚选的配置。
+     */
+    @Test
+    public void explicitActivationIsNotReplacedByPendingTxnOfOtherProfile() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+
+        // ⚠️ 关键（A1 审计 N1 修正）：**导入会把指针置成刚导入的那个 profile**（importZip 成功路径
+        // 无条件 persistActive，与 hadOld 无关）。故必须让「最后一次导入」与「用户将要 activate 的目标」
+        // **不同**，否则指针恰好等于用户选择，任何「用指针值替代实参」的实现注入都不会改变结果——
+        // 用例就成了空守卫（初版正是如此，A1 用探针实测它保持绿）。
+        Map<String, byte[]> va = defaultFiles("va");
+        assertTrue(m.importZip(stream(zip("", manifest("pA", "[\"arm64-v8a\"]", va, "lic"), va)), ABI, true).isOk());
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        // p1 留下**证据不足**的未决现场（旧格式 + 同名），应原样滞留
+        File target1 = m.profileDir("p1");
+        File bak1 = new File(dir, ".bak_p1");
+        assertTrue(target1.renameTo(bak1));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target1, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        writeTxnFile(dir, "p1", true, "p1", false);
+
+        Map<String, byte[]> vp2 = defaultFiles("vp2");
+        assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", vp2, "lic"), vp2)), ABI, true).isOk());
+        assertEquals("最后一次导入后指针应指向 p2（= 下面用户选择的**相反**侧）", "p2", m.activeProfileId());
+
+        // 用户显式选择 pA —— 而此刻指针是 p2。若实现用指针值替代实参，这里会去激活 p2。
+        assertTrue(m.activate("pA", ABI, true).isOk());
+
+        FaceRuntimeStatus st = m.status();
+        assertEquals("用户选择的 pA 不得被指针值（p2）偷换", "pA", st.profileId);
+        assertTrue("另一 profile 的未决现场应原样滞留（只在该 profile 被触碰时处理）",
+                new File(dir, ".txn_p1").exists() && bak1.isDirectory() && target1.isDirectory());
+    }
+
+    /**
+     * 指针格式兼容：旧格式（裸 profileId）与新格式（{@code profileId=} + {@code txnId=}）都必须
+     * 解析出同一 profileId；**非法代次必须降级为「无证据」而不得污染 profileId**。
+     */
+    @Test
+    public void activePointerParsesLegacyAndTokenFormats() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        writeActivePointer(dir, "p1");
+        assertEquals("p1", m.activeProfileId());
+        assertNull("旧格式无提交证据", readPointerTxnId(dir));
+
+        writeActivePointer(dir, "p1", TXN_A);
+        assertEquals("p1", m.activeProfileId());
+        assertEquals(TXN_A, readPointerTxnId(dir));
+
+        // 非法代次（长度/字符集不符）不得污染 profileId，也**不得成为提交证据**。
+        java.nio.file.Files.write(new File(dir, FaceModelManager.ACTIVE_POINTER_FILE).toPath(),
+                "profileId=p1\ntxnId=zzz\n".getBytes(StandardCharsets.UTF_8));
+        assertEquals("非法代次不得污染 profileId", "p1", m.activeProfileId());
+
+        // 判别力验证：指针与记录都写**同一个**脏串 "zzz"。若任一侧把它当成代次，两侧相等就会
+        // 伪造出「已提交」判定（保留新目录、报 READY）；正确行为是两侧都降级为无证据 ⇒ 走旧格式
+        // 路径 ⇒ 同名覆盖判为歧义、保留现场并报 ERROR。
+        writeTxnFile(dir, "p1", true, "p1", false, "zzz");
+        File target = m.profileDir("p1");
+        File bak = new File(dir, ".bak_p1");
+        assertTrue(target.renameTo(bak));
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        writeProfileDir(target, manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2);
+
+        FaceRuntimeStatus st = m.status();
+        assertFalse("脏代次不得被当成提交证据（否则会误判为已提交而保留新目录）", st.isReady());
+        assertEquals("应走旧格式歧义路径", "p1", st.ambiguousSwapProfileId);
+    }
+
+    /**
+     * **外部审查 P1 #1 的真实导入复现**：{@code committed} 改写失败 **且** 备份也删不掉时，
+     * **绝不回滚一次成功的导入**。
+     *
+     * <p>旧实现把「记录残留会收敛到保留新目录」建立在「备份确实被清掉」这一前提上；前提不成立时
+     * 现场退化成 {@code in_progress + target + bak}，恢复按「未提交」把新目录删掉——而 native 仍在
+     * 跑新模型。现在提交证据是指针里的代次，恢复据此判定已提交，只重试清理备份。
+     *
+     * <p>用可编程闸门表达「第 1 次 writeSync（in_progress）成功、第 2 次（committed）失败」——
+     * 旧的全局布尔接缝**根本无法表达**这个组合。
+     */
+    @Test
+    public void committedRewriteAndBackupCleanupBothFailDoesNotRollBack() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            // 只让 committed 改写失败（不影响 in_progress 那次），并让备份删不掉
+            ops.failWriteIfContains("state=committed");
+            ops.failDeleteForName(".bak_p1");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+            assertTrue("激活确已生效，导入应返回成功：" + r.message, r.isOk());
+            assertTrue("现场应退化为 in_progress + target + bak",
+                    new File(dir, ".txn_p1").exists() && new File(dir, ".bak_p1").isDirectory());
+
+            ops.resetGates();
+            FaceRuntimeStatus st = m.status();
+            assertTrue("恢复后应就绪", st.isReady());
+            assertEquals("p1", st.profileId);
+            assertTrue("**不得回滚一次已提交的导入**：内容必须是新模型",
+                    java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(m.profileDir("p1"), DET_BIN))));
+            assertFalse("备份应被清理", new File(dir, ".bak_p1").exists());
+            assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * **第三代理 2026-09-18 实证复现的真实缺口**：提交证据**不得**随激活指针移动而丢失。
+     *
+     * <p>场景（可达：Android 上 native mmap 模型文件常致备份删不掉，而 {@code commitSide} 存在
+     * 的意义正是覆盖它）：同名覆盖 p2 的 {@code committed} 改写失败 **且** 备份删不掉 → 记录停在
+     * {@code in_progress}；此时用户切到别的 profile，指针被换成 p1 → **旧实现把 p2 的提交证据一并
+     * 摧毁**（证据只存在指针里），之后再触碰 p2 就把它**静默回滚**掉一次成功的导入。
+     *
+     * <p>见证文件 {@code .commit_<id>} 按 profile 固定命名、写在提交动作最前沿，指针怎么移动都与
+     * 它无关，故「切走再切回」不再造成任何回滚。
+     */
+    @Test
+    public void commitEvidenceSurvivesPointerMoveAndDoesNotRollBack() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            // 只让 committed 改写失败（不影响 in_progress 那次），并让备份删不掉 → 记录停在 in_progress
+            ops.failWriteIfContains("state=committed");
+            ops.failDeleteForName(".bak_p2");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+            assertTrue("激活确已生效，导入应返回成功：" + r.message, r.isOk());
+            assertTrue("现场应退化为 in_progress + target + bak",
+                    new File(dir, ".txn_p2").exists() && new File(dir, ".bak_p2").isDirectory());
+            assertNotNull("见证的提交代次不得为空", readCommitWitnessTxnId(dir, "p2"));
+            assertEquals("此刻见证与指针应带同一个提交代次（指针稍后会被覆盖，见证不会）",
+                    readPointerTxnId(dir), readCommitWitnessTxnId(dir, "p2"));
+
+            // ★ 指针移动：切到 p1。旧实现自此丢掉 p2 的提交证据。
+            assertTrue(m.activate("p1", ABI, true).isOk());
+            assertNotNull("指针应已带 p1 的新鲜代次", readPointerTxnId(dir));
+
+            // 解除文件故障后触碰 p2：恢复必须判「已提交」→ 只重试清理，绝不回滚目录。
+            ops.resetGates();
+            assertTrue(m.activate("p2", ABI, true).isOk());
+
+            assertTrue("提交证据不得随指针移动而丢失：p2 必须保留新模型",
+                    java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(m.profileDir("p2"), DET_BIN))));
+            assertFalse("已提交 ⇒ 备份应被清理", new File(dir, ".bak_p2").exists());
+            assertFalse("已提交 ⇒ 记录应被清除", new File(dir, ".txn_p2").exists());
+            assertFalse("已提交 ⇒ 见证应被清除", commitWitnessOf(dir, "p2").exists());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 见证**单独**即可判定「已提交」：即便激活指针的代次与事务代次不同（指针已移走/已重盖），
+     * 恢复也必须保留新目录。
+     *
+     * <p>夹具直接构造现场，把机制与导入流程解耦——这样即便将来导入流程重构，本用例仍能守住
+     * 「见证 ⇒ 已提交」这条判据。
+     */
+    @Test
+    public void commitWitnessAloneIsSufficientEvidenceToKeepNewDir() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        Map<String, byte[]> v2 = defaultFiles("v2");
+
+        File target = m.profileDir("p2");
+        writeProfileDir(target, manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2);
+        File bak = new File(dir, ".bak_p2");
+        writeProfileDir(bak, manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1);
+        writeTxnFile(dir, "p2", true, "p1", false, TXN_A);      // 停在 in_progress
+        writeCommitWitness(dir, "p2", TXN_A);                   // 提交见证（与事务代次一致）
+        writeActivePointer(dir, "p2", TXN_B);                   // 指针代次**不等于**事务代次
+
+        FaceRuntimeStatus st = m.status();
+
+        assertTrue("见证成立即已提交，应报就绪：" + st.message, st.isReady());
+        assertEquals("p2", st.profileId);
+        assertTrue("已提交 ⇒ 保留新目录",
+                java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+        assertFalse("已提交 ⇒ 清理备份", bak.exists());
+        assertFalse("已提交 ⇒ 记录清除", new File(dir, ".txn_p2").exists());
+        assertFalse("已提交 ⇒ 见证清除", commitWitnessOf(dir, "p2").exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 见证**不得**被伪造：代次与事务不符（或非法、或见证缺失）一律降级为「无证据」⇒ 判未提交
+     * ⇒ 回滚目录。
+     *
+     * <p>判别力来自「代次是每次不同的 nonce」：脏内容一旦参与相等比较，就可能伪造出一次
+     * 「已提交」而把**未提交**的新目录留在激活位。
+     *
+     * <p>⚠️ 三支子用例里**只有 {@code TXN_B}（不匹配）与 {@code null}（无见证）承重**；
+     * {@code "zzz"} 属格式健壮性用例、**不具独立判别力**：记录的代次恒为合法 nonce（{@code newTxnId}），
+     * 故「见证侧做不做 {@code isSafeTxnId} 校验」对 {@code isCommitted} 的等值比较结果完全相同
+     * （A2 审计 F3 实测）。保留它是因为它锁住了「非法代次不得被当成证据」这条契约本身。
+     */
+    @Test
+    public void commitWitnessWithMismatchedOrInvalidTxnIdIsNotEvidence() throws Exception {
+        for (String witnessTxn : new String[]{TXN_B, "zzz", null}) {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+
+            File target = m.profileDir("p2");
+            writeProfileDir(target, manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2);
+            File bak = new File(dir, ".bak_p2");
+            writeProfileDir(bak, manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1);
+            writeTxnFile(dir, "p2", true, "p1", false, TXN_A);
+            if (witnessTxn != null) {
+                writeCommitWitness(dir, "p2", witnessTxn);
+            }
+            writeActivePointer(dir, "p2", TXN_B);
+
+            FaceRuntimeStatus st = m.status();
+
+            assertTrue("无有效见证 ⇒ 必须回滚到旧目录（witnessTxn=" + witnessTxn + "）",
+                    java.util.Arrays.equals(v1.get(DET_BIN), readFile(new File(target, DET_BIN))));
+            assertFalse("回滚应消费备份（witnessTxn=" + witnessTxn + "）", bak.exists());
+            assertFalse("回滚后记录应清除（witnessTxn=" + witnessTxn + "）",
+                    new File(dir, ".txn_p2").exists());
+            assertTrue("回滚后应就绪：" + st.message, st.isReady());
+            assertNoTempArtifacts(dir);
+        }
+    }
+
+    /**
+     * **长 profileId 不得截断提交证据**（A2 审计 F1）。
+     *
+     * <p>现场读取原本用**定长缓冲单次 {@code read()}**（见证 256、事务记录 512）。而 profileId
+     * **没有长度上限**（{@code isSafeDirName} 只拒绝空 / {@code .} / {@code ..} / 分隔符，
+     * {@code FaceModelManifest} 只要求非空），于是稍长的 profileId 就会把 {@code txnId} 行挤出缓冲
+     * → 见证被判「无证据」、记录被降级为「旧格式」→ 在「指针已移走」的现场把一次**成功**的导入
+     * 静默回滚。这与本批要消灭的失败模式是同一个。
+     *
+     * <p>本用例把 profileId 拉到 240 字符：见证内容 ≈ 289 字节（&gt; 256），事务记录 ≈ 572 字节
+     * （&gt; 512，因为 profileId 与 prevActive 各出现一次）。指针指向**别的** profile，故「已提交」
+     * 只能由见证证明——旧实现两条读都被截断后走旧格式启发式，会判成未提交而回滚。
+     */
+    @Test
+    public void longProfileIdDoesNotTruncateCommitEvidence() throws Exception {
+        StringBuilder sb = new StringBuilder("long");
+        while (sb.length() < 240) {
+            sb.append('x');
+        }
+        String id = sb.toString();
+
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        Map<String, byte[]> v2 = defaultFiles("v2");
+
+        File target = m.profileDir(id);
+        writeProfileDir(target, manifest(id, "[\"arm64-v8a\"]", v2, "lic"), v2);
+        File bak = new File(dir, ".bak_" + id);
+        writeProfileDir(bak, manifest(id, "[\"arm64-v8a\"]", v1, "lic"), v1);
+        // prevActive 也取长 id：让记录超过原先的 512 字节缓冲
+        writeTxnFile(dir, id, true, id, false, TXN_A);
+        writeCommitWitness(dir, id, TXN_A);
+        writeActivePointer(dir, "p1", TXN_B);   // 指针在**别的** profile，且代次与本事务无关
+
+        assertTrue("夹具前提：见证内容必须超过原先的 256 字节缓冲",
+                commitWitnessOf(dir, id).length() > 256);
+        assertTrue("夹具前提：事务记录必须超过原先的 512 字节缓冲",
+                new File(dir, ".txn_" + id).length() > 512);
+
+        // 触碰该 profile（activate 入口会先恢复）——「已提交」只能由见证证明。
+        FaceModelManager.Result r = m.activate(id, ABI, true);
+        assertTrue("恢复后应能正常激活：" + r.message, r.isOk());
+
+        assertTrue("长 profileId 下提交证据不得被截断：新目录必须保留",
+                java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
+        assertFalse("已提交 ⇒ 备份应被清理", bak.exists());
+        assertFalse("已提交 ⇒ 记录应被清除", new File(dir, ".txn_" + id).exists());
+        assertFalse("已提交 ⇒ 见证应被清除", commitWitnessOf(dir, id).exists());
+        assertNoTempArtifacts(dir);
+    }
+
+    /**
+     * 见证写不进去 ⇒ **绝不越过提交点**（与「{@code in_progress} 记录写不进去就绝不动手」同一条
+     * 原则）：回滚到旧配置、失败返回，且不留下任何见证残留。
+     */
+    @Test
+    public void commitWitnessWriteFailureRollsBackWithoutCrossingCommitPoint() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            // 记录导入前的指针代次：profileId 在两种结果下都是 "p2"（同名覆盖），**不具判别力**；
+            // 能判别「有没有越过提交点」的是代次——越过则 persistActive 会盖上**新鲜**代次。
+            String pointerTxnBefore = readPointerTxnId(dir);
+            ops.failWriteForName(FaceModelManager.COMMIT_WITNESS_PREFIX + "p2.tmp");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertFalse("见证落不下就不该越过提交点：" + r.message, r.isOk());
+            assertTrue("旧配置必须回滚就位",
+                    java.util.Arrays.equals(v1.get(DET_BIN), readFile(new File(m.profileDir("p2"), DET_BIN))));
+            assertFalse("不得残留见证", commitWitnessOf(dir, "p2").exists());
+            assertFalse("不得残留记录", new File(dir, ".txn_p2").exists());
+            assertFalse("不得残留备份", new File(dir, ".bak_p2").exists());
+            assertEquals("提交点未越过 ⇒ 指针不得被改动", pointerTxnBefore, readPointerTxnId(dir));
+            assertEquals("指针仍指向 p2", "p2", m.activeProfileId());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 激活指针写失败 ⇒ 见证必须被**撤销**。
+     *
+     * <p>否则会留下自相矛盾的状态：现场已回滚（新目录被删、旧目录还原），而盘上却有一条
+     * 「本次事务已提交」的见证——下次恢复会据此把**已回滚**的现场再翻成「保留新目录」。
+     *
+     * <p>⚠️ **本用例不判别「有没有显式撤销」**：这里回滚是**成功**的，而 {@code rollbackProfileSwap}
+     * 内部的 {@code finishTxn} 会顺带把见证清掉——即使删掉 {@code importZip} 里那次显式撤销，本用例
+     * 仍全绿（A1 审计 Low-2 实测）。判别显式撤销的职责在
+     * {@link #commitWitnessIsRevokedBeforeRollbackSoFailedRollbackStaysUncommitted}（那里回滚失败、
+     * 记录被保留，两种实现才显出差别）。保留本用例是因为它覆盖「撤销 + 回滚成功」这条组合路径。
+     */
+    @Test
+    public void commitWitnessIsRevokedWhenPointerWriteFails() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            ops.failWriteForName(FaceModelManager.ACTIVE_POINTER_FILE + ".tmp");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+
+            assertFalse("指针写失败应失败返回：" + r.message, r.isOk());
+            assertTrue("旧配置必须回滚就位",
+                    java.util.Arrays.equals(v1.get(DET_BIN), readFile(new File(m.profileDir("p2"), DET_BIN))));
+            assertFalse("见证必须被撤销（否则下次恢复会把已回滚的现场翻成已提交）",
+                    commitWitnessOf(dir, "p2").exists());
+            assertFalse("不得残留记录", new File(dir, ".txn_p2").exists());
+            assertEquals("指针写失败 ⇒ 保持原激活配置", "p2", m.activeProfileId());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
+    /**
+     * 指针写失败 **且回滚也失败** 时，见证必须**已被撤销**。
+     *
+     * <p>这条才是「先撤销见证、再回滚」真正承重的地方：回滚**成功**时 {@code rollbackProfileSwap}
+     * 内部的 {@code finishTxn} 顺带就把见证清了，掩盖了「有没有显式撤销」的差别；只有回滚失败、
+     * 记录被保留时差别才显出来——见证若还在，下一次恢复会判「已提交」，把一个**从未提交**的现场
+     * 翻成「保留新目录」，而磁盘上留着的其实是那个没被激活成功的新包。
+     */
+    @Test
+    public void commitWitnessIsRevokedBeforeRollbackSoFailedRollbackStaysUncommitted() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FaceModelManager.setFileOpsForTesting(ops);
+        try {
+            FakeRuntime rt = new FakeRuntime();
+            File dir = tmp.newFolder();
+            FaceModelManager m = new FaceModelManager(dir, rt);
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+            assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+            // 指针写失败 + 回滚（.bak_p2 → p2）也失败 ⇒ 记录与备份都滞留现场
+            ops.failWriteForName(FaceModelManager.ACTIVE_POINTER_FILE + ".tmp");
+            ops.failRenameFromName(".bak_p2");
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true);
+            assertFalse("指针写失败应失败返回：" + r.message, r.isOk());
+            assertFalse("见证必须在回滚**之前**就被撤销", commitWitnessOf(dir, "p2").exists());
+            assertTrue("回滚失败 ⇒ 记录保留待下次重试", new File(dir, ".txn_p2").exists());
+
+            // 解除故障：恢复必须判「未提交」→ 继续回滚到旧目录，而不是被残留见证翻成「保留新目录」。
+            ops.resetGates();
+            FaceRuntimeStatus st = m.status();
+            assertTrue("恢复后应就绪：" + st.message, st.isReady());
+            assertTrue("未提交的事务不得被判为已提交（内容应为旧模型）",
+                    java.util.Arrays.equals(v1.get(DET_BIN), readFile(new File(m.profileDir("p2"), DET_BIN))));
+            assertFalse(new File(dir, ".txn_p2").exists());
+            assertFalse(new File(dir, ".bak_p2").exists());
+            assertFalse(commitWitnessOf(dir, "p2").exists());
+
+            // `.rollback_p2` 意图标记会滞留——既有行为（rollbackDirOnly 不清它，buildStatus 已容忍
+            // 「标记在、备份已被消费」并照常判 READY），属既有遗留、非本用例考察对象。清掉再做卫生断言。
+            assertTrue("清理人造标记", new File(dir, ".rollback_p2").delete());
+            assertNoTempArtifacts(dir);
+        } finally {
+            FaceModelManager.setFileOpsForTesting(null);
+        }
+    }
+
     // ---------- 夹具 ----------
 
     /** 按 flat 布局把 manifest 与模型文件写入目录（供构造磁盘现场使用）。 */
@@ -1616,6 +2587,7 @@ public class FaceModelManagerTest {
             assertFalse("残留临时/备份内容: " + n,
                     n.startsWith(".tmp_") || n.startsWith(".bak_") || n.startsWith(".rollback_")
                             || n.startsWith(".txn_")
+                            || n.startsWith(FaceModelManager.COMMIT_WITNESS_PREFIX)
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".tmp")
                             || n.equals(FaceModelManager.ACTIVE_POINTER_FILE + ".bak"));
         }
