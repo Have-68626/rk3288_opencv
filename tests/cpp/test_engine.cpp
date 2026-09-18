@@ -1126,3 +1126,130 @@ TEST(EngineTest, RevocationCannotReturnBetweenFinalCheckAndEmit) {
         }
     }
 }
+
+// FACE-PIPE-015：把发射门「免死锁契约」从注释升级为可执行约束（重入检测 + 拒绝）。
+//
+// 契约：renderResults 持 identityEmitMu_ 期间经 publisher_->publish 调用结果回调；回调**不得同步
+// 回入**任何取 tracksMu_ 的公开 API——穷尽集为 5 个：run / processFrameOnce / setRealtimePipeline /
+// applyGalleryUpdate / getTrackViews（见 Engine.h 的同名条目）——否则
+// 与撤销路径（revokeTrackIdentitiesLocked：tracksMu_ → identityEmitMu_）构成 ABBA 死锁。修复前该约定
+// 仅存在于注释，无任何编译期/运行期护栏；现在这些入口在入口处检测「本线程正处发射门内」并拒绝执行。
+//
+// 确定性回归：覆写 onBeforePublishLocked（测试接缝，此时引擎线程**必已持 identityEmitMu_**），在**同一
+// 线程**内同步调用 applyGalleryUpdate，断言其**返回失败（false）**而非挂死。
+//
+// ⚠️ **已知未覆盖（子代理3 用探针实测确认）**：`run()` 的重入守卫**没有判别用例**——注释掉 `Engine::run()`
+// 顶部那行守卫，本套件仍 88 通过 / 0 失败。
+//
+// 这是**成本收益取舍，不是「做不到」**。子代理4 给出了两条**安全且确定**的测法（其仅为构造性论证，未实做）：
+//   · 设计 A（需一个极小的测试接缝）：在 `run()` 的守卫之后、`isRunning_ = true` **之前**加一个
+//     `RK_ENABLE_TEST_SEAMS` 下的虚接缝（与既有 onBeforeRenderPublish / onBeforePublishLocked 同款），
+//     测试子类覆写它并抛哨兵异常。无守卫时该异常在**循环外的无 try 区**抛出 → 穿透到 worker 的
+//     `catch(...)` → `run()` **根本不进循环** ⇒ 无自旋、无 detach、无泄漏，断言「接缝未被触发」即可判别。
+//     代价 = 1 个虚函数 + 1 行调用（生产不定义宏 ⇒ 零成本）。
+//   · 设计 B（零生产改动）：让 `run()` 无帧可消费（不接相机）⇒ 恒走 `processed=false → sleep → continue`，
+//     永不触碰 identityEmitMu_；另起守护线程限时调 `stop()`（只置原子、不取两把锁）以有界终止，再用
+//     gtest `CaptureStdout()` 判「守卫之后那行 `Engine started.` 是否输出」——**文本断言，非计时断言**。
+//   ⇒ 之所以仍**不做**：该守卫**生产不可达**（结果回调不可能同步调用阻塞主循环），且 5 个入口共用同一行
+//   守卫形态、已由本用例的 `applyGalleryUpdate` 这一代表覆盖；为一个不可达路径引入新生产接缝（设计 A 要
+//   改头文件）或做 stdout 捕获（设计 B 较繁琐），收益不抵成本。**若该路径将来变得可达，按设计 A 补测。**
+//
+// ℹ️ RED 的**平台差异**（别照字面理解本用例的"死锁"描述）：MSVC 的 `std::mutex` 对**同线程重入**会**抛**
+// `system_error`（"resource deadlock would occur"）而非挂死 ⇒ 被 worker 的 `catch(...)` 接住、照常置
+// workerDone，RED 收敛为**干净的断言失败**、**不触发 detach**；只有 libstdc++（Linux，非本项目门禁）才是
+// 真挂死并走 detach 分支。
+
+// 有界性（关键：保证回归时为「用例失败」而非「套件挂死」）：重入检测基于 thread_local，重入必须发生在
+// **同一线程**（钩子内部），故**不能**把重入调用挪到别的线程再等超时（那样标记不生效、测不到）。做法是
+// 把**驱动一帧**整体放在独立 worker 线程；主线程对 worker 完成做**有界等待**——超时即 ADD_FAILURE 并
+// **detach 卡住的 worker、不再析构 Engine（泄漏之）**：卡住的线程仍持有泄漏 Engine 内部互斥量，但不触碰
+// 已释放内存，套件得以前进。故 RED 表现为「本用例失败、套件继续」，而非 CI job 超时。
+class ReentryProbeEngine : public Engine {
+public:
+    std::atomic<bool> reentryArmed{false};   // 仅对受测帧启用重入
+    std::atomic<bool> reentryDone{false};    // 钩子内 applyGalleryUpdate 已返回
+    std::atomic<bool> reentryResult{true};   // 其返回值（预期 false）
+    std::shared_ptr<const FaceSearchLinearIndex> gallery;  // 钩子内换入的库（内容与本用例无关）
+
+protected:
+    void onBeforePublishLocked() override {
+        if (!reentryArmed.load()) return;  // 其余帧走等价空钩子
+        // 同一线程（引擎线程）、持 identityEmitMu_：同步回入取 tracksMu_ 的公开 API。
+        const bool ok = applyGalleryUpdate(gallery, {});
+        reentryResult.store(ok);
+        reentryDone.store(true);
+    }
+};
+
+TEST(EngineTest, ResultCallbackReentryFromEmitGateIsRejectedNotDeadlocked) {
+    auto aliceIdx = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(aliceIdx->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err)) << err;
+
+    auto emptyIdx = std::make_shared<FaceSearchLinearIndex>();
+    std::string e2;
+    ASSERT_TRUE(emptyIdx->reset({}, 512, e2)) << e2;
+
+    // 堆分配：RED（未拒绝）时 worker 会卡死，需 detach 并**泄漏**本对象以保证套件存活。
+    ReentryProbeEngine* engine = new ReentryProbeEngine();
+
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    ASSERT_TRUE(engine->setRealtimePipeline(makeRtPipeline(det, aliceIdx)));
+
+    const cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH, CV_8UC3,
+                        cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) engine->processFrameOnce(frame);  // 先确认 alice
+    ASSERT_EQ(engine->getTrackViews().size(), 1u);
+    ASSERT_EQ(engine->getTrackViews()[0].stableId, "alice");
+
+    engine->gallery = emptyIdx;
+    engine->reentryArmed.store(true);
+
+    // 有界驱动：帧处理（含钩子内重入）在独立 worker；主线程限时等待其完成。
+    // ⚠️ **超时分支会 detach，detach 后 worker 仍可能恢复运行**，故它触及的一切都不得是本栈局部量：
+    //   · workerDone 因此**堆分配 + shared_ptr 按值捕获**（worker 持一份引用计数 ⇒ 本函数返回后对象仍存活）；
+    //   · frame 按值捕获（cv::Mat 拷贝持有数据引用，数据生命周期由引用计数保证）；
+    //   · engine 是堆指针，且超时分支**刻意泄漏**（其内存仍被 detach 线程引用，不得析构）。
+    //（A2 审计 Med-1：先前把 workerDone 写成栈上变量并按引用捕获，detach 后会写已销毁的栈帧，
+    //  可随机打坏**其它**用例；且该风险不限于 RED——GREEN 下 worker 超过 kInterleaveWait 同样会 detach。）
+    auto workerDone = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([engine, frame, workerDone] {
+        // 吞掉 worker 内逃逸的异常：RED（未拒绝重入）时同一线程二次取 identityEmitMu_，MSVC 的
+        // std::mutex 会**抛** system_error（"resource deadlock would occur"，非挂死；libstdc++ 上则是
+        // 真挂死）。若任其逃出 worker 线程 → std::terminate() 中止整个进程（非「用例失败」）。此处
+        // 捕获后照常置 workerDone，使 RED 收敛为**确定性断言失败**而非进程中止；真挂死的平台则由
+        // 下方有界等待兜底。
+        try {
+            engine->processFrameOnce(frame);
+        } catch (...) {
+        }
+        workerDone->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + kInterleaveWait;
+    while (!workerDone->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    if (!workerDone->load()) {
+        // RED（无重入检测）：worker 在 ABBA 死锁上永久阻塞。有界放弃以保套件存活：detach 而非 join
+        //（join 会永久阻塞），并**泄漏** engine（其内存仍被 detach 线程引用，不得析构）。
+        ADD_FAILURE() << "重入未被拒绝：worker 在超时内未返回（疑似发射门 ABBA 死锁）";
+        worker.detach();
+        return;
+    }
+    worker.join();
+
+    EXPECT_TRUE(engine->reentryDone.load());
+    EXPECT_FALSE(engine->reentryResult.load())
+            << "从结果回调同步重入 applyGalleryUpdate 应被拒绝（返回 false）而非死锁";
+
+    // 被拒绝的调用不得产生副作用：身份仍在（未换库、未撤销）。
+    const auto post = engine->getTrackViews();
+    ASSERT_EQ(post.size(), 1u);
+    EXPECT_EQ(post[0].stableId, "alice");
+
+    delete engine;
+}
+
