@@ -39,6 +39,24 @@ bool getString(const rk_win::JsonValue& o, const std::string& key, std::string& 
     return true;
 }
 
+// profileId 字符集校验——Java FaceModelManifest 的**逐字镜像**（契约见 FaceModelManifest.java 类注释：
+// 字段名/缺省值/非法判定必须一致，否则会出现「Java 通过、native 拒绝」或反之）。
+// 拒绝当且仅当满足任一条：
+//   ① 任一字符 c 满足 c < 0x20（C0 控制字符，含 \n \r \t）或 c == 0x7F；
+//   ② 首字符或末字符是空格 0x20（首尾空白）。
+// **放行**：'='、内部空格、'.'、非 ASCII 等一切其它字符。**不加长度上限**。
+// 注意 char 符号性：std::string 的 char 在 x86/ARM 上默认**有符号**，`c < 0x20` 对 >0x7F 的字节
+// （UTF-8 续字节 0x80-0xFF）会因符号扩展成负值而误判——故这里逐字符先转 unsigned char（范围 0-255）
+// 再比较，与 Java char（无符号 16 位）的语义对齐。
+bool isValidProfileId(const std::string& s) {
+    if (s.empty()) return false;  // 与 getString 的非空约束一致（空串另由缺字段分支拒绝）
+    for (const unsigned char c : s) {
+        if (c < 0x20 || c == 0x7F) return false;
+    }
+    if (s.front() == ' ' || s.back() == ' ') return false;
+    return true;
+}
+
 bool parseEntry(const rk_win::JsonValue& v, FaceModelManifestEntry& e) {
     if (!v.isObject()) return false;
     if (!getString(v, "path", e.relativePath)) return false;
@@ -146,6 +164,12 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
     if (!getString(root, "profileId", out.profileId) ||
         !getString(root, "displayName", out.displayName)) {
         err = "缺少 profileId 或 displayName";
+        return false;
+    }
+    // profileId 字符集校验（Java FaceModelManifest 镜像，见 isValidProfileId）。
+    // 返回 false 与 Java 侧经 FaceModelManager 归入 Status.MANIFEST_INVALID 语义对应（C++ 无状态枚举）。
+    if (!isValidProfileId(out.profileId)) {
+        err = "profileId 含非法字符（控制字符或首尾空格）";
         return false;
     }
 
