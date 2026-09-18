@@ -132,6 +132,70 @@ public class FaceModelManifestTest {
                 FaceModelManifest.parse(VALID.replace("\"detector\": {", "\"detectorX\": {"), ABI).status);
     }
 
+    /**
+     * 导入校验：profileId 字符集。拒绝任何 C0 控制字符（{@code c < 0x20}，含 {@code \n \r \t}）
+     * 与 DEL(0x7F)，以及**首字符或末字符为空格**(0x20)；放行 `=`、内部空格、`.`、`*`、`?`、非 ASCII。
+     * 规则与 C++ 侧镜像逐字一致；返回 {@link FaceModelManifest.Status#MISSING_FIELD}
+     * （{@code FaceModelManifest.Status} 无 MANIFEST_INVALID，且该方法紧邻 isBlank 分支；
+     * 外层 {@code FaceModelManager} 会统一映射为 MANIFEST_INVALID）。
+     */
+    @Test
+    public void importRejectsProfileIdWithControlCharsOrEdgeSpaces() {
+        for (String bad : new String[]{"a\nb", "a\rb", "a\tb", " a", "a ", "ab"}) {
+            FaceModelManifest.ParseResult r = parseWithProfileId(bad);
+            assertEquals("应拒绝 profileId: " + describe(bad),
+                    FaceModelManifest.Status.MISSING_FIELD, r.status);
+            assertFalse("被拒时不得产出 profile", r.isOk());
+        }
+        for (String ok : new String[]{"rk3288_light", "a=b", "a b", "a.b"}) {
+            FaceModelManifest.ParseResult r = parseWithProfileId(ok);
+            assertTrue("应接受 profileId: " + describe(ok), r.isOk());
+            assertEquals(ok, r.profile.profileId);
+        }
+    }
+
+    /** 用指定 profileId（自动 JSON 转义）派生 VALID manifest 并解析。 */
+    private static FaceModelManifest.ParseResult parseWithProfileId(String id) {
+        return FaceModelManifest.parse(
+                VALID.replace("\"profileId\": \"p1\"", "\"profileId\": " + jsonString(id)), ABI);
+    }
+
+    /** 将字符串编码为 JSON 字符串字面量（控制字符转 {@code \n}/\r/\t 或 Unicode 转义）。 */
+    private static String jsonString(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 2).append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"': sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 0x20 || c == 0x7F) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        return sb.append('"').toString();
+    }
+
+    /** 控制字符可见化，便于失败信息定位。 */
+    private static String describe(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                sb.append(String.format("\\u%04x", (int) c));
+            } else {
+                sb.append(c);
+            }
+        }
+        return "[" + sb + "]";
+    }
+
     @Test
     public void rejectsWrongDetectorOutputCount() {
         FaceModelManifest.ParseResult r =

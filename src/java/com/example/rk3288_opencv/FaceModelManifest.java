@@ -210,6 +210,16 @@ public final class FaceModelManifest {
         if (isBlank(profileId) || isBlank(displayName)) {
             return new ParseResult(Status.MISSING_FIELD, null, "缺少 profileId 或 displayName");
         }
+        // 导入校验：profileId 字符集。
+        // ⚠️ 它**不止作用于新导入**——本方法（parse）同时被状态读取路径 FaceModelManager.buildStatus 调用，
+        // 故「升级前导入、profileId 含内部控制字符」的存量 profile 会由 READY 变为「激活配置 manifest 无效」。
+        // 这是有意为之（详见 isImportSafeProfileId 的 javadoc）。读路径的 isSafeDirName 仍有意保持宽松。
+        // 之所以在此拦截：profileId 会作为目录名/行式 k=v 文件（active_profile / .txn_* / .commit_*）
+        // 的值落盘，含换行/首尾空格会把读回值截断成另一个 id，导致「无记录 / 无提交证据」错判。
+        if (!isImportSafeProfileId(profileId)) {
+            return new ParseResult(Status.MISSING_FIELD, null,
+                    "profileId 含非法字符（C0 控制字符/DEL 或首尾空格）");
+        }
 
         List<Object> abisRaw = asArray(obj.get("supportedAbis"));
         if (abisRaw == null || abisRaw.isEmpty()) {
@@ -414,6 +424,42 @@ public final class FaceModelManifest {
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
             if (c == '/' || c == '\\' || c == '\0' || c == ':') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * profileId 的字符集判据（**新导入把关 + 存量暴露**）。
+     *
+     * <p>为何与 {@link #isSafeDirName} 分开、而不直接收紧它：{@code isSafeDirName} 与**读路径**共享
+     * （{@code FaceModelManager.parseActivePointer}、{@code listProfiles}），收紧它会让磁盘上
+     * **已存在**的含控制字符目录从「按原名显式报错」退化成「静默未导入」——那是有意保留的行为。
+     *
+     * <p>⚠️ **但它并非只作用于新导入**：它接在 {@link #parse} 里，而 {@code parse} 同时被状态读取路径
+     * 使用（{@code FaceModelManager.buildStatus}）。因此**升级前**用旧代码导入、profileId 含**内部**
+     * 控制字符（如 {@code "a\tb"}）的 profile，升级后会由 READY 变为「激活配置 manifest 无效」。
+     * 这是**有意**的：此类 profileId 的 {@code .txn_*} / {@code .commit_*} 本来就无法原样往返
+     * （含 {@code \n} 时被截断读回），如实报错比报 READY 诚实。（首尾空白那类在旧代码下本就读不回来，
+     * 不受影响。）
+     *
+     * <p>拒绝当且仅当满足任一条：任一字符 {@code c} 满足 {@code c < 0x20}（C0 控制字符，含
+     * {@code \n \r \t}）或 {@code c == 0x7F}；或首字符/末字符为空格(0x20)。放行 {@code =}、内部空格、
+     * {@code .}、{@code *}、{@code ?}、非 ASCII 等一切其它字符。**不设长度上限**（交由文件系统报错）。
+     *
+     * <p>规则与 C++ 侧 {@code FaceRuntimeProfile.cpp} 的 {@code isValidProfileId} 逐字一致。
+     */
+    public static boolean isImportSafeProfileId(@NonNull String id) {
+        if (id.isEmpty()) {
+            return false;
+        }
+        if (id.charAt(0) == ' ' || id.charAt(id.length() - 1) == ' ') {
+            return false;
+        }
+        for (int i = 0; i < id.length(); i++) {
+            char c = id.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
                 return false;
             }
         }
