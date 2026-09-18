@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-16
+as_of=2026-09-17
 -->
 
 # 模型获取与导入流程（Android 端）
@@ -38,14 +38,19 @@ as_of=2026-09-16
 - 单 profile 的目录形态：
   ```
   face_models/
-    active_profile            # 当前激活 profileId（纯文本指针）
+    active_profile            # 当前激活指针：`profileId=<id>`，可选第二行 `txnId=<32hex>`
+                              #（本次目录替换的**提交代次**）；旧格式「纯 profileId 一行」仍可读，
+                              #  视为「无提交证据」。见 §4 步骤 8 的提交点判定。
     active_profile.tmp/.bak   # 指针原子写的临时/备份
     <profileId>/manifest.json
     <profileId>/scrfd.param / scrfd.bin
     <profileId>/arcface.param / arcface.bin
     .tmp_<nano>/              # 解压临时目录（下次导入时清扫）
     .bak_<profileId>/         # 目录替换时移开的旧配置备份
-    .txn_<profileId>          # 目录替换**事务记录**（任务 A，见 §4 步骤 7/8）
+    .txn_<profileId>          # 目录替换**事务记录**（profileId/hadOld/prevActive/state[/txnId]，任务 A，见 §4 步骤 7/8）
+    .commit_<profileId>       # **提交见证**（profileId/txnId）：本次替换已提交的持久证据。
+                              # 按 profileId 固定命名、**不随激活指针移动**——指针里的代次会被
+                              # 下一次导入/切换覆盖，见证不会（见下「事务记录与崩溃恢复」）。
     .rollback_<profileId>     # 旧版回滚意图标记（已非主路径，仅保留兼容与恢复）
   ```
 
@@ -76,9 +81,32 @@ as_of=2026-09-16
 5. **模型文件校验**（`verifyModelFiles`）：canonical 包含性 → `MANIFEST_INVALID`；缺失 → `MISSING_MODEL_FILE`；Git LFS pointer（`version https://git-lfs.github.com/spec/v1`）→ `MISSING_MODEL_FILE`；SHA-256 与引脚不符 → `SHA256_MISMATCH`。
 6. **native 校验/暂存**（`nativeValidateProfile`，原 `nativeSelfCheck`，P1-2 澄清语义）：调 `NativeFaceBridge.loadProfile` 做格式/ABI 校验，只看 `validated:true`；失败 → `NATIVE_CHECK_FAILED`。此步**只校验暂存，不等于加载生效**，旧目录与激活指针完全未被触碰。
 7. **原子启用目录**（`swapInProfileDirs`）：**先在 `.txn_<profileId>` 落 `in_progress` 事务记录**（含 hadOld 与原激活指针；写不进去即中止，旧配置一动未动），再把基目录 rename 到 `face_models/<profileId>`（如有旧目录先 rename 为 `.bak_<profileId>`），同盘 rename 保证原子；**暂不**写激活指针。
-8. **激活并落定**（`nativeActivateRuntime`）：调 `activateRuntime`，仅当返回 `ok:true` 且 `effective || reason=="pending"` 才算受理；失败 → `RUNTIME_ACTIVATE_FAILED`，**保留新目录但不切指针**（旧配置继续生效），绝不静默报成功。最后 `persistActive(profileId)` 原子落定指针；成功后把事务记录改写为 `committed` → 清理 `.bak_` → 清事务记录（**仅在备份确已清掉时才清记录**）。指针落定失败则 `rollbackProfileSwap` + `bestEffortReactivate(previousActive)` → `ATOMIC_RENAME_FAILED`。`finally` 清理临时目录。
+8. **激活并落定**（`nativeActivateRuntime`）：调 `activateRuntime`，仅当返回 `ok:true` 且 `effective || reason=="pending"` 才算受理；失败 → `RUNTIME_ACTIVATE_FAILED`，**保留新目录但不切指针**（旧配置继续生效），绝不静默报成功。最后**先落提交见证** `.commit_<profileId>`（`profileId` + `txnId`；写不进去即回滚并中止——见证落不下就**绝不越过提交点**），再 `persistActive(profileId, txnId)` 原子落定指针（代次随内容一起写入）；成功后把事务记录改写为 `committed` → 清理 `.bak_` → 清事务记录**与见证**（**仅在备份确已清掉时才清**）。注意 committed 改写失败**不回滚**：提交证据在见证与指针的代次上，恢复据它判定已提交、只重试清理备份（见下）。指针落定失败则先**撤销见证**再 `rollbackProfileSwap` + `bestEffortReactivate(previousActive)` → `ATOMIC_RENAME_FAILED`（见证撤销不掉则保留新目录并报「未激活」——盘上仍有提交证据时不得回滚）。`previousActive` 在阻塞检查**之后**读取（恢复可能改写指针）。`finally` 清理临时目录。
 
-**事务记录与崩溃恢复（任务 A）**：`.txn_<profileId>` 的 `state` 区分「替换进行中」与「已提交未清理」，恢复据此判定——`committed` ⇒ 保留新目录并继续清备份；`in_progress` + `hadOld` + `.bak_` 在 ⇒ 回滚旧目录**与原指针**；`in_progress` + `!hadOld` ⇒ 无事可做（新包保留、指针未改）。任一恢复步骤失败都**保持现场并保留记录**，状态报 ERROR 且**拒绝继续覆盖导入**；「无记录且新旧目录并存」按**歧义现场**处理（保留两份、不猜）。写入事务记录前保证 `.bak_` 已不存在，使「`in_progress` + `.bak_` 在」恒等于「本次替换已移开旧目录」。
+**事务记录与崩溃恢复（任务 A）**：`.txn_<profileId>` 的 `state` 区分「替换进行中」与「已提交未清理」。
+**但仅有 `state` 不够**——写 `state` 本身可能失败，于是「未提交」与「已提交但 `committed` 改写失败」
+会留下同一份 `in_progress` 记录；同名覆盖时连激活指针都前后相同，二者**无法区分**（后果是把一次
+成功的导入静默回滚，而 native 仍在跑新模型）。故引入**提交代次 `txnId`**：随机 32 位 hex，写在
+事务记录里，并在提交点写进见证与激活指针。
+
+**把代次只放在指针里仍不够**——**指针会被下一次导入/切换覆盖**，证据随之被摧毁：此后触碰该
+profile 只能判「未提交」，把一次成功的替换**静默回滚**；而 cross-profile 的**崩溃**回滚（合法，
+`inProgressTxnRollsBackToOldModelAndPointer` 已覆盖）观察到的指针形态与它**完全相同**，两种历史
+用「仅指针」这一种见证不可区分。故提交点前先落一份按 profileId 固定命名、**不随指针移动**的
+见证 `.commit_<profileId>`。判定式：
+
+- **已提交** ⇔ 记录自述 `committed`，**或**「见证代次 == 事务代次」，**或**「指针代次 == 事务代次」
+  ⇒ 保留新目录、只重试清理备份，**不动指针**。
+  ⚠️ **残留窗口（如实记录）**：见证落盘后、指针落定前崩溃 ⇒ 判「已提交」⇒ 保留新目录但**未激活**。
+  窗口只有相邻两次 fsync 写，结果是「导入已生效、需手动激活」，优于「静默回滚一次成功的导入」。
+- **未提交** ⇒ 回滚目录，且**不触碰指针**（提交点未落定即等价于「本事务从未改写过指针」）。
+- **旧格式记录**（无 `txnId`，本版本之前写入）沿用旧语义，仅对可判定子情形加强：`hadOld` + 备份**不在** + 指针已是本 profileId + `prevActive` 是另一配置 ⇒ 补做那次丢失的指针还原；`hadOld` + 备份**在** + 指针已是本 profileId + `prevActive` 是另一配置 ⇒ 判为已提交（未提交的事务不会写指针）。
+- **证据不足**（旧格式 + 同名覆盖 + 新旧并存）：**保留两份数据与记录、报 ERROR，不猜、不删任一副本**，由 `resolveAmbiguousSwap(profileId, keepNew)` 交用户显式了结（UI 入口为模型状态区的「处理未决替换」按钮，状态以 `ambiguousSwapProfileId` 机器可读地标出）。该现场**只阻塞本 profileId**。
+
+任一步失败都**保持现场并保留记录**，状态报 ERROR 且**拒绝继续覆盖导入**；「无记录且新旧目录并存」同样按歧义现场处理。写入事务记录前保证 `.bak_` 已不存在。
+
+**恢复的作用范围**：只对**被触碰的那个 profile** 执行——状态查询与启动闸门只恢复当前激活的 profile，其它 profile 的未决现场会滞留到它被 `activate`/`importZip` 触碰时。
+**启动自动激活**必须先经 `recoverForStartup()`（先恢复、**再重读**指针；恢复未完成即停止自动激活并报错），不得「先读指针再 activate」——否则恢复会被随后写回的旧值抵消。**用户主动切换**始终以用户实参为目标，不得改用指针值。
 
 `activate(profileId)` 对已导入目录重跑第 4–6 步校验后原子改写指针，失败时指针不变；目标未导入 → `PROFILE_NOT_FOUND`。
 
