@@ -78,6 +78,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_track_coordinator.cpp"
         "tests/cpp/test_track_replay.cpp"
         "tests/cpp/test_replay_script_writer.cpp"
+        "tests/cpp/test_face_runtime_profile_id.cpp"
         "tests/cpp/test_face_post_processor.cpp"
         "tests/cpp/test_scrfd_decoder.cpp"
         "tests/cpp/test_realtime_face_pipeline.cpp"
