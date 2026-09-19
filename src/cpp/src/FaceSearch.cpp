@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
@@ -101,10 +102,51 @@ static float cosineSimilarity(const float* a, float aNorm, const float* b, float
     return dotProduct(a, b, dim) / denom;
 }
 
+// ═══ 生物特征模板就地擦除（安全红线 FACE-ENROLL-009）═══
+// 就地清零而**不改变容器大小/容量**：擦除发生在调用方容器析构**之前**，故其析构释放的
+// 堆块已是全零，不留模板明文残留；同时保留 size 使调用方/测试可观察到"已擦除"状态。
+// id（身份标签）亦属模板内容，一并擦除。
+void eraseEntrySecretsInPlace(FaceSearchEntry& entry) {
+    for (float& v : entry.embedding) v = 0.0f;
+    for (char& c : entry.id) c = '\0';
+}
+
+void eraseEntriesSecretsInPlace(std::vector<FaceSearchEntry>& entries) {
+    for (auto& e : entries) eraseEntrySecretsInPlace(e);
+}
+
+// 作用域清零守卫（与 native_face_bridge.cpp 同款 RAII 模式）：覆盖所有提前 return 分支
+// 与异常展开路径，杜绝"手写漏一个 return"重新引入红线缺陷。
+template <typename Fn>
+class ScopeClearGuard {
+public:
+    explicit ScopeClearGuard(Fn fn) : fn_(std::move(fn)) {}
+    ~ScopeClearGuard() { fn_(); }
+    ScopeClearGuard(const ScopeClearGuard&) = delete;
+    ScopeClearGuard& operator=(const ScopeClearGuard&) = delete;
+
+private:
+    Fn fn_;
+};
+
+template <typename Fn>
+ScopeClearGuard<Fn> makeScopeClearGuard(Fn fn) {
+    return ScopeClearGuard<Fn>(std::move(fn));
+}
+
 }  // namespace
 
-bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::size_t dim, std::string& err) {
+bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry>&& entries, std::size_t dim, std::string& err) {
     err.clear();
+    // 安全红线（FACE-ENROLL-009）：任何校验失败都必须在容器析构前就地擦除生物特征模板，
+    // 否则形参所绑定的调用方容器析构会把 embedding 明文释放到堆上。
+    // committed 仅在成功且所有权已移交 entries_ 后置位；此前（即全部失败分支与异常展开
+    // 路径）由守卫无条件擦除——守卫覆盖所有 return，杜绝手写漏项。
+    bool committed = false;
+    auto clearGuard = makeScopeClearGuard([&entries, &committed] {
+        if (!committed) eraseEntriesSecretsInPlace(entries);
+    });
+
     if (dim == 0) {
         err = "FaceSearchLinearIndex: dim 不能为 0";
         return false;
@@ -139,6 +181,7 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry> entries, std::siz
     dim_ = dim;
     entries_ = std::move(entries);
     norms_ = std::move(norms);
+    committed = true;  // 所有权已移交；守卫析构时不再擦除
     return true;
 }
 

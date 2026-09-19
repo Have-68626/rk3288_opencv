@@ -491,7 +491,13 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
         // 绝不写入日志（安全红线）。
         std::vector<std::string> keepIds;
         keepIds.reserve(static_cast<std::size_t>(idCount));
-        // 红线：校验失败 early-return 或异常展开时，已累积条目的 embedding 也必须清零。
+        // 红线：本循环内 early-return（空 id / 非法 embedding）或异常展开时，已累积条目的
+        // embedding 必须清零——此时 entries 尚未被搬走，本守卫是**真覆盖**。
+        // ⚠️ 与 FaceSearchLinearIndex::reset 的分工（FACE-ENROLL-009）：reset 的**失败**路径由 reset
+        // 自行就地擦除，**勿依赖本守卫**。原因：新形参 `std::vector<FaceSearchEntry>&&` 是**不消费**的
+        // —— reset 失败时不会执行 `std::move(entries)`，故那份 entries 并未被搬空，彼时本守卫析构会
+        // **冗余地**再擦一遍（无害）。即本守卫在该路径上是**冗余的真覆盖**，不是"不起作用"。
+        // （刻意不写行号：本注释在改动中曾两次因行号漂移失准，符号名才是不腐的锚点。）
         auto entriesGuard = makeScopeClearGuard([&entries] {
             for (auto& e : entries) secureClear(e.embedding);
         });
