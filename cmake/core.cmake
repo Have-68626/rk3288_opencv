@@ -244,3 +244,72 @@ function(rk_assert_contract_flags)
         endforeach()
     endif()
 endfunction()
+
+# ── 配置期断言（FACE-CLEAN-019）：测试接缝宏 RK_ENABLE_TEST_SEAMS 的使用边界 ──
+# 该宏让 Engine 的析构由非虚变虚（多出 vptr）并允许 test_engine.cpp 的 BarrierEngine 覆写
+# onBeforeRenderPublish。它**只允许出现在测试 target 上**——一旦漏进生产 target，后果全在
+# 运行期（ABI / 性能差异），**编译期完全无声**。故在此把两个方向都钉死：
+#   ① 除白名单外，任何 target 都**不得携带**它；
+#   ② 白名单内的 target **必须携带**它。
+#      ⚠️ **理由须如实（子代理 4 S3 指出原措辞夸大）**：本仓里「拿掉该宏」**并不是**静默失效 ——
+#      `Engine.h` 的 `onBeforeRenderPublish` 整个声明都写在 `#if defined(RK_ENABLE_TEST_SEAMS)` 内，
+#      而 `test_engine.cpp` 的 `BarrierEngine` **无条件**声明该类并使用了 `override`
+#      ⇒ 宏一旦缺失就是**编译错误（响亮）**。故方向 ② 实为一条**冗余防线**（无害且便宜，保留），
+#      它防的是「将来有人去掉 `override`、或把虚函数挪到宏外」这类**形态变化**，
+#      **不是**当前主要风险的拦截者。原措辞把危险夸大了，已更正。
+#
+# 生效范围（**如实，勿高估**）：
+#   · `core_gtest_tests` 定义在 `if(NOT ANDROID)` ∧ `if(NOT RK_SKIP_OPENCV)` 内 ⇒
+#     **`RK_SKIP_OPENCV=ON` 与 Android 配置下它根本不是 target，方向 ② 完全不执行（函数空转）**。
+#     真正生效的是 Windows / 全量配置；CI 的 windows job 恰好构建 `core_gtest_tests`，故该路径有覆盖
+#     （A2 审计 L2）。
+#   · 方向 ① 的覆盖面见下方「扫描集合」处的局限说明。
+#
+# 扫描集合 = 引擎 target + 白名单 + **会被大量 target 链接的共享 INTERFACE 库**。
+# ⚠️ 必须含 INTERFACE 库：宏若挂在 INTERFACE 库上会**传播**给所有链接它的 target，而
+#    `get_target_property(<消费者> COMPILE_DEFINITIONS)` **看不到**它（返回 `-NOTFOUND`）——
+#    只查目标自身定义会**静默漏报**（A2 审计 M1，已用探针复现）。本仓唯一的共享 INTERFACE 库
+#    是 `rk_core`（本文件顶部 `add_library(rk_core INTERFACE)`）。
+# ⚠️ **仍存的局限（如实记录，勿当作已封死）**：任意第三方/未来引入的 INTERFACE 库的传递传播、
+#    以及目录级 `add_compile_definitions()`，均**不在**本断言的覆盖内。要彻底封死须改读实际
+#    编译命令行，代价与脆弱性都更高，故本轮不做。
+set(RK_TEST_SEAM_TARGETS core_gtest_tests)
+set(RK_TEST_SEAM_SCANNED_INTERFACE_LIBS rk_core)
+function(rk_assert_test_seam_boundary)
+    # 「断言被跳过」必须与「断言通过」在日志里**长得不一样** —— 否则本断言自身的空转无人察觉
+    # （子代理 4 S3：原实现下二者都是静默的）。仅当白名单 target 在本配置下不存在时提示。
+    if(NOT TARGET ${RK_TEST_SEAM_TARGETS})
+        message(STATUS
+            "rk_assert_test_seam_boundary: 白名单 target ${RK_TEST_SEAM_TARGETS} 在本配置下不存在"
+            "(RK_SKIP_OPENCV / Android) ⇒ 方向② 不适用；方向① 仍照常执行")
+    endif()
+    foreach(t ${RK_ENGINE_TARGETS} ${RK_TEST_SEAM_TARGETS} ${RK_TEST_SEAM_SCANNED_INTERFACE_LIBS})
+        if(NOT TARGET ${t})
+            continue()
+        endif()
+        # 同时看「自身定义」与「自身对外传播的定义」：任一含该宏都算该 target 携带它。
+        # （`get_target_property` 未设置时返回 `<var>-NOTFOUND`，而 CMake 的 `if(<var>)` 把
+        #   「以 -NOTFOUND 结尾」判为假，故下面的归一化写法可靠。）
+        get_target_property(_rk_defs ${t} COMPILE_DEFINITIONS)
+        get_target_property(_rk_iface_defs ${t} INTERFACE_COMPILE_DEFINITIONS)
+        if(NOT _rk_defs)
+            set(_rk_defs "")
+        endif()
+        if(NOT _rk_iface_defs)
+            set(_rk_iface_defs "")
+        endif()
+        set(_rk_seam_defs "${_rk_defs};${_rk_iface_defs}")
+
+        if(_rk_seam_defs MATCHES "RK_ENABLE_TEST_SEAMS")
+            if(NOT ${t} IN_LIST RK_TEST_SEAM_TARGETS)
+                message(FATAL_ERROR
+                    "CONTRACT_ASSERT_FAIL: target ${t} 携带 RK_ENABLE_TEST_SEAMS "
+                    "(该宏会改变 Engine 的 ABI；唯一允许携带它的 target 是: ${RK_TEST_SEAM_TARGETS})")
+            endif()
+        elseif(${t} IN_LIST RK_TEST_SEAM_TARGETS)
+            message(FATAL_ERROR
+                "CONTRACT_ASSERT_FAIL: 测试 target ${t} 未携带 RK_ENABLE_TEST_SEAMS "
+                "(测试接缝会静默失效：BarrierEngine 将覆写一个非虚函数且不报错)")
+        endif()
+    endforeach()
+endfunction()
