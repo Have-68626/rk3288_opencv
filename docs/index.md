@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-18
+as_of=2026-09-19
 -->
 
 # 文档索引
@@ -173,6 +173,7 @@ as_of=2026-09-18
 | `../AGENTS.md` | living | AI 助手指南（事实源，含机器可读事实块） |
 | `../CLAUDE.md` | living | AI 助手指南镜像（共享区间与 AGENTS.md 校验一致） |
 | `../.claude/CLAUDE.md` | living | Claude Code 子目录指南（graphify 触发 + 记忆系统指针） |
+| `../cache/README.md` | living | `cache/` 落盘规范：可复用内容的唯一根目录、分类、删除代价与重建命令 |
 
 ## 子系统说明（各自目录内）
 
