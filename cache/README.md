@@ -1,3 +1,9 @@
+<!-- DOCSYNC_DOC
+type=guide
+status=living
+as_of=2026-09-19
+-->
+
 # `cache/` —— 本项目可复用内容的唯一根目录
 
 > **本目录的用途有版本记录（本文件入库，其余内容一律 gitignore）**，因此它**不是**「编译后未及时
