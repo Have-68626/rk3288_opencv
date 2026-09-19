@@ -254,7 +254,7 @@ classDiagram
 | 注册 ID | 适配器 | 推荐场景 | 平台限制 |
 |---------|--------|----------|----------|
 | `yolo_face` | YoloFaceAdapter | 高精度 | 通用 |
-| `scrfd_0.5gf` | YoloFaceAdapter | 高速 | 通用 |
+| `scrfd_0.5gf` | ScrfdNcnnAdapter | 高速 | 通用 |
 | `retinaface_scrfd` | RetinaFaceAdapter | 高精度（640x） | 通用 |
 | `yunet` | YuNetAdapter | 均衡 | 通用 |
 | `dnn_ssd` | DnnSsdAdapter | 均衡 | Windows only |
@@ -266,11 +266,11 @@ classDiagram
 | 注册 ID | 适配器 | 输出维度 | 推荐场景 | 平台限制 |
 |---------|--------|----------|----------|----------|
 | `arcface` | ArcFaceAdapter | 512 | 高精度 | 通用 |
-| `mobilefacenet` | MobileFaceNetAdapter | 128 | 高速 | 通用 |
+| `mobilefacenet` | MobileFaceNetAdapter | 512 | 高速 | 通用 |
 | `sface` | SFaceAdapter | 128 | 高速 | 通用 |
 | `lbph` | LbphAdapter | — | 高速 | Windows only |
 | `arcface_int8` | ArcFaceAdapter | 512 | 高速（INT8） | 条件编译 |
-| `mobilefacenet_int8` | MobileFaceNetAdapter | 128 | 高速（INT8） | 条件编译 |
+| `mobilefacenet_int8` | MobileFaceNetAdapter | 512 | 高速（INT8） | 条件编译 |
 
 ---
 
