@@ -106,9 +106,10 @@ static float cosineSimilarity(const float* a, float aNorm, const float* b, float
 // 就地清零而**不改变容器大小/容量**：擦除发生在调用方容器析构**之前**，故其析构释放的
 // 堆块已是全零，不留模板明文残留；同时保留 size 使调用方/测试可观察到"已擦除"状态。
 // id（身份标签）亦属模板内容，一并擦除。
+// 实现收敛到 FaceSearch.h 的 `eraseFaceSearchEntrySecrets`——`FaceSearchEntry` 析构
+// 亦调用同一函数，两处逻辑同源、不会漂移。
 void eraseEntrySecretsInPlace(FaceSearchEntry& entry) {
-    for (float& v : entry.embedding) v = 0.0f;
-    for (char& c : entry.id) c = '\0';
+    eraseFaceSearchEntrySecrets(entry);
 }
 
 void eraseEntriesSecretsInPlace(std::vector<FaceSearchEntry>& entries) {
@@ -179,6 +180,8 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry>&& entries, std::s
     }
 
     dim_ = dim;
+    // 成功替换（§2.5-H）：旧 entries_ 的元素在此被析构，其 `~FaceSearchEntry` 先就地清零
+    // embedding/id，随后才释放各自堆缓冲 ⇒ 旧库不会以明文被 free。无需在此手写擦除。
     entries_ = std::move(entries);
     norms_ = std::move(norms);
     committed = true;  // 所有权已移交；守卫析构时不再擦除
