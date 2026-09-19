@@ -336,7 +336,24 @@ if(NOT ANDROID)
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
     endif()
-    add_test(NAME core_gtest_tests COMMAND core_gtest_tests)
+    # 源码根作为 WORKING_DIRECTORY —— 双代理审计（A1/A2）+ 子代理 3/4 复核共同定位的缺口：
+    # `test_adapters.cpp::MobileFaceNetDefaultsMatchShippedModelFiles`（本批新增）用**相对路径**
+    # `models/...` 判断模型是否存在。不设本属性时 `ctest` 从**构建目录**起算 ⇒ 它在 ctest 下
+    # **静默 GTEST_SKIP**，本机这条守卫形同虚设（已实测：设属性前 ctest 下 SKIP、设属性后 OK）。
+    # ⚠️ **修好 cwd 只解决一半，不要把这条读成「CI 已守住」**（子代理 4 S1 与子代理 3 各自独立指出）：
+    #    `models/*` 是 gitignored 的二进制（`git ls-files models/` 仅 7 个文本文件、无任何 `.param`），
+    #    CI 全新检出后**这些模型根本不存在** ⇒ 即便 cwd 正确，该用例在 CI 上**仍会 SKIP**。
+    #    ⇒ 「适配器默认值 ↔ **真实模型**」这条对齐校验**本质上只能在有模型的本机跑**。
+    #    CI 侧真正守住的是它的**另一半**：`MobileFaceNetNodeNamesAndDimAreConfigurable`
+    #    （无任何跳过条件、恒运行）把默认值钉死为 in0/out0/512 ⇒ **常量漂移在 CI 可被拦**。
+    # ⚠️ 同处更正（子代理 3/4 各指出一次）：`AdapterLoadsRealInt8ModelWithInjectedNames` **不是**因 cwd
+    #    才跳过 —— 它在本机（模型存在）仍 SKIP，原因是 `RK_HAVE_NCNN=0`（本机构建与 CI 均未启用 ncnn）。
+    #    修 cwd 对它是必要不充分；它真正缺的前置是「一个启用 ncnn 的构建」。
+    # ⚠️ 另一处更正：「本 target 其余用例均不依赖 cwd」**不成立**：`AdapterTest.ModelRegistryListAllEmpty`
+    #    依赖 `ModelRegistry` 的**惰性注册**，而注册用的正是相对路径 `models/*.param` ⇒ 一旦将来有用例
+    #    先触发注册，cwd=源根（本机有模型）就会让该断言翻红。当前无触发者，属**潜在脆弱**，此处留档。
+    add_test(NAME core_gtest_tests COMMAND core_gtest_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # win_unit_tests contains GTest files (test_http_faces_server.cpp), need GTest::gtest (no _main to avoid main() conflict)
     if(WIN32 AND TARGET win_unit_tests AND TARGET GTest::gtest)
@@ -383,3 +400,5 @@ endforeach()
 rk_apply_compiler_contract()
 # 配置期断言（RW8 ①）— 契约应用后独立读回 COMPILE_OPTIONS，验证 flag 已落到 target
 rk_assert_contract_flags()
+# 配置期断言（FACE-CLEAN-019）— 锁定测试接缝宏只出现在允许的 target 上（两个方向都查）
+rk_assert_test_seam_boundary()
