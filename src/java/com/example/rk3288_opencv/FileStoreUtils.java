@@ -1,6 +1,7 @@
 package com.example.rk3288_opencv;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import java.io.File;
 import java.util.concurrent.ConcurrentHashMap;
@@ -41,11 +42,75 @@ final class FileStoreUtils {
     }
 
     /**
+     * 删除行为接缝（**仅测试注入用**）—— FACE-UI-011 要点⑥ 的「删除失败」用例在纯 JVM 下无法构造：
+     * 真实文件系统上很难**稳定**制造 {@code File.delete()} 失败（POSIX 看父目录写权限、Windows 看句柄占用，
+     * 两者语义还不一致）。故把 {@link #deleteWithBackup} 用到的**两类**文件系统操作
+     * （{@code delete} / {@code exists}，共 **3 处调用**：删 {@code .bak}、删主文件、查主文件存在性）
+     * 收敛为可注入接口。
+     *
+     * <p>与 {@code FaceModelManager.FileOps}、{@code FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting}
+     * 同构（`@VisibleForTesting interface` + `private static final 默认实现` + `private static volatile 字段`
+     * + `setXForTesting(null)` 复位）：**默认实现即原有行为，生产路径零变化**。
+     */
+    @androidx.annotation.VisibleForTesting
+    interface FileOps {
+        /**
+         * 语义同 {@link File#delete()}：返回是否删除成功。
+         *
+         * <p>⚠️ **可能抛出未受检的 {@link SecurityException}**（与 {@code File#delete()} 一致，
+         * 本接缝**不吞**它）。生产侧 {@code AndroidEnrollmentRepository.remove} 正是
+         * {@code catch (SecurityException)} 兜住 {@link #deleteWithBackup} 的 —— 别把本方法
+         * 读成「从不抛异常」。
+         */
+        boolean delete(@NonNull File f);
+
+        /** 语义同 {@link File#exists()}。 */
+        boolean exists(@NonNull File f);
+    }
+
+    private static final FileOps DEFAULT_FILE_OPS = new FileOps() {
+        @Override
+        public boolean delete(@NonNull File f) {
+            return f.delete();
+        }
+
+        @Override
+        public boolean exists(@NonNull File f) {
+            return f.exists();
+        }
+    };
+
+    private static volatile FileOps fileOps = DEFAULT_FILE_OPS;
+
+    /** 仅供测试注入；传 null 恢复默认（真实文件系统）实现。 */
+    @androidx.annotation.VisibleForTesting
+    static void setFileOpsForTesting(@Nullable FileOps ops) {
+        fileOps = (ops != null) ? ops : DEFAULT_FILE_OPS;
+    }
+
+    /**
      * 删除主文件**及其写入器备份**（{@code <name>.bak}）。
      *
      * <p><b>为什么必须一起删</b>：写入器采用「tmp → fsync → dst→bak → tmp→dst → 删 bak」策略，
      * 且读路径有「阶段 1 恢复基线」（主文件缺失时把 {@code .bak} 还原就位）。若删除逻辑只删主文件，
      * 一个陈旧的 {@code .bak} 会在**下次读取时把已删除的数据复活**。
+     *
+     * <p><b>返回值语义（⚠️ 这是**既有**语义，本次只是补文档，不是设计变更）</b>：以「主文件是否
+     * **确实已不存在**」为准而非 {@code delete()} 的返回值 —— 后者在「文件本来就不存在」时也返回
+     * false，而那种情况应当算**成功**（幂等删除）。
+     *
+     * <p>⚠️ <b>异常语义与本类另一工具**不一致**（如实记录，未擅自改行为）</b>：
+     * {@link #renameQuietly} 会**吞掉** {@code SecurityException} 并返回 false，而本方法**不吞**、
+     * 让它向上传播。两个生产调用方因此行为不同：
+     * <ul>
+     *   <li>{@code AndroidEnrollmentRepository.remove} —— 有 {@code catch (SecurityException)}，
+     *       会回滚注册表并返回 {@code IO_ERROR}（已有用例覆盖，见 {@code AndroidEnrollmentRepositoryTest}）；</li>
+     *   <li>{@code PersonDisplayNameStore.remove} —— <b>没有</b> catch，异常会传播并**跳过缓存清理**，
+     *       与其 javadoc 承诺的「文件删除失败不影响缓存清理」**相抵触**。</li>
+     * </ul>
+     * 影响面有限：Android 上 {@code File.delete()} 抛 {@code SecurityException} 需 SecurityManager，
+     * 现代 Android 已无 ⇒ 实际不可达。修复方向有二（**待决，本轮只钉现状**）：
+     * ① 在调用方 catch；② 让本方法不抛（与 {@link #renameQuietly} 对齐）。
      *
      * @return 主文件是否确实已不存在
      */
@@ -53,11 +118,11 @@ final class FileStoreUtils {
         File parent = main.getParentFile();
         if (parent != null) {
             //noinspection ResultOfMethodCallIgnored
-            new File(parent, main.getName() + ".bak").delete();
+            fileOps.delete(new File(parent, main.getName() + ".bak"));
         }
         //noinspection ResultOfMethodCallIgnored
-        main.delete();
-        return !main.exists();
+        fileOps.delete(main);
+        return !fileOps.exists(main);
     }
 
     /**

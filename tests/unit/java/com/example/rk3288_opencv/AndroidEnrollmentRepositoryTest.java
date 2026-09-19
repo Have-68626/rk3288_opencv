@@ -49,6 +49,16 @@ public class AndroidEnrollmentRepositoryTest {
     @After
     public void tearDown() {
         FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
+        // §2.5-D：本类的删除路径（AndroidEnrollmentRepository.remove 等）也会经
+        // FileStoreUtils.deleteWithBackup，而该接缝是**进程级静态**可变状态。
+        // ⚠️ 如实说明本行的**作用范围**（子代理 3 指出我原先写的「这里能兜住」**高估**了它）：
+        //    · 它只在**本类用例跑完之后**执行 ⇒ **保护不了本类自身**
+        //      （若上游类泄漏，本类首个用例仍会带着被污染的替身运行）；
+        //    · 它把全局接缝复位，故受益者是**排在本类之后、且自身未复位的类** ——
+        //      是否受益**取决于 JUnit 的类执行顺序**，并不可靠。
+        //    ⇒ 本类自身不注入，这一行属「与既有 setPlatformKeyProviderForTesting(null) 惯例一致的
+        //      尽力而为」，**不是**结构性防护。
+        FileStoreUtils.setFileOpsForTesting(null);
     }
 
     // ---------- ① 新增 + 读取（并验证使用后清零） ----------
@@ -285,6 +295,43 @@ public class AndroidEnrollmentRepositoryTest {
 
         new File(tpl, "blocker").delete();
         tpl.delete();
+    }
+
+    /**
+     * §2.5-D 补的**异常**路径：注入一个 {@code delete} 抛 {@code SecurityException} 的接缝，
+     * 覆盖 {@code AndroidEnrollmentRepository.remove} 的 {@code catch (SecurityException)}（子代理 4 P1）。
+     *
+     * <p>既有用例 {@code removeRollsBackRegistryWhenTemplateRemovalFails} 只用「非空目录占位」
+     * 覆盖了「{@code delete} 返回 false」那条，**未覆盖抛异常**那条 —— 而接缝让后者零成本可构造。
+     * 若有人删掉那个 catch，删除会在异常时直接抛出、绕过回滚，注册表与模板不一致且**无测试拦截**。
+     */
+    @Test
+    public void removeRollsBackRegistryWhenDeleteThrowsSecurityException() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 22), MV, TSV).status);
+
+        FileStoreUtils.setFileOpsForTesting(new FileStoreUtils.FileOps() {
+            @Override
+            public boolean delete(File f) {
+                throw new SecurityException("probe: delete denied");
+            }
+
+            @Override
+            public boolean exists(File f) {
+                return f.exists();
+            }
+        });
+        AndroidEnrollmentRepository.Result rm;
+        try {
+            rm = repo.remove("alice");  // 不得把 SecurityException 抛出去
+        } finally {
+            FileStoreUtils.setFileOpsForTesting(null);
+        }
+
+        assertEquals(AndroidEnrollmentRepository.Status.IO_ERROR, rm.status);
+        assertEquals("抛异常应回滚注册表条目", 1, repo.list().entries.size());
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
     }
 
     // ---------- ⑨ 单行损坏跳过/隔离（#7） ----------

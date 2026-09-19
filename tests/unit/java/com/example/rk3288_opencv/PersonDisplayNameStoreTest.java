@@ -8,7 +8,9 @@ import org.junit.rules.TemporaryFolder;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +33,9 @@ public class PersonDisplayNameStoreTest {
 
     @Before
     public void setUp() throws Exception {
+        // §2.5-D：接缝是**进程级静态**状态。这里在**每个用例前**也复位一次（子代理 4 P4）——
+        // 只靠 @After 挡不住「上游某个类泄漏 → 本类首个用例」这一窗口。
+        FileStoreUtils.setFileOpsForTesting(null);
         KeyGenerator kg = KeyGenerator.getInstance("AES");
         kg.init(128);
         final SecretKey key = kg.generateKey();
@@ -51,6 +56,46 @@ public class PersonDisplayNameStoreTest {
     @After
     public void tearDown() {
         FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
+        FileStoreUtils.setFileOpsForTesting(null);   // §2.5-D：接缝复位，防跨用例泄漏
+    }
+
+    /**
+     * 模拟「文件删不掉」：{@code delete} 恒返回 false、{@code exists} 恒返回 true。
+     *
+     * <p>**记录被尝试删除的文件名**（而非仅计数）—— A2 审计指出：只断言「调用次数 > 0」挡不住
+     * 「实现里漏删主文件、只删 .bak」这类 bug（那种情况下仍有一次调用）。记录名字后可以逐项断言
+     * **主文件与其 .bak 都被尝试过**，守卫才真正承重。
+     */
+    private static final class UndeletableOps implements FileStoreUtils.FileOps {
+        final java.util.List<String> attempted = new java.util.ArrayList<>();
+
+        @Override
+        public boolean delete(File f) {
+            attempted.add(f.getName());
+            return false;
+        }
+
+        @Override
+        public boolean exists(File f) {
+            // 反映**真实**文件状态，而不是恒 true（子代理 4 P6）：恒 true 只是「恰好」等于
+            // 「当前实现只在末尾对主文件查一次 exists」这一**实现细节**的真相，属白盒耦合——
+            // 一旦实现改为先查 .bak、或在删除前查 exists，恒 true 的替身就会**说谎**
+            // （对不存在的 .bak 报告存在）。用真实状态后，替身不再预设调用序。
+            return f.exists();
+        }
+    }
+
+    /** 注入「delete 抛 SecurityException」的替身：用于覆盖异常路径（子代理 4 P1）。 */
+    private static final class ThrowingOps implements FileStoreUtils.FileOps {
+        @Override
+        public boolean delete(File f) {
+            throw new SecurityException("probe: delete denied");
+        }
+
+        @Override
+        public boolean exists(File f) {
+            return f.exists();
+        }
     }
 
     /** 未缓存时 get 必须降级为 personId（UI 线程纯读、不触发 IO）。 */
@@ -205,5 +250,126 @@ public class PersonDisplayNameStoreTest {
         String text = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
         assertFalse("磁盘不得含显示名明文", text.contains("UniquelyNamedPerson"));
         assertFalse("磁盘不得含 personId 明文", text.contains("alice"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // §2.5-D：删除失败路径（FACE-UI-011 要点⑥ 此前缺失的第三类用例）
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // 此前的缺口：FileStoreUtils.deleteWithBackup 无注入接缝，而真实文件系统上很难**稳定**制造
+    // delete() 失败（POSIX 看父目录写权限、Windows 看句柄占用，语义还不一致）⇒ 纯 JVM 下无法构造。
+    // 现经 FileStoreUtils.FileOps 接缝注入失败行为。
+
+    /** 删除失败时 remove 仍须清理缓存、不抛异常（remove 的契约是「文件删除失败不影响缓存清理」）。 */
+    @Test
+    public void removeClearsCacheEvenWhenFileDeleteFails() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        assertTrue(s.save("alice", "张三"));
+        File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
+        assertTrue(f.isFile());
+
+        UndeletableOps ops = new UndeletableOps();
+        FileStoreUtils.setFileOpsForTesting(ops);
+        try {
+            s.remove("alice");  // 不得抛异常
+        } finally {
+            FileStoreUtils.setFileOpsForTesting(null);
+        }
+
+        // 守卫承重点（A2 M1）：必须**逐项**证明主文件与其 .bak 都被尝试删除 —— 仅断言「调用次数 > 0」
+        // 挡不住「实现里漏删主文件、只删 .bak」这类 bug（那种情况下仍有一次调用）。
+        assertTrue("必须尝试删主文件（只删 .bak 是错的）", ops.attempted.contains(f.getName()));
+        assertTrue("必须尝试删 .bak（否则读路径的『阶段 1 恢复基线』会复活已删除数据）",
+                ops.attempted.contains(f.getName() + ".bak"));
+        assertEquals("删除失败也必须清理缓存", 0, s.cachedCount());
+        assertEquals("缓存已清 ⇒ get 降级为 personId", "alice", s.get("alice"));
+        assertTrue("删除确实失败 ⇒ 文件仍在（不得被谎报为已删）", f.exists());
+    }
+
+    /** 删除失败时 removeOrphans 不得把失败计入删除数（返回值以「确实已不存在」为准）。 */
+    @Test
+    public void removeOrphansDoesNotCountFailedDeletes() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        assertTrue(s.save("alice", "张三"));
+
+        UndeletableOps ops = new UndeletableOps();
+        FileStoreUtils.setFileOpsForTesting(ops);
+        int removed;
+        try {
+            removed = s.removeOrphans(Collections.emptySet());
+        } finally {
+            FileStoreUtils.setFileOpsForTesting(null);
+        }
+
+        final String name = FeatureTemplateEncryptedStore
+                .nameFileForPersonInDir(dir, "alice").getName();
+        // 同 A2 M1：逐项断言，而非只数调用次数。
+        assertTrue("必须尝试删主文件", ops.attempted.contains(name));
+        assertTrue("必须尝试删 .bak", ops.attempted.contains(name + ".bak"));
+        assertEquals("删不掉就不得计入", 0, removed);
+        assertTrue("文件应仍在",
+                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice").exists());
+    }
+
+    /**
+     * 默认实现下的**幂等**语义：文件本来就不存在时 {@code File.delete()} 会返回 false，
+     * 但那属于「已经删掉了」⇒ deleteWithBackup 应报**成功**，不得因返回值而误报失败。
+     *
+     * <p>⚠️ 定位如实（A2 M3）：这是**特征化测试**（钉住**改前就已如此**的语义），
+     * <b>不是</b> §2.5-D 接缝的回归网 —— 它不注入接缝，改前改后都通过。
+     * 它真正防的是「把返回值改成 `delete()` 的返回值」这一**假想实现**（那样本用例会红）。
+     */
+    @Test
+    public void deleteWithBackupTreatsMissingFileAsSuccess() throws Exception {
+        File dir = tmp.newFolder();
+        File missing = new File(dir, "n_neverexisted.enc");
+        assertFalse(missing.exists());
+        assertTrue("不存在的文件：删除应视为成功（幂等）", FileStoreUtils.deleteWithBackup(missing));
+    }
+
+    /** {@code deleteWithBackup} 的 {@code parent == null} 分支（无父目录的裸文件名）此前无覆盖（子代理 4 P7）。 */
+    @Test
+    public void deleteWithBackupHandlesFileWithoutParent() {
+        File bare = new File("no_such_parent_probe.enc");
+        assertNull("前置：该文件不应有父目录", bare.getParentFile());
+        // 不存在的文件 ⇒ 幂等成功；且不得因 parent==null 抛异常
+        assertTrue(FileStoreUtils.deleteWithBackup(bare));
+    }
+
+    /**
+     * **特征化测试（钉住现状，不是期望）** —— 子代理 4 P1 指出的覆盖缺口。
+     *
+     * <p>{@code FileStoreUtils.deleteWithBackup} **不吞** {@code SecurityException}，
+     * 而本类的 {@code remove} **没有** try/catch ⇒ 异常会传播出去并**跳过缓存清理**。
+     * 这与 {@code remove} 的 javadoc 承诺「文件删除失败不影响缓存清理」**不一致**。
+     *
+     * <p>影响面：Android 上 {@code File.delete()} 抛 {@code SecurityException} 需要 SecurityManager，
+     * 现代 Android 已无 ⇒ **实际不可达**。故本次**只钉现状、不改行为**，修复选项另行记录：
+     * ① 在 {@code remove} 内 catch；② 让 {@code deleteWithBackup} 不抛（与本类
+     * {@code renameQuietly} 的「吞 {@code SecurityException}」保持一致）。
+     *
+     * <p>⚠️ 若将来按 ① 或 ② 修好，**本用例会红**（那正是它存在的意义），届时改为断言「缓存已清理」。
+     */
+    @Test
+    public void removePropagatesSecurityExceptionAndSkipsCacheClear() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        assertTrue(s.save("alice", "张三"));
+        assertEquals(1, s.cachedCount());
+
+        FileStoreUtils.setFileOpsForTesting(new ThrowingOps());
+        try {
+            try {
+                s.remove("alice");
+                fail("当前实现不 catch SecurityException，应当传播（若此处不抛，说明行为已改变，请更新本用例）");
+            } catch (SecurityException expected) {
+                // 现状如此：异常未被拦截
+            }
+        } finally {
+            FileStoreUtils.setFileOpsForTesting(null);
+        }
+        assertEquals("异常路径下缓存未被清理 —— 与 javadoc 契约不一致，已记录待决", 1, s.cachedCount());
     }
 }
