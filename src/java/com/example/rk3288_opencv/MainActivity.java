@@ -704,11 +704,17 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * <ul>
      *   <li>{@code FaceModelManager.status()}（任务14，P1-6）：模型来源标签「用户导入/未导入/
      *       不可用」、profileId/维度/许可与缺失原因。</li>
-     *   <li>{@code NativeFaceBridge.getRuntimeStatus()} 返回的 JSON（任务11/13）：读取
-     *       顶层 {@code profileLoaded/profileId/embeddingDim/galleryCount/enrollmentState}，
-     *       以及（若 native 侧后续暴露）{@code requested/effective/reason/evidence/
-     *       benchmarkP95Ms} 与嵌套 {@code accelerators.<cap>.{compiled,installed,requested,
-     *       effective,reason,evidence}}。</li>
+     *   <li>{@code NativeFaceBridge.getRuntimeStatus()} 返回的 JSON（任务11/13）：读取顶层
+     *       {@code ok/profileValidated/profileLoaded/profileId/embeddingDim/galleryLoaded/
+     *       galleryCount/galleryDim/enrollmentState}，以及
+     *       {@code effective/reason}（**native 已输出**，见 {@code native_face_bridge.cpp} 的
+     *       {@code bridge_getRuntimeStatus}）。
+     *       ⚠️ 同处更正（A1 审计指出）：此处原写「（若 native 侧后续暴露）{@code requested/
+     *       effective/reason/evidence/benchmarkP95Ms}」，其中 {@code effective/reason} 早已输出，
+     *       该措辞会让人误以为管道级字段尚未可用。
+     *       仍旧**未暴露**的是 {@code requested/evidence/benchmarkP95Ms}，与嵌套
+     *       {@code accelerators.<cap>.{compiled,installed,requested,effective,reason,evidence}}
+     *       —— 后者由 {@link JsonText#capObject} 做前向兼容，现行数据下恒为 null。</li>
      *   <li>Java 侧既有事实：能力开关与偏好（与 initEngine 的 RK_USE_* 一致）、
      *       {@link BuildConfig} 构建信息、{@link StatsRepository} 最近推理耗时。</li>
      * </ul>
@@ -983,22 +989,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         return jsonGetBool(sub, key, false);
     }
 
-    /** 定位 cap 对应对象：优先 accelerators 下的同名对象，回退顶层同名对象。 */
+    /** 定位 cap 对应对象：优先 accelerators 下的同名对象，回退顶层同名对象。实现见 {@link JsonText#capObject}。 */
     private static String capObject(String json, String cap) {
-        if (json == null) return null;
-        String acc = jsonExtractObject(json, "accelerators");
-        if (acc != null) {
-            String capObj = jsonExtractObject(acc, cap);
-            if (capObj != null) return capObj;
-        }
-        return jsonExtractObject(json, cap);
+        return JsonText.capObject(json, cap);
     }
 
     /**
      * 提取 "key": 后的原始值 token（字符串含引号）；<b>仅匹配顶层对象键</b>，缺失返回 null。
      *
      * <p>限定顶层是为了避免误取 {@code accelerators.<cap>.*} 内的同名键（如 effective/reason）：
-     * 嵌套取值必须先 {@link #jsonExtractObject}（{@link #capObject}）缩小到子对象体，
+     * 嵌套取值必须先 {@link JsonText#extractObject}（{@link #capObject}）缩小到子对象体，
      * 再对子对象体调用本方法——此时子对象体的键仍处于其自身顶层。
      */
     private static String jsonExtractRawValue(String json, String key) {
@@ -1008,6 +1008,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     /**
      * 纯文本 JSON 取值工具：不依赖 Activity 实例与 Android API，抽成静态嵌套类以便
      * JVM 单测直接覆盖（访问嵌套类不会触发 MainActivity 的静态初始化 / native 加载）。
+     *
+     * <p>⚠️ **边界如实说明**：{@link #extractRawValue}/{@link #extractObject} 是**通用**扫描；
+     * 而 {@link #capObject} 内嵌了「{@code accelerators.<cap>}」这一**加速能力矩阵的业务结构**，
+     * 严格说超出了「纯工具」的职责（子代理 4 审计 P5 指出）。之所以仍放在此处，是因为本类是
+     * `MainActivity` 的私有嵌套类、仅为状态区渲染与可测性服务，并非对外通用 API；
+     * 且该分支在现行生产数据上恒为 null（见 {@link #capObject}）。若将来它被复用或长大，
+     * 应迁到独立的能力矩阵领域类。
      */
     static final class JsonText {
 
@@ -1055,6 +1062,86 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }
 
         /**
+         * 提取 {@code "key":} 后**顶层**对象的值子串（含花括号；按花括号配平、忽略字符串内的括号）；
+         * 键缺失、或该键的值不是对象时返回 null。
+         *
+         * <p><b>为什么必须限定顶层（§2.5-G）</b>：旧实现用整串 {@code indexOf} 取**首个** {@code "key"}，
+         * 于是两种情形会取到错的对象——
+         * <ol>
+         *   <li>更早处存在**同名嵌套键**（如 {@code {"other":{"mpp":…},"mpp":…}}）；</li>
+         *   <li>更早处有**字符串值恰好等于该键名**（值自身的引号构成 {@code "key"} 字面量，
+         *       如 {@code {"note":"mpp",…,"mpp":{…}}}）。</li>
+         * </ol>
+         * 这与 {@link #extractRawValue} 的顶层纪律同源；两条取值路径的保护强度自此对齐。
+         *
+         * <p>与 {@link #capObject} 的配合：当 {@code accelerators} **存在**时，{@code capObject} 会先把它的
+         * 对象体取出、再在该本体上找 cap；对象体自带花括号，故其键仍处于自身顶层 —— 本方法对其适用。
+         * ⚠️ 但 native 侧当前**并不输出** {@code accelerators}（见 {@link #capObject} 的现状说明），
+         * 故这条配合在**现行生产数据上不会被走到**。
+         */
+        static String extractObject(String json, String key) {
+            if (json == null || key == null) return null;
+            String needle = "\"" + key + "\"";
+            int idx = indexOfTopLevelKey(json, needle);
+            if (idx < 0) return null;
+            int i = idx + needle.length();
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i >= json.length() || json.charAt(i) != ':') return null;
+            i++;
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i >= json.length() || json.charAt(i) != '{') return null;
+
+            int open = i;
+            int depth = 0;
+            boolean inStr = false;
+            boolean esc = false;
+            for (int j = open; j < json.length(); j++) {
+                char ch = json.charAt(j);
+                if (inStr) {
+                    if (esc) {
+                        esc = false;
+                    } else if (ch == '\\') {
+                        esc = true;
+                    } else if (ch == '"') {
+                        inStr = false;
+                    }
+                    continue;
+                }
+                if (ch == '"') {
+                    inStr = true;
+                } else if (ch == '{') {
+                    depth++;
+                } else if (ch == '}') {
+                    depth--;
+                    if (depth == 0) return json.substring(open, j + 1);
+                }
+            }
+            return null;
+        }
+
+        /**
+         * 定位某能力（cap）对应的对象体：优先 {@code accelerators.<cap>}，回退**顶层** {@code <cap>}；
+         * 两者皆无则返回 null。
+         *
+         * <p>⚠️ <b>现状（勿高估覆盖）</b>：native 侧 {@code NativeFaceBridge.getRuntimeStatus()}
+         * <b>当前并不输出 {@code accelerators}，也不输出任何 cap 对象</b>——它返回的顶层是
+         * {@code ok/profileValidated/profileLoaded/profileId/embeddingDim/galleryLoaded/galleryCount/
+         * galleryDim/enrollmentState/effective/reason}（见 {@code jni/native_face_bridge.cpp} 的
+         * {@code bridge_getRuntimeStatus}）。⇒ 本方法在**现行生产数据上恒返回 null**，
+         * {@code jsonGetCapString}/{@code jsonGetCapBool} 一律回落到默认值。
+         * 本方法是为「native 后续暴露该形态」预留的**前向兼容**路径，**不是**已生效的生产路径。
+         */
+        static String capObject(String json, String cap) {
+            if (json == null) return null;
+            String acc = extractObject(json, "accelerators");
+            if (acc != null) {
+                String capObj = extractObject(acc, cap);
+                if (capObj != null) return capObj;
+            }
+            return extractObject(json, cap);
+        }
+
+        /**
          * 只在顶层容器（深度 1）内定位键 token 的起始引号下标；未命中返回 -1。
          *
          * <p>顶层键后必须紧跟 {@code ':'}，从而把同名嵌套键（深度 &gt; 1）与字符串值排除在外，
@@ -1096,41 +1183,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             return -1;
         }
-    }
-
-    /** 提取 "obj":{...} 的对象子串（按花括号配平，忽略字符串内的括号）；缺失返回 null。 */
-    private static String jsonExtractObject(String json, String obj) {
-        if (json == null || obj == null) return null;
-        String needle = "\"" + obj + "\"";
-        int idx = json.indexOf(needle);
-        if (idx < 0) return null;
-        int open = json.indexOf('{', idx + needle.length());
-        if (open < 0) return null;
-        int depth = 0;
-        boolean inStr = false;
-        boolean esc = false;
-        for (int j = open; j < json.length(); j++) {
-            char ch = json.charAt(j);
-            if (inStr) {
-                if (esc) {
-                    esc = false;
-                } else if (ch == '\\') {
-                    esc = true;
-                } else if (ch == '"') {
-                    inStr = false;
-                }
-                continue;
-            }
-            if (ch == '"') {
-                inStr = true;
-            } else if (ch == '{') {
-                depth++;
-            } else if (ch == '}') {
-                depth--;
-                if (depth == 0) return json.substring(open, j + 1);
-            }
-        }
-        return null;
     }
 
     /** 解转义（与 native jsonEscape 对齐，仅处理常用控制字符）。 */
