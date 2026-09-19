@@ -46,9 +46,14 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "ArcFace 512 维特征提取，LFW 99.8%。精度优先方案，适合门禁/人证比对。RK3288 ncnn 约 8ms/帧。",
          "high_accuracy", 1});
 
+    // §2.5-A：两条 `mobilefacenet*` 条目的描述此前自相矛盾（本条目写 128D、下方 INT8 条目写 512D）。
+    // 以**本仓模型文件为准**统一为 512D：`models/mobilefacenet_ncnn/mobilefacenet.param` 与
+    // `models/mobilefacenet_int8_ncnn/mobilefacenet_int8.param` 的末层均为
+    // `InnerProduct linear_33 … out0 0=512`，首层均为 `Input in0`。
+    // 适配器侧已同步（默认节点名 in0/out0、默认期望维度 512，且均可注入）。
     reg.registerEmbedder("mobilefacenet", []() { return std::make_unique<MobileFaceNetAdapter>(); },
-        {"mobilefacenet", "MobileFaceNet 128D", "recognize",
-         "MobileFaceNet 128 维嵌入，推理快 2-3 倍。适合 RK3288 等资源受限设备。需额外下载模型。",
+        {"mobilefacenet", "MobileFaceNet 512D", "recognize",
+         "MobileFaceNet 512 维嵌入，推理快 2-3 倍。适合 RK3288 等资源受限设备。需额外下载模型。",
          "high_speed", 2});
 
 #ifdef _WIN32
