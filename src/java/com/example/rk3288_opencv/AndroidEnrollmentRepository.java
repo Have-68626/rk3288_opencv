@@ -184,6 +184,16 @@ public final class AndroidEnrollmentRepository {
     @NonNull private final File scopeDir;
 
     /**
+     * 删除行为接缝（**仅测试注入用**）：默认走真实文件系统；测试可经 {@link #setFileOpsForTesting}
+     * 注入替身以在纯 JVM 下构造「删除失败 / 删除抛 {@code SecurityException}」场景。
+     *
+     * <p><b>实例字段而非进程级静态</b>（子代理 4 P4）：本字段只属于本实例，注入**不会**影响其它
+     * 实例或其它测试类，跨实例泄漏在结构上不可能发生。
+     */
+    @NonNull
+    private FileStoreUtils.FileOps fileOps = FileStoreUtils.DEFAULT_FILE_OPS;
+
+    /**
      * 通用作用域构造：模板与注册表都落在 {@code scopeDir} 内。
      *
      * @param ctx       应用上下文；仅默认工厂需要，测试可直接传 null
@@ -196,6 +206,12 @@ public final class AndroidEnrollmentRepository {
             // 创建失败不在此处抛错，交由后续写入返回 IO_ERROR。
             scopeDir.mkdirs();
         }
+    }
+
+    /** 仅供测试注入删除行为替身；传 null 恢复默认（真实文件系统）实现。**仅影响本实例**。 */
+    @androidx.annotation.VisibleForTesting
+    void setFileOpsForTesting(@Nullable FileStoreUtils.FileOps ops) {
+        fileOps = (ops != null) ? ops : FileStoreUtils.DEFAULT_FILE_OPS;
     }
 
     /** 默认 gallery：与存储层默认目录一致（{@code files/face_templates}）。 */
@@ -286,7 +302,7 @@ public final class AndroidEnrollmentRepository {
             Entry entry;
             byte[] raw = readFileQuietly(tpl);
             if (raw == null || raw.length == 0) {
-                FileStoreUtils.deleteWithBackup(tpl);
+                FileStoreUtils.deleteWithBackup(tpl, fileOps);
                 return new Result(Status.IO_ERROR, null, "写入后无法回读模板文件");
             }
             entry = new Entry(userId, modelVersion, templateSchemaVersion, raw.length,
@@ -297,7 +313,7 @@ public final class AndroidEnrollmentRepository {
             Status persisted = persistRegistry(next);
             if (persisted != Status.OK) {
                 // 注册表写失败 -> 回滚模板，保持模板文件与注册表一致。
-                FileStoreUtils.deleteWithBackup(tpl);
+                FileStoreUtils.deleteWithBackup(tpl, fileOps);
                 return new Result(persisted, null, "注册表写入失败，已回滚模板");
             }
             return new Result(Status.OK, entry, "");
@@ -371,7 +387,7 @@ public final class AndroidEnrollmentRepository {
                 try {
                     // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时
                     // 把**已删除**的模板复活（A2-Med3）。
-                    deleted = FileStoreUtils.deleteWithBackup(tpl);
+                    deleted = FileStoreUtils.deleteWithBackup(tpl, fileOps);
                 } catch (SecurityException ex) {
                     deleted = false;
                 }

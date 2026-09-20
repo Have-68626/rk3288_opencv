@@ -1,7 +1,6 @@
 package com.example.rk3288_opencv;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
 import java.io.File;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,17 +41,26 @@ final class FileStoreUtils {
     }
 
     /**
-     * 删除行为接缝（**仅测试注入用**）—— FACE-UI-011 要点⑥ 的「删除失败」用例在纯 JVM 下无法构造：
+     * 删除行为接缝（可注入替身）—— FACE-UI-011 要点⑥ 的「删除失败」用例在纯 JVM 下无法构造：
      * 真实文件系统上很难**稳定**制造 {@code File.delete()} 失败（POSIX 看父目录写权限、Windows 看句柄占用，
      * 两者语义还不一致）。故把 {@link #deleteWithBackup} 用到的**两类**文件系统操作
      * （{@code delete} / {@code exists}，共 **3 处调用**：删 {@code .bak}、删主文件、查主文件存在性）
      * 收敛为可注入接口。
      *
-     * <p>与 {@code FaceModelManager.FileOps}、{@code FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting}
-     * 同构（`@VisibleForTesting interface` + `private static final 默认实现` + `private static volatile 字段`
-     * + `setXForTesting(null)` 复位）：**默认实现即原有行为，生产路径零变化**。
+     * <p><b>注入点是实例级，不是进程级静态</b>（子代理 4 P4）：此前本类持有一个
+     * {@code private static volatile FileOps fileOps} 全局开关，而 {@code :app:testDebugUnitTest}
+     * 的全部测试类在**同一 JVM 内串行**执行，任何测试类注入后忘记复位都会污染其后所有走
+     * {@code deleteWithBackup} 的用例。现已改为：{@link #deleteWithBackup(File, FileOps)} 由调用方
+     * **显式传入** {@code ops}，两个生产调用方（{@code PersonDisplayNameStore} /
+     * {@code AndroidEnrollmentRepository}）各持**实例字段**（默认 {@link #DEFAULT_FILE_OPS}），
+     * 并经各自的实例方法 {@code setFileOpsForTesting} 注入 ⇒ 跨实例泄漏在结构上不可能发生。
+     *
+     * <p><b>默认实现即原有行为，生产路径零变化</b>。
+     *
+     * <p>⚠️ 本接口**不是** {@code @VisibleForTesting}：注入点改为实例级后，两个生产类各自以
+     * {@code private} 字段持有本类型（默认 {@link #DEFAULT_FILE_OPS}），故本类型属**生产内部类型**，
+     * 仅**注入方法**（各调用方的 {@code setFileOpsForTesting}）才是测试专用。
      */
-    @androidx.annotation.VisibleForTesting
     interface FileOps {
         /**
          * 语义同 {@link File#delete()}：返回是否删除成功。
@@ -68,7 +76,14 @@ final class FileStoreUtils {
         boolean exists(@NonNull File f);
     }
 
-    private static final FileOps DEFAULT_FILE_OPS = new FileOps() {
+    /**
+     * 真实文件系统实现（{@code File.delete()} / {@code File.exists()}）。生产调用方把它作为
+     * 各自的默认 {@link FileOps}（实例字段），测试注入替身时**传 null 即恢复本实现**。
+     *
+     * <p>包级可见：只给同包的两个生产调用方与单元测试使用；仍是 {@code static final} 不可变常量，
+     * 故**不存在**可被篡改的进程级可变状态。
+     */
+    static final FileOps DEFAULT_FILE_OPS = new FileOps() {
         @Override
         public boolean delete(@NonNull File f) {
             return f.delete();
@@ -79,14 +94,6 @@ final class FileStoreUtils {
             return f.exists();
         }
     };
-
-    private static volatile FileOps fileOps = DEFAULT_FILE_OPS;
-
-    /** 仅供测试注入；传 null 恢复默认（真实文件系统）实现。 */
-    @androidx.annotation.VisibleForTesting
-    static void setFileOpsForTesting(@Nullable FileOps ops) {
-        fileOps = (ops != null) ? ops : DEFAULT_FILE_OPS;
-    }
 
     /**
      * 删除主文件**及其写入器备份**（{@code <name>.bak}）。
@@ -114,15 +121,15 @@ final class FileStoreUtils {
      *
      * @return 主文件是否确实已不存在
      */
-    static boolean deleteWithBackup(@NonNull File main) {
+    static boolean deleteWithBackup(@NonNull File main, @NonNull FileOps ops) {
         File parent = main.getParentFile();
         if (parent != null) {
             //noinspection ResultOfMethodCallIgnored
-            fileOps.delete(new File(parent, main.getName() + ".bak"));
+            ops.delete(new File(parent, main.getName() + ".bak"));
         }
         //noinspection ResultOfMethodCallIgnored
-        fileOps.delete(main);
-        return !fileOps.exists(main);
+        ops.delete(main);
+        return !ops.exists(main);
     }
 
     /**
