@@ -234,7 +234,7 @@ public class PersonDisplayNameStoreTest {
         File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
         assertTrue(f.isFile());
 
-        s.remove("alice");
+        assertTrue("删除成功 ⇒ 必须报告 true", s.remove("alice"));
 
         assertFalse("文件应被删除", f.exists());
         assertEquals("缓存应被清理", 0, s.cachedCount());
@@ -379,7 +379,8 @@ public class PersonDisplayNameStoreTest {
         UndeletableOps ops = new UndeletableOps();
         s.setFileOpsForTesting(ops);
         try {
-            s.remove("alice");  // 不得抛异常
+            // 与 f.exists() 断言同向：删不掉就必须**如实报告 false**（返回值不得恒真）。
+            assertFalse("删除静默失败（delete 返回 false）⇒ 不得谎报成功", s.remove("alice"));
         } finally {
             s.setFileOpsForTesting(null);
         }
@@ -466,7 +467,9 @@ public class PersonDisplayNameStoreTest {
 
         s.setFileOpsForTesting(new ThrowingOps());
         try {
-            s.remove("alice");  // 修法①：调用点自行包装 ⇒ 不得再抛异常（若抛，本用例即红）
+            // 修法①：调用点自行包装，**不再抛**异常（若抛，本用例即红）。
+            // 同时证明：吞掉异常 ≠ 谎报成功 —— 删除确实被拒时必须返回 false。
+            assertFalse("删除被拒（SecurityException）⇒ 不得谎报成功", s.remove("alice"));
         } finally {
             s.setFileOpsForTesting(null);
         }
