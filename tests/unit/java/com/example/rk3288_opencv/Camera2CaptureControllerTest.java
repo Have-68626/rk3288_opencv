@@ -10,6 +10,7 @@ import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CaptureRequest;
+import android.media.Image;
 import android.media.ImageReader;
 import android.os.HandlerThread;
 
@@ -55,6 +56,8 @@ public class Camera2CaptureControllerTest {
     }
 
     static class FakeSink implements ExternalFrameSink {
+        int calls;
+
         @Override
         public boolean onYuv420888Frame(ByteBuffer yBuffer,
                                         int yRowStride,
@@ -69,6 +72,7 @@ public class Camera2CaptureControllerTest {
                                         long timestampNs,
                                         int rotationDegrees,
                                         boolean mirrored) {
+            calls++;
             return true;
         }
     }
@@ -360,5 +364,78 @@ public class Camera2CaptureControllerTest {
         assertEquals("成功路径不得释放 thread", 0, c.releaseCaptureThreadCalls);
         assertEquals("成功路径不得递增代次", 1L, c.epochGate.current());
         assertFalse("成功路径不得上报错误", obs.hasError());
+    }
+
+    // ---------- FACE-CAM-008：提交前二次代次复检（入口校验与提交之间的竞态） ----------
+
+    /** 构造一帧可被 onImageAvailable 消费的 YUV_420_888 替身（3 平面）。 */
+    private static Image buildOneFrameImage() {
+        Image.Plane[] planes = new Image.Plane[]{
+                new Image.Plane(ByteBuffer.allocate(16), 16, 1),
+                new Image.Plane(ByteBuffer.allocate(8), 8, 1),
+                new Image.Plane(ByteBuffer.allocate(8), 8, 1)
+        };
+        Image img = new Image();
+        img.setPlanes(planes);
+        img.setDimensions(4, 4);
+        img.setTimestamp(123L);
+        return img;
+    }
+
+    /**
+     * FACE-CAM-008 RED 判别：修复前帧路径只在入口校验一次代次（本方法 :225），
+     * 入口校验与 sink 提交之间若发生 stop/切源，旧帧仍会被推入已失效会话。
+     *
+     * 本用例利用已注入的 RotationDegreesProvider：其 lambda 在返回前同步推进代次，
+     * 精确复现「入口校验通过 → 提交前代次失效」窗口（确定性、无 sleep）。这正是复检
+     * 必须放在 computeRotationDegrees() 之后的原因。
+     * 断言：修复后提交前复检失败即丢弃，sink 不得被调用（旧代码 sink.calls==1 即 RED）；
+     * 帧仍须经 finally 关闭释放。
+     */
+    @Test
+    public void frameNotCommittedIfEpochStaleAtSubmitPoint() {
+        FakeObserver obs = new FakeObserver();
+        FakeSink sink = new FakeSink();
+        final Camera2CaptureController[] holder = new Camera2CaptureController[1];
+        // 关键：代次推进发生在 computeRotationDegrees() 内（入口校验之后、提交复检之前）
+        RotationDegreesProvider provider = () -> {
+            holder[0].epochGate.advance();
+            return 0;
+        };
+        Camera2CaptureController c = new Camera2CaptureController(null, sink, obs, provider);
+        holder[0] = c;
+
+        long capturedEpoch = c.epochGate.enter(); // 当前代次 1，回调闭包捕获同代次
+        Image img = buildOneFrameImage();
+        ImageReader reader = new ImageReader();
+        reader.setNextImage(img);
+
+        c.onImageAvailable(reader, capturedEpoch);
+
+        assertEquals("提交前代次已失效，帧不得推送", 0, sink.calls);
+        assertFalse("复检丢弃不得上报推送", obs.pushed);
+        assertTrue("帧仍须经 finally 关闭释放", img.closeCalls >= 1);
+    }
+
+    /**
+     * 正对照：代次在提交前保持当前时，帧必须正常提交 —— 证明上面的判别用例不是
+     * 「因为路径本就到不了 sink」而恒绿（若误删提交逻辑，本用例 RED）。
+     */
+    @Test
+    public void frameCommittedWhenEpochStillCurrentAtSubmitPoint() {
+        FakeObserver obs = new FakeObserver();
+        FakeSink sink = new FakeSink();
+        Camera2CaptureController c = new Camera2CaptureController(null, sink, obs, () -> 0);
+
+        long capturedEpoch = c.epochGate.enter(); // 当前代次 1，全程不推进
+        Image img = buildOneFrameImage();
+        ImageReader reader = new ImageReader();
+        reader.setNextImage(img);
+
+        c.onImageAvailable(reader, capturedEpoch);
+
+        assertEquals("代次仍当前，帧应正常提交", 1, sink.calls);
+        assertTrue("提交成功应上报推送", obs.pushed);
+        assertTrue("帧仍须经 finally 关闭释放", img.closeCalls >= 1);
     }
 }
