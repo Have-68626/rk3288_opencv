@@ -4496,20 +4496,25 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 AppLog.w("MainActivity", "refreshGalleryFromRepository",
                         "图库重建跳过损坏条目 skipped=" + skipped + "（成功 " + ids.size() + " 条）");
             }
-            // 任务 B：仓库 list() 成功即认为人员集合**权威**，此时才做显示名的预取与孤儿清理
-            // （prefetch 只清缓存不删文件；removeOrphans 会删文件，故必须以此为前提）。
+            // 任务 B：显示名的预取与孤儿清理**共用同一权威性前提**（A4 对称化）。
             // 传入的是**注册表完整集合** allRegisteredIds，而非成功解码子集 ids —— 见其声明处注释。
             // 本方法在后台线程调用，符合 PersonDisplayNameStore 的线程约定。
             PersonDisplayNameStore store = displayNameStore();
-            store.prefetch(allRegisteredIds);
-            // 删除孤儿文件是**破坏性**的：仅当注册表条目集**权威**（无损坏行、未从 .bak 恢复、
-            // 且确实存在注册表文件）时才允许。否则差集里会混入「仍在册但本次没读到」的人，
-            // 其显示名会被误删（A2 审计 H2；与先前「误传成功解码子集 ids」同类，只是更深一层）。
+            // 仅在注册表条目集**权威**（无损坏行、未从 .bak 恢复、且确实存在注册表文件）时才预取 / 清孤儿：
+            //   * removeOrphans 是**破坏性**的 —— 非权威时差集里会混入「仍在册但本次没读到」的人，其
+            //     显示名会被误删（A2 审计 H2）；
+            //   * prefetch 虽**非破坏性**（只清缓存、不删文件），但其读取会经读路径的「阶段 1 恢复基线」
+            //     把遗留的 .bak 改名还原为主文件并解密 ⇒ 可把已删除人员的明文**复活进内存缓存**。
+            //     故二者同口径门控（A4：此前 prefetch 是无条件的，与紧随其后的门控不对称）。
+            // 非权威时的降级：显示名退化为 personId（不再预取）—— 可接受：权威性通常在下一次 list()
+            // 即恢复（从 .bak 恢复的路径会顺带把 .bak 改名回主文件，见 AndroidEnrollmentRepository.loadRegistry）。
             if (list.authoritative) {
+                store.prefetch(allRegisteredIds);
                 store.removeOrphans(new java.util.HashSet<>(allRegisteredIds));
             } else {
                 AppLog.w("MainActivity", "refreshGalleryFromRepository",
-                        "注册表条目集非权威（含损坏行 / 从备份恢复 / 无注册表），跳过显示名孤儿清理以免误删");
+                        "注册表条目集非权威（含损坏行 / 从备份恢复 / 无注册表），跳过显示名预取与孤儿清理"
+                                + "（避免复活遗留备份 / 误删显示名）");
             }
             migrateLegacyDisplayNames();
             return ok;
@@ -4575,7 +4580,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             AndroidEnrollmentRepository.Result result = enrollmentRepository().remove(userId);
             boolean galleryOk = false;
             if (result.isOk()) {
-                removeDisplayName(userId);
+                // A4-Low：removeDisplayName 内部只吞 SecurityException（见 PersonDisplayNameStore.remove），
+                // 若它抛出**其它**未受检异常，会从本 Runnable 逃逸 ⇒ 线程死掉、其后的 runOnUiThread 不再
+                // 执行 ⇒ **成功/失败 Toast 都不弹**（安全无碍，缓存已由 remove 的 finally 清；仅 UX 问题）。
+                // 故在此兜住并如实记一条日志，保证后续 Toast 与图库刷新照常执行。
+                try {
+                    removeDisplayName(userId);
+                } catch (Exception t) {
+                    AppLog.w("MainActivity", "deletePerson",
+                            "显示名清理异常（不影响本地模板删除结果）: " + t);
+                }
                 galleryOk = refreshGalleryFromRepository();
             }
             final AndroidEnrollmentRepository.Result r = result;
