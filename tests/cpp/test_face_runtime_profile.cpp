@@ -307,6 +307,60 @@ TEST_F(FaceRuntimeManifestTest, DetectorAnchorsPerPosNonPositiveRejected) {
     EXPECT_NE(err.find("anchorsPerPos"), std::string::npos);
 }
 
+// 上限：元素超 kMaxAnchorsPerPos(=8) → 拒（防下游 4*N/10*N 溢出）。
+// 说明：本用例（[2,2,9]）与 DetectorAnchorsPerPosHugeValueRejected（[2,2,1e100]）打的是**同一条**
+// 「上限」判据——9 只是超上限的「普通」样本，1e100 则额外区分「上限真正生效」与「靠 double→int
+// 未定义行为侥幸被拒」。两条用例的断言均**绑定精确的中文错误消息子串**（含 "anchorsPerPos" 与
+// "1..8"/"须正整数"），故改动生产侧消息措辞即会令断言变红——这是有意的（消息即接口）。
+TEST_F(FaceRuntimeManifestTest, DetectorAnchorsPerPosOverLimitRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"anchorsPerPos\":[2,2,2]");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"anchorsPerPos\":[2,2,2]").size(),
+                "\"anchorsPerPos\":[2,2,9]");  // 9 > 8
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("anchorsPerPos"), std::string::npos);
+    // 打红点：命中「上限」分支（消息含 1..8）；上限判据被删则落到整数分支（无 1..8）。
+    EXPECT_NE(err.find("1..8"), std::string::npos);
+}
+
+// 极大值：1e100 有限且 >0，须在 cast int 前被上限拦下（否则 double→int 未定义行为）。
+// 说明：与 DetectorAnchorsPerPosOverLimitRejected（[2,2,9]）打的是**同一条上限判据**——2 的增量
+// 意义仅在于区分「上限生效」与「靠 1e100→int 的 UB 侥幸被拒」（实测 MSVC x64 下 cast(1e100)==INT_MIN，
+// 整数回等判据亦会拒），并非另一套逻辑。断言同样绑定精确消息子串（"anchorsPerPos" + "1..8"）。
+TEST_F(FaceRuntimeManifestTest, DetectorAnchorsPerPosHugeValueRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"anchorsPerPos\":[2,2,2]");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"anchorsPerPos\":[2,2,2]").size(),
+                "\"anchorsPerPos\":[2,2,1e100]");
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("anchorsPerPos"), std::string::npos);
+    // 打红点：必须在「上限」分支被拒（消息含 1..8），而非依赖 1e100→int 的 UB 回落。
+    // 实测 MSVC x64 下 cast(1e100)==INT_MIN，整数回等判据（L117）亦会拒——故此断言
+    // 是把「上限真正生效」与「靠 UB 侥幸被拒」二者区分开的唯一判据。
+    EXPECT_NE(err.find("1..8"), std::string::npos);
+}
+
+// 非整数：1.5 通过「有限/正/上限」检查后，仍须被「整数值」分支拒。
+TEST_F(FaceRuntimeManifestTest, DetectorAnchorsPerPosNonIntegerRejected) {
+    std::string bad = manifestWithDetectorRuntime();
+    auto pos = bad.find("\"anchorsPerPos\":[2,2,2]");
+    ASSERT_NE(pos, std::string::npos);
+    bad.replace(pos, std::string("\"anchorsPerPos\":[2,2,2]").size(),
+                "\"anchorsPerPos\":[2,2,1.5]");
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
+    EXPECT_NE(err.find("anchorsPerPos"), std::string::npos);
+    // 打红点：命中「非整数」分支（消息含「须正整数」且不含 1..8）；整数回等判据被删则接受。
+    EXPECT_NE(err.find("须正整数"), std::string::npos);
+}
+
 TEST_F(FaceRuntimeManifestTest, DetectorOutputLayoutInvalidRejected) {
     std::string bad = manifestWithDetectorRuntime();
     auto pos = bad.find("\"outputLayout\":\"nchw\"");
