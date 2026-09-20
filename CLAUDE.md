@@ -140,7 +140,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 4. **docs-audit** —— `node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit`。门禁要求 high=0 且 medium=0，不满足时以退出码 2 阻断。**本 job 不因 `docs_only` 跳过**——docs 变更正是它的审查对象（其余 job 在 pure-docs 变更时全部跳过）。
 5. **web** —— `pnpm install` → `lint` → `build` → `e2e:run:coverage`（E2E 失败非阻断）。
 6. **android** —— `./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`（Temurin Java 21）。
-7. **windows** —— 仅 `pull_request` / `push` 触发（`workflow_dispatch` 时跳过），且要求 `docs_only != true`。从源码完整构建 OpenCV（缓存于 `_deps/`）。INT8 量化与精度步骤仅在 `models/`、`scripts/quantize_ncnn_int8.py` 或 `deps/WIDER_train/` 发生变更时运行，且为 `continue-on-error` 非阻断。
+7. **windows** —— 仅 `pull_request` / `push` 触发（`workflow_dispatch` 时跳过），且要求 `docs_only != true`。从源码完整构建 OpenCV（缓存于 `_deps/`）。INT8 量化与精度步骤仅在 `models/`、`scripts/quantize_ncnn_int8.py` 或 `deps/WIDER_train/` 发生变更时运行，且为 `continue-on-error` 非阻断。该 job 另有一个 **非阻断** 的独立 `rk3288_cli` 编译 step（step 级 `continue-on-error: true`）及配套的失败告警 step：编译失败时仅写 Step Summary 并打 `::warning::`，不阻断 job、也不影响其后的 ctest。该步闭合的是 `rk3288_cli`「从未在 CI 编译过」的零覆盖盲区（该 target 曾因 `EventManager.h` 传递依赖 `<gtest/gtest_prod.h>` 报 `C1083` 而长期静默）；转正条件为观察一轮全绿后并入主构建行的 `--target` 清单。
 
 **`.github/workflows/docs-audit.yml`** —— 独立 workflow，先跑 `node --test tests/scripts/docs-sync-audit.test.js`，再执行与 ci.yml 完全相同的 `--skip-links` 审计命令。
 
