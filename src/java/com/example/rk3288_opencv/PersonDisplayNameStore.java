@@ -43,6 +43,14 @@ final class PersonDisplayNameStore {
      *
      * <p><b>实例字段而非进程级静态</b>（子代理 4 P4）：本字段只属于本实例，注入**不会**影响其它
      * 实例或其它测试类，跨实例泄漏在结构上不可能发生。
+     *
+     * <p><b>为何非 {@code final}（安全发布前提，如实固化）</b>：字段须可经
+     * {@link #setFileOpsForTesting} 在**构造后**改写（测试注入），故不能标 {@code final}；即它
+     * **非 volatile、非 final**。理论上若本实例被**不安全发布**，并发读者可能见到 {@code null}。
+     * 当前仓库**安全**：本类实例在生产中仅经 {@code MainActivity.displayNameStore} 的
+     * {@code volatile} 字段 + 双检锁发布（见该字段声明与 {@code displayNameStore()}），volatile 写
+     * 建立了 happens-before ⇒ 构造期对该字段的赋值先于其它线程的读取而可见。**改动发布路径
+     * （去掉 volatile / 改为常规共享）前须复核本前提**。
      */
     @NonNull
     private FileStoreUtils.FileOps fileOps = FileStoreUtils.DEFAULT_FILE_OPS;
@@ -165,14 +173,41 @@ final class PersonDisplayNameStore {
         return true;
     }
 
-    /** 后台线程：删除映射（文件 + 缓存）。文件删除失败不影响缓存清理。 */
+    /**
+     * 后台线程：删除映射（文件 + 缓存）。
+     *
+     * <p><b>文件删除失败 —— 实为「任何异常」—— 都不影响缓存清理</b> —— 这是本方法的契约。
+     * 缓存里存的是**可擦除的显示名明文**（本类刻意用 {@code byte[]} 以便 {@code Arrays.fill} 擦除）；
+     * 人已删除却因异常把明文留在内存缓存 = **PII 未如期清除**。故缓存清理放在 {@code finally}，
+     * 直白表达「**无论如何都清**」。措辞如实：{@code finally} 对**任何**逃逸出 try 块的异常都会执行
+     * 清理，而 try 块内**只 catch 了 {@link SecurityException}** —— 故「会被清理」的原因集合是
+     * 「会被吞掉」的原因集合的**超集**（任何异常都清缓存，但只有 {@code SecurityException} 被吞）。
+     *
+     * <p><b>为什么只 catch {@code SecurityException}（有意的窄捕获）</b>：文件删除被拒
+     * （{@code File.delete()} 抛 {@code SecurityException}）属可预期的 best-effort 失败，吞掉即可；
+     * 而 {@code NullPointerException} 之类**真正的编程错误**必须照常向外暴露、不得被静默掩盖。故此处
+     * **刻意只捕 {@code SecurityException}**。⚠️ 这与本仓 {@code …Quietly} 惯例**并不同构**：对照
+     * {@code FaceModelManager.deleteRecursivelyQuietly} 捕的是 {@code Exception}（连编程错误一并吞）。
+     * 本处更窄、也更安全：删除只是收尾，但吞掉 NPE 会掩盖真正的 bug。二者是**有意**的差异，非疏漏。
+     *
+     * <p><b>为什么在此 catch 而非改 {@link FileStoreUtils#deleteWithBackup}</b>：后者是共享工具，其
+     * 「不吞 {@code SecurityException}」的语义被 {@code AndroidEnrollmentRepository.remove} 依赖
+     * （它据此回滚注册表并返回 {@code IO_ERROR}）；让共享工具吞异常会让那个调用点的 catch 沦为
+     * **静默死代码**。故本调用点自行包装（与之一起，构成本仓两处「调用点自行包装
+     * {@code deleteWithBackup}」的实例）。
+     */
     void remove(@NonNull String personId) {
-        // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把已删除的
-        // 显示名复活（A2-Med3）。
-        FileStoreUtils.deleteWithBackup(
-                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), fileOps);
-        byte[] removed = cache.remove(personId);
-        if (removed != null) Arrays.fill(removed, (byte) 0);
+        try {
+            // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把已删除的
+            // 显示名复活（A2-Med3）。
+            FileStoreUtils.deleteWithBackup(
+                    FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), fileOps);
+        } catch (SecurityException ignored) {
+            // best-effort：删除被拒（SecurityManager）不应阻断缓存清理 —— 见上方 javadoc（PII 擦除优先）。
+        } finally {
+            byte[] removed = cache.remove(personId);
+            if (removed != null) Arrays.fill(removed, (byte) 0);
+        }
     }
 
     /**
@@ -181,7 +216,11 @@ final class PersonDisplayNameStore {
      * <p><b>调用方必须确保 {@code liveIds} 权威</b>（注册表条目集未被降级）。传空集合等于删除全部，
      * 故本方法刻意不自动调用，也不与 {@link #prefetch} 合并。
      *
-     * @return 实际删除的文件数
+     * <p><b>单个孤儿删除失败不得中断整轮清理</b>：若某项删除抛 {@link SecurityException}（或
+     * {@link FileStoreUtils#deleteWithBackup} 返回 false），**跳过该项并继续**处理其余孤儿，绝不因
+     * 一个坏项放弃整轮。异常项**不计入返回值**。
+     *
+     * @return 实际删除的文件数（**仅在确实删除成功时 +1**；被拒/删不掉的项不计入）
      */
     int removeOrphans(@NonNull Set<String> liveIds) {
         File[] files = dir.listFiles();
@@ -194,12 +233,28 @@ final class PersonDisplayNameStore {
         int removed = 0;
         for (File f : files) {
             String n = f.getName();
-            if (!n.startsWith("n_") || !n.endsWith(".enc")) continue;
-            if (liveNames.contains(n)) continue;
+            // 谓词须**同时**匹配主文件（n_*.enc）与其写入器备份（n_*.enc.bak）：二者都参与孤儿判定。
+            // A4 修复（Med）：此前谓词只认 `endsWith(".enc")`，使「主文件已不在、只剩 .bak」的孤儿
+            // **永不进入本循环**，而读路径的阶段 1 恢复基线会在下次读取时把该 .bak 改名还原为主文件
+            // 并解密 ⇒ **持久的 PII 复活种子**。注意：已修的「+207」只覆盖 remove 路径（一并删 .bak），
+            // **本谓词当时漏了**；且须保持 `n_` 前缀，免得误删模板文件 u_*.bin
+            // （removeOrphansDeletesOnlyUnlistedNameFiles 明确断言不得误删）。
+            String mainName = n.endsWith(".bak") ? n.substring(0, n.length() - 4) : n;
+            if (!mainName.startsWith("n_") || !mainName.endsWith(".enc")) continue;
+            // 以**主文件基名**判存活：主文件在册时其 .bak 亦视为在册（不得误删在册者的备份）。
+            if (liveNames.contains(mainName)) continue;
             // 一并删掉写入器备份（n_*.enc.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把
-            // **已删除**的显示名复活（A2-Med3）。A3 确认此处是此前遗漏的删除路径——主文件删除已
-            // 统一走 deleteWithBackup，唯独本方法漏了。
-            if (FileStoreUtils.deleteWithBackup(f, fileOps)) removed++;
+            // **已删除**的显示名复活（A2-Med3）。
+            //
+            // 异常语义（本轮选定）：**跳过并继续，且不计入 removed** —— 与本方法对「deleteWithBackup
+            // 返回 false」的既有口径一致（见 removeOrphansDoesNotCountFailedDeletes 用例）；返回值
+            // 始终是「确实被删除的文件数」。此处 catch 只为「一个坏项不拖垮整轮」，不暴露失败明细
+            // （本方法无返回值通道承载之，且调用方 MainActivity 只需 best-effort 收尾）。
+            try {
+                if (FileStoreUtils.deleteWithBackup(f, fileOps)) removed++;
+            } catch (SecurityException ignored) {
+                // 该项删不掉：不计入 removed，继续下一项。
+            }
         }
         return removed;
     }

@@ -10,7 +10,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import java.io.File;
 import java.lang.reflect.Field;
@@ -87,11 +86,77 @@ public class PersonDisplayNameStoreTest {
         }
     }
 
-    /** 注入「delete 抛 SecurityException」的替身：用于覆盖异常路径（子代理 4 P1）。 */
+    /** 注入「delete 抛 SecurityException」的替身：用于覆盖异常路径。 */
     private static final class ThrowingOps implements FileStoreUtils.FileOps {
         @Override
         public boolean delete(File f) {
             throw new SecurityException("probe: delete denied");
+        }
+
+        @Override
+        public boolean exists(File f) {
+            return f.exists();
+        }
+    }
+
+    /**
+     * 首次 {@code delete} 抛 {@code SecurityException}，其后转为**真实**删除。
+     *
+     * <p>用于证明 {@code removeOrphans}「单个孤儿删除失败**不中断整轮**」：无论 {@code listFiles()}
+     * 的返回顺序如何，整轮恰好有一次 delete 调用抛异常，其余均真实执行 ⇒ 恰有一个孤儿删不掉、其余
+     * 全被删除。断言不依赖遍历顺序，因此是确定性的。
+     */
+    private static final class ThrowOnceThenRealOps implements FileStoreUtils.FileOps {
+        private boolean thrown = false;
+
+        @Override
+        public boolean delete(File f) {
+            if (!thrown) {
+                thrown = true;
+                throw new SecurityException("probe: delete denied once");
+            }
+            return f.delete();
+        }
+
+        @Override
+        public boolean exists(File f) {
+            return f.exists();
+        }
+    }
+
+    /**
+     * **三态混合替身**：按**目标文件基名**分流 —— 指定基名恒抛 {@code SecurityException}、另一指定
+     * 基名恒返回 {@code false}（删不掉）、其余真实删除。
+     *
+     * <p><b>为什么按名字而非调用序分流</b>：{@link FileStoreUtils#deleteWithBackup} 对每个孤儿会先删
+     * {@code .bak}、再删主文件（共 2 次 {@code delete} 调用），故「第 N 次调用」的分流会随
+     * {@code listFiles()} 遍历顺序漂移；按**基名**（剥掉 {@code .bak} 后缀）分流则与遍历顺序无关，
+     * 断言是**确定性**的。
+     */
+    private static final class ThrowThenUndeletableThenRealOps implements FileStoreUtils.FileOps {
+        private final String throwingBase;     // 该基名：delete 恒抛 SecurityException
+        private final String undeletableBase;  // 该基名：delete 恒返回 false
+
+        ThrowThenUndeletableThenRealOps(String throwingBase, String undeletableBase) {
+            this.throwingBase = throwingBase;
+            this.undeletableBase = undeletableBase;
+        }
+
+        private static String baseName(File f) {
+            String n = f.getName();
+            return n.endsWith(".bak") ? n.substring(0, n.length() - 4) : n;
+        }
+
+        @Override
+        public boolean delete(File f) {
+            String b = baseName(f);
+            if (b.equals(throwingBase)) {
+                throw new SecurityException("probe: delete denied (mixed)");
+            }
+            if (b.equals(undeletableBase)) {
+                return false;
+            }
+            return f.delete();
         }
 
         @Override
@@ -196,6 +261,46 @@ public class PersonDisplayNameStoreTest {
         assertFalse("bob 的文件应被删除",
                 FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "bob").exists());
         assertTrue("模板文件不得被误删", tpl.exists());
+    }
+
+    /**
+     * A4 修复（Med）判别性用例：removeOrphans 的谓词必须**同时匹配写入器备份** {@code n_*.enc.bak}。
+     *
+     * <p><b>场景</b>：某人已注销/数据陈旧，其显示名主文件已不在、**只剩 {@code .bak}**（上次写入崩在
+     * 「dst→bak」之后、「tmp→dst」完成前）。此前谓词只认 {@code endsWith(".enc")} ⇒ 该 {@code .bak}
+     * **不进入循环**、永不被清理；而读路径的「阶段 1 恢复基线」会在下次读取时把它改名还原为主文件并
+     * 解密 ⇒ **持久的 PII 复活种子**（与已修的「+207」同类，那次只覆盖 remove 路径）。
+     *
+     * <p><b>为何断言 {@code readFromDisk} 为 null</b>：这直接把「不得复活」钉在**读路径的真实行为**上
+     * ——清干净后，新实例经 {@code readEnvelope} 读 bob 应取不到任何明文；若 {@code .bak} 未删，读路径
+     * 会把它还原为主文件并成功解密（返回「李四」）⇒ 本断言同样红。
+     *
+     * <p><b>打红方式</b>：把谓词改回只匹配 {@code .enc}（不剥 {@code .bak} 后缀）⇒ 下面三条断言全红。
+     */
+    @Test
+    public void removeOrphansDeletesOrphanedBackupWhenMainFileGone() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        assertTrue(s.save("alice", "张三"));
+        assertTrue(s.save("bob", "李四"));
+
+        File bobMain = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "bob");
+        File bobBak = new File(dir, bobMain.getName() + ".bak");
+        // 构造崩溃现场：主文件已不在，只剩 .bak。
+        assertTrue("前置：bob 主文件应存在", bobMain.isFile());
+        assertTrue("前置：应能把主文件改名为 .bak", bobMain.renameTo(bobBak));
+        assertFalse("前置：主文件应已不在", bobMain.exists());
+        assertTrue("前置：只剩 .bak", bobBak.isFile());
+
+        int removed = s.removeOrphans(Collections.singleton("alice"));
+
+        assertEquals("只剩 .bak 的孤儿必须被清理并计入删除数", 1, removed);
+        assertFalse("孤儿 .bak 应已被删除", bobBak.exists());
+        assertFalse("主文件不得被读路径的阶段 1 恢复基线复活", bobMain.exists());
+        assertNull("清理后新实例不得再读到 bob 的显示名（无 .bak 可复活）",
+                new PersonDisplayNameStore(dir).readFromDisk("bob"));
+        assertTrue("在册的 alice 主文件应保留",
+                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice").exists());
     }
 
     /** 平台不支持（API<23）：save 返回 false、prefetch 不崩、get 降级 —— 且绝不落盘明文。 */
@@ -342,38 +447,109 @@ public class PersonDisplayNameStoreTest {
     }
 
     /**
-     * **特征化测试（钉住现状，不是期望）** —— 子代理 4 P1 指出的覆盖缺口。
+     * 修法①后：{@code remove} 在**调用点**吞掉 {@link SecurityException}（best-effort 收尾）⇒
+     * **不抛异常**，且缓存照清（清理放 {@code finally}），{@code get} 随之降级为 {@code personId}；
+     * 同时删除**确实失败**（文件仍在，不得被谎报为已删）。
      *
-     * <p>{@code FileStoreUtils.deleteWithBackup} **不吞** {@code SecurityException}，
-     * 而本类的 {@code remove} **没有** try/catch ⇒ 异常会传播出去并**跳过缓存清理**。
-     * 这与 {@code remove} 的 javadoc 承诺「文件删除失败不影响缓存清理」**不一致**。
-     *
-     * <p>影响面：Android 上 {@code File.delete()} 抛 {@code SecurityException} 需要 SecurityManager，
-     * 现代 Android 已无 ⇒ **实际不可达**。故本次**只钉现状、不改行为**，修复选项另行记录：
-     * ① 在 {@code remove} 内 catch；② 让 {@code deleteWithBackup} 不抛（与本类
-     * {@code renameQuietly} 的「吞 {@code SecurityException}」保持一致）。
-     *
-     * <p>⚠️ 若将来按 ① 或 ② 修好，**本用例会红**（那正是它存在的意义），届时改为断言「缓存已清理」。
+     * <p>本用例取代此前的特征化测试 {@code removePropagatesSecurityExceptionAndSkipsCacheClear}
+     * （它钉的是「异常传播且跳过缓存清理」的旧现状）。新契约即 {@code remove} 的 javadoc 承诺：
+     * 「文件删除失败不影响缓存清理」—— 缓存里是可擦除的显示名明文，异常路径下**必须**擦除（PII）。
      */
     @Test
-    public void removePropagatesSecurityExceptionAndSkipsCacheClear() throws Exception {
+    public void removeSwallowsSecurityExceptionAndClearsCache() throws Exception {
         File dir = tmp.newFolder();
         PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
         assertTrue(s.save("alice", "张三"));
         assertEquals(1, s.cachedCount());
+        File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
+        assertTrue(f.isFile());
 
         s.setFileOpsForTesting(new ThrowingOps());
         try {
-            try {
-                s.remove("alice");
-                fail("当前实现不 catch SecurityException，应当传播（若此处不抛，说明行为已改变，请更新本用例）");
-            } catch (SecurityException expected) {
-                // 现状如此：异常未被拦截
-            }
+            s.remove("alice");  // 修法①：调用点自行包装 ⇒ 不得再抛异常（若抛，本用例即红）
         } finally {
             s.setFileOpsForTesting(null);
         }
-        assertEquals("异常路径下缓存未被清理 —— 与 javadoc 契约不一致，已记录待决", 1, s.cachedCount());
+
+        assertEquals("无论文件删除成败都必须清理缓存（finally）", 0, s.cachedCount());
+        assertEquals("缓存已清 ⇒ get 降级为 personId", "alice", s.get("alice"));
+        assertTrue("删除确实失败（SecurityException）⇒ 文件仍在（不得被谎报为已删）", f.exists());
+    }
+
+    /**
+     * 修法①后：{@code removeOrphans} 中**单个孤儿删除抛异常不得中断整轮清理**，且抛异常项
+     * **不计入返回值**（返回值始终是「确实被删除的文件数」）。
+     *
+     * <p>用 {@link ThrowOnceThenRealOps}（首次 delete 抛、其后真实删除）＋三个孤儿：无论遍历顺序，
+     * 恰有一次 delete 调用抛异常 ⇒ 恰好一个孤儿删不掉、其余两个被删 ⇒ {@code removed == 2}。
+     * 若实现未 catch（异常穿透循环），则 {@code removed} 会随遍历顺序退化为 0 或 1，且可能残留多个
+     * 文件 ⇒ 本用例红。
+     */
+    @Test
+    public void removeOrphansContinuesPastThrowingOrphan() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        assertTrue(s.save("alice", "A"));
+        assertTrue(s.save("bob", "B"));
+        assertTrue(s.save("carol", "C"));
+        File fa = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
+        File fb = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "bob");
+        File fc = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "carol");
+        assertTrue(fa.isFile() && fb.isFile() && fc.isFile());
+
+        s.setFileOpsForTesting(new ThrowOnceThenRealOps());
+        int removed;
+        try {
+            removed = s.removeOrphans(Collections.emptySet());  // 三个都是孤儿
+        } finally {
+            s.setFileOpsForTesting(null);
+        }
+
+        assertEquals("抛异常项不计入、其余照删 ⇒ 恰好 2（异常未中断整轮）", 2, removed);
+        int stillThere = 0;
+        for (File f : new File[]{fa, fb, fc}) {
+            if (f.exists()) stillThere++;
+        }
+        assertEquals("恰好一个孤儿删不掉（即抛异常那一项），其余两个确已删除", 1, stillThere);
+    }
+
+    /**
+     * **混合场景**（三条既有用例各覆盖一半，本用例钉住三者**同时出现**的组合）：
+     * {@code removeOrphans} 一轮内同时遇到「抛 {@code SecurityException}」「返回 false（删不掉）」
+     * 「真实删除成功」三种结果。
+     *
+     * <p>期望：**仅真实删除成功的那一项**计入返回值 ⇒ {@code removed == 1}；另两项**原样残留**
+     * （抛异常项被 catch 跳过、返回 false 项不计入，二者都不删）。用
+     * {@link ThrowThenUndeletableThenRealOps} 按**基名**分流，故断言不依赖 {@code listFiles()} 顺序。
+     *
+     * <p><b>一旦 catch 缺失 / 计数口径漂移即红</b>：若实现未 catch（异常穿透整轮）⇒ 本用例抛
+     * {@code SecurityException} 而红；若把「返回 false」也计入 ⇒ {@code removed == 2} 而红。
+     */
+    @Test
+    public void removeOrphansMixedThrowUndeletableAndRealPinsExactCountAndResidue() throws Exception {
+        File dir = tmp.newFolder();
+        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        assertTrue(s.save("alice", "A"));
+        assertTrue(s.save("bob", "B"));
+        assertTrue(s.save("carol", "C"));
+        File fa = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
+        File fb = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "bob");
+        File fc = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "carol");
+        assertTrue(fa.isFile() && fb.isFile() && fc.isFile());
+
+        // alice → 恒抛；bob → 恒 false（删不掉）；carol → 真实删除。
+        s.setFileOpsForTesting(new ThrowThenUndeletableThenRealOps(fa.getName(), fb.getName()));
+        int removed;
+        try {
+            removed = s.removeOrphans(Collections.emptySet());  // 三个都是孤儿
+        } finally {
+            s.setFileOpsForTesting(null);
+        }
+
+        assertEquals("三态并存：仅「真实删除成功」的 carol 计入 ⇒ 恰为 1", 1, removed);
+        assertTrue("alice（抛 SecurityException）应原样残留", fa.exists());
+        assertTrue("bob（deleteWithBackup 返回 false）应原样残留", fb.exists());
+        assertFalse("carol（真实删除）应已删除", fc.exists());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

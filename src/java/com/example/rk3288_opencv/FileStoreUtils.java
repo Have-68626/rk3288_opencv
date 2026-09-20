@@ -106,18 +106,26 @@ final class FileStoreUtils {
      * **确实已不存在**」为准而非 {@code delete()} 的返回值 —— 后者在「文件本来就不存在」时也返回
      * false，而那种情况应当算**成功**（幂等删除）。
      *
-     * <p>⚠️ <b>异常语义与本类另一工具**不一致**（如实记录，未擅自改行为）</b>：
-     * {@link #renameQuietly} 会**吞掉** {@code SecurityException} 并返回 false，而本方法**不吞**、
-     * 让它向上传播。两个生产调用方因此行为不同：
+     * <p><b>异常语义遵循本仓的命名约定（如实记录）</b>：后缀 {@code …Quietly} 表示**吞**异常；
+     * **原始操作**表示**不吞**、用返回值报成败（本方法、{@code FaceModelManager.deleteRecursively}）。
+     * 二者并存是有意的：需要感知失败（如回滚注册表）的调用方走原始操作，best-effort 收尾走
+     * {@code …Quietly}。
+     *
+     * <p>⚠️ <b>{@code …Quietly} 之间的「捕获宽度」并不一致</b>（A4 补注）：{@link #renameQuietly}
+     * **仅**捕 {@code SecurityException}，而 {@code FaceModelManager.deleteRecursivelyQuietly} 捕的是
+     * {@code Exception}（连编程错误一并吞）；本方法则**不吞**任何异常。「后缀同名」不等于「吞的范围
+     * 相同」，选用/阅读时以各自实现为准。
+     *
+     * <p><b>本方法不吞 {@code SecurityException}，让它向上传播</b>，由调用方按需包装：
      * <ul>
-     *   <li>{@code AndroidEnrollmentRepository.remove} —— 有 {@code catch (SecurityException)}，
-     *       会回滚注册表并返回 {@code IO_ERROR}（已有用例覆盖，见 {@code AndroidEnrollmentRepositoryTest}）；</li>
-     *   <li>{@code PersonDisplayNameStore.remove} —— <b>没有</b> catch，异常会传播并**跳过缓存清理**，
-     *       与其 javadoc 承诺的「文件删除失败不影响缓存清理」**相抵触**。</li>
+     *   <li>{@code AndroidEnrollmentRepository.remove} —— {@code catch (SecurityException)}，回滚注册表
+     *       并返回 {@code IO_ERROR}（已有用例覆盖，见 {@code AndroidEnrollmentRepositoryTest}）；</li>
+     *   <li>{@code PersonDisplayNameStore.remove} —— 在**调用点**自行 catch（该类需保证「文件删除失败
+     *       不影响缓存清理」，即 PII 明文擦除优先），是本仓**第二处**「调用点自行包装」的实例
+     *       （第一处即上一条 {@code AndroidEnrollmentRepository.remove}）。</li>
      * </ul>
-     * 影响面有限：Android 上 {@code File.delete()} 抛 {@code SecurityException} 需 SecurityManager，
-     * 现代 Android 已无 ⇒ 实际不可达。修复方向有二（**待决，本轮只钉现状**）：
-     * ① 在调用方 catch；② 让本方法不抛（与 {@link #renameQuietly} 对齐）。
+     * Android 上 {@code File.delete()} 抛 {@code SecurityException} 需 SecurityManager，现代 Android
+     * 已无 ⇒ 上述包装是**契约护栏**，实际难以触达。
      *
      * @return 主文件是否确实已不存在
      */
