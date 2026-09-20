@@ -422,6 +422,47 @@ jobs:
           # 编译期错误会一路静默到有人本地全量构建——本 job 已具备完整 OpenCV，增量成本低。
           cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests win_replay_export_cli -- /m
 
+      # 单独编译 rk3288_cli（非阻断）。为何独立成 step 而不并入上面主构建行的 --target 清单：
+      # GitHub Actions 中一个 step 失败会中止整个 job，排在其后的测试 step 会被跳过——若 rk3288_cli
+      # 在 CI 的源/工具链组合下编不过，会连带丢掉既有的、有价值的测试覆盖，属净损失。故此处用
+      # continue-on-error 兜底：编不过只作提示，不中止 job、不影响后续 ctest。该 target 位于
+      # CMakeLists.txt 的 if(NOT RK_SKIP_OPENCV) 块内，曾被所有 CI job 零覆盖，且曾因
+      # EventManager.h 传递依赖 <gtest/gtest_prod.h> 触发 C1083（因 CI 从不编译它而长期静默）；
+      # 本步用于消除这一「从未在 CI 编译」的盲区。
+      # 转正条件：连续观察一轮全绿（本步稳定通过）后，可将其并入上方主构建行的 --target 清单。
+      - name: Build rk3288_cli (non-blocking, closes the "never compiled in CI" blind spot)
+        id: build_rk3288_cli
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target rk3288_cli -- /m
+
+      # 失败可见化（本步对应上一本步的 continue-on-error）。为什么单独加这一步：continue-on-error
+      # 只保证「本 step 变红但不中止 job」，job 结论仍为 success，且**无任何下游 step 消费其 outcome**
+      # ⇒ 真实编译回归只会在上一步的展开列表里留一个红叉，扫 checks 状态的人看不到（「盲区已闭合」仅
+      # 纸面成立）。本步在上一步 outcome 为 failure 时，把告警写进 job 的 Step Summary（run 页面顶部
+      # 可见）并打 ::warning:: 注解，令该信号无法被忽略。
+      #
+      # 取舍（显式选择①：**仅报警、不 exit 1**）：若本步也失败，job 会变红并跳过其后的 ctest，
+      # 牺牲既有测试覆盖——这与「用 continue-on-error 保护的初衷」自相矛盾。rk3288_cli 非门禁
+      # target，其构建失败可由人从 summary 感知并跟进，故此处选择「可见但不阻断」，真正的门禁仍是
+      # ctest 与其它 required checks。
+      - name: Warn if rk3288_cli failed to compile (visible, non-blocking)
+        if: steps.build_rk3288_cli.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $lines = @(
+            ':warning: **rk3288_cli 在 CI 上编译失败** —— 这是「零覆盖盲区被点亮」的信号，请检查而非忽略。',
+            '',
+            '该 target 曾因 `EventManager.h` 传递依赖 `<gtest/gtest_prod.h>` 触发 C1083，且长期未被任何',
+            'CI job 编译（本步即为消除该盲区而加）。**请定位并修复**，或确认是环境噪声后重跑。',
+            '',
+            '本告警**不阻断** job：后续 ctest 仍会正常运行（这是有意的取舍——保护既有测试覆盖）。'
+          )
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines -join "`n")
+          Write-Host "::warning title=rk3288_cli build failed::rk3288_cli failed to compile in CI — see job summary; coverage-gap signal, please investigate."
+
       - name: Run ctest
         shell: pwsh
         run: |
