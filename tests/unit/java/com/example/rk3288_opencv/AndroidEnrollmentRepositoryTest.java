@@ -49,16 +49,9 @@ public class AndroidEnrollmentRepositoryTest {
     @After
     public void tearDown() {
         FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
-        // §2.5-D：本类的删除路径（AndroidEnrollmentRepository.remove 等）也会经
-        // FileStoreUtils.deleteWithBackup，而该接缝是**进程级静态**可变状态。
-        // ⚠️ 如实说明本行的**作用范围**（子代理 3 指出我原先写的「这里能兜住」**高估**了它）：
-        //    · 它只在**本类用例跑完之后**执行 ⇒ **保护不了本类自身**
-        //      （若上游类泄漏，本类首个用例仍会带着被污染的替身运行）；
-        //    · 它把全局接缝复位，故受益者是**排在本类之后、且自身未复位的类** ——
-        //      是否受益**取决于 JUnit 的类执行顺序**，并不可靠。
-        //    ⇒ 本类自身不注入，这一行属「与既有 setPlatformKeyProviderForTesting(null) 惯例一致的
-        //      尽力而为」，**不是**结构性防护。
-        FileStoreUtils.setFileOpsForTesting(null);
+        // §2.5-D / 子代理 4 P4：删除行为接缝已由「进程级静态」改为**实例级注入**
+        // （AndroidEnrollmentRepository#setFileOpsForTesting）。本类若注入替身，只在**本用例创建的
+        // repo 实例**上生效，不再需要、也无法做跨类全局复位 —— 跨实例泄漏在结构上不可能发生。
     }
 
     // ---------- ① 新增 + 读取（并验证使用后清零） ----------
@@ -311,7 +304,7 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(AndroidEnrollmentRepository.Status.OK,
                 repo.add("alice", templateBytes(16, 22), MV, TSV).status);
 
-        FileStoreUtils.setFileOpsForTesting(new FileStoreUtils.FileOps() {
+        repo.setFileOpsForTesting(new FileStoreUtils.FileOps() {
             @Override
             public boolean delete(File f) {
                 throw new SecurityException("probe: delete denied");
@@ -326,7 +319,7 @@ public class AndroidEnrollmentRepositoryTest {
         try {
             rm = repo.remove("alice");  // 不得把 SecurityException 抛出去
         } finally {
-            FileStoreUtils.setFileOpsForTesting(null);
+            repo.setFileOpsForTesting(null);
         }
 
         assertEquals(AndroidEnrollmentRepository.Status.IO_ERROR, rm.status);
@@ -583,7 +576,91 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals("alice", list.entries.get(0).userId);
     }
 
+    // ---------- ⑬ 实例级注入不跨实例泄漏（子代理 3 N2 补的结构性守卫，与存储侧对偶） ----------
+
+    /**
+     * 删除接缝的实例级注入**不跨实例泄漏**：两个仓库实例各注入不同替身、互不影响。
+     *
+     * <p><b>为什么这条守卫必要</b>（子代理 3 N2）：{@code FileStoreUtils} 的 {@code FileOps} 接缝
+     * 已由「进程级静态」改为「实例字段 + 显式传参」，而 {@code :app:testDebugUnitTest} 的全部测试类
+     * 在**同一 JVM 内串行**执行 —— 若接缝退回静态，任一类注入后忘记复位就会污染其后所有走
+     * {@code deleteWithBackup} 的用例。存储侧
+     * {@code PersonDisplayNameStoreTest.injectedOpsArePerInstanceAndDoNotLeak} 已钉住该不变量，
+     * 但 {@code AndroidEnrollmentRepository} 此前**既无结构性守卫、也无行为性守卫**
+     * （{@code fileStoreUtilsExposesNoStaticInjectionSeam} 只反射 {@code FileStoreUtils.class}，不覆盖本类）
+     * ⇒ 本类「实例级、注入只影响本实例」的承诺完全无守护。本用例补齐该对偶。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>把 {@code AndroidEnrollmentRepository.fileOps} 退回 {@code static}（或让
+     *       {@code deleteWithBackup} 读任何静态 {@code fileOps}）—— 则对 {@code b} 的注入会覆盖
+     *       对 {@code a} 的注入，{@code a.remove} 将改用 {@code opsB} ⇒「实例 a 的替身应被触达」
+     *       与「实例 b 的替身不得被 a 触达」两断言同时红；</li>
+     *   <li>让 {@code remove} 不再传本实例的 {@code fileOps}（例如误传
+     *       {@code FileStoreUtils.DEFAULT_FILE_OPS}）⇒「实例 a 的替身应被触达」红。</li>
+     * </ul>
+     */
+    @Test
+    public void injectedOpsArePerInstanceAndDoNotLeak() throws Exception {
+        File dirA = tmp.newFolder("a");
+        File dirB = tmp.newFolder("b");
+        AndroidEnrollmentRepository a = new AndroidEnrollmentRepository(null, dirA);
+        AndroidEnrollmentRepository b = new AndroidEnrollmentRepository(null, dirB);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                a.add("alice", templateBytes(16, 71), MV, TSV).status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                b.add("bob", templateBytes(16, 72), MV, TSV).status);
+
+        String nameA = a.templateFileFor("alice").getName();
+        String nameB = b.templateFileFor("bob").getName();
+        assertFalse("前置：两个实例的文件名应不同（否则名字断言无区分度）", nameA.equals(nameB));
+
+        UndeletableOps opsA = new UndeletableOps();
+        UndeletableOps opsB = new UndeletableOps();
+        a.setFileOpsForTesting(opsA);
+        b.setFileOpsForTesting(opsB);
+
+        a.remove("alice");   // 失败替身 ⇒ a 的模板删不掉（并触发注册表回滚）
+
+        assertTrue("实例 a 的替身应被触达", opsA.attempted.contains(nameA));
+        assertTrue("实例 a 的替身应触达 .bak", opsA.attempted.contains(nameA + ".bak"));
+        assertTrue("实例 b 的替身不得被 a 的操作触达（否则存在跨实例泄漏）",
+                opsB.attempted.isEmpty());
+        assertTrue("a 的删除失败 ⇒ a 的模板仍在（不得被谎报为已删）",
+                a.templateFileFor("alice").exists());
+        assertTrue("b 的模板不得受 a 的操作影响", b.templateFileFor("bob").exists());
+
+        int aCallsAfterRemove = opsA.attempted.size();
+        b.remove("bob");
+        assertTrue("实例 b 的替身应被触达", opsB.attempted.contains(nameB));
+        assertTrue("实例 b 的替身应触达 .bak", opsB.attempted.contains(nameB + ".bak"));
+        assertEquals("a 的替身调用数不得因 b 的操作而变化", aCallsAfterRemove, opsA.attempted.size());
+    }
+
     // ---------- 工具 ----------
+
+    /**
+     * 记录型删除替身：「文件删不掉」（{@code delete} 恒返回 false）但**记录被尝试删除的文件名**。
+     *
+     * <p>与 {@code PersonDisplayNameStoreTest.UndeletableOps} 同构：只断言「调用次数 &gt; 0」挡不住
+     * 「实现里漏删主文件、只删 .bak」这类 bug（那种情况下仍有一次调用）；记录名字后可逐项断言
+     * 主文件与其 {@code .bak} 都被尝试过。{@code exists} **反映真实文件状态**（不恒 true）——
+     * 恒 true 只是「恰好」等于当前实现末尾对主文件查一次 exists 这一实现细节，属白盒耦合。
+     */
+    private static final class UndeletableOps implements FileStoreUtils.FileOps {
+        final List<String> attempted = new java.util.ArrayList<>();
+
+        @Override
+        public boolean delete(File f) {
+            attempted.add(f.getName());
+            return false;
+        }
+
+        @Override
+        public boolean exists(File f) {
+            return f.exists();
+        }
+    }
 
     /** 注册表备份文件路径；与实现约定的 {@code <主文件名>.bak} 保持一致。 */
     private static File bakFor(AndroidEnrollmentRepository repo) {

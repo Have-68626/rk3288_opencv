@@ -13,6 +13,9 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.File;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -33,9 +36,9 @@ public class PersonDisplayNameStoreTest {
 
     @Before
     public void setUp() throws Exception {
-        // §2.5-D：接缝是**进程级静态**状态。这里在**每个用例前**也复位一次（子代理 4 P4）——
-        // 只靠 @After 挡不住「上游某个类泄漏 → 本类首个用例」这一窗口。
-        FileStoreUtils.setFileOpsForTesting(null);
+        // §2.5-D / 子代理 4 P4：删除行为接缝已由「进程级静态」改为**实例级注入**
+        // （PersonDisplayNameStore#setFileOpsForTesting），每个测试在**自己创建的实例**上注入，
+        // 故无需（也无法）在类级 setUp/tearDown 里做跨类复位 —— 跨实例泄漏在结构上不可能发生。
         KeyGenerator kg = KeyGenerator.getInstance("AES");
         kg.init(128);
         final SecretKey key = kg.generateKey();
@@ -56,7 +59,6 @@ public class PersonDisplayNameStoreTest {
     @After
     public void tearDown() {
         FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
-        FileStoreUtils.setFileOpsForTesting(null);   // §2.5-D：接缝复位，防跨用例泄漏
     }
 
     /**
@@ -270,11 +272,11 @@ public class PersonDisplayNameStoreTest {
         assertTrue(f.isFile());
 
         UndeletableOps ops = new UndeletableOps();
-        FileStoreUtils.setFileOpsForTesting(ops);
+        s.setFileOpsForTesting(ops);
         try {
             s.remove("alice");  // 不得抛异常
         } finally {
-            FileStoreUtils.setFileOpsForTesting(null);
+            s.setFileOpsForTesting(null);
         }
 
         // 守卫承重点（A2 M1）：必须**逐项**证明主文件与其 .bak 都被尝试删除 —— 仅断言「调用次数 > 0」
@@ -295,12 +297,12 @@ public class PersonDisplayNameStoreTest {
         assertTrue(s.save("alice", "张三"));
 
         UndeletableOps ops = new UndeletableOps();
-        FileStoreUtils.setFileOpsForTesting(ops);
+        s.setFileOpsForTesting(ops);
         int removed;
         try {
             removed = s.removeOrphans(Collections.emptySet());
         } finally {
-            FileStoreUtils.setFileOpsForTesting(null);
+            s.setFileOpsForTesting(null);
         }
 
         final String name = FeatureTemplateEncryptedStore
@@ -326,7 +328,8 @@ public class PersonDisplayNameStoreTest {
         File dir = tmp.newFolder();
         File missing = new File(dir, "n_neverexisted.enc");
         assertFalse(missing.exists());
-        assertTrue("不存在的文件：删除应视为成功（幂等）", FileStoreUtils.deleteWithBackup(missing));
+        assertTrue("不存在的文件：删除应视为成功（幂等）",
+                FileStoreUtils.deleteWithBackup(missing, FileStoreUtils.DEFAULT_FILE_OPS));
     }
 
     /** {@code deleteWithBackup} 的 {@code parent == null} 分支（无父目录的裸文件名）此前无覆盖（子代理 4 P7）。 */
@@ -335,7 +338,7 @@ public class PersonDisplayNameStoreTest {
         File bare = new File("no_such_parent_probe.enc");
         assertNull("前置：该文件不应有父目录", bare.getParentFile());
         // 不存在的文件 ⇒ 幂等成功；且不得因 parent==null 抛异常
-        assertTrue(FileStoreUtils.deleteWithBackup(bare));
+        assertTrue(FileStoreUtils.deleteWithBackup(bare, FileStoreUtils.DEFAULT_FILE_OPS));
     }
 
     /**
@@ -359,7 +362,7 @@ public class PersonDisplayNameStoreTest {
         assertTrue(s.save("alice", "张三"));
         assertEquals(1, s.cachedCount());
 
-        FileStoreUtils.setFileOpsForTesting(new ThrowingOps());
+        s.setFileOpsForTesting(new ThrowingOps());
         try {
             try {
                 s.remove("alice");
@@ -368,8 +371,115 @@ public class PersonDisplayNameStoreTest {
                 // 现状如此：异常未被拦截
             }
         } finally {
-            FileStoreUtils.setFileOpsForTesting(null);
+            s.setFileOpsForTesting(null);
         }
         assertEquals("异常路径下缓存未被清理 —— 与 javadoc 契约不一致，已记录待决", 1, s.cachedCount());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 子代理 4 P4：实例级注入的结构守卫（替代此前的「进程级静态 + 各测试类自觉复位」约定）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 实例级注入**不跨实例泄漏**：两个实例各注入不同替身、互不影响。
+     *
+     * <p><b>为什么这条守卫生效</b>（子代理 4 P4）：此前接缝是 {@code FileStoreUtils} 上的
+     * {@code private static volatile FileOps}，而 {@code :app:testDebugUnitTest} 的所有测试类在
+     * **同一 JVM 内串行**执行 —— 任一类注入后忘记复位，就会污染其后所有走 {@code deleteWithBackup}
+     * 的类。改为实例字段后，注入只作用在**本实例**上；本用例把这个不变量钉死。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>让 {@code PersonDisplayNameStore#setFileOpsForTesting} 写回 {@code FileStoreUtils} 的
+     *       **静态**字段，或让 {@code deleteWithBackup} 读任何**静态** {@code fileOps} —— 则对 {@code b}
+     *       的注入会覆盖对 {@code a} 的注入，{@code a.remove} 将改用 {@code opsB} ⇒
+     *       「实例 a 的替身应被触达」与「实例 b 的替身不得被 a 触达」两断言同时红；</li>
+     *   <li>让 {@code remove}/{@code removeOrphans} 不再传本实例的 {@code fileOps}（例如误传
+     *       全局默认）⇒ 「实例 a 的替身应被触达」红。</li>
+     * </ul>
+     */
+    @Test
+    public void injectedOpsArePerInstanceAndDoNotLeak() throws Exception {
+        File dirA = tmp.newFolder("a");
+        File dirB = tmp.newFolder("b");
+        PersonDisplayNameStore a = new PersonDisplayNameStore(dirA);
+        PersonDisplayNameStore b = new PersonDisplayNameStore(dirB);
+        assertTrue(a.save("alice", "A"));
+        assertTrue(b.save("bob", "B"));
+
+        String nameA = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dirA, "alice").getName();
+        String nameB = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dirB, "bob").getName();
+        assertFalse("前置：两个实例的文件名应不同（否则名字断言无区分度）", nameA.equals(nameB));
+
+        UndeletableOps opsA = new UndeletableOps();
+        UndeletableOps opsB = new UndeletableOps();
+        a.setFileOpsForTesting(opsA);
+        b.setFileOpsForTesting(opsB);
+
+        a.remove("alice");   // 失败替身 ⇒ a 的文件删不掉
+
+        assertTrue("实例 a 的替身应被触达", opsA.attempted.contains(nameA));
+        assertTrue("实例 a 的替身应触达 .bak", opsA.attempted.contains(nameA + ".bak"));
+        assertTrue("实例 b 的替身不得被 a 的操作触达（否则存在跨实例泄漏）",
+                opsB.attempted.isEmpty());
+        assertTrue("a 的删除失败 ⇒ a 的文件仍在（不得被谎报）",
+                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dirA, "alice").exists());
+        assertTrue("b 的文件不得受 a 的操作影响",
+                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dirB, "bob").exists());
+
+        int aCallsAfterRemove = opsA.attempted.size();
+        b.remove("bob");
+        assertTrue("实例 b 的替身应被触达", opsB.attempted.contains(nameB));
+        assertEquals("a 的替身调用数不得因 b 的操作而变化", aCallsAfterRemove, opsA.attempted.size());
+    }
+
+    /**
+     * **结构守卫**：{@code FileStoreUtils} 上**不再存在**静态注入入口 / 任意静态 {@code FileOps} 注入字段。
+     *
+     * <p>反例原理：只要类上还能「一次注入、全局生效」，本仓的 JVM 内串行测试模型就可能被跨类污染
+     * （子代理 4 P4）。故用反射把「没有静态接缝」钉成可执行断言。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>新增**任何**接受单个 {@code FileOps} 参数的静态方法（**不限名**，含把
+     *       {@code setFileOpsForTesting} 改名后重新加回）⇒ 方法断言红；</li>
+     *   <li>新增**任意**静态 {@code FileOps} 字段（含 {@code private static final FileOps fileOps}）——
+     *       仅放行唯一合法常量 {@code DEFAULT_FILE_OPS} ⇒ 字段断言红。</li>
+     * </ul>
+     *
+     * <p><b>本守卫的边界（如实声明）</b>：
+     * <ul>
+     *   <li>只按**形态**判据：静态方法「参数恰为一个 {@code FileOps}」、静态字段「类型为
+     *       {@code FileOps}」。若有人以**其它类型**承载注入（如静态 {@code Consumer<FileOps>}、
+     *       静态 {@code Map} 缓存替身），本条**不覆盖**；</li>
+     *   <li>合法的 {@code deleteWithBackup(File, FileOps)}（静态、双参）不在拦截范围内——
+     *       它是生产调用方显式传入 {@code ops} 的正规入口，非注入接缝。</li>
+     * </ul>
+     */
+    @Test
+    public void fileStoreUtilsExposesNoStaticInjectionSeam() {
+        for (Method m : FileStoreUtils.class.getDeclaredMethods()) {
+            boolean staticMethod = Modifier.isStatic(m.getModifiers());
+            // 注入接缝形态：任意名静态方法，参数恰为一个 FileOps
+            boolean takesSingleFileOps = m.getParameterCount() == 1
+                    && FileStoreUtils.FileOps.class.equals(m.getParameterTypes()[0]);
+            assertFalse("FileStoreUtils 不应再暴露静态注入入口（不限名的单 FileOps 参数静态方法）："
+                            + m.getName(),
+                    staticMethod && takesSingleFileOps);
+        }
+        for (Field f : FileStoreUtils.class.getDeclaredFields()) {
+            boolean staticFileOps = Modifier.isStatic(f.getModifiers())
+                    && FileStoreUtils.FileOps.class.isAssignableFrom(f.getType());
+            if (!staticFileOps) {
+                continue;
+            }
+            assertTrue("静态 FileOps 字段必须是 final 不可变常量：" + f.getName(),
+                    Modifier.isFinal(f.getModifiers()));
+            assertTrue("静态 FileOps 字段仅允许唯一合法常量 DEFAULT_FILE_OPS，不得新增注入字段："
+                            + f.getName(),
+                    "DEFAULT_FILE_OPS".equals(f.getName()));
+        }
+        // 编译期引用：证明 DEFAULT_FILE_OPS 仍对同包可见（生产调用方的默认实例）。
+        assertTrue("DEFAULT_FILE_OPS 应对同包可见且非空", FileStoreUtils.DEFAULT_FILE_OPS != null);
     }
 }

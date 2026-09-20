@@ -37,8 +37,24 @@ final class PersonDisplayNameStore {
     @NonNull
     private final ConcurrentHashMap<String, byte[]> cache = new ConcurrentHashMap<>();
 
+    /**
+     * 删除行为接缝（**仅测试注入用**）：默认走真实文件系统；测试可经
+     * {@link #setFileOpsForTesting} 注入替身以在纯 JVM 下构造「删除失败」场景。
+     *
+     * <p><b>实例字段而非进程级静态</b>（子代理 4 P4）：本字段只属于本实例，注入**不会**影响其它
+     * 实例或其它测试类，跨实例泄漏在结构上不可能发生。
+     */
+    @NonNull
+    private FileStoreUtils.FileOps fileOps = FileStoreUtils.DEFAULT_FILE_OPS;
+
     PersonDisplayNameStore(@NonNull File dir) {
         this.dir = dir;
+    }
+
+    /** 仅供测试注入删除行为替身；传 null 恢复默认（真实文件系统）实现。**仅影响本实例**。 */
+    @androidx.annotation.VisibleForTesting
+    void setFileOpsForTesting(@Nullable FileStoreUtils.FileOps ops) {
+        fileOps = (ops != null) ? ops : FileStoreUtils.DEFAULT_FILE_OPS;
     }
 
     /** 本机是否具备加密能力（API >= 23 且密钥可用）。供调用方避免徒劳的迁移重试。 */
@@ -154,7 +170,7 @@ final class PersonDisplayNameStore {
         // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把已删除的
         // 显示名复活（A2-Med3）。
         FileStoreUtils.deleteWithBackup(
-                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId));
+                FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), fileOps);
         byte[] removed = cache.remove(personId);
         if (removed != null) Arrays.fill(removed, (byte) 0);
     }
@@ -183,7 +199,7 @@ final class PersonDisplayNameStore {
             // 一并删掉写入器备份（n_*.enc.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把
             // **已删除**的显示名复活（A2-Med3）。A3 确认此处是此前遗漏的删除路径——主文件删除已
             // 统一走 deleteWithBackup，唯独本方法漏了。
-            if (FileStoreUtils.deleteWithBackup(f)) removed++;
+            if (FileStoreUtils.deleteWithBackup(f, fileOps)) removed++;
         }
         return removed;
     }
