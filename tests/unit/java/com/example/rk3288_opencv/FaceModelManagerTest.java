@@ -9,6 +9,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
@@ -1362,11 +1365,11 @@ public class FaceModelManagerTest {
     @Test
     public void txnWriteFailureAbortsImportWithoutTouchingOldConfig() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
             byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
@@ -1382,7 +1385,7 @@ public class FaceModelManagerTest {
             assertFalse("不得留下事务记录", new File(dir, ".txn_p1").exists());
             assertFalse("不得残留备份", new File(dir, ".bak_p1").exists());
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -1422,11 +1425,11 @@ public class FaceModelManagerTest {
     @Test
     public void renameFailureDuringDirSwapRestoresOldConfigAndClearsTxn() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
             byte[] oldBin = readFile(new File(m.profileDir("p1"), DET_BIN));
@@ -1443,7 +1446,7 @@ public class FaceModelManagerTest {
             assertFalse("就地还原后必须结清事务记录", new File(dir, ".txn_p1").exists());
             assertTrue("状态应仍为就绪（旧模型在位）", m.status().isReady());
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -1455,11 +1458,11 @@ public class FaceModelManagerTest {
     @Test
     public void deleteFailureDuringTxnRecoveryKeepsSceneAndReportsError() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
 
@@ -1480,7 +1483,7 @@ public class FaceModelManagerTest {
             assertTrue("删除失败时内容必须仍是新包（不得声称已回滚）",
                     java.util.Arrays.equals(v2.get(DET_BIN), readFile(new File(target, DET_BIN))));
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -1597,11 +1600,11 @@ public class FaceModelManagerTest {
     @Test
     public void committedTxnWithUndeletableBackupStillReportsReady() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
 
@@ -1627,7 +1630,7 @@ public class FaceModelManagerTest {
                     m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v3, "lic"), v3)), ABI, true);
             assertTrue("已提交记录不应阻塞后续导入", r.isOk());
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -1641,11 +1644,11 @@ public class FaceModelManagerTest {
     @Test
     public void failedBackupCleanupKeepsCommittedTxnInsteadOfLeavingAmbiguity() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
 
@@ -1667,7 +1670,7 @@ public class FaceModelManagerTest {
             assertTrue("已提交状态应报就绪（不得被误判为歧义）", st.isReady());
             assertFalse("清理完成后记录应被清除", txn.exists());
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -1684,11 +1687,11 @@ public class FaceModelManagerTest {
     @Test
     public void staleBackupBlocksSwapBeforeTxnIsWritten() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
 
@@ -1712,7 +1715,7 @@ public class FaceModelManagerTest {
             assertTrue("**不得**被降级为 in_progress（否则恢复会误回滚到陈旧备份）",
                     new String(readFile(txn), StandardCharsets.UTF_8).contains("state=committed"));
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -1851,13 +1854,13 @@ public class FaceModelManagerTest {
 
         FaultyFileOps ops = new FaultyFileOps();
         ops.failWriteForName(FaceModelManager.ACTIVE_POINTER_FILE);   // 指针还原写不进去
-        FaceModelManager.setFileOpsForTesting(ops);
+        m.setFileOpsForTesting(ops);
         try {
             FaceRuntimeStatus st = m.status();
             assertFalse("指针还原失败不得报就绪", st.isReady());
             assertTrue("必须保留记录以待重试", new File(dir, ".txn_pA").exists());
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
 
         // 解除故障后自愈。**判别点（约束 2-3）**：这里必须由**状态查询本身**触发那次补做的指针
@@ -2080,7 +2083,7 @@ public class FaceModelManagerTest {
 
         FaultyFileOps ops = new FaultyFileOps();
         ops.failDeleteForName("p1");   // 新目录删不掉 ⇒ 回滚失败
-        FaceModelManager.setFileOpsForTesting(ops);
+        m.setFileOpsForTesting(ops);
         try {
             FaceModelManager.StartupRecovery sr = m.recoverForStartup();
             assertNull("恢复未完成时不得给出激活目标", sr.activeProfileId);
@@ -2088,7 +2091,7 @@ public class FaceModelManagerTest {
             assertTrue("必须保留记录以待重试", new File(dir, ".txn_p1").exists());
             assertTrue("必须保留两份数据", target.isDirectory() && bak.isDirectory());
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2186,11 +2189,11 @@ public class FaceModelManagerTest {
     @Test
     public void committedRewriteAndBackupCleanupBothFailDoesNotRollBack() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
 
@@ -2214,7 +2217,7 @@ public class FaceModelManagerTest {
             assertFalse("记录应被清除", new File(dir, ".txn_p1").exists());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2232,11 +2235,11 @@ public class FaceModelManagerTest {
     @Test
     public void commitEvidenceSurvivesPointerMoveAndDoesNotRollBack() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
             assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
@@ -2269,7 +2272,7 @@ public class FaceModelManagerTest {
             assertFalse("已提交 ⇒ 见证应被清除", commitWitnessOf(dir, "p2").exists());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2411,11 +2414,11 @@ public class FaceModelManagerTest {
     @Test
     public void commitWitnessWriteFailureRollsBackWithoutCrossingCommitPoint() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
             assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
@@ -2440,7 +2443,7 @@ public class FaceModelManagerTest {
             assertEquals("指针仍指向 p2", "p2", m.activeProfileId());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2459,11 +2462,11 @@ public class FaceModelManagerTest {
     @Test
     public void commitWitnessIsRevokedWhenPointerWriteFails() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
             assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
@@ -2482,7 +2485,7 @@ public class FaceModelManagerTest {
             assertEquals("指针写失败 ⇒ 保持原激活配置", "p2", m.activeProfileId());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2497,11 +2500,11 @@ public class FaceModelManagerTest {
     @Test
     public void commitWitnessIsRevokedBeforeRollbackSoFailedRollbackStaysUncommitted() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
             assertTrue(m.importZip(stream(zip("", manifest("p2", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
@@ -2531,7 +2534,7 @@ public class FaceModelManagerTest {
             assertTrue("清理人造标记", new File(dir, ".rollback_p2").delete());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2549,11 +2552,11 @@ public class FaceModelManagerTest {
     @Test
     public void sweepDoesNotDeleteLiveTxnRecordOfDotTmpProfileId() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
 
             // 构造 profileId="p.tmp" 的**未了结**替换现场：新旧目录并存 + in_progress 记录（未提交）。
             Map<String, byte[]> vNew = defaultFiles("new");
@@ -2581,7 +2584,7 @@ public class FaceModelManagerTest {
             assertTrue("应据事务记录判为未提交事务，实际=" + r.message,
                     r.message.contains("未提交事务"));
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2637,11 +2640,11 @@ public class FaceModelManagerTest {
     @Test
     public void writeTxnMoveReplaceFailureAbortsBeforeAnyDestructiveChange() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
                     ABI, true).isOk());
@@ -2662,7 +2665,7 @@ public class FaceModelManagerTest {
             assertFalse("不得残留备份", new File(dir, ".bak_p1").exists());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2673,11 +2676,11 @@ public class FaceModelManagerTest {
     @Test
     public void commitWitnessMoveReplaceFailureDoesNotCrossCommitPoint() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
                     ABI, true).isOk());
@@ -2701,7 +2704,7 @@ public class FaceModelManagerTest {
             assertEquals("提交点未越过 ⇒ 指针不得被改动", pointerTxnBefore, readPointerTxnId(dir));
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2721,11 +2724,11 @@ public class FaceModelManagerTest {
     @Test
     public void partialWriteFailureLeavesStagingFileThatNextImportSweeps() throws Exception {
         FaultyFileOps ops = new FaultyFileOps();
-        FaceModelManager.setFileOpsForTesting(ops);
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
         try {
-            FakeRuntime rt = new FakeRuntime();
-            File dir = tmp.newFolder();
-            FaceModelManager m = new FaceModelManager(dir, rt);
             Map<String, byte[]> v1 = defaultFiles("v1");
             assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
 
@@ -2746,7 +2749,7 @@ public class FaceModelManagerTest {
             assertFalse("下次导入的清扫必须回收半截临时文件", partial.exists());
             assertNoTempArtifacts(dir);
         } finally {
-            FaceModelManager.setFileOpsForTesting(null);
+            m.setFileOpsForTesting(null);
         }
     }
 
@@ -2786,6 +2789,130 @@ public class FaceModelManagerTest {
         assertFalse("存量含控制字符的 profile 应报 ERROR（不得谎报 READY）", st.isReady());
         assertTrue("应归为 manifest 无效，实际=" + st.message, st.message.contains("manifest 无效"));
         assertTrue("应指出是 profileId 字符非法，实际=" + st.message, st.message.contains("非法字符"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 子代理 4 P4：实例级注入的结构守卫
+    // （替代此前「进程级静态 fileOps + 各用例自觉复位 null」的约定；与
+    //  FileStoreUtils / PersonDisplayNameStore 的同构改造一致）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 实例级注入**不跨实例泄漏**：两个管理器各注入不同替身、互不影响。
+     *
+     * <p><b>为什么这条守卫生效</b>：此前接缝是 {@code FaceModelManager} 上的
+     * {@code private static volatile FileOps}，而 {@code :app:testDebugUnitTest} 的所有测试类在
+     * **同一 JVM 内串行**执行 —— 任一类注入后忘记复位就会污染其后所有走破坏性文件操作的用例。
+     * 改为实例字段后，注入只作用在**本实例**上；本用例把这个不变量钉死。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>把 {@code fileOps} 改回**静态**字段（或让注入方法写静态字段）⇒ 对 {@code b} 的注入会覆盖
+     *       对 {@code a} 的注入，{@code a} 的二次导入将改用 {@code opsB} ⇒「a 的替身应被触达」与
+     *       「b 的替身不得被 a 触达」两断言同时红；</li>
+     *   <li>让任何破坏性调用点不再读本实例的 {@code fileOps}（例如误传全局默认）⇒「a 的替身应被触达」红。</li>
+     * </ul>
+     */
+    @Test
+    public void injectedFileOpsArePerInstanceAndDoNotLeak() throws Exception {
+        File dirA = tmp.newFolder("a");
+        File dirB = tmp.newFolder("b");
+        FaceModelManager a = new FaceModelManager(dirA, new FakeRuntime());
+        FaceModelManager b = new FaceModelManager(dirB, new FakeRuntime());
+        Map<String, byte[]> v1 = defaultFiles("v1");
+        assertTrue(a.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+        assertTrue(b.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)), ABI, true).isOk());
+
+        RecordingFileOps opsA = new RecordingFileOps();
+        RecordingFileOps opsB = new RecordingFileOps();
+        a.setFileOpsForTesting(opsA);
+        b.setFileOpsForTesting(opsB);
+
+        Map<String, byte[]> v2 = defaultFiles("v2");
+        assertTrue("实例 a 的二次导入应成功", a.importZip(
+                stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)), ABI, true).isOk());
+
+        assertFalse("实例 a 的替身应被触达（注入必须作用于本实例）", opsA.attempted.isEmpty());
+        assertTrue("实例 b 的替身不得被 a 的操作触达（否则存在跨实例泄漏）", opsB.attempted.isEmpty());
+    }
+
+    /**
+     * **结构守卫**：{@code FaceModelManager} 上**不再存在**静态 {@code FileOps} 注入入口 / 任意静态
+     * {@code FileOps} 注入字段（与 {@code PersonDisplayNameStoreTest} 对 {@code FileStoreUtils} 的守卫同构）。
+     *
+     * <p>反例原理：只要类上还能「一次注入、全局生效」，本仓的 JVM 内串行测试模型就可能被跨类污染。
+     * 故用反射把「没有静态接缝」钉成可执行断言。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>新增**任何**接受单个 {@code FileOps} 参数的静态方法（**不限名**，含把
+     *       {@code setFileOpsForTesting} 改回静态/改名后重新加回）⇒ 方法断言红；</li>
+     *   <li>新增**任意**静态 {@code FileOps} 字段（含把 {@code fileOps} 改回 {@code private static volatile}）
+     *       —— 仅放行唯一合法常量 {@code DEFAULT_FILE_OPS} ⇒ 字段断言红。</li>
+     * </ul>
+     *
+     * <p><b>本守卫的边界（如实声明）</b>：只按**形态**判据（静态单 {@code FileOps} 参数方法 / 静态
+     * {@code FileOps} 字段）。若有人以**其它类型**承载注入（如静态 {@code Consumer<FileOps>}），本条不覆盖。
+     */
+    @Test
+    public void faceModelManagerExposesNoStaticFileOpsSeam() {
+        for (Method method : FaceModelManager.class.getDeclaredMethods()) {
+            boolean staticMethod = Modifier.isStatic(method.getModifiers());
+            boolean takesSingleFileOps = method.getParameterCount() == 1
+                    && FaceModelManager.FileOps.class.equals(method.getParameterTypes()[0]);
+            assertFalse("FaceModelManager 不应再暴露静态 FileOps 注入入口（不限名的单 FileOps 参数静态方法）："
+                            + method.getName(),
+                    staticMethod && takesSingleFileOps);
+        }
+        for (Field f : FaceModelManager.class.getDeclaredFields()) {
+            boolean staticFileOps = Modifier.isStatic(f.getModifiers())
+                    && FaceModelManager.FileOps.class.isAssignableFrom(f.getType());
+            if (!staticFileOps) {
+                continue;
+            }
+            assertTrue("静态 FileOps 字段必须是 final 不可变常量：" + f.getName(),
+                    Modifier.isFinal(f.getModifiers()));
+            assertTrue("静态 FileOps 字段仅允许唯一合法常量 DEFAULT_FILE_OPS，不得新增注入字段："
+                            + f.getName(),
+                    "DEFAULT_FILE_OPS".equals(f.getName()));
+        }
+    }
+
+    /** 记录每次破坏性调用的替身（委托真实文件系统，使导入等流程仍能成功走完）。 */
+    private static final class RecordingFileOps implements FaceModelManager.FileOps {
+        final java.util.List<String> attempted = new java.util.ArrayList<>();
+
+        @Override
+        public boolean rename(File from, File to) {
+            attempted.add("rename:" + from.getName());
+            return from.renameTo(to);
+        }
+
+        @Override
+        public boolean moveReplace(File from, File to) {
+            attempted.add("moveReplace:" + from.getName());
+            //noinspection ResultOfMethodCallIgnored
+            to.delete();
+            return from.renameTo(to);
+        }
+
+        @Override
+        public boolean deleteRecursively(File f) {
+            attempted.add("delete:" + f.getName());
+            return deleteRecursivelyReal(f);
+        }
+
+        @Override
+        public boolean writeSync(File f, byte[] data) {
+            attempted.add("write:" + f.getName());
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
+                fos.write(data);
+                fos.flush();
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
     }
 
     // ---------- 夹具 ----------

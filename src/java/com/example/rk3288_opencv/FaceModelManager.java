@@ -1746,13 +1746,17 @@ public final class FaceModelManager {
         return new ActivePointer(id, txnId);
     }
 
-    // ── 文件操作接缝（任务 A，2026-09-16 决策）────────────────────────────────────
+    // ── 文件操作接缝（任务 A，2026-09-16 决策；子代理 4 P4 改为实例级）────────────────
     // 用途：目录替换的事务协议有大量**破坏性**步骤（改名 / 删除 / 落事务记录），其失败分支在纯 JVM
     // 下难以构造（本类是 final、原方法均为 private static，「非空目录占位」只覆盖得了少数情形）。
-    // 故把这三类操作收敛为可注入接口，与 FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting
-    // 同构。默认实现即原有行为，**生产路径零变化**。
+    // 故把这三类操作收敛为可注入接口。注入点已是**实例级**（见下方 fileOps 字段），
+    // 与 FileStoreUtils 的实例级改造同构；默认实现即原有行为，**生产路径零变化**。
+    //
+    // ⚠️ 本接口**不是** {@code @VisibleForTesting}（A4 与 FileStoreUtils.FileOps 对齐注解哲学）：
+    // 注入点改为实例级后，本类以 private 字段持有本类型（默认 {@link #DEFAULT_FILE_OPS}），故本类型
+    // 属**生产内部类型**，并非测试专用；仅**注入方法** {@link #setFileOpsForTesting(FileOps)}
+    // （以及 FileStoreUtils 侧的对应方法）才是测试专用。此前把注解放到接口上会误导读者。
 
-    @androidx.annotation.VisibleForTesting
     interface FileOps {
         /** 改名；语义同 {@link File#renameTo}（含吞 SecurityException）。**目标已存在时失败**。 */
         boolean rename(@NonNull File from, @NonNull File to);
@@ -1812,11 +1816,31 @@ public final class FaceModelManager {
         }
     };
 
-    private static volatile FileOps fileOps = DEFAULT_FILE_OPS;
+    /**
+     * 破坏性文件操作（删除 / 改名 / 写盘）的**实例级**注入点（子代理 4 P4，与 {@code FileStoreUtils}
+     * 同构的扩面改造）。
+     *
+     * <p>此前本字段与注入方法都是**进程级静态**（{@code private static volatile FileOps} +
+     * 静态 {@code setFileOpsForTesting}）。而 {@code :app:testDebugUnitTest} 的全部测试类在
+     * **同一 JVM 内串行**执行，任一类注入后忘记复位就会污染其后所有用例。现改为**实例字段**：
+     * 每处破坏性调用读的都是**本实例**的 {@code fileOps}，经实例方法
+     * {@link #setFileOpsForTesting(FileOps)} 注入 ⇒ 跨实例泄漏在结构上不可能发生。
+     *
+     * <p><b>默认即原有行为，生产路径零变化</b>：实例构造时默认 {@link #DEFAULT_FILE_OPS}。
+     *
+     * <p><b>为何非 {@code final}（安全发布前提，如实固化）</b>：字段须可经
+     * {@link #setFileOpsForTesting(FileOps)} 在**构造后**改写（测试注入），故不能标 {@code final}；
+     * 即它**非 volatile、非 final**。理论上若本实例被**不安全发布**，并发读者可能见到 {@code null}。
+     * 当前仓库**安全**：本类实例在生产中仅经 {@code MainActivity.modelManager()} 的 {@code volatile}
+     * 字段 + 双检锁发布（见 {@code MainActivity.faceModelManager}），volatile 写建立了 happens-before
+     * ⇒ 构造期对该字段的赋值先于其它线程的读取而可见。**改动发布路径（去掉 volatile / 改为常规共享）
+     * 前须复核本前提**。
+     */
+    private FileOps fileOps = DEFAULT_FILE_OPS;
 
     /** 仅供测试注入；传 null 恢复默认（真实文件系统）实现。 */
     @androidx.annotation.VisibleForTesting
-    static void setFileOpsForTesting(@Nullable FileOps ops) {
+    void setFileOpsForTesting(@Nullable FileOps ops) {
         fileOps = (ops != null) ? ops : DEFAULT_FILE_OPS;
     }
 
@@ -2356,7 +2380,7 @@ public final class FaceModelManager {
         }
     }
 
-    private static void deleteRecursivelyQuietly(@NonNull File f) {
+    private void deleteRecursivelyQuietly(@NonNull File f) {
         try {
             fileOps.deleteRecursively(f);
         } catch (Exception ignored) {
