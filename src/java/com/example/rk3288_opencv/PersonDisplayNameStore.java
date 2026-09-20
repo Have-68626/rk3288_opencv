@@ -176,7 +176,16 @@ final class PersonDisplayNameStore {
     /**
      * 后台线程：删除映射（文件 + 缓存）。
      *
-     * <p><b>文件删除失败 —— 实为「任何异常」—— 都不影响缓存清理</b> —— 这是本方法的契约。
+     * <p><b>⚠️ 异常契约已变更（A4）—— 阅读旧审计记录时须先看这一段</b>：此前
+     * {@link FileStoreUtils#deleteWithBackup} 抛出的 {@code SecurityException} 会**向上传播**，
+     * 并且据此**跳过**缓存清理，与「文件删除失败不影响缓存清理」的承诺相抵触。现在改为在**本方法内**
+     * catch，缓存清理移入 {@code finally}。故：若在变更前的审计 / 文档 / 用例里读到「remove 会抛
+     * {@code SecurityException}」「异常会跳过缓存清理」，那是**变更前**的描述，**不是**回归
+     * ——不要据此把异常传播「修」回来。（对应地，旧用例已被新用例**替换**而非并存：
+     * {@code removePropagatesSecurityExceptionAndSkipsCacheClear} 删除、
+     * {@code removeSwallowsSecurityExceptionAndClearsCache} 取而代之。）
+     *
+     * <p><b>契约（现行为）</b>：文件删除失败 —— 实为「任何异常」—— 都不影响缓存清理。
      * 缓存里存的是**可擦除的显示名明文**（本类刻意用 {@code byte[]} 以便 {@code Arrays.fill} 擦除）；
      * 人已删除却因异常把明文留在内存缓存 = **PII 未如期清除**。故缓存清理放在 {@code finally}，
      * 直白表达「**无论如何都清**」。措辞如实：{@code finally} 对**任何**逃逸出 try 块的异常都会执行
@@ -195,19 +204,53 @@ final class PersonDisplayNameStore {
      * （它据此回滚注册表并返回 {@code IO_ERROR}）；让共享工具吞异常会让那个调用点的 catch 沦为
      * **静默死代码**。故本调用点自行包装（与之一起，构成本仓两处「调用点自行包装
      * {@code deleteWithBackup}」的实例）。
+     *
+     * <p><b>可观测性（本轮修复的缺口）</b>：此前本方法返回 {@code void} 且不记日志 ⇒ 无论删除是被
+     * **静默拒绝**（{@code delete} 返回 false，不抛异常）还是**抛 {@code SecurityException}**，
+     * 调用方都**无法得知文件是否真的被删掉**，失败完全无痕。现改为**返回 {@code boolean}**，
+     * 两条失败路径都会如实报 {@code false}。
+     *
+     * <p><b>返回值只用于上报/诊断，不得用作「要不要清缓存」的条件</b>：缓存清理在 {@code finally}，
+     * 与返回值**无关** —— 内存明文的 PII 擦除优先级最高。
+     *
+     * <p><b>为什么是「返回 boolean」而非「在本方法内记日志」</b>：本类在
+     * {@code PersonDisplayNameStoreTest} 中是**纯 JVM** 构造的（无 Robolectric，且未开
+     * {@code returnDefaultValues}），而本仓日志走 {@link AppLog} → {@code android.util.Log}
+     * ⇒ 在纯 JVM 单测里会抛 "not mocked"。故本类**不引入 Android 日志依赖**、只负责报告；日志留在
+     * 平台层（{@code MainActivity.removeDisplayName} 消费本返回值后记一条）。**不要**改回「向上传播
+     * 异常」来替代本返回值 —— 那会重新引入「异常跳过缓存清理」的 PII 缺口。
+     *
+     * <p><b>失败后的残留与收敛（边界写准）</b>：磁盘上留下的是**密文**（{@code n_*.enc}，
+     * AES-GCM 加密件），**不是明文**；它由后续**注册表条目集权威（{@code list.authoritative}）**时的
+     * {@code MainActivity.refreshGalleryFromRepository} → {@link #removeOrphans} 按孤儿回收
+     * （该谓词现已覆盖 {@code .bak}）。⚠️ **不是「下次一定收敛」**：非权威时该路径整体跳过，残留可能
+     * 跨越多次刷新。故契约边界是「**最终会收敛 + 失败可观测**」，而非「立即删除」。
+     *
+     * @return 主文件是否**确认已不存在**：{@code true} = 确实删除（含本就无文件，幂等口径，与
+     *         {@link FileStoreUtils#deleteWithBackup} 一致）；{@code false} = 删除被拒
+     *         （{@code SecurityException}）**或**静默未生效（{@code delete} 返回 false）。
+     *         **无论返回什么，缓存都已清理。**
      */
-    void remove(@NonNull String personId) {
+    boolean remove(@NonNull String personId) {
+        boolean gone = false;
         try {
             // 一并删掉写入器备份（.bak）：否则读路径的「阶段 1 恢复基线」会在下次读取时把已删除的
-            // 显示名复活（A2-Med3）。
-            FileStoreUtils.deleteWithBackup(
+            // 显示名复活（A2-Med3）。返回值即「主文件确认已不存在」（幂等口径）。
+            gone = FileStoreUtils.deleteWithBackup(
                     FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), fileOps);
         } catch (SecurityException ignored) {
             // best-effort：删除被拒（SecurityManager）不应阻断缓存清理 —— 见上方 javadoc（PII 擦除优先）。
+            // gone 保持 false：**不谎报删除成功** —— 这正是本方法返回值存在的意义。
+            //
+            // 本分支**刻意不记日志**：本类在 PersonDisplayNameStoreTest 中是**纯 JVM** 构造的
+            // （无 Robolectric，未开 returnDefaultValues），而本仓日志走 AppLog → android.util.Log，
+            // 在此会抛 "not mocked"。日志留在平台层（MainActivity.removeDisplayName 消费返回值后记录）。
         } finally {
             byte[] removed = cache.remove(personId);
             if (removed != null) Arrays.fill(removed, (byte) 0);
         }
+        // 缓存清理**无条件**发生（finally），与本返回值无关；归还的是「文件是否确认已删」。
+        return gone;
     }
 
     /**

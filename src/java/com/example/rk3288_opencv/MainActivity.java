@@ -4637,7 +4637,18 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void removeDisplayName(@NonNull String personId) {
-        displayNameStore().remove(personId);
+        // 返回值 = 显示名文件是否**确认已删**（PersonDisplayNameStore.remove）。本类作为平台层消费它并
+        // 落日志：store 侧刻意不依赖 android.util.Log——它在 PersonDisplayNameStoreTest 里是**纯 JVM**
+        // 构造的（无 Robolectric、未开 returnDefaultValues），记日志会抛 "not mocked"；故「报告」与
+        // 「记录」分居两层，本方法即二者的接缝。
+        //
+        // 日志**不带 personId**：本类既有日志没有记录人员标识符的先例，不借此新开一个持久化标识面；
+        // 需定位时可按时间对齐同一次 deletePerson 流程的其它日志。
+        if (!displayNameStore().remove(personId)) {
+            AppLog.w("MainActivity", "removeDisplayName",
+                    "显示名文件未确认删除（被拒或静默未生效）—— 内存缓存已清；"
+                            + "残留为加密件，待后续权威 list() 的孤儿清理回收");
+        }
     }
 
     // ── 历史明文显示名：默认保留 + 用户确认后清除（任务 B 决策，2026-09-16）──────────────
