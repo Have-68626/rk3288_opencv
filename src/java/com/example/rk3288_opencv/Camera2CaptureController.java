@@ -238,6 +238,20 @@ class Camera2CaptureController implements CaptureController {
             }
 
             int rotation = computeRotationDegrees();
+            // FACE-CAM-008：提交前二次代次复检。入口校验（本方法开头 :225）与提交之间仍会执行
+            // 取帧/取平面/算旋转，该窗口内若发生 stop/切源，旧帧会被推入已失效的会话。复检紧贴提交点，
+            // 把该窗口内的实际副作用压到最小：复检通过后到 sink 真正收到帧之间，只剩 sink 实参求值时的
+            // 数次平面访问器调用。作为量级参考，整段「入口校验→提交」约含 11 次虚调用
+            // （3 个 plane 的 getBuffer/getRowStride/getPixelStride 共 8 次 + getWidth/getHeight/getTimestamp 3 次），
+            // **并非「数条指令」**（原措辞夸大，经审计指出后更正）；残留窗口仍存，彻底消除需提交侧持锁，
+            // 会阻塞 stop 线程，实时路径不可接受，故明确接受。
+            // 与 CameraXCaptureController.analyze 保持「同位置、同表达式」。
+            if (!epochGate.isCurrent(capturedEpoch)) {
+                // 已知副作用（接受）：本 return 落在上面的 try 内 ⇒ 仍走 finally，该帧照常计入
+                // statsFrames（入口即丢弃的路径不计统计，二者语义略有出入）。为罕见竞态重构
+                // try 结构不划算，故接受并在此注释。
+                return;
+            }
             boolean ok = sink.onYuv420888Frame(
                     planes[0].getBuffer(), planes[0].getRowStride(),
                     planes[1].getBuffer(), planes[1].getRowStride(), planes[1].getPixelStride(),
