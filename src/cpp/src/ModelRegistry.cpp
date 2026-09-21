@@ -8,7 +8,8 @@ using namespace rk_core;
 #include "adapters/MobileFaceNetAdapter.h"
 #include "adapters/YuNetAdapter.h"
 #include "adapters/SFaceAdapter.h"
-#include "adapters/RetinaFaceAdapter.h"
+// 注：adapters/RetinaFaceAdapter.h 已不再被本文件引用 —— retinaface_scrfd 条目已**删除**
+// （见该条目原位置处 FACE-SCRFD-004 的说明）。该类现为遗留、无人注册。
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -73,10 +74,23 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "high_speed", 3});
 #endif
 
-    reg.registerDetector("retinaface_scrfd", []() { return std::make_unique<RetinaFaceAdapter>(); },
-        {"retinaface_scrfd", "SCRFD/RetinaFace (det_10g)", "detect",
-         "SCRFD 架构，640x640 输入，FPN 多尺度。WiderFace 96.1%。PNNX 转换 ONNX 模型。",
-         "high_accuracy", 1});
+    // FACE-SCRFD-004：原先此处注册 `retinaface_scrfd` → RetinaFaceAdapter，**现已删除**（不是改指）。
+    //
+    // 删除理由（三条各自独立成立）：
+    //  1) **零消费者**：`retinaface_scrfd` 在本仓只出现于注册表自身、文档的检测器表与 CREDITS 台账；
+    //     无任何 profile / manifest / Java / Web / JNI / CLI / 默认配置引用它。
+    //  2) **本注册表路径无法让它工作**（决定性）：注册表以 `make_unique<ScrfdNcnnAdapter>()`
+    //     **默认构造**，随后只调 `load(modelPath)` 填 param/bin 路径；而默认 `cfg_` 是
+    //     `decodeMode = kDelta` + `anchorsPerPos = {1,1,1}`（见 ScrfdNcnnAdapter.h），
+    //     **这条路径不消费任何 profile**。真实 SCRFD det_10g 需要 `kDistance` + 每位置 2 anchor
+    //     ⇒ 经注册表取得的实例**必然解错框位**。故「改指 ScrfdNcnnAdapter」只修好了加载器
+    //     （能读 ncnn），解码**照样错** —— 相当于换一个坑，故不采纳。
+    //     ⚠️ 同一条限制也适用于上面的 `scrfd_0.5gf`（同一路径、同一默认 cfg）：那是**既有**的
+    //     结构性限制，与本条无关，本次**未**处理。
+    //  3) 原指向的 RetinaFaceAdapter 用 **delta** 解码（SCRFD 是距离编码），且加载器只吃 ONNX，
+    //     与已记录的文档意图（CREDITS.md「NCNN SCRFD」行记为 BIN/PARAM）相矛盾。
+    // ⚠️ 副作用（如实记录）：RetinaFaceAdapter 自此**无人注册**，成为遗留类（仍被 cmake 源表编译、
+    // 无任何测试引用）。其删除与否是**独立**的后续项，不在本条范围内。
 
     reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
         {"yunet", "YuNet Face Detector", "detect",
