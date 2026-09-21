@@ -76,8 +76,11 @@ public:
     // 不丢框），不再经本全清路径。
     // **保留 nextTrackId_**：不回退计数器，避免新轨迹复用已对外发布过的 trackId，
     // 造成旧帧回调/日志中的 trackId 指向不同目标的复用歧义。
-    // 线程安全：本方法非线程安全；调用方（Engine）须保证与 update() 互斥
-    //（见 Engine::trackFaces 持 tracksMu_ 调用 update/reset）。
+    // 线程安全：本方法非线程安全；调用方须保证与 update() 互斥。
+    // ⚠️ **当前生产侧零调用**：Engine 的图库变更一律走 resetIdentitiesExcept（见上），
+    //    生产路径不调用本方法；它**保留为公共原语**，以备将来遇到需要「硬清空」
+    //    （连同轨迹本体与 bbox 一并丢弃）的场景；当前实际调用者只有单测与回放载体
+    //    （test_track_coordinator / test_track_replay）。
     void reset();
 
     // 按图库有效身份**精准撤销**（第三波审查 #1：reset() 过宽——多人场景删除/注册

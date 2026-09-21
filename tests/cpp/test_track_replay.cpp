@@ -36,23 +36,22 @@
 // **限定条件（勿省略）**：该等价性只在「**静态图库 + 模型常驻**」前提下成立。Engine 另有三处
 // 会在检测序列**之后**改写 coordinator 的输入或输出。本载体**已把三种改写显式建模为 `@` 指令**
 // （格式见下节），不再假定它们不存在：
-//   * `Engine.cpp:1292-1302`（trackFaces 内）读路径**代次作废**——图库在「读库」与「提交轨迹」
+//   * `Engine::trackFaces` 内的读路径**代次作废**降级——图库在「读库」与「提交轨迹」
 //     之间被替换时，把本帧**全部**检测的 isAuthenticated 降级为 false、identityId 改 "Unknown"
 //     **后再交给** update()。这改的是 **coordinator 的输入**，故直接影响 firstConfirmSteps。
 //     用 `@ stale` 指令建模（作用于当前 F 帧）。
-//   * `Engine.cpp:853-869`（revokeTrackIdentitiesLocked，由 applyGalleryUpdate:845 调用）
+//   * `Engine::revokeTrackIdentitiesLocked`（由 `Engine::applyGalleryUpdate` 调用）
 //     **身份撤销**——`trackCoordinator_->resetIdentitiesExcept(keepIds)` 把不在图库有效集内的轨迹
 //     身份就地清为 "Unknown"（**保留轨迹本体/bbox/确认计数**）。用 `@ revoke <keep>` 建模（帧间事件）。
-//   * `Engine.cpp:1098-1103`（processFrameRealtime 的 else 分支）**模型缺失**——runRealtimeDetect
+//   * `Engine::processFrameRealtime` 的 else 分支**模型缺失**——runRealtimeDetect
 //     返回 false 时**根本不调用 trackFaces**，只 `currentTracks_.clear()` 清空**对外视图**，
 //     coordinator 内部轨迹**原样保留**（仅受下一次 update 的 TTL 约束）。用 `@ missing <idx> <ts>`
 //     建模。**它与 `reset()`（清空内部轨迹）语义不同**，本文件有专门用例区分二者。
 // 另添 `@ reset` 指令，仅用于与 `@ missing` 对照——`reset()` 非产线路径（Engine 图库变更统一走
-// resetIdentitiesExcept，见 TrackCoordinator.h:75-77）。
-// 另：Engine 成功路径**恒传 detectionRan=true**（`Engine.cpp:1142` 是唯一赋值点，返回 false 的
-// 分支都在它之前），故脚本里的 `detectionRan=0` 模拟的是 coordinator 的「调度跳过」语义，
-// **产线上没有对应路径**。（`Engine::trackFaces` 注释所称「模型缺失跳过检测时为 false」与
-// `:1098-1103` 的实际行为不符，属既有陈旧注释，不在本次改动范围。）
+// resetIdentitiesExcept，见 TrackCoordinator.h:75-76）。
+// 另：Engine 成功路径**恒传 detectionRan=true**（`Engine::runRealtimeDetect` 中
+// `detectionRan = true;` 是唯一赋值点，返回 false 的分支都在它之前），故脚本里的 `detectionRan=0`
+// 模拟的是 coordinator 的「调度跳过」语义，**产线上没有对应路径**。
 //
 // 本层的实利：① 零 OpenCV/ncnn 依赖；② target 是 core_unit_tests → Linux 与 Windows CI 都会跑；
 //   ③ 不需要任何图像素材，跑上万帧仍在毫秒级。
@@ -81,7 +80,7 @@ namespace {
 //
 // 指令行（`@` 前缀，刻意选一个与 F/D/# 都不冲突的前缀，便于外部导出器区分“检测数据”与“控制”）：
 //   * `@ stale` —— **帧内代次作废**，须紧跟在某个 `F`（及其 D）之后，把该帧的全部检测在交给
-//     update() 前降级为「未认证 + Unknown」（精确镜像 Engine 读路径代次作废的 1296-1301 行）。
+//     update() 前降级为「未认证 + Unknown」（精确镜像 `Engine::trackFaces` 的读路径代次作废降级）。
 //     **真值口径随之改变**：stale 帧的“真值身份”按**降级后**的检测计（图库已换，旧认证结论在新库
 //     下不成立 → 该帧的真值就是 Unknown），故它不会把“保守的 fail-closed 降级”误记成串人。
 //   * `@ revoke <keep>` —— **身份撤销**（帧间事件，不产生视图）。`<keep>` 为 `-`（空集，等价于清空
@@ -102,7 +101,7 @@ namespace {
 //   * 容忍行尾 \r（Windows 换行）。
 //
 // **三类必须拒绝的输入**（都不是洁癖，每一类都会安静地产出「看似合理但错误」的指标）：
-//   1. `D … 1 -`（已认证却无身份）：协调器会给新轨迹置 `stableId = ""`（`TrackCoordinator.cpp:135`），
+//   1. `D … 1 -`（已认证却无身份）：协调器会给新轨迹置 `stableId = ""`（`TrackCoordinator.cpp:140`），
 //      而空串 **≠ "Unknown"**，于是被本文件「按非 Unknown 即真实身份」的各处以空串键接住。
 //      **已实测**（构造 6 帧、含两处空身份）：`trackIds` 出现空串键且计数为 2、`rebuilds=1`、
 //      `duplicateIdCases=1`。而 `firstConfirmSteps` 与 `neverConfirmed` **不受影响**——因为
@@ -235,7 +234,7 @@ bool parseReplayScript(std::istream& in, ReplayScript& out, std::string& err) {
             }
             d.authenticated = (auth == 1);
             if (d.identityId == "-") d.identityId.clear();  // "-" 是「无身份」的规范编码
-            // 拒绝①：已认证却无身份。协调器会给新轨迹置 stableId = ""（TrackCoordinator.cpp:135），
+            // 拒绝①：已认证却无身份。协调器会给新轨迹置 stableId = ""（TrackCoordinator.cpp:140），
             // 空串 != "Unknown" → 会被本文件的指标当成**真实身份**。宁可报错也不让幽灵混进读数。
             if (d.authenticated && d.identityId.empty()) {
                 err = "第 " + std::to_string(lineNo) +
@@ -525,7 +524,7 @@ ReplayMetrics runReplay(const ReplayScript& script,
         }
 
         const ScriptedFrame& frame = s.frame;
-        // 有效检测 = 帧内检测；若带 @ stale 则整帧降级为「未认证 + Unknown」，镜像 Engine 1296-1301。
+        // 有效检测 = 帧内检测；若带 @ stale 则整帧降级为「未认证 + Unknown」，镜像 `Engine::trackFaces` 代次作废。
         std::vector<pipeline::DetectedFace> faces;
         faces.reserve(frame.detections.size());
         for (const auto& d : frame.detections) {

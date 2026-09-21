@@ -53,7 +53,7 @@ as_of=2026-09-17
                               # 不可能与任何 profile 的正式产物同名（旧顶层 .txn_<id>.tmp 在 profileId
                               # 恰为 foo.tmp 时与活记录 .txn_foo.tmp 同名，会被清扫误删 / 被写入覆盖）。
     .bak_<profileId>/         # 目录替换时移开的旧配置备份
-    .txn_<profileId>          # 目录替换**事务记录**（profileId/hadOld/prevActive/state[/txnId]，任务 A，见 §4 步骤 7/8）
+    .txn_<profileId>          # 目录替换**事务记录**（profileId/hadOld/prevActive[/txnId]/state，任务 A，见 §4 步骤 7/8）
     .commit_<profileId>       # **提交见证**（profileId/txnId）：本次替换已提交的持久证据。
                               # 按 profileId 固定命名、**不随激活指针移动**——指针里的代次会被
                               # 下一次导入/切换覆盖，见证不会（见下「事务记录与崩溃恢复」）。

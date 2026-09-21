@@ -38,6 +38,12 @@ public:
 
     // 将输入坐标系的点/矩形映射到 applyImage 输出坐标系（像素、框、关键点同一变换）。
     // inWidth/inHeight 为输入图像（变换前）的尺寸。
+    // ⚠️ 本组函数**全仓无生产调用方**，仅单测直接调用 ⇒ 对它们的改动**没有生产路径
+    //    回归保护**，须以用例为准；也不要因它们存在就推断生产会用到。
+    //    生产帧路径不调用本组函数：**图像变换**走 applyImage（只做 cv::rotate / cv::flip，
+    //    不含任何取整）；**检测框坐标的取整**在 Engine::postProcessRealtimeBoxes 内联实现
+    //    （下界 floor / 上界 ceil，与其半开区间语义一致）。检测在变换后帧上执行、框天然处于
+    //    同一坐标系，实时路径无需二次映射，故本组正向映射函数在其中始终不被触及。
     static cv::Point2f mapPoint(const cv::Point2f& p, const FrameTransformConfig& c,
                                 int inWidth, int inHeight);
     static cv::Rect mapRect(const cv::Rect& r, const FrameTransformConfig& c,
