@@ -180,6 +180,10 @@ add_executable(win_face_eval_cli
     "src/win/src/FaceDatabase.cpp"
     "src/win/src/FaceRecognizer.cpp"
     "src/win/src/StructuredLogger.cpp"
+    # FaceRecognizer.cpp 调用 rk_wcfr::calculateSHA256（定义在 src/cpp/src/FileHash.cpp 内）
+    # ⇒ 本 target 必须一并编译该 TU，否则链接期 LNK2019 未解析外部符号。
+    # 此前这两个 CLI 长期缺这一行且 CI 不构建它们，故缺口一直未被发现。
+    "src/cpp/src/FileHash.cpp"
 )
 target_include_directories(win_face_eval_cli PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
@@ -208,6 +212,9 @@ add_executable(win_face_bench_cli
     "src/win/src/LbphEmbedder.cpp"
     "src/win/src/FaceDatabase.cpp"
     "src/win/src/FaceRecognizer.cpp"
+    # FaceRecognizer.cpp 调用 rk_wcfr::calculateSHA256（定义在 src/cpp/src/FileHash.cpp 内）
+    # ⇒ 本 target 必须一并编译该 TU，否则链接期 LNK2019 未解析外部符号。
+    "src/cpp/src/FileHash.cpp"
 )
 target_include_directories(win_face_bench_cli PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
