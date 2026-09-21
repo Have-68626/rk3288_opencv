@@ -18,6 +18,11 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SCHEMA_PATH = path.join(REPO_ROOT, "docs", "windows-web-spa", "config.schema.json");
 const OPENAPI_PATH = path.join(REPO_ROOT, "docs", "windows-web-spa", "openapi.yaml");
 const TYPES_PATH = path.join(REPO_ROOT, "web", "src", "app", "api", "types.ts");
+// FACE-ARCWIN-004：recognition 段的两处 C++ 字段集拷贝（此前无机械看护）。
+const WIN_JSON_CONFIG_PATH = path.join(REPO_ROOT, "src", "win", "src", "WinJsonConfig.cpp");
+const JSON_SCHEMA_VALIDATOR_PATH = path.join(REPO_ROOT, "src", "win", "src", "JsonSchemaValidator.cpp");
+// FACE-ARCWIN-001 新增、必须同时出现在全部字段集拷贝中的锚键。
+const RECOGNITION_ANCHOR_KEYS = ["arcFaceInputName", "arcFaceOutputName"];
 
 // 从 config.schema.json 提取规范字段树：{ section: { fields:Set, required:Set } }
 function canonicalFromSchema(schemaText) {
@@ -116,6 +121,8 @@ function extractServerSettingsDoc(typesText) {
 const schemaText = fs.readFileSync(SCHEMA_PATH, "utf8");
 const openapiText = fs.readFileSync(OPENAPI_PATH, "utf8");
 const typesText = fs.readFileSync(TYPES_PATH, "utf8");
+const winJsonConfigText = fs.readFileSync(WIN_JSON_CONFIG_PATH, "utf8");
+const jsonSchemaValidatorText = fs.readFileSync(JSON_SCHEMA_VALIDATOR_PATH, "utf8");
 const canonical = canonicalFromSchema(schemaText);
 // 组件名 → schema 段名（反向映射，供“多余组件”哨兵使用）。
 const COMPONENT_TO_SECTION = new Map(Object.keys(canonical).map((s) => [componentName(s), s]));
@@ -197,3 +204,111 @@ test("types.ts ServerSettingsDoc ↔ config.schema.json 字段集", () => {
   const extra = Object.keys(ts).filter((s) => !canonical[s]);
   assert.deepEqual(extra, [], `types.ts 多余段: ${extra}`);
 });
+
+// ---- FACE-ARCWIN-004：recognition 段六处字段集机械校验（补 ①② 两处 C++ 拷贝） ----
+//
+// 需要一致的六处拷贝：
+//   ① src/win/src/WinJsonConfig.cpp  序列化处（r.o["..."] = ...）
+//   ① src/win/src/WinJsonConfig.cpp  解析处（getString/getNumber(*r, "...")）
+//   ② src/win/src/JsonSchemaValidator.cpp  buildSettingsDocSchema()（rp.o["..."]）
+//   ③ docs/windows-web-spa/config.schema.json
+//   ④ docs/windows-web-spa/openapi.yaml  RecognitionSettings
+//   ⑤ web/src/app/api/types.ts  ServerSettingsDoc.recognition
+//
+// 设计要点（见任务 FACE-ARCWIN-004）：
+//   1) 作用域锚定——先按起止行切出 recognition 段，再在段内提键，
+//      而非全文件 grep（否则会混入 camera/dnn/model/inference 等段的键）。
+//   2) 防「静默通过」——若源码改写导致正则抽空，绝不能「空 == 空」通过；
+//      故对每个来源断言：非空 + 含锚键 + 字面量出现次数 == 去重键数。
+//   3) 失败信息可操作——主断言逐键给出「缺 [..]；多 [..]」，而非只报 sets differ。
+
+// 在 [startPred 首次命中行, 其后 endPred 首次命中行) 的行区间内切出识别段。
+// 返回行数组（含起点行，不含终点行）。
+function sliceRecognitionSection(text, startPred, endPred, label) {
+  const lines = text.split(/\r?\n/);
+  const s = lines.findIndex(startPred);
+  assert.ok(s >= 0, `${label}: 未定位到识别段起点`);
+  const e = lines.findIndex((l, i) => i > s && endPred(l));
+  assert.ok(e >= 0 && e > s, `${label}: 未定位到识别段终点`);
+  return lines.slice(s, e);
+}
+
+// 在给定行区间内按 keyRe 提取键名（保留全部命中，以便检测重复/漏抽）。
+function extractKeysInLines(lines, keyRe) {
+  const keys = [];
+  for (const line of lines) {
+    keyRe.lastIndex = 0;
+    let m;
+    while ((m = keyRe.exec(line)) !== null) keys.push(m[1]);
+  }
+  return keys;
+}
+
+test("recognition 段字段集：WinJsonConfig 序列化/解析 ↔ 运行时 schema ↔ schema.json ↔ openapi ↔ types.ts", () => {
+  // ①a WinJsonConfig.cpp 序列化处：形如 r.o["cascadePath"] = JsonValue::makeString(...)
+  const serLines = sliceRecognitionSection(
+    winJsonConfigText,
+    (l) => l.includes("// recognition"),
+    (l) => l.includes('root.o["recognition"]'),
+    "WinJsonConfig.cpp 序列化段"
+  );
+  const serKeys = extractKeysInLines(serLines, /\br\.o\["([^"]+)"\]/g);
+
+  // ①b WinJsonConfig.cpp 解析处：形如 getString(*r, "cascadePath", s) / getNumber(*r, ...)
+  const parseLines = sliceRecognitionSection(
+    winJsonConfigText,
+    (l) => l.includes('doc.find("recognition")'),
+    (l) => l.includes("// inference"),
+    "WinJsonConfig.cpp 解析段"
+  );
+  const parseKeys = extractKeysInLines(parseLines, /get(?:String|Number)\(\*r,\s*"([^"]+)"/g);
+
+  // ② JsonSchemaValidator.cpp buildSettingsDocSchema()：形如 rp.o["cascadePath"] = objStr()
+  const runtimeLines = sliceRecognitionSection(
+    jsonSchemaValidatorText,
+    (l) => l.includes("// recognition"),
+    (l) => l.includes('props.o["recognition"]'),
+    "JsonSchemaValidator.cpp 识别段"
+  );
+  const runtimeKeys = extractKeysInLines(runtimeLines, /rp\.o\["([^"]+)"\]/g);
+
+  // ③④⑤ 复用既有提取器结论（config.schema.json / openapi.yaml / types.ts）。
+  const sources = [
+    { label: "①a WinJsonConfig.cpp 序列化", keys: serKeys },
+    { label: "①b WinJsonConfig.cpp 解析", keys: parseKeys },
+    { label: "② JsonSchemaValidator.cpp 运行时 schema", keys: runtimeKeys },
+    { label: "③ config.schema.json", keys: [...canonical.recognition.fields] },
+    { label: "④ openapi.yaml RecognitionSettings", keys: [...(comps.RecognitionSettings || { props: new Set() }).props] },
+    { label: "⑤ types.ts ServerSettingsDoc.recognition", keys: [...(ts.recognition || new Set())].map((f) => f.replace(/^\?/, "")) },
+  ];
+
+  // 防「静默通过」：每个来源都必须非空、含锚键、且无重复（字面量数 == 去重键数）。
+  for (const { label, keys } of sources) {
+    assert.ok(keys.length > 0, `${label}: recognition 段未抽出任何键（提取正则与源码写法脱节？）`);
+    for (const must of RECOGNITION_ANCHOR_KEYS) {
+      assert.ok(
+        keys.includes(must),
+        `${label}: 未抽到锚键 ${must}（该处漏改 FACE-ARCWIN-001 字段，或提取正则失效）`
+      );
+    }
+    assert.equal(
+      new Set(keys).size,
+      keys.length,
+      `${label}: 键名重复（字面量 ${keys.length} 条 ≠ 去重 ${new Set(keys).size} 条）`
+    );
+  }
+
+  // 主断言：六处键集与 ③ config.schema.json 两两一致。失败信息逐键列出缺/多。
+  const reference = canonical.recognition.fields; // Set<string>
+  for (const { label, keys } of sources) {
+    const actual = new Set(keys);
+    const missing = [...reference].filter((k) => !actual.has(k));
+    const extra = [...actual].filter((k) => !reference.has(k));
+    assert.deepEqual(
+      [...actual].sort(),
+      [...reference].sort(),
+      `${label}: recognition 段字段集与 config.schema.json 不一致；缺 [${missing.join(", ")}]；多 [${extra.join(", ")}]`
+    );
+  }
+});
+

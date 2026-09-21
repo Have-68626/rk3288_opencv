@@ -27,6 +27,31 @@ import { getErrorMessage } from '../api/error'
 import { useAppStore } from '../state/AppStore'
 import { diffPatch } from '../utils/diffPatch'
 
+// ⚠️ 覆盖边界（FACE-ARCWIN-005）——改本文件前必读。
+// 本表单的 ServerFormModel 只覆盖 ServerSettingsDoc（web/src/app/api/types.ts）11 段中的 5 段：
+//   http / log / poster / ui / acceleration
+// 另有 6 段未被本表单建模，UI 既读不到、也改不了：
+//   camera / recognition / inference / dnn / model / display
+// （其中 recognition 段正是人脸识别参数的所在段——后端把 recognition 列为 settings 的对外字段，
+//  见 docs/windows-web-spa/openapi.yaml 与 config.schema.json，但本 UI 无法编辑它。）
+//
+// 未覆盖的段如何修改：直接编辑事实源 %APPDATA%\rk_wcfr\config.json；
+//   INI（config/windows_camera_face_recognition.ini）仅供迁移，不是事实源。
+//
+// ⚠️ 这不是数据风险，请勿据此做「紧急修复」：未覆盖段不会被 PUT 清空。机制如下——
+//   1) diffPatch（web/src/app/utils/diffPatch.ts）只遍历本模型出现过的键做深比较，
+//      未建模段因此从不进入提交的 patch；
+//   2) 后端 WinJsonConfigStore::updateFromJsonBody（src/win/src/WinJsonConfig.cpp）把 patch
+//      deepMergeObject 到「落盘的全量配置」之上，再校验+落盘，故未覆盖段被完整保留。
+// 性质：该缺口自 f122731（2026-07-05）引入 ServerFormModel 起即存在，属非回归；
+//   且没有任何文档/注释表明这是有意取舍——它更像长期欠账，而非设计决定。
+//
+// 后续选项（若产品确需在 UI 编辑识别参数）：应「整段」加入 recognition 的全部 8 个字段
+//   （cascadePath / databasePath / minFaceSizePx / identifyThreshold / enrollSamples /
+//     arcFaceModelPath / arcFaceInputName / arcFaceOutputName），
+//   而非只加 arcFaceInputName / arcFaceOutputName 两个——只加两个会在同一段内造成
+//   「一半可改、一半不可改」的新不一致。
+//   ⚠️ 整段实现需运行 `pnpm -C web build` 重建已入库的 src/win/app/webroot/ 产物。
 type ServerFormModel = {
   http: { enable: boolean; port: number }
   log: { logDir: string; maxFileBytes: number; maxRollFiles: number }
