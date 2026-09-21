@@ -1041,7 +1041,6 @@ void Engine::captureEnrollmentFaces(const cv::Mat& frame,
     alignOpt.outW = snap.profile.embedderInputW > 0 ? snap.profile.embedderInputW : 112;
     alignOpt.outH = snap.profile.embedderInputH > 0 ? snap.profile.embedderInputH : 112;
 
-    const float frameArea = static_cast<float>(frame.cols) * static_cast<float>(frame.rows);
     const int faceCount = static_cast<int>(faces.size());
 
     for (const pipeline::DetectedFace& df : faces) {
@@ -1082,9 +1081,6 @@ void Engine::captureEnrollmentFaces(const cv::Mat& frame,
         sample.frameHeight = frame.rows;
         sample.detScore = df.confidence;
         sample.faceCount = faceCount;
-        sample.areaRatio = frameArea > 0.0f
-                               ? (static_cast<float>(df.bbox.area()) / frameArea)
-                               : 0.0f;
         sample.hasLandmarks = df.hasKeypoints;
         sample.landmarks = df.keypoints;
         float gm = 0.0f;

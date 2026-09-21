@@ -46,7 +46,7 @@ constexpr std::size_t kGalleryCapacity = 1000;
 
 // #1 注册采集回调的 metrics 打包数组长度（须与 Java 侧 NativeFaceBridge.ENROLL_METRICS_LEN 一致）：
 //   [0]frameWidth [1]frameHeight [2]detScore [3]faceCount
-//   [4]grayMean [5]grayStd [6]laplacianVariance [7]areaRatio
+//   [4]grayMean [5]grayStd [6]laplacianVariance [7]保留位（原 areaRatio，已删）
 //   [8..11]bbox(left,top,right,bottom) [12..21]landmarks(x0,y0,...,x4,y4)
 constexpr jsize kEnrollMetricsLen = 22;
 
@@ -750,7 +750,16 @@ void onEnrollmentCaptureSample(const rk_core::EnrollmentCaptureSample& s) {
     metrics[4] = static_cast<jfloat>(s.grayMean);
     metrics[5] = static_cast<jfloat>(s.grayStd);
     metrics[6] = static_cast<jfloat>(s.laplacianVariance);
-    metrics[7] = static_cast<jfloat>(s.areaRatio);
+    // [7] 保留位（原 areaRatio 死负载，已删）：native 侧不再计算「人脸框面积 / 帧面积」，
+    //     Java 侧本就自行计算（EnrollmentSession.ImageMetrics.areaRatio，有独立用例覆盖），
+    //     native 那份**无任何读者**。
+    //     ⚠️ 为何仍**显式写 0**（必要性归因要说准）：不是「怕读者拿到垃圾值」——唯一的读者
+    //     MainActivity.onEnrollmentFrameFromNative **不读 [7]**，写不写都不影响它。真正的原因是
+    //     `metrics` 是**未初始化的栈数组**，而下面 SetFloatArrayRegion 会**整体拷贝 22 槽**
+    //     ⇒ 任何未写槽位都会构成「读取未初始化内存」（C++ 未定义行为，MSan 一类工具会直接报）。
+    //     ⚠️ 另一个不变量：长度 22 与 [8..21] 下标**必须保持不变** —— 把数组压实成 21 会让
+    //     [8..21] 前移，Java 侧 bbox / landmarks 全部错位。
+    metrics[7] = 0.0f;
     metrics[8] = static_cast<jfloat>(s.bbox.x);
     metrics[9] = static_cast<jfloat>(s.bbox.y);
     metrics[10] = static_cast<jfloat>(s.bbox.x + s.bbox.width);

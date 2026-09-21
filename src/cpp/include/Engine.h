@@ -50,7 +50,6 @@ struct EnrollmentCaptureSample {
     float grayMean = 0.0f;          // 对齐人脸灰度均值（0..255）
     float grayStd = 0.0f;           // 对齐人脸灰度总体标准差
     float laplacianVariance = 0.0f;  // Laplacian(4 邻域) 响应方差（清晰度）
-    float areaRatio = 0.0f;         // 人脸框面积 / 帧面积
     bool hasLandmarks = false;
     std::array<float, 10> landmarks{};  // 5 点 (x,y) 扁平：左眼、右眼、鼻、左嘴角、右嘴角
 };
