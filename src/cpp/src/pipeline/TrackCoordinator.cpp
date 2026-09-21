@@ -52,6 +52,11 @@ std::vector<TrackView> TrackCoordinator::update(
     tracks_ = std::move(alive);
 
     // 性能调度跳过检测：不计缺失、不新建/匹配（任务5：保持现状）
+    // ⚠️ 本早退位于 TTL 清理**之后是有意的，不是笔误**：TTL 是「长期无帧的最终保护」，即便本帧
+    //    跳过检测也应照常回收；若把本早退上移到 TTL 之前，TTL 就会在节流期间失效。
+    //    该顺序**当前无可达路径**：detThrottleMode_ 只被 store / 日志 / getter 触碰
+    //    （Engine.cpp:507/542/544/558），**未接线**去跳过检测 ⇒ 生产侧恒传 detectionRan=true
+    //    （Engine.cpp 的 trackFaces 处有同口径说明），仅测试可构造 false。
     if (!detectionRan) {
         return views();
     }
