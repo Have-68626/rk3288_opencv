@@ -134,7 +134,9 @@ TEST(TrackCoordinator, CenterDistanceFallbackKeepsAdjacentFacesSeparate) {
     pipeline::TrackCoordinator tc;
     // 帧 1：仅 A 建轨（未确认）
     ASSERT_TRUE(tc.update({face(0, 0, 100, 100)}, 1000, true).empty());
-    // 帧 2：A + 明显分离的相邻脸 B（中心间距 150 ≫ 0.25*100）→ B 另建轨迹，不并入 A
+    // 帧 2：A + 明显分离的相邻脸 B（中心距 ≈152.1 > 0.8*100=80，即超过
+    // centerMaxRatio × max(refW,refH)）→ B 另建轨迹，不并入 A
+    //（判据用的是**欧氏**中心距：A 中心 (50,50)、B 中心 (200,75)，dx=150、dy=25）
     tc.update({face(0, 0, 100, 100), face(150, 20, 100, 110)}, 1100, true);
     EXPECT_EQ(tc.trackCount(), 2);
     // 再累积两帧使两者确认，输出 2 条独立轨迹，A 保持 trackId=1
