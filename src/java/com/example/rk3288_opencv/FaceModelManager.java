@@ -69,7 +69,7 @@ import java.util.zip.ZipInputStream;
  *                              下次导入时**整体清空**——里面只可能是临时文件，故清扫是纯正语义。
  *                              （名字不含 profileId ⇒ 结构上不可能与任何 profile 的正式产物同名。）
  *   .bak_&lt;profileId&gt;/         目录替换时移开的旧配置备份
- *   .txn_&lt;profileId&gt;          目录替换**事务记录**（profileId/hadOld/prevActive/state[/txnId]，任务 A）
+ *   .txn_&lt;profileId&gt;          目录替换**事务记录**（profileId/hadOld/prevActive[/txnId]/state，任务 A）
  *   .commit_&lt;profileId&gt;       **提交见证**（profileId/txnId）：本次替换已提交的持久证据。
  *                             按 profileId 固定命名、**不随激活指针移动**——指针里的代次会被下一次
  *                             导入/切换覆盖，见证不会（2026-09-18 修复「静默回滚」缺口）。
@@ -1856,6 +1856,30 @@ public final class FaceModelManager {
      * </ol>
      *
      * <p>恢复为 best-effort：失败不在此处报错，仍由 {@link #buildStatus} 依据真实目录如实判定。
+     *
+     * <p><b>rename 返回值的契约分界（勿擅自「统一」）</b>：本类中 {@code fileOps.rename(...)}
+     * 的返回值<b>只在「决策点」检查</b>——即其成败会改变对外结果或用户文案时，代表是
+     * {@code rollbackProfileSwap} 里决定 {@code RollbackOutcome} 的那一处（有专门用例钉住）。
+     * <b>恢复/回填路径刻意不检查</b>，共四处：{@code persistActive} 内（tmp→dst 改名失败后的
+     * 尽力回填）、{@code readActivePointer} 两处（活动指针崩溃恢复）、{@code recoverProfileDirIfNeeded}
+     * 的崩溃窗口还原。这四处的 rename 结果都被丢弃，但后果需<b>分级</b>，不可一概而论：
+     * <ul>
+     *   <li>{@code persistActive} 那处失败时该方法本就返回 false，调用方据此报
+     *       {@code ATOMIC_RENAME_FAILED} ⇒ <b>已用户可见</b>，无需再查。</li>
+     *   <li>{@code recoverProfileDirIfNeeded} 的崩溃窗口还原失败时目标目录仍缺失，下一次
+     *       {@link #buildStatus} 会据「目录缺失」报 ERROR ⇒ <b>已由下一跳如实呈现</b>。</li>
+     *   <li>{@code readActivePointer} 两处则<b>可能没有任何用户可见信号</b>。两处改名失败的现场
+     *       <b>并不相同</b>，不能简化成单一情形：<b>第一处</b>（主指针 {@code active_profile}
+     *       <b>缺失</b>的那一支）改名失败后主指针<b>仍缺失</b>；<b>第二处</b>（主指针<b>存在但
+     *       不可解析/非法</b>的那一支）改名失败后主指针<b>仍在，且保留其损坏内容</b>——并非
+     *       「缺失」。两处的共同点是：{@code active_profile.bak} 都尚未被消耗、<b>仍可解析</b>，
+     *       且两处的 rename 返回值都被丢弃、随后都<b>无条件</b>返回从 {@code .bak} 解析出的
+     *       <b>有效</b> id ⇒ 读路径（{@link #readActive()} / {@link #readActivePointer()}）会
+     *       回落到 {@code .bak} 并返回<b>有效</b> id ⇒ {@link #buildStatus} 走正常（READY）
+     *       分支、不报错。即在这两处，「静默」<b>可能</b>延伸到用户层——不要假定它一定被下一跳
+     *       呈现。</li>
+     * </ul>
+     * <b>若要在此补检查，必须同时给出用户可见的处置路径</b>，否则只是多一个被丢弃的布尔值。
      */
     private void recoverProfileDirIfNeeded(@NonNull String profileId) {
         File target = profileDir(profileId);

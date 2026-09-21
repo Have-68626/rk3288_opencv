@@ -40,6 +40,23 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "轻量级检测器，0.5G FLOPs，WiderFace 96.1% AP。适合资源受限设备。需要额外下载 ncnn 模型。",
          "high_speed", 2});
 
+    // ⚠️ **注册表路径不注入节点名**（β-N3）：`createEmbedder` 的 factory 是默认构造、
+    //    只填模型路径，故经注册表取到的适配器一律沿用各自头文件的**默认节点名**——
+    //    `MobileFaceNetAdapter` 默认已是 `in0`/`out0`（与本仓模型一致）；而 `ArcFaceAdapter`
+    //    包装的 `ArcFaceEmbedderConfig` **两套后端默认并不相同**：**ncnn 字段** `ncnnInput`/`ncnnOutput`
+    //    默认 `data`/`output`（与本仓 `in0`/`out0` 模型**不一致**）；**OpenCV-DNN 字段**
+    //    `opencvInput`/`opencvOutput` 则**无初值（空串 = 自动推断）**，与 ncnn 侧不是同一套默认。
+    //    ncnn 侧的 `data`/`output` 是**有意保留**的遗留兼容默认，由 `test_arcface_contract.cpp`
+    //    **三个用例、共 5 条断言**主动钉住——`NodeNamesConfigDriven`（2 条：`ncnnInput`/`ncnnOutput`
+    //    初值）、`AdapterNodeNamesInjectedFromManifest`（2 条：未注入时 `inputNodeName`/`outputNodeName`）、
+    //    `AdapterNodeNameEmptyIgnored`（1 条：空 output 保留默认）。
+    //    ⇒ **不要擅自改该默认**，要改须同步改这 5 条断言并说明理由。
+    //    生产侧唯一注入点是 manifest 驱动的 `RealtimeFacePipeline::loadEmbedder`。
+    //    另：本条与下方 `mobilefacenet` 在生产源码中**无 createEmbedder 消费者**
+    //    （`createEmbedder("arcface")` 零调用）。这两个条目的元数据在生产侧只有 `rk3288_cli
+    //    --list-models` 经 `listAll()` 消费；`getEntry()` **在生产代码中无任何调用点**（仅测试用），
+    //    而 REST 的 `/api/v1/models` 读的是 `RuntimeBootstrap` 的 `ModelSnapshot`、**不经本注册表**
+    //    ⇒ 属 **catalog-only** 条目。
     reg.registerEmbedder("arcface", []() { return std::make_unique<ArcFaceAdapter>(); },
         {"arcface", "ArcFace 512D", "recognize",
          "ArcFace 512 维特征提取，LFW 99.8%。精度优先方案，适合门禁/人证比对。RK3288 ncnn 约 8ms/帧。",
