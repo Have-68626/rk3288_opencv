@@ -203,6 +203,9 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.recognition.minFaceSizePx = readIniInt(cfg.configPath, L"recognition", L"min_face_size_px", cfg.recognition.minFaceSizePx);
     cfg.recognition.identifyThreshold = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold", cfg.recognition.identifyThreshold);
     cfg.recognition.enrollSamples = readIniInt(cfg.configPath, L"recognition", L"enroll_samples", cfg.recognition.enrollSamples);
+    // ArcFace 节点名（FACE-ARCWIN-001）：键缺省为空串 ⇒ 自动（OpenCV 默认输入 / 首个输出）。
+    cfg.recognition.arcFaceInputName = utf8FromWide(readIniW(cfg.configPath, L"recognition", L"arcface_input_name", L""));
+    cfg.recognition.arcFaceOutputName = utf8FromWide(readIniW(cfg.configPath, L"recognition", L"arcface_output_name", L""));
 
     cfg.inference.throttleMode =
         normalizeInferenceThrottleMode(utf8FromWide(readIniW(cfg.configPath, L"inference", L"throttle_mode", L"auto")));
@@ -318,6 +321,8 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"recognition", L"min_face_size_px", toWStringInt(cfg.recognition.minFaceSizePx)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold", toWStringDouble(cfg.recognition.identifyThreshold)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"enroll_samples", toWStringInt(cfg.recognition.enrollSamples)) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"arcface_input_name", wideFromUtf8(cfg.recognition.arcFaceInputName)) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"arcface_output_name", wideFromUtf8(cfg.recognition.arcFaceOutputName)) && ok;
 
     ok = writeIniW(cfg.configPath, L"inference", L"throttle_mode", wideFromUtf8(normalizeInferenceThrottleMode(cfg.inference.throttleMode))) && ok;
     ok = writeIniW(cfg.configPath, L"inference", L"interval_ms", toWStringInt(clampInferenceIntervalMs(cfg.inference.intervalMs))) && ok;

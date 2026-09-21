@@ -18,6 +18,13 @@ struct RecognitionConfig {
     std::filesystem::path cascadePath;
     std::filesystem::path databasePath;
     std::filesystem::path arcFaceModelPath;
+    // ArcFace OpenCV-DNN 的输入/输出节点名（FACE-ARCWIN-001）。
+    // **默认留空**——空串即走 OpenCV「自动默认输入 / 首个输出」兜底，这正是修复本身：
+    // 此前该节点名被硬编码为 `data`/`output`（其实是 ArcFaceEmbedderConfig 的 ncnn 字段默认值），
+    // 与真实 ONNX 图命名不符，导致推理期抛 `Requested blob "data" not found`（异常被吞 ⇒
+    // identify() 恒返回 UNKNOWN）。勿再把 `data`/`output` 作为回退默认值引入。
+    std::string arcFaceInputName;
+    std::string arcFaceOutputName;
     int minFaceSizePx = 60;
     double identifyThreshold = 55.0;
     int enrollSamples = 12;

@@ -479,6 +479,14 @@ components:
           type: string
           description: ArcFace 识别模型路径
           example: "C:\\ProgramData\\rk_wcfr\\models\\arcface_w600k_r50.onnx"
+        arcFaceInputName:
+          type: string
+          description: ArcFace 输入节点名（默认空串 = OpenCV 自动取默认输入）
+          example: ""
+        arcFaceOutputName:
+          type: string
+          description: ArcFace 输出节点名（默认空串 = OpenCV 自动取首个输出）
+          example: ""
         minFaceSizePx:
           type: number
           description: 最小检测脸尺寸（像素边长）

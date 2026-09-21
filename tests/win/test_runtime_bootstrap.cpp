@@ -96,3 +96,14 @@ bool test_bootstrap_arcface_snapshot_hash_uses_cascade_path() {
     }
     return false;  // 未找到 cascade 快照
 }
+
+// 守卫：RecognitionConfig 的 ArcFace 节点名字段**默认必须为空串**（FACE-ARCWIN-001 回归钉住）。
+// 语义：空串 = OpenCV-DNN 走「自动默认输入 / 首个输出」兜底，这正是 FACE-ARCWIN-001 的修复本身；
+// 若有人把默认值改回 `data`/`output`（即把 ncnn 字段默认误当 OpenCV-DNN 真实节点名，正是本缺陷
+// 的形态），本用例会立即变红——无需任何模型或 OpenCV 推理，CI 恒可跑。
+// 与 RuntimeBootstrap::build() 调用 setNodeNames(cfg.recognition.arcFaceInputName, ...) 配套：
+// 配置键缺省即空串 ⇒ 自动兜底；此处钉住这两个字段的结构体默认值不被改回硬编码。
+bool test_recognition_config_node_names_default_empty() {
+    const rk_win::RecognitionConfig cfg{};
+    return cfg.arcFaceInputName.empty() && cfg.arcFaceOutputName.empty();
+}
