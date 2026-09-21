@@ -72,6 +72,7 @@ bool test_int8_yolo_face_registered();
 bool test_int8_arcface_registered();
 bool test_int8_mobilefacenet_registered();
 bool test_model_registry_concurrent_get_and_register();
+bool test_model_registry_has_no_retinaface_scrfd_entry();
 bool test_int8_yolo_face_creates_detector();
 bool test_int8_arcface_creates_embedder();
 bool test_int8_mobilefacenet_creates_embedder();
@@ -126,6 +127,7 @@ int main() {
         {"int8_arcface_registered", test_int8_arcface_registered},
         {"int8_mobilefacenet_registered", test_int8_mobilefacenet_registered},
         {"model_registry_concurrent_get_and_register", test_model_registry_concurrent_get_and_register},
+        {"model_registry_has_no_retinaface_scrfd_entry", test_model_registry_has_no_retinaface_scrfd_entry},
         {"int8_yolo_face_creates_detector", test_int8_yolo_face_creates_detector},
         {"int8_arcface_creates_embedder", test_int8_arcface_creates_embedder},
         {"int8_mobilefacenet_creates_embedder", test_int8_mobilefacenet_creates_embedder},

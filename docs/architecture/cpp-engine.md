@@ -170,7 +170,7 @@ graph TD
         ModelRegistry-->FaceDetector["FaceDetector（接口）"]
         ModelRegistry-->Embedder["Embedder（接口）"]
         FaceDetector-->YoloFaceAdapter
-        FaceDetector-->RetinaFaceAdapter
+        FaceDetector-->ScrfdNcnnAdapter
         FaceDetector-->YuNetAdapter
         FaceDetector-->CascadeAdapter
         FaceDetector-->DnnSsdAdapter
@@ -255,7 +255,6 @@ classDiagram
 |---------|--------|----------|----------|
 | `yolo_face` | YoloFaceAdapter | 高精度 | 通用 |
 | `scrfd_0.5gf` | ScrfdNcnnAdapter | 高速 | 通用 |
-| `retinaface_scrfd` | RetinaFaceAdapter | 高精度（640x） | 通用 |
 | `yunet` | YuNetAdapter | 均衡 | 通用 |
 | `dnn_ssd` | DnnSsdAdapter | 均衡 | Windows only |
 | `cascade_lbp` | CascadeAdapter | 高速 | Windows only |
@@ -330,6 +329,7 @@ graph TD
 
     subgraph "adapters（子目录）"
         YoloFaceAdapter
+        ScrfdNcnnAdapter
         RetinaFaceAdapter
         YuNetAdapter
         CascadeAdapter
