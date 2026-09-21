@@ -35,6 +35,9 @@ export interface ServerSettingsDoc {
     identifyThreshold: number
     enrollSamples: number
     arcFaceModelPath: string
+    // ArcFace OpenCV-DNN 节点名：默认空串 = 由 OpenCV 自动取默认输入 / 首个输出
+    arcFaceInputName: string
+    arcFaceOutputName: string
   }
   inference: {
     throttleMode: string

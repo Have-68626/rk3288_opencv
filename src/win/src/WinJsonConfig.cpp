@@ -281,6 +281,10 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         r.o["cascadePath"] = JsonValue::makeString(cfg.recognition.cascadePath.string());
         r.o["databasePath"] = JsonValue::makeString(cfg.recognition.databasePath.string());
         r.o["arcFaceModelPath"] = JsonValue::makeString(cfg.recognition.arcFaceModelPath.string());
+        // ArcFace 节点名（FACE-ARCWIN-001）：非路径，原样序列化（不做 resolvePathFromExeDir）。
+        // 默认空串，语义 = OpenCV 自动以首个输入/输出节点兜底。
+        r.o["arcFaceInputName"] = JsonValue::makeString(cfg.recognition.arcFaceInputName);
+        r.o["arcFaceOutputName"] = JsonValue::makeString(cfg.recognition.arcFaceOutputName);
         r.o["minFaceSizePx"] = JsonValue::makeNumber(cfg.recognition.minFaceSizePx);
         r.o["identifyThreshold"] = JsonValue::makeNumber(cfg.recognition.identifyThreshold);
         r.o["enrollSamples"] = JsonValue::makeNumber(cfg.recognition.enrollSamples);
@@ -514,6 +518,11 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*r, "cascadePath", s)) cfg.recognition.cascadePath = resolvePathFromExeDir(s);
         if (getString(*r, "databasePath", s)) cfg.recognition.databasePath = resolvePathFromExeDir(s);
         if (getString(*r, "arcFaceModelPath", s)) cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(s);
+        // 节点名不是路径：原样读入，绝不做 resolvePathFromExeDir。
+        // getString 仅要求"键存在且为字符串"（空串亦满足），故显式置空可覆盖 cfg 的旧值；
+        // 键缺失时才保留默认（空串）。
+        if (getString(*r, "arcFaceInputName", s)) cfg.recognition.arcFaceInputName = s;
+        if (getString(*r, "arcFaceOutputName", s)) cfg.recognition.arcFaceOutputName = s;
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
         if (getNumber(*r, "enrollSamples", v)) cfg.recognition.enrollSamples = static_cast<int>(v);

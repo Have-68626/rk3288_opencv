@@ -187,6 +187,10 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         rp.o["cascadePath"] = objStr();
         rp.o["databasePath"] = objStr();
         rp.o["arcFaceModelPath"] = objStr();
+        // ArcFace 节点名（FACE-ARCWIN-001）：可选，默认空串=OpenCV 自动。
+        // 刻意不加入 required——空串是合法默认值，仅当用户显式覆盖图命名时才需设置。
+        rp.o["arcFaceInputName"] = objStr();
+        rp.o["arcFaceOutputName"] = objStr();
         rp.o["minFaceSizePx"] = objBoolInt(true, 10, 10000);
         {
             JsonValue t = JsonValue::makeObject();

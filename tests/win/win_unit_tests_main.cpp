@@ -37,6 +37,7 @@ bool test_face_metrics_confusion_matrix();
 bool test_bootstrap_returns_models_on_valid_config();
 bool test_bootstrap_reports_failure_on_bad_cascade();
 bool test_bootstrap_arcface_snapshot_hash_uses_cascade_path();
+bool test_recognition_config_node_names_default_empty();
 bool test_registry_dispatch_returns_200_for_matching_route();
 bool test_registry_returns_405_for_method_mismatch();
 bool test_pipeline_concurrent_reload_no_uaf();
@@ -78,6 +79,7 @@ int main(int argc, char** argv) {
         {"test_bootstrap_returns_models_on_valid_config", test_bootstrap_returns_models_on_valid_config},
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
         {"test_bootstrap_arcface_snapshot_hash_uses_cascade_path", test_bootstrap_arcface_snapshot_hash_uses_cascade_path},
+        {"test_recognition_config_node_names_default_empty", test_recognition_config_node_names_default_empty},
         {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
         {"pipeline_switch_camera_switches_source", test_pipeline_switch_camera_switches_source},
         {"pipeline_switch_camera_failure_keeps_old", test_pipeline_switch_camera_failure_keeps_old},
