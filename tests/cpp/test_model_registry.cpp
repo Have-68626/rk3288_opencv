@@ -77,8 +77,8 @@ bool test_model_registry_concurrent_get_and_register() {
 //   3) 原指向的 RetinaFaceAdapter 用 delta 解码（SCRFD 是距离编码），且加载器只吃 ONNX，
 //      与已记录的文档意图（CREDITS.md「NCNN SCRFD」记为 BIN/PARAM）矛盾。
 //
-// 判别力（已实测）：把该条目加回注册表（无论指向 RetinaFaceAdapter 还是 ScrfdNcnnAdapter）
-// ⇒ `getEntry` 有值 ⇒ 本用例**红**。
+// 判别力（已实测）：把该条目加回注册表 ⇒ `getEntry` 有值 ⇒ 本用例**红**。
+// （RetinaFaceAdapter 类本身也已在本批一并删除，故"加回"只能指向 ScrfdNcnnAdapter。）
 // 反向护栏：同族的 `scrfd_0.5gf` 必须仍在，防止「删多了」。
 bool test_model_registry_has_no_retinaface_scrfd_entry() {
     ModelRegistry::ensureBuiltinRegistered();

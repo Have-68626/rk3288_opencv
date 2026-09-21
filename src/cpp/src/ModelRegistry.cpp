@@ -8,8 +8,6 @@ using namespace rk_core;
 #include "adapters/MobileFaceNetAdapter.h"
 #include "adapters/YuNetAdapter.h"
 #include "adapters/SFaceAdapter.h"
-// 注：adapters/RetinaFaceAdapter.h 已不再被本文件引用 —— retinaface_scrfd 条目已**删除**
-// （见该条目原位置处 FACE-SCRFD-004 的说明）。该类现为遗留、无人注册。
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -89,8 +87,12 @@ void ModelRegistry::ensureBuiltinRegistered() {
     //     结构性限制，与本条无关，本次**未**处理。
     //  3) 原指向的 RetinaFaceAdapter 用 **delta** 解码（SCRFD 是距离编码），且加载器只吃 ONNX，
     //     与已记录的文档意图（CREDITS.md「NCNN SCRFD」行记为 BIN/PARAM）相矛盾。
-    // ⚠️ 副作用（如实记录）：RetinaFaceAdapter 自此**无人注册**，成为遗留类（仍被 cmake 源表编译、
-    // 无任何测试引用）。其删除与否是**独立**的后续项，不在本条范围内。
+    // ⚠️ 后续处置（本批）：RetinaFaceAdapter **类本身已一并删除**。判定依据：它是全仓**唯一**
+    //    未被任何注册点引用的适配器（其余每个 adapter 都有注册点），且无任何测试引用；
+    //    它对本条目而言本来就是错配的「加载器 + 解码器」。其能力（FPN anchor 生成 / NMS）在
+    //    ScrfdNcnnAdapter、YoloFaceAdapter、YuNetAdapter 与 pipeline::FacePostProcessor 中
+    //    均有等价实现 ⇒ 删除不损失任何唯一能力。将来若真接入 RetinaFace 权重，
+    //    可从 git 历史取回该类。
 
     reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
         {"yunet", "YuNet Face Detector", "detect",
