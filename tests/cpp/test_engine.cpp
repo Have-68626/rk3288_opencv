@@ -763,7 +763,6 @@ TEST(EngineTest, EnrollmentCaptureCallbacksOnlyWhenEnabled) {
         EXPECT_FLOAT_EQ(got.detScore, 0.9f);
         EXPECT_EQ(got.frameWidth, rk_core::config::FRAME_WIDTH);
         EXPECT_EQ(got.frameHeight, rk_core::config::FRAME_HEIGHT);
-        EXPECT_GT(got.areaRatio, 0.0f);
         EXPECT_TRUE(got.hasLandmarks);
         EXPECT_FLOAT_EQ(got.landmarks[0], 120.f);
         EXPECT_FLOAT_EQ(got.landmarks[9], 220.f);

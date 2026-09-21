@@ -39,7 +39,8 @@ final class NativeFaceBridge {
     /**
      * 注册采集回调 metrics 打包数组长度（与 C++ {@code kEnrollMetricsLen} 一致）：
      * [0]frameWidth [1]frameHeight [2]detScore [3]faceCount
-     * [4]grayMean [5]grayStd [6]laplacianVariance [7]areaRatio
+     * [4]grayMean [5]grayStd [6]laplacianVariance [7]保留位（原 areaRatio，已删：Java 侧
+     * 由 {@code EnrollmentSession.ImageMetrics.areaRatio} 自行计算，native 那份无读者）
      * [8..11]bbox(left,top,right,bottom) [12..21]landmarks(x0,y0,...,x4,y4)。
      * 无关键点时 landmarks 段为 NaN（调用方应构造 landmarks=null，令姿态判不定）。
      */
