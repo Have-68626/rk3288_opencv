@@ -47,6 +47,9 @@ static cv::Mat cropAndResize(const cv::Mat& bgr, const cv::Rect& roi, int outW, 
     return resized;
 }
 
+// ArcFace 5 点模板所在的参考坐标系边长：下列模板坐标定义在 112×112 画布上。
+constexpr float kArcFaceRefDim = 112.0f;
+
 static std::array<cv::Point2f, 5> arcFace112Ref5() {
     return {cv::Point2f(38.2946f, 51.6963f),
             cv::Point2f(73.5318f, 51.5014f),
@@ -82,7 +85,26 @@ FaceAlignResult alignFaceForArcFace112(const cv::Mat& bgr, const FaceDetection& 
             std::array<cv::Point2f, 5> dst;
             for (int i = 0; i < 5; i++) src[static_cast<size_t>(i)] = kps[static_cast<size_t>(i)];
             const auto ref = arcFace112Ref5();
-            for (int i = 0; i < 5; i++) dst[static_cast<size_t>(i)] = ref[static_cast<size_t>(i)];
+            // 参考点定义在 112×112 坐标系，而下面的 warpAffine 渲染到 opt.outW×outH —— 必须先把
+            // 参考点按输出画布**等比缩放**，否则人脸会以 **112 尺度**落在画布**左上角**
+            // （outW>112 时右/下留黑边、outW<112 时被裁），与 bbox 回退路径「裁剪后缩放填满画布」不一致。
+            //
+            // ⚠️ 为什么取**单轴**比例（min(outW,outH)/112），而不是各轴独立的 sx=outW/112、sy=outH/112：
+            //    `cv::estimateAffinePartial2D` 求的是**相似变换（4 自由度：旋转 + 等比缩放 + 平移）**，
+            //    它**无法表达各轴独立缩放**；传入各轴不同的目标只会得到**最小二乘折中**。
+            //    实测证据（本文件对应用例）：160×96 下把目标设为各轴独立时，源图中的正方形特征被
+            //    渲染成 **76×75（长宽比 1.013）**而非预期的 1.667 —— 尺度不可解释，且可能裁掉人脸。
+            //    取 min 的语义是明确的：等比缩放到**完整容纳**人脸，不裁剪。
+            // ⚠️ 与 bbox 回退路径在**非方画布**下无法完全对称（后者是各轴独立的 cv::resize）——
+            //    这是相似变换的能力边界，非疏漏。两个随包 manifest 均为 112×112（方画布），
+            //    该情形下两者语义一致；方画布也是本项的实际场景。
+            // outW=outH=112 时 s=1 ⇒ 与既有行为逐比特一致，零回归。
+            const float s = std::min(static_cast<float>(opt.outW), static_cast<float>(opt.outH)) /
+                            kArcFaceRefDim;
+            for (int i = 0; i < 5; i++) {
+                const auto& p = ref[static_cast<size_t>(i)];
+                dst[static_cast<size_t>(i)] = cv::Point2f(p.x * s, p.y * s);
+            }
 
             cv::Mat M = cv::estimateAffinePartial2D(src, dst, cv::noArray(), cv::LMEDS);
             if (!M.empty() && M.cols == 3 && M.rows == 2) {

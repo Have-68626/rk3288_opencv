@@ -80,6 +80,8 @@ bool test_face_align_basic();
 bool test_face_align_nan_bbox();
 bool test_face_align_empty_image();
 bool test_face_align_negative_bbox();
+bool test_face_align_keypoints_out_non112();
+bool test_face_align_keypoints_uniform_fit_non_square();
 
 bool test_cleanup_temp_file_removed();
 bool test_cleanup_temp_dir_created_and_removed();
@@ -133,6 +135,8 @@ int main() {
         {"face_align_nan_bbox", test_face_align_nan_bbox},
         {"face_align_empty_image", test_face_align_empty_image},
         {"face_align_negative_bbox", test_face_align_negative_bbox},
+        {"face_align_keypoints_out_non112", test_face_align_keypoints_out_non112},
+        {"face_align_keypoints_uniform_fit_non_square", test_face_align_keypoints_uniform_fit_non_square},
         {"cleanup_temp_file_removed", test_cleanup_temp_file_removed},
         {"cleanup_temp_dir_created_and_removed", test_cleanup_temp_dir_created_and_removed},
         {"cleanup_file_write_and_read", test_cleanup_file_write_and_read},
