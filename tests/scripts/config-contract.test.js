@@ -312,3 +312,80 @@ test("recognition 段字段集：WinJsonConfig 序列化/解析 ↔ 运行时 sc
   }
 });
 
+// ---- 任务 F1：recognition 段 required 集机械校验（运行时 schema ↔ schema.json ↔ openapi） ----
+//
+// 与上面的「字段集（properties）」校验互补：properties 描述「允许出现哪些键」，
+// required 描述「启动校验时必须出现哪些键」。二者是**独立的契约面**。
+//
+// 本批（FACE-ARCWIN-006/007）新增 identifyThresholdArcFace 时**刻意只进 properties、不进 required**：
+// 既有部署的 config.json 都没有该键，若设为必填会在启动校验时报「缺少必填字段」而被拒 ⇒ 升级即损坏配置。
+// 反之，cascadePath 等 6 个既有键是 required——它们是历史契约，不能悄悄从 required 里掉出去。
+//
+// 若不机械看护 required，未来有人误把 identifyThresholdArcFace 加进 required（迁移安全静默破坏），
+// 或改了运行时 required 却漏同步 config.schema.json/openapi.yaml，都不会被本测试发现。
+//
+// 需要一致的 required 三处拷贝：
+//   ① src/win/src/JsonSchemaValidator.cpp  buildSettingsDocSchema()（**运行时**；形如
+//      req.a.push_back(JsonValue::makeString("k"))，是字面量，可静态可靠抽取）
+//   ② docs/windows-web-spa/config.schema.json  recognition.required
+//   ③ docs/windows-web-spa/openapi.yaml  RecognitionSettings.required
+const RECOGNITION_OPTIONAL_KEYS = ["identifyThresholdArcFace", "arcFaceInputName", "arcFaceOutputName"];
+
+test("recognition 段 required 集：JsonSchemaValidator 运行时 ↔ schema.json ↔ openapi", () => {
+  // ① 运行时 required：先切出识别段，再在段内抽 req.a.push_back(JsonValue::makeString("k"))。
+  //    该形态在 buildSettingsDocSchema 的 recognition 块内为字面量，可静态可靠抽取。
+  //    若未来被改写为运行时构造，下面的「非空」断言会先行失败示警（而非静默抽空后误判一致）。
+  const runtimeReqLines = sliceRecognitionSection(
+    jsonSchemaValidatorText,
+    (l) => l.includes("// recognition"),
+    (l) => l.includes('props.o["recognition"]'),
+    "JsonSchemaValidator.cpp required 段"
+  );
+  const runtimeRequired = extractKeysInLines(
+    runtimeReqLines,
+    /req\.a\.push_back\(JsonValue::makeString\("([^"]+)"\)\)/g
+  );
+
+  const sources = [
+    { label: "① JsonSchemaValidator.cpp 运行时 required", keys: runtimeRequired },
+    { label: "② config.schema.json recognition.required", keys: [...canonical.recognition.required] },
+    {
+      label: "③ openapi.yaml RecognitionSettings.required",
+      keys: [...((comps.RecognitionSettings || { required: [] }).required)],
+    },
+  ];
+
+  // 防「静默通过」：每处 required 必须非空、无重复（字面量数 == 去重键数）、且**不含刻意可选的键**。
+  // 最后一条把「identifyThresholdArcFace 等刻意不进 required」钉死在测试里——这正是迁移安全的护栏。
+  for (const { label, keys } of sources) {
+    assert.ok(
+      keys.length > 0,
+      `${label}: recognition.required 未抽出任何键（提取正则与源码写法脱节？）`
+    );
+    assert.equal(
+      new Set(keys).size,
+      keys.length,
+      `${label}: required 键重复（字面量 ${keys.length} 条 ≠ 去重 ${new Set(keys).size} 条）`
+    );
+    for (const opt of RECOGNITION_OPTIONAL_KEYS) {
+      assert.ok(
+        !keys.includes(opt),
+        `${label}: required 含刻意可选键 ${opt}（既有 config.json 缺该键会在启动校验被拒 ⇒ 迁移破坏）`
+      );
+    }
+  }
+
+  // 主断言：三处 required 集与 ② config.schema.json 两两一致，失败信息逐键列出缺/多。
+  const reference = [...canonical.recognition.required].sort();
+  for (const { label, keys } of sources) {
+    const actual = [...new Set(keys)].sort();
+    const missing = reference.filter((k) => !actual.includes(k));
+    const extra = actual.filter((k) => !reference.includes(k));
+    assert.deepEqual(
+      actual,
+      reference,
+      `${label}: recognition.required 与 config.schema.json 不一致；缺 [${missing.join(", ")}]；多 [${extra.join(", ")}]`
+    );
+  }
+});
+

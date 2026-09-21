@@ -202,6 +202,8 @@ AppConfig loadConfigFromIniOrDefault() {
     cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"recognition", L"arcface_model_path", L"models/arcface_w600k_r50.onnx")));
     cfg.recognition.minFaceSizePx = readIniInt(cfg.configPath, L"recognition", L"min_face_size_px", cfg.recognition.minFaceSizePx);
     cfg.recognition.identifyThreshold = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold", cfg.recognition.identifyThreshold);
+    // ArcFace 专用阈值（余弦相似度，FACE-ARCWIN-006/007）：独立键，缺省保留结构体默认 0.45。
+    cfg.recognition.identifyThresholdArcFace = readIniDouble(cfg.configPath, L"recognition", L"identify_threshold_arcface", cfg.recognition.identifyThresholdArcFace);
     cfg.recognition.enrollSamples = readIniInt(cfg.configPath, L"recognition", L"enroll_samples", cfg.recognition.enrollSamples);
     // ArcFace 节点名（FACE-ARCWIN-001）：键缺省为空串 ⇒ 自动（OpenCV 默认输入 / 首个输出）。
     cfg.recognition.arcFaceInputName = utf8FromWide(readIniW(cfg.configPath, L"recognition", L"arcface_input_name", L""));
@@ -320,6 +322,7 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"recognition", L"arcface_model_path", cfg.recognition.arcFaceModelPath.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"min_face_size_px", toWStringInt(cfg.recognition.minFaceSizePx)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold", toWStringDouble(cfg.recognition.identifyThreshold)) && ok;
+    ok = writeIniW(cfg.configPath, L"recognition", L"identify_threshold_arcface", toWStringDouble(cfg.recognition.identifyThresholdArcFace)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"enroll_samples", toWStringInt(cfg.recognition.enrollSamples)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"arcface_input_name", wideFromUtf8(cfg.recognition.arcFaceInputName)) && ok;
     ok = writeIniW(cfg.configPath, L"recognition", L"arcface_output_name", wideFromUtf8(cfg.recognition.arcFaceOutputName)) && ok;

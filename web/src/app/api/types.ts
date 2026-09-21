@@ -33,6 +33,8 @@ export interface ServerSettingsDoc {
     databasePath: string
     minFaceSizePx: number
     identifyThreshold: number
+    // ArcFace 专用阈值（余弦相似度，0..1）；与 LBPH 的 identifyThreshold 量纲不同，独立成键
+    identifyThresholdArcFace: number
     enrollSamples: number
     arcFaceModelPath: string
     // ArcFace OpenCV-DNN 节点名：默认空串 = 由 OpenCV 自动取默认输入 / 首个输出

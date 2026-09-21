@@ -287,6 +287,9 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         r.o["arcFaceOutputName"] = JsonValue::makeString(cfg.recognition.arcFaceOutputName);
         r.o["minFaceSizePx"] = JsonValue::makeNumber(cfg.recognition.minFaceSizePx);
         r.o["identifyThreshold"] = JsonValue::makeNumber(cfg.recognition.identifyThreshold);
+        // ArcFace 专用阈值（余弦相似度语义，FACE-ARCWIN-006/007）。与 LBPH 的 identifyThreshold 量纲不同，
+        // 必须独立成键；后者保持 LBPH 语义不动（迁移安全）。
+        r.o["identifyThresholdArcFace"] = JsonValue::makeNumber(cfg.recognition.identifyThresholdArcFace);
         r.o["enrollSamples"] = JsonValue::makeNumber(cfg.recognition.enrollSamples);
         root.o["recognition"] = std::move(r);
     }
@@ -525,6 +528,8 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*r, "arcFaceOutputName", s)) cfg.recognition.arcFaceOutputName = s;
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
+        // ArcFace 专用阈值（余弦相似度）。键缺失时保留默认 0.45。
+        if (getNumber(*r, "identifyThresholdArcFace", v)) cfg.recognition.identifyThresholdArcFace = v;
         if (getNumber(*r, "enrollSamples", v)) cfg.recognition.enrollSamples = static_cast<int>(v);
     }
 

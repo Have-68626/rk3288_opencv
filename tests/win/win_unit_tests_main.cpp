@@ -38,6 +38,7 @@ bool test_bootstrap_returns_models_on_valid_config();
 bool test_bootstrap_reports_failure_on_bad_cascade();
 bool test_bootstrap_arcface_snapshot_hash_uses_cascade_path();
 bool test_recognition_config_node_names_default_empty();
+bool test_recognition_config_arcface_threshold_in_cosine_range();
 bool test_registry_dispatch_returns_200_for_matching_route();
 bool test_registry_returns_405_for_method_mismatch();
 bool test_pipeline_concurrent_reload_no_uaf();
@@ -56,6 +57,8 @@ bool test_config_default_serialization_passes_schema();
 bool test_config_each_single_field_put_passes_schema();
 bool test_config_roundtrip_and_schema_alignment();
 bool test_config_masked_echo_preserves_real_value();
+bool test_config_missing_arcface_threshold_key_migrates();
+bool test_config_arcface_threshold_out_of_range_rejected();
 bool test_reload_endpoint_bumps_generation();
 bool test_openapi_endpoint_returns_spec_json();
 bool test_face_db_plaintext_vuln_documented();
@@ -80,6 +83,7 @@ int main(int argc, char** argv) {
         {"test_bootstrap_reports_failure_on_bad_cascade", test_bootstrap_reports_failure_on_bad_cascade},
         {"test_bootstrap_arcface_snapshot_hash_uses_cascade_path", test_bootstrap_arcface_snapshot_hash_uses_cascade_path},
         {"test_recognition_config_node_names_default_empty", test_recognition_config_node_names_default_empty},
+        {"test_recognition_config_arcface_threshold_in_cosine_range", test_recognition_config_arcface_threshold_in_cosine_range},
         {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
         {"pipeline_switch_camera_switches_source", test_pipeline_switch_camera_switches_source},
         {"pipeline_switch_camera_failure_keeps_old", test_pipeline_switch_camera_failure_keeps_old},
@@ -96,6 +100,8 @@ int main(int argc, char** argv) {
         {"config_each_single_field_put_passes_schema", test_config_each_single_field_put_passes_schema},
         {"config_roundtrip_and_schema_alignment", test_config_roundtrip_and_schema_alignment},
         {"config_masked_echo_preserves_real_value", test_config_masked_echo_preserves_real_value},
+        {"config_missing_arcface_threshold_key_migrates", test_config_missing_arcface_threshold_key_migrates},
+        {"config_arcface_threshold_out_of_range_rejected", test_config_arcface_threshold_out_of_range_rejected},
         {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
         {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
         {"face_db_plaintext_vuln_documented", test_face_db_plaintext_vuln_documented},

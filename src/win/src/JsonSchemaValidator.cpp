@@ -199,6 +199,16 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
             t.o["maximum"] = JsonValue::makeNumber(100000.0);
             rp.o["identifyThreshold"] = std::move(t);
         }
+        {
+            // ArcFace 专用阈值（余弦相似度，FACE-ARCWIN-006/007）：值域取 [0,1]。
+            // 与 LBPH 的 identifyThreshold 量纲不同，故独立成键；刻意不加入 required
+            // （默认有值 0.45）——若设为必填，既有 config.json 缺该键会在启动校验时被拒（迁移破坏）。
+            JsonValue t = JsonValue::makeObject();
+            t.o["type"] = JsonValue::makeString("number");
+            t.o["minimum"] = JsonValue::makeNumber(0.0);
+            t.o["maximum"] = JsonValue::makeNumber(1.0);
+            rp.o["identifyThresholdArcFace"] = std::move(t);
+        }
         rp.o["enrollSamples"] = objBoolInt(true, 1, 1000);
         r.o["properties"] = std::move(rp);
         props.o["recognition"] = std::move(r);

@@ -285,3 +285,75 @@ bool test_config_masked_echo_preserves_real_value() {
     // 正常字段应照常合并：哨兵剔除不得误伤同对象其他字段
     return store.current().poster.enable;
 }
+
+// FACE-ARCWIN-006/007 迁移不变式：既有 config.json 缺 identifyThresholdArcFace 时必须被接受并取默认 0.45。
+//
+// 为什么必须有这条：identifyThresholdArcFace 是本批新增键，**刻意不进 schema.required**
+// （既有部署的 config.json 都没有该键；若设为必填，这些配置会在启动校验时报「缺少必填字段」而被拒
+// ⇒ 升级即损坏配置）。现有 roundtrip 用例喂入的是**默认序列化**（已含该键），因此**没有**任何测试
+// 覆盖「缺该键的既有配置」这条迁移路径。本用例手工构造一份缺该键的配置走 store.initialize（启动加载）
+// 路径，钉住「加载成功 + 缺键落到默认 0.45」。若未来有人把该键误加进 required，或解析处不再是
+// 「键缺失时保留默认」，本用例立即变红。
+bool test_config_missing_arcface_threshold_key_migrates() {
+    // 清空会改写配置解析结果的环境覆盖项（与 roundtrip 测试一致，保证加载结果确定性）
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("missing_arcface_threshold");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 先让 store 落盘一份默认配置（含新键），作为「既有配置」的基底。
+    {
+        rk_win::WinJsonConfigStore store;
+        std::string warn;
+        store.initialize(warn);
+    }
+
+    // 2) 从落盘文件剔除 identifyThresholdArcFace，模拟「升级前写入、无该键」的既有配置。
+    std::string txt;
+    {
+        std::ifstream in(cfgPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        txt.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(txt, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    // 守卫：默认序列化必须含该键，否则本用例根本没在测「缺键」（防静默通过，同 roundtrip 的防呆思路）。
+    if (rec->o.erase("identifyThresholdArcFace") != 1) return false;
+    {
+        std::ofstream out(cfgPath, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        out << rk_win::toJsonString(doc, true);
+        if (!out) return false;
+    }
+
+    // 3) 启动加载该缺键配置：必须被接受（warn 为空）且取默认 0.45。
+    rk_win::WinJsonConfigStore store2;
+    std::string warn;
+    store2.initialize(warn);
+    if (!warn.empty()) return false;  // 缺键配置被拒（如误加入 required）即为迁移破坏
+    return store2.current().recognition.identifyThresholdArcFace == 0.45;
+}
+
+// FACE-ARCWIN-007 边界：identifyThresholdArcFace 值域 [0,1]（余弦相似度），越界值必须被 schema 拒绝。
+//
+// 成本低但价值高：55.0 是 LBPH 的卡方距离量纲值——若被误收下，ArcFace 侧 `bestSim >= 55.0`
+// （bestSim ∈ [-1,1]）将恒假，identify() 恒返回 UNKNOWN（正是 FACE-ARCWIN-006 的形态）。
+// updateFromJsonBody 内部走 buildSettingsDocSchema 校验，55.0 超上界 1.0 ⇒ res.ok 必须为 false。
+bool test_config_arcface_threshold_out_of_range_rejected() {
+    const auto dir = makeTempDir("arcface_threshold_range");
+    ConfigEnvGuard env(dir / "config.json");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const auto res = store.updateFromJsonBody("{\"recognition\":{\"identifyThresholdArcFace\":55}}");
+    return !res.ok;
+}

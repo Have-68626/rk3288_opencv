@@ -107,3 +107,14 @@ bool test_recognition_config_node_names_default_empty() {
     const rk_win::RecognitionConfig cfg{};
     return cfg.arcFaceInputName.empty() && cfg.arcFaceOutputName.empty();
 }
+
+// 守卫：RecognitionConfig 的 ArcFace 阈值必须落在**余弦相似度值域**内（FACE-ARCWIN-006/007 回归钉住）。
+// 语义：ArcFaceWinRecognizer::identify 用 `bestSim >= 阈值`（bestSim ∈ [-1,1]）判定；若有人把它改回
+// LBPH 专用的 55.0 这类卡方距离值（值域约 [0,64]），`bestSim >= 55.0` 将恒假 ⇒ identify() 恒返回
+// UNKNOWN（正是 FACE-ARCWIN-006 的形态）。断言「落在 [-1,1] 余弦值域内」即可：55.0 等 LBPH 量纲值
+// 因远超上界 1.0 已被拒绝；不再额外拒绝恰好等于 1.0 者（那是 schema 允许的合法余弦阈值，拒绝属过度严格）。
+// 模型无关、无需 OpenCV 推理，CI 恒可跑。
+bool test_recognition_config_arcface_threshold_in_cosine_range() {
+    const rk_win::RecognitionConfig cfg{};
+    return cfg.identifyThresholdArcFace >= -1.0 && cfg.identifyThresholdArcFace <= 1.0;
+}
