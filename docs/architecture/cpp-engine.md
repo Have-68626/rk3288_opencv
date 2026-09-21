@@ -330,7 +330,6 @@ graph TD
     subgraph "adapters（子目录）"
         YoloFaceAdapter
         ScrfdNcnnAdapter
-        RetinaFaceAdapter
         YuNetAdapter
         CascadeAdapter
         DnnSsdAdapter
