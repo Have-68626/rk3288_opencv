@@ -495,10 +495,16 @@ components:
           example: 60
         identifyThreshold:
           type: number
-          description: 识别阈值（LBPH 距离/余弦相似度）
+          description: LBPH 识别阈值（卡方距离，约 0..64；越小越严格）
           minimum: 1
           maximum: 100000
-          example: 2000
+          example: 55
+        identifyThresholdArcFace:
+          type: number
+          description: ArcFace 识别阈值（余弦相似度，0..1；小于此值拒绝）
+          minimum: 0
+          maximum: 1
+          example: 0.45
         enrollSamples:
           type: number
           description: 注册所需样本数

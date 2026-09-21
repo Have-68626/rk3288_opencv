@@ -35,15 +35,19 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         // 节点名注入必须在 initialize() 之前（initialize 内部才把 cfg 交给 embedder_）。
         // 配置缺省为空串 ⇒ 走 OpenCV 自动默认输入 / 首个输出（FACE-ARCWIN-001 的修复）。
         arcRec->setNodeNames(cfg.recognition.arcFaceInputName, cfg.recognition.arcFaceOutputName);
+        // ArcFace 的判定量纲是**余弦相似度**（∈[-1,1]），与 LBPH 的卡方距离无关，
+        // 故这里必须注入 identifyThresholdArcFace，绝不能复用 LBPH 专用的 identifyThreshold
+        // （否则 bestSim >= 55.0 恒假 ⇒ identify() 恒返回 UNKNOWN，即 FACE-ARCWIN-006）。
         recognizerOk = arcRec->initialize(
             cascadeUtf8,
             cfg.recognition.databasePath,
             cfg.recognition.arcFaceModelPath.string(),
             cfg.recognition.minFaceSizePx,
-            cfg.recognition.identifyThreshold);
+            cfg.recognition.identifyThresholdArcFace);
         result.recognizer = std::move(arcRec);
     } else {
         auto lbpRec = std::make_unique<FaceRecognizer>();
+        // LBPH 的判定量纲是**卡方距离**（约 [0,64]），沿用 identifyThreshold（默认 55.0）。
         recognizerOk = lbpRec->initialize(
             cascadeUtf8,
             cfg.recognition.databasePath,

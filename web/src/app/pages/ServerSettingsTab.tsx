@@ -30,8 +30,12 @@ import { diffPatch } from '../utils/diffPatch'
 // ⚠️ 覆盖边界（FACE-ARCWIN-005）——改本文件前必读。
 // 本表单的 ServerFormModel 只覆盖 ServerSettingsDoc（web/src/app/api/types.ts）11 段中的 5 段：
 //   http / log / poster / ui / acceleration
-// 另有 6 段未被本表单建模，UI 既读不到、也改不了：
+// 另有 6 段未被本表单建模，本表单读不到、也改不了：
 //   camera / recognition / inference / dnn / model / display
+// ⚠️ 「未被本表单建模」≠「UI 完全无法编辑」：camera 段另有独立编辑入口
+//   PreviewPage（web/src/app/pages/PreviewPage.tsx），读见其 :66-69、写见 :362 与 :386-392，
+//   均经同一 updateServerSettings；recognition / inference / dnn / model / display 这 5 段
+//   在 web/src 内确无其他读写入口，只能改 config.json。
 // （其中 recognition 段正是人脸识别参数的所在段——后端把 recognition 列为 settings 的对外字段，
 //  见 docs/windows-web-spa/openapi.yaml 与 config.schema.json，但本 UI 无法编辑它。）
 //
@@ -46,9 +50,9 @@ import { diffPatch } from '../utils/diffPatch'
 // 性质：该缺口自 f122731（2026-07-05）引入 ServerFormModel 起即存在，属非回归；
 //   且没有任何文档/注释表明这是有意取舍——它更像长期欠账，而非设计决定。
 //
-// 后续选项（若产品确需在 UI 编辑识别参数）：应「整段」加入 recognition 的全部 8 个字段
-//   （cascadePath / databasePath / minFaceSizePx / identifyThreshold / enrollSamples /
-//     arcFaceModelPath / arcFaceInputName / arcFaceOutputName），
+// 后续选项（若产品确需在 UI 编辑识别参数）：应「整段」加入 recognition 的全部字段
+//   （见 docs/windows-web-spa/config.schema.json 的 recognition 段，当前 9 个；
+//    这里不再逐一枚举，以免 schema 演进后本注释静默失真），
 //   而非只加 arcFaceInputName / arcFaceOutputName 两个——只加两个会在同一段内造成
 //   「一半可改、一半不可改」的新不一致。
 //   ⚠️ 整段实现需运行 `pnpm -C web build` 重建已入库的 src/win/app/webroot/ 产物。

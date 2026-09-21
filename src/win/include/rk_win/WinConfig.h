@@ -26,7 +26,15 @@ struct RecognitionConfig {
     std::string arcFaceInputName;
     std::string arcFaceOutputName;
     int minFaceSizePx = 60;
+    // **LBPH 专用**阈值：卡方距离（值域约 [0,64]），`FaceRecognizer::identify` 用「距离 <= 阈值」判定。
+    // ⚠️ 勿把它当作通用阈值传给其它识别后端——历史上 ArcFace 分支曾逐字复用它做**余弦相似度**判定，
+    //    导致 `bestSim(∈[-1,1]) >= 55.0` 恒假、识别恒返回 UNKNOWN（FACE-ARCWIN-006 的根因，
+    //    即「一个字段被两个量纲不同的后端共用」）。ArcFace 请用下方 identifyThresholdArcFace。
+    //    键名/默认值/语义一律保持不变：改名会让既有 config.json 的旧键在启动校验时被直接拒绝。
     double identifyThreshold = 55.0;
+    // ArcFace 专用阈值：**余弦相似度**语义（值域 [-1,1]，取 [0,1] 为合法阈值区间）。
+    // `ArcFaceWinRecognizer::identify` 用「bestSim >= 阈值」判定，与 identifyThreshold 的量纲无关。
+    double identifyThresholdArcFace = 0.45;
     int enrollSamples = 12;
 };
 
