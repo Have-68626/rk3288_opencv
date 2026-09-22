@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-19
+as_of=2026-09-22
 -->
 
 # 文档索引
@@ -46,6 +46,7 @@ as_of=2026-09-19
 | `designs/android-enrollment-design.md` | living | Android 端人员注册设计 |
 | `designs/model-acquisition-import.md` | living | 模型获取与导入流程 |
 | `designs/rk3288-fingerprint-integration-design.md` | living | RK3288 指纹/读卡外设接入设计（**未落地设计稿**，含未定论项） |
+| `designs/assistant-terminal-vision.md` | living | 桌面助手终端产品愿景与关键决策（**未落地**：三节点拓扑、时间与顺序、设备锁、信息源离线分级、B站与微信桥） |
 
 ## guides/
 
