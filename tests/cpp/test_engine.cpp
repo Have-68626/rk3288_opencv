@@ -1105,6 +1105,27 @@ TEST(EngineTest, RevocationCannotReturnBetweenFinalCheckAndEmit) {
             << "撤销在发射临界区结束前即已返回：最终校验与事件发射未被同一门序列化";
 
     ASSERT_TRUE(revokeDone.load());
+
+    // FACE-PIPE-017：校验② 在**绘制之后**命中，若不同步重绘，发布帧仍是校验① 之前画上的认证**绿框**，
+    // 而视图层已变 Unknown——同帧「绿框 + AUTH_FAIL Unknown」自相矛盾。
+    // **取样必须发生在下面「再次驱动」之前**：此刻 renderFrame_ 正是 framer 那一帧（校验② 窗口内的发布帧，
+    // 尚未被覆盖）；若把本断言放到那次驱动之后，取到的会是「撤销后重新认脸」的合法红框帧，断言恒真、放过
+    // 缺陷。断言框顶边像素：红框 R≈255 / 绿框 G≈255，背景 (50,50,50)。
+    {
+        const auto preRedrive = engine.getTrackViews();
+        ASSERT_EQ(preRedrive.size(), 1u);
+        cv::Mat published;
+        ASSERT_TRUE(latestRender(engine, published));
+        const int sx = preRedrive[0].bbox.x + preRedrive[0].bbox.width / 2;
+        const int sy = preRedrive[0].bbox.y;  // 顶边：红框 R 通道 ≈255，绿框 G 通道 ≈255
+        ASSERT_LT(sy, published.rows);
+        ASSERT_LT(sx, published.cols);
+        const cv::Vec3b border = published.at<cv::Vec3b>(sy, sx);
+        EXPECT_GT(static_cast<int>(border[2]), 200)
+                << "发布帧像素与视图层不自相矛盾：门内校验②命中后必须同步重绘为未认证红框";
+        EXPECT_LT(static_cast<int>(border[1]), 100);
+    }
+
     // 撤销返回后**再驱动一帧**，并用**确定性**断言锁住「该身份不会回来」。此前这里是一条恒空转的
     // 「承重断言」（A2' Med / A3' δ2 实测 AFTER_REVOKE_CHECKED=0）——revoker 被门阻塞到 framer
     // 结束才置 revokeDone，events 中不存在 first==true 的元素，循环体零执行；既不判别也不可靠。
