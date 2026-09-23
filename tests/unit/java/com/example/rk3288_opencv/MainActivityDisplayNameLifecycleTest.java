@@ -209,29 +209,47 @@ public class MainActivityDisplayNameLifecycleTest {
     }
 
     /**
-     * 契约（FACE-JAVA-002）：{@code displayNameStore()} 的**构造路径不得创建目录**。
+     * 契约（FACE-JAVA-002/003）：{@code MainActivity} 全文件**不得创建目录**（判据由「{@code displayNameStore()}
+     * 方法体内」升级为「整个文件」）。
+     *
+     * <p><b>判据射程与语义（务必先读）：本判据射程 = 整个 {@code MainActivity} 文件，语义 = 「{@code MainActivity}
+     * 一律不得创建任何目录」这条<b>策略级禁令</b>（不是某个方法、某处 bug 的单点回归锁）。</b>
+     * 换言之它默认**恒绿**，除有人在本文件里引入建目录代码外不会变红。
+     *
+     * <p><b>⚠️ 由此产生的「非假红」变红——请按策略复议处理，不要改判据</b>：将来若为**别的合法用途**
+     * （如缓存目录、导出目录）在 {@code MainActivity} 里建目录，本用例会**真实变红**。那不是假红，
+     * 而是「{@code MainActivity} 不得建目录」这条**策略需要被重新评估**的信号：要么把建目录挪出
+     * {@code MainActivity}（保留策略），要么显式复议并放宽本策略（改动本守卫、在评审中说明理由）。
+     * **切勿**把它当假红去削判据——那会削弱本守卫对「构造期建目录」这一类回归的防护。
      *
      * <p>为什么必须有这条：该 accessor 在「平台不支持」的早退路径上也会被取到
      * （{@code migrateLegacyDisplayNames} 的 {@code displayNameStore().isSupported()} 是一次纯能力查询；
-     * {@code refreshGalleryFromRepository} 更是**无条件**先取实例）。若在构造路径里 {@code mkdirs()}，
+     * {@code refreshGalleryFromRepository} 更是**不受平台支持门禁约束地**取实例）。若在构造路径里 {@code mkdirs()}，
      * API&lt;23 设备会凭空多出一个**永远用不到**的 {@code files/face_names/} 空目录。
      * 目录的实际创建推迟到**首次写入**（{@code FeatureTemplateEncryptedStore.writeEnvelopeAtomically}）；
      * 读取路径在目录缺失时本就按「无文件」正确处理（{@code listFiles()} → null → 0；文件不存在 → NOT_FOUND）。
      *
-     * <p><b>判别力</b>：把 {@code if (!dir.exists()) dir.mkdirs();} 加回该方法体内 ⇒ 本用例红
-     * （已覆盖 {@code mkdir} / {@code mkdirs}）；{@code Files.createDirectories(...)} 亦在射程内
+     * <p><b>判据为何能扩为「全文」（FACE-JAVA-003 收口）</b>：已只读核实 —— {@code MainActivity.java}
+     * 全文件**没有任何真实建目录调用**（{@code mkdir}/{@code mkdirs}/{@code createDirectories} 仅出现在
+     * {@code displayNameStore()} 的 javadoc 注释里，注释在判别前被剥离）⇒「全文不得含建目录字面量」在
+     * **当前代码上为绿**，不会误红。
+     *
+     * <p><b>判别力</b>：把 {@code if (!dir.exists()) dir.mkdirs();} 加回 {@code displayNameStore()} 方法体内
+     * ⇒ 本用例红；把它**抽成私有方法**（如 {@code ensureFaceNamesDir()}）再由 accessor 调用 ⇒ **仍红**
+     * （判据已是全文，字面量仍在文件里）；{@code Files.createDirectories(...)} 亦在射程内
      * （判别前先剥离注释与字符串/字符字面量，故「注释里提及 mkdir」不会误红）。
      *
-     * <p><b>仍可绕过（本守卫拦不住的路径，如实声明，勿高估）</b>：
+     * <p><b>仍可绕过（本守卫拦不住的路径，如实声明，勿高估）</b>：判据扩为「全文」后，「把建目录抽到被
+     * accessor 调用的私有方法」这一**旧绕过路径已被堵死**（方法体仍在本文件内，字面量仍在 ⇒ 仍红）。剩余：
      * <ol>
-     *   <li>把建目录抽到一个**被 accessor 调用的私有方法**里——accessor 方法体只剩调用语句，
-     *       不含任何建目录字面量 ⇒ 本用例（及其它源码守卫）都不红；{@code PersonDisplayNameStoreTest}
-     *       的两条用例直接 {@code new PersonDisplayNameStore(dir)}、不走 MainActivity 路径，也拦不住。</li>
-     *   <li>用其它建目录 API 绕开这三个字面量（如 {@code Os.mkdir}、反射、第三方工具）——文本匹配即失效。</li>
+     *   <li>用其它建目录 API 绕开这三个字面量（如 {@code Os.mkdir}、反射、第三方工具）——文本匹配即失效；</li>
+     *   <li>{@code PersonDisplayNameStoreTest} 的两条用例只直接 {@code new PersonDisplayNameStore(dir)}、
+     *       不走 MainActivity 路径，钉住的是「存储层构造器与能力查询无文件系统副作用」，本用例的全文判据
+     *       只管 MainActivity 这一半（{@code AppCompatActivity}，纯 JVM 不可构造）。</li>
      * </ol>
-     * <p><b>假红面（残量，如实声明）</b>：判别前已剥离方法体内的行/块注释与字符串/字符字面量，故在方法体内
-     * 写「不得 mkdir」之类注释、或字面量里出现这些词，均**不会**误红；但若这几个词作为**真实标识符**出现在
-     * 方法体代码里（如变量名 {@code dirToMkdir}），仍会误红——此类假红需人工甄别，属词法匹配的固有代价。
+     * <p><b>假红面（残量，如实声明）</b>：判别前已剥离**全文**的行/块注释与字符串/字符字面量，故在注释或
+     * 字面量里出现这些词均**不会**误红；但若这些词作为**真实标识符**出现在代码里（如变量名
+     * {@code dirToMkdir}），仍会误红——此类假红需人工甄别，属词法匹配的固有代价。
      * 根因：本用例（及本文件全部守卫）是**字面匹配**，等价重排 / 抽取即绕过；真正的行为级锁定需要在
      * JVM 内构造 {@code MainActivity}（本仓无 Robolectric/Mockito）。故它**不是「已封死」**，只是当前
      * **唯一可行**的自动化近似——{@code PersonDisplayNameStoreTest} 的两条用例只钉住「存储层构造器与
@@ -241,38 +259,22 @@ public class MainActivityDisplayNameLifecycleTest {
     @Test
     public void displayNameStoreAccessorDoesNotCreateDirectory() throws IOException {
         String text = source();
-        final String sig = "private PersonDisplayNameStore displayNameStore()";
-        int start = text.indexOf(sig);
-        assertTrue("应存在 displayNameStore() accessor", start >= 0);
-        // 花括号配对取方法体：避免把后续方法一起圈进来（文本切片一旦外扩，断言就可能被邻接代码拯救）。
-        int open = text.indexOf('{', start);
-        assertTrue("accessor 应有方法体", open > start);
-        int depth = 0;
-        int end = -1;
-        for (int i = open; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (c == '{') {
-                depth++;
-            } else if (c == '}') {
-                depth--;
-                if (depth == 0) { end = i; break; }
-            }
-        }
-        assertTrue("应能取到 displayNameStore() 的方法体", end > open);
-        String body = text.substring(open, end);
-        // 剥离注释与字符串/字符字面量后再判别：消除「注释里提及 mkdir ⇒ 假红」，从而可安全把射程
-        // 扩大到 mkdir（含 mkdirs）与 Files.createDirectories 两类绕过路径（局限见该类 javadoc）。
-        String code = stripCommentsAndLiterals(body);
-        assertFalse("displayNameStore() 构造路径不得创建目录（File.mkdir/mkdirs，FACE-JAVA-002）",
+        assertTrue("应存在 displayNameStore() accessor（判据升级为全文后仍确保该 accessor 仍在）",
+                text.contains("private PersonDisplayNameStore displayNameStore()"));
+        // FACE-JAVA-003 收口：判据由「accessor 方法体内」升级为「全文」——已只读核实 MainActivity 全文件
+        // 无任何真实建目录调用（mkdir/mkdirs/createDirectories 仅出现在 javadoc 注释里，被剥离）。
+        // 剥离注释与字符串/字符字面量后，整个 MainActivity 源码不得含建目录字面量。
+        String code = stripCommentsAndLiterals(text);
+        assertFalse("MainActivity 全文不得创建目录（File.mkdir/mkdirs，FACE-JAVA-002/003）",
                 code.contains("mkdir"));
-        assertFalse("displayNameStore() 构造路径不得创建目录（java.nio.file.Files.createDirectories，FACE-JAVA-002）",
+        assertFalse("MainActivity 全文不得创建目录（java.nio.file.Files.createDirectories，FACE-JAVA-002/003）",
                 code.contains("createDirectories"));
     }
 
     /**
-     * 去掉 Java 源码片段中的行/块注释与字符串/字符字面量，仅保留代码，供文本匹配使用——
-     * 避免「注释或字面量里出现 mkdir」造成的假红。纯词法扫描，不做完整解析；本用例的 accessor
-     * 方法体很小，足够可靠（文本块 """ 之类不在适用范围内）。
+     * 去掉 Java 源码中的行/块注释与字符串/字符字面量，仅保留代码，供文本匹配使用——
+     * 避免「注释或字面量里出现 mkdir」造成的假红。纯词法扫描，不做完整解析；现作用于整个
+     * MainActivity 源码（本仓 Java 11，无文本块 """，故在适用范围内）。
      */
     private static String stripCommentsAndLiterals(String body) {
         StringBuilder out = new StringBuilder(body.length());
