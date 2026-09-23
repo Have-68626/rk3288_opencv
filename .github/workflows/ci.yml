@@ -305,6 +305,118 @@ jobs:
       - name: Build and Test (Skip OpenCV)
         run: ./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --no-daemon
 
+      # native-lib.cpp 语法检查（非阻断）——闭合「真实 JNI 实现从未被任何 CI job 编译」的盲区。
+      # 背景：`native-lib` target 只在 Android 构建（cmake/android.cmake），且本 job 传
+      # -PRK_SKIP_OPENCV=true ⇒ 只编 native-lib-stub.cpp；src/cpp/native-lib.cpp 的真实实现
+      # （8703e83 新增的每线程 JNIEnv 缓存 / jclass-jmethodID 缓存 / NewLocalRef-DeleteLocalRef
+      # 引用管理）从未被编译过，也从未被运行过。
+      # 为何放在本 job：该文件 `#include <android/native_window.h>`（第 15 行，无条件）与 `<jni.h>`，
+      # 只有本 job 具备真实 NDK 头（native-lib-stub.cpp 同样 include <jni.h>/<android/log.h>，
+      # 故本 job 的 Gradle 构建必然已就位 NDK）；OpenCV 头由 libopencv-dev 提供。unit-tests job
+      # 虽有真 OpenCV 却无 NDK（无 android/ 头），无法直接覆盖本文件。
+      # 为何只做 -fsyntax-only 而不整编：本文件自身零 cv:: 代码，但其传递包含链
+      # Engine.h → VideoManager.h → <opencv2/opencv.hpp> 强制要求完整 OpenCV 头，因此只做
+      # 解析/语义检查、不生成代码也不链接。
+      # ⚠️ 能力边界（勿高估本 step，勿再宣称它能抓运行期回归）：
+      #   它捕捉的是【编译期】问题——头文件解析失败、标识符/签名/类型不匹配、预处理配置错
+      #   （宏未定义、包含路径错）。
+      #   它【不覆盖】运行期语义：NewLocalRef/DeleteLocalRef 引用计数、局部引用泄漏、
+      #   jclass/jmethodID 缓存失效（IsSameObject）判定逻辑、g_activity 之类的
+      #   use-after-delete 悬挂引用——这些在 -fsyntax-only 下根本不执行，编译器也无从检查。
+      #   因此 8703e83 那批 JNI 引用管理改动，本 step【只能证明其可编译】，【不能】证明其行为
+      #   正确；后者必须靠真机运行或运行期验证（如 adb logcat + 引用表/内存观察）才能发现。
+      # ⚠️ 配置边界（勿误以为 CI 已覆盖 Android 真实配置）：
+      #   本 step 用【宿主 g++ + 宿主 glibc/libstdc++ + 系统 libopencv-dev + NDK 头】的混合组合；
+      #   【不传】-D__ANDROID__、不指定 ABI/API level、不定义 RK_HAVE_*（MPP/ncnn/libyuv 等）。
+      #   即它验证的【不是】生产 Android 的交叉编译配置，只能抓粗粒度编译错；真实 Android 配置
+      #   仍以本 job 的 ./gradlew :app:assembleDebug 与真机构建为准。
+      # 为何非阻断（step 级 continue-on-error）：本机无等价环境，转正条件为先观察一轮全绿
+      # （与本 job 内 rk3288_cli 的既有先例一致）。
+      - name: Compile-check native-lib.cpp (non-blocking, closes the "never compiled" blind spot)
+        id: check_native_lib_compile
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+
+          # OpenCV 头（opencv2/opencv.hpp / opencv2/core/ocl.hpp）——经 Engine.h → VideoManager.h
+          # 传递依赖；libopencv-dev 同时提供 pkg-config 的 opencv4.pc。
+          # 安装失败视为【环境未就绪】(apt 临时故障等)：打 ::notice:: 并以成功结束，避免把环境
+          # 问题误报成代码回归（与下面 NDK 缺失同一口径）。保留完整安装（不加
+          # --no-install-recommends）：宁可多装，也不因缺头把环境问题伪装成「编译失败」。
+          if ! sudo apt-get update -qq || ! sudo apt-get install -y -qq libopencv-dev; then
+            echo "::notice::环境未就绪：libopencv-dev 安装失败（apt 临时故障？）——跳过 native-lib.cpp 语法检查（非代码问题）。"
+            echo ':grey_exclamation: **native-lib.cpp 语法检查被跳过（环境未就绪）** —— libopencv-dev 安装失败，非代码回归。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 定位 Android NDK 的 sysroot include（jni.h + android/native_window.h 所在）。
+          # 优先环境变量，其次扫描 SDK 的 ndk/ 目录（AGP 会在此安装它需要的版本）。
+          SYSROOT_REL="toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+          NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-${ANDROID_NDK:-}}}"
+          if [ -z "$NDK" ] || [ ! -f "$NDK/$SYSROOT_REL/android/native_window.h" ]; then
+            NDK=""
+            for cand in "${ANDROID_SDK_ROOT:-}"/ndk/* "${ANDROID_HOME:-}"/ndk/* /usr/local/lib/android/sdk/ndk/*; do
+              if [ -f "$cand/$SYSROOT_REL/android/native_window.h" ]; then NDK="$cand"; fi
+            done
+          fi
+          if [ -z "$NDK" ]; then
+            # 环境未就绪，而非代码错：打 ::notice::（非 ::warning::）并成功结束，使「环境问题」与
+            # 「代码真错」在 UI 与 outcome 上可区分（否则该 step 会长期只告警、掩盖真信号）。
+            echo "::notice::环境未就绪：未找到 Android NDK（$SYSROOT_REL/android/native_window.h）——跳过 native-lib.cpp 语法检查（非代码问题）。"
+            echo ':grey_exclamation: **native-lib.cpp 语法检查被跳过（环境未就绪）** —— 未找到 NDK 头，非代码回归；本 step 以成功结束，故不触发下方告警 step。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "使用 NDK sysroot include: $NDK/$SYSROOT_REL"
+
+          # pkg-config 拿不到 opencv4 亦属环境未就绪（同口径）：避免因缺 OpenCV cflags 导致 g++ 报
+          # 缺头、被误判成「代码编译失败」。
+          if ! pkg-config --exists opencv4; then
+            echo "::notice::环境未就绪：pkg-config 未找到 opencv4——跳过 native-lib.cpp 语法检查（非代码问题）。"
+            echo ':grey_exclamation: **native-lib.cpp 语法检查被跳过（环境未就绪）** —— pkg-config opencv4 不可用，非代码回归。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 用 -idirafter（而非 -I/-isystem）挂 NDK 头：仅当宿主缺失某头时（jni.h / android/*）
+          # 才回落到 NDK，标准 C 头仍取宿主 glibc/libstdc++，避免 bionic 与 glibc 头相互遮蔽。
+          g++ -fsyntax-only -std=c++17 \
+            -Isrc/cpp/include \
+            -Isrc/cpp/include/adapters \
+            -Isrc/win/include \
+            -idirafter "$NDK/$SYSROOT_REL" \
+            $(pkg-config --cflags opencv4) \
+            src/cpp/native-lib.cpp
+          echo "native-lib.cpp 语法检查通过（仅编译期：真实 OpenCV 头 + NDK jni.h/native_window.h；不覆盖 JNI 引用管理等运行期语义）。"
+
+      # 失败可见化（对应上一 step 的 continue-on-error）。为什么单独加这一步：continue-on-error
+      # 只保证「本 step 变红但不中止 job」，job 结论仍为 success，且无下游 step 消费其 outcome
+      # ⇒ 真实编译回归只会在展开列表里留一个红叉。本步在上一 step outcome 为 failure 时把告警写进
+      # job 的 Step Summary 并打 ::warning:: 注解，令该信号无法被忽略。
+      # 信号区分：上一 step 的【环境未就绪】分支（NDK 缺失 / apt 或 pkg-config 不可用）已改为打
+      # ::notice:: 并以成功结束 ⇒ 不会触发本 step。故【本告警出现 ⇒ 大概率是真实代码/配置问题】，
+      # 而非环境噪声；这正是与「永久噪声掩盖真信号」相反的设计。
+      # 取舍（显式选择：仅报警、不 exit 1）：native-lib.cpp 检查非门禁，本 job 无等价本地环境，
+      # 转正条件为先观察一轮全绿；若本步也 exit 1 会令 job 变红并跳过后面的 Upload Artifacts，
+      # 与「用 continue-on-error 保护的初衷」相矛盾。
+      - name: Warn if native-lib.cpp failed to compile (visible, non-blocking)
+        if: steps.check_native_lib_compile.outcome == 'failure'
+        run: |
+          {
+            echo ':warning: **native-lib.cpp 语法检查失败（编译期错误）** —— 这是「native-lib 真实实现从未在 CI 编译」盲区被点亮的信号，请检查而非忽略。'
+            echo ''
+            echo '该文件是 Android JNI 真实实现（8703e83 含每线程 JNIEnv 缓存、jclass/jmethodID 缓存与'
+            echo 'NewLocalRef/DeleteLocalRef 引用管理）；此前仅 native-lib-stub.cpp 参与 CI，真实实现从未被任何 job 编译。'
+            echo ''
+            echo '**本 step 的能力边界**：失败 ⇒ 编译期问题（头文件解析 / 标识符 / 签名 / 类型 / 预处理配置）；'
+            echo '它**不能**证明或否认运行期语义（引用计数、局部引用泄漏、缓存失效、use-after-delete）——'
+            echo '后者需真机运行期验证。'
+            echo ''
+            echo '**如何区分环境与代码**：环境未就绪（NDK 缺失 / apt 或 pkg-config 不可用）已改为打 ::notice::'
+            echo '并以成功结束、不触发本告警。因此【出现本告警 ⇒ 删掉环境噪声后大概率是真实代码/配置问题】，请定位并修复。'
+            echo ''
+            echo '本告警**不阻断** job（有意取舍：先观察一轮全绿再考虑转正为门禁）。'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=native-lib.cpp compile check failed::native-lib.cpp failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases downgraded to ::notice::); see job summary."
+
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
