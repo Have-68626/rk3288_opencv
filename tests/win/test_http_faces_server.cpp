@@ -400,7 +400,7 @@ std::unique_ptr<rk_win::WinJsonConfigStore> makeAuthConfigStore(const std::wstri
     return store;
 }
 
-// FACE-CONFIG-001：先写入一份无法装载的 config.json（截断的非法 JSON），再初始化 store，
+// FACE-CONFIG-011：先写入一份无法装载的 config.json（截断的非法 JSON），再初始化 store，
 // 复现「既有 config.json 存在但无法装载 ⇒ 改名另存证据 + 以默认值启动」的被拒路径。
 // 用于验证 health 的独立可见通道在被拒启动时确实暴露诊断（configStatus=rejected）。
 std::unique_ptr<rk_win::WinJsonConfigStore> makeRejectedConfigStore(const std::wstring& name) {
@@ -412,6 +412,28 @@ std::unique_ptr<rk_win::WinJsonConfigStore> makeRejectedConfigStore(const std::w
     {
         std::ofstream ofs(cfgPath, std::ios::binary);
         ofs << "{ \"http\": { \"port\": 8090 ";  // 截断：非良构 JSON ⇒ 无法装载
+    }
+    AuthEnvGuard cfgGuard(L"RK_WCFR_CONFIG", cfgPath.c_str());
+    auto store = std::make_unique<rk_win::WinJsonConfigStore>();
+    std::string warn;
+    (void)store->initialize(warn);
+    return store;
+}
+
+// FACE-CONFIG-011：构造「装载**成功但存在告警**」（降级）的 store——写入一份存在但 base64 非法的密钥文件
+// （**不写** config.json），使默认配置序列化得到 {"_error":...} stub 而被落盘前闸门拒写 ⇒ initWarning 非空
+// 且 configRejectedOnLoad=false。用于验证 health 暴露 configStatus:"degraded"
+// （修复前会错误地报 "ok"：装载成功 ≠ 无告警）。
+std::unique_ptr<rk_win::WinJsonConfigStore> makeDegradedConfigStore(const std::wstring& name) {
+    const auto base = std::filesystem::temp_directory_path() / L"rk3288_opencv_win_auth_tests" / name;
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::filesystem::create_directories(base, ec);
+    const auto cfgPath = base / L"config.json";
+    {
+        // 存在但 base64 非法的密钥文件：ensureOrLoadKey 的 base64Decode 失败 ⇒ 序列化 stub ⇒ 闸门拒写。
+        std::ofstream ofs(base / L"config.key.dpapi", std::ios::binary);
+        ofs << "!!!not-base64!!!";
     }
     AuthEnvGuard cfgGuard(L"RK_WCFR_CONFIG", cfgPath.c_str());
     auto store = std::make_unique<rk_win::WinJsonConfigStore>();
@@ -534,6 +556,24 @@ TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
     EXPECT_NE(r.response.find("\"configStatus\":\"rejected\""), std::string::npos) << r.response;
     EXPECT_NE(r.response.find("\"configWarning\""), std::string::npos) << r.response;
     EXPECT_NE(r.response.find("\"configQuarantinedTo\""), std::string::npos) << r.response;
+}
+
+// FACE-CONFIG-011 独立可见通道（**降级侧**）：装载完成但本次启动存在告警（密钥不可用 ⇒ 默认配置序列化
+// 未通过 schema 被拒写）⇒ configRejectedOnLoad=false 而 initWarning 非空 ⇒ health 必须报
+// configStatus:"degraded"。修复前该场景被错误地报成 "ok"（装载成功被当作无问题），与三态原则口径不一致：
+// 「装载成功」与「装载成功且无告警」不是同一语义。判别力：把 handler 的判据退回仅看 configRejectedOnLoad
+// ⇒ 本用例红。
+TEST(HttpFacesAuth, HealthExposesDegradedConfigStatus) {
+    auto store = makeDegradedConfigStore(L"health_degraded_config");
+    ASSERT_FALSE(store->configRejectedOnLoad()) << "前置：降级场景不得被误判为 rejected";
+    ASSERT_FALSE(store->initWarning().empty()) << "前置：降级场景必须有告警文本";
+    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+    const auto r = runHttpRequest(nullptr, req, store.get());
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 200) << r.response;
+    EXPECT_NE(r.response.find("\"configStatus\":\"degraded\""), std::string::npos) << r.response;
+    // 降级同时暴露告警文本（供监控定位）。
+    EXPECT_NE(r.response.find("\"configWarning\""), std::string::npos) << r.response;
 }
 
 // RED→GREEN：SSE 流（StreamSessionRunner 旁路）在启用认证后必须 401。
@@ -1258,6 +1298,9 @@ TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
     GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, HealthExposesDegradedConfigStatus) {
     GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, UnauthenticatedStreamRejectedWhenAuthEnabled) {

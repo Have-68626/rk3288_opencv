@@ -853,12 +853,21 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
         if (readFileAll(configPath_, txt, err)) {
             AppConfig cfg;
             if (parseAndValidateSettingsDoc(txt, cfg, err)) {
+                // 级联路径迁移：命中旧部署路径（tests/data/...）且该旧文件已不存在时改指新路径，并尝试持久化。
+                // ④ 修复：这次写盘此前被 (void) 吞掉，且成功分支无条件 initWarning_.clear()，结果「迁移只改了内存、
+                //   未落到磁盘」却对外报 configStatus=ok（静默）。现把失败并入 warnOut/initWarning_，使其在 health
+                //   上体现为 degraded（键为 configWarning）。⚠️ migrateWarn 仅在写盘**真的失败**时才非空 ⇒ 健康
+                //   装载（不触发本迁移分支）时 warnOut 仍为空，保持「正常启动零告警 / stderr 零输出」语义。
+                std::string migrateWarn;
                 const auto oldCascade = resolvePathFromExeDir(L"tests/data/lbpcascade_frontalface.xml");
                 if (cfg.recognition.cascadePath == oldCascade && !std::filesystem::exists(cfg.recognition.cascadePath)) {
                     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
                     const std::string prettyMigrated = buildSettingsJson(cfg, false, true);
                     std::string writeErr;
-                    (void)writeAtomicallyWithBackup(prettyMigrated, writeErr);
+                    if (!writeAtomicallyWithBackup(prettyMigrated, writeErr)) {
+                        // 只改了内存 cascadePath；写盘失败 ⇒ 磁盘仍是失效的旧路径，下次启动会再次进入本分支。
+                        migrateWarn = "级联路径迁移未持久化（写入 config.json 失败）: " + writeErr;
+                    }
                 }
 
                 const std::string pretty = buildSettingsJson(cfg, false, true);
@@ -867,11 +876,13 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                 lastGoodJsonPretty_ = pretty;
                 std::error_code ec;
                 lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
-                // 诊断字段永远描述**最近一次** initialize：成功路径同样无条件复位，
+                // 诊断字段永远描述**最近一次** initialize：成功路径同样复位上一轮的 rejected / 隔离名；
+                // initWarning_ 仅回填本次迁移告警（健康装载时 migrateWarn 为空 ⇒ 复位为空串），
                 // 否则同一 store 二次 initialize 会残留上一轮的 rejected / warning / 隔离名。
                 configRejectedOnLoad_ = false;
-                initWarning_.clear();
+                initWarning_ = migrateWarn;
                 initQuarantineFileName_.clear();
+                warnOut = migrateWarn;
                 return true;
             }
         }
@@ -1053,16 +1064,21 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         r.details.push_back(prettyEnc);
         return r;
     }
-    if (!writeAtomicallyWithBackup(prettyEnc, err)) {
-        r.httpStatus = 500;
-        r.code = "io_error";
-        r.message = "写入配置失败";
-        r.details.push_back(err);
-        return r;
-    }
-
+    // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘与内存提交（cfg_/generation_）必须在**同一** mu_ 临界区内，
+    //   以便与 reloadFromDisk 回滚段的「取快照 → 序列化 → 写回磁盘」互斥，杜绝「回滚线程用旧快照覆盖已提交的
+    //   新 PUT」这一竞态（详见 reloadFromDisk 回滚处的同因注释）。
+    //   为何可直接扩大 mu_（而非新增专用写锁）：buildSettingsJson / writeAtomicallyWithBackup **均不取 mu_**
+    //   （逐字核实），故持 mu_ 调用它们不会递归加锁；全函数仅此一把锁 ⇒ 无锁序问题、无死锁风险。
+    //   代价：写盘期间 mu_ 被持有 ⇒ current() 短暂阻塞（PUT 为低频管理操作，可接受）。
     {
         std::lock_guard<std::mutex> lock(mu_);
+        if (!writeAtomicallyWithBackup(prettyEnc, err)) {
+            r.httpStatus = 500;
+            r.code = "io_error";
+            r.message = "写入配置失败";
+            r.details.push_back(err);
+            return r;
+        }
         cfg_ = newCfg;
         lastGoodJsonPretty_ = prettyEnc;
         std::error_code ec;
@@ -1148,21 +1164,23 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
         r.details.push_back(prettyEnc);
         return r;
     }
-    if (!writeAtomicallyWithBackup(prettyEnc, err)) {
-        if (hadOldKey) {
-            (void)writeFileAll(keyPath_, oldKeyB64, ioErr);
-        } else {
-            std::error_code ec;
-            std::filesystem::remove(keyPath_, ec);
-        }
-        r.code = "io_error";
-        r.message = "写入配置失败（已尝试回滚密钥）";
-        r.details.push_back(err);
-        return r;
-    }
-
+    // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘 + 内存提交同处一个 mu_ 临界区，与 PUT / 热重载回滚写回互斥，
+    //   杜绝「回滚线程用旧快照覆盖已提交的新配置」。writeAtomicallyWithBackup / writeFileAll **均不取 mu_**
+    //   （逐字核实）⇒ 无递归加锁；本函数仅此一把锁 ⇒ 无锁序问题。
     {
         std::lock_guard<std::mutex> lock(mu_);
+        if (!writeAtomicallyWithBackup(prettyEnc, err)) {
+            if (hadOldKey) {
+                (void)writeFileAll(keyPath_, oldKeyB64, ioErr);
+            } else {
+                std::error_code ec;
+                std::filesystem::remove(keyPath_, ec);
+            }
+            r.code = "io_error";
+            r.message = "写入配置失败（已尝试回滚密钥）";
+            r.details.push_back(err);
+            return r;
+        }
         cfg_ = cfg;
         lastGoodJsonPretty_ = prettyEnc;
         std::error_code ec;
@@ -1219,39 +1237,93 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
             return false;
         }
         outErr += "; 原配置已隔离为 " + movedTo.filename().string();
-        // 隔离已把坏文件挪走；随后按既有语义把 .bak 写回 config.json，使磁盘上仍有一份可用配置。
-        // **但不采纳** .bak 进内存：.bak 是「上一次写入前」的副本，可能比内存中正在生效的配置更旧；
-        // 采纳它（cfg_ = bakCfg 且 generation+1）等于用一次**无关的外部坏写**撤销用户最近一次成功 PUT，
-        // 并经 generation 触发整条管线 FullRestart——这正是本次修复要消除的语义。
-        if (std::filesystem::exists(bakPath_)) {
-            std::string bakTxt, e2;
-            if (readFileAll(bakPath_, bakTxt, e2)) {
-                AppConfig bakCfg;
-                if (parseAndValidateSettingsDoc(bakTxt, bakCfg, e2)) {
-                    std::string ioErr;
-                    const std::filesystem::path tmp = configPath_.parent_path() / L"config.json.rollback.tmp";
-                    if (writeFileAll(tmp, bakTxt, ioErr) && moveReplaceWriteThrough(tmp, configPath_, ioErr)) {
-                        outErr += "; 已用 .bak 写回 config.json（本次不应用）";
-                    } else {
-                        outErr += "; 回滚写入失败: " + ioErr;
-                    }
-                } else {
-                    outErr += "; .bak 也无效: " + e2;
-                }
-            } else {
-                outErr += "; 读取 .bak 失败: " + e2;
-            }
-        } else {
-            // 无可用 .bak：不写盘。坏文件已被隔离 ⇒ 下次轮询因 config.json 不存在直接早退。
-            outErr += "; 无可用 .bak，本次不写盘";
-        }
-        // 记录**实际**当前 mtime（写回 .bak 时文件已被本次改写；隔离后文件不存在则取默认值），
-        // 打断 1 秒轮询的重复重读（否则会每秒重读一份已判定为坏 / 已被替换的文件，产生 IO / 日志噪声）。
-        // ⚠️ 残余不一致（如实登记，非第三种语义）：本路径把 .bak 写回磁盘后即返回，内存配置保持原样。
-        //   若 .bak 比内存中生效的配置更旧，则「磁盘 = 旧 .bak，内存 = 较新配置」不一致，直到下一次
-        //   真实变更或重启才收敛。这是为「不应用」语义（不重启管线、不撤销用户最近一次 PUT）付出的代价。
+        // 隔离已把坏文件挪走；随后把**内存中当前生效的配置**写回 config.json，使磁盘与内存**语义一致（非字节一致）**。
+        // FACE-CONFIG-010：为什么不用 .bak —— .bak 是「上一次写入前」的副本，可能比内存中正在生效的
+        //   配置**更旧**（例：用户刚 PUT 过 B，.bak 仍是 A）。把它写回磁盘会得到「磁盘 = 旧 A、内存 = 新 B」
+        //   的不一致，静默回退用户最近一次成功 PUT 的持久化形态，直到下一次真实变更或重启才收敛。
+        //   故首选内存快照；仅当内存序列化不可写时才回退 .bak（保持服务可用），两者都不可用则不写盘。
+        // 为什么用 cfg_ 重新序列化而非缓存的 lastGoodJsonPretty_ —— lastGoodJsonPretty_ **有意可能滞后**
+        //   于 cfg_（成功热重载路径在序列化为错误 stub 时**不**更新它，见下方成功分支），故它不总等于当前
+        //   生效配置；cfg_ 才是「当前生效配置」的事实源（与 configRejectedOnLoad 语义同源）。
+        // 落盘前必须过 serializedDocIsWritable 闸门：密钥不可用时 buildSettingsJson 返回 {"_error":...}
+        //   stub，写盘会污染磁盘（下次启动必被 schema 拒 ⇒ 再隔离 ⇒ 自持续循环）。
+        // 写回方式为「直接写 tmp + moveReplaceWriteThrough」，**不**走 writeAtomicallyWithBackup——
+        //   后者会轮转 .bak（把 config.json.bak 改名为 .bak.1），搅乱本轮「隔离证据 → 回滚」的证据链。
+        // **不采纳**任何回滚内容进内存（不 cfg_ = ...、不 generation+1）：避免一次无关的外部坏写撤销用户
+        //   最近一次成功 PUT 并经 generation 触发整条管线 FullRestart——这是本次修复要保住的语义。
+        // ── 并发互斥（FACE-CONFIG-010 竞态收口；本文件三处写盘路径统一用 mu_ 串行化）──
+        // 以下「取内存快照 → 序列化 → 写回磁盘 → 记录 mtime」**整段**必须在 mu_ 临界区内完成，与
+        // updateFromJsonBody（PUT）及 rotateKeyAndReencrypt 的「写盘 + 内存提交」互斥。
+        // 否则失效时序（三路对抗审查逐字推演，已复核为真实可达）：回滚线程取到旧快照 A → 并发 PUT 成功
+        //   写盘 B 且提交 cfg_=B、generation++ → 回滚线程继续把 A 写回 config.json（**覆盖 B**）→ 再把
+        //   lastWriteTime_ 记为 A 的 mtime ⇒ 下一轮轮询因 mtime 相同早退 ⇒ 磁盘=A、内存=B 的分歧持久不
+        //   收敛，重启读到的就是被撤销的 A。这与 FACE-CONFIG-010 声称消除的失败是**同一个**，只是从确定性
+        //   版变成竞态版。
+        // 为何直接用 mu_ 而非新增专用写锁：mu_ 已是内存态的唯一锁；本段调用的 buildSettingsJson /
+        //   serializedDocIsWritable / writeFileAll / moveReplaceWriteThrough / parseAndValidateSettingsDoc
+        //   均**不取 mu_**（逐字核实）⇒ 不会递归加锁；三处写盘路径都只用 mu_ 一把锁 ⇒ 无锁序问题、无死锁。
+        //   代价：写盘期间 mu_ 被持有 ⇒ current() 短暂阻塞（本路径只在检测到外部坏写时触发，罕见）。
+        // rbTmp 为**固定名** `config.json.rollback.tmp`：写入 + moveReplaceWriteThrough 成功即消失；但进程
+        //   若在写盘中途崩溃**会残留**该文件（initialize 与 writeAtomicallyWithBackup 都不清理它）。残留无
+        //   正确性影响（下次回滚以 trunc 覆盖），仅占一份磁盘空间，属已知登记项（见 config.md）。
+        const std::filesystem::path rbTmp = configPath_.parent_path() / L"config.json.rollback.tmp";
         {
             std::lock_guard<std::mutex> lock(mu_);
+            const std::string memPretty = buildSettingsJson(cfg_, false, true);
+            std::string memWhyNot;
+            if (serializedDocIsWritable(memPretty, memWhyNot)) {
+                std::string ioErr;
+                if (writeFileAll(rbTmp, memPretty, ioErr) && moveReplaceWriteThrough(rbTmp, configPath_, ioErr)) {
+                    outErr += "; 已用内存中当前生效的配置写回 config.json（本次不应用）";
+                } else {
+                    std::error_code rec;
+                    std::filesystem::remove(rbTmp, rec);
+                    outErr += "; 内存配置写回失败: " + ioErr;
+                }
+            } else {
+                // ② 订正：进入本臂的**现实**原因**不是**「密钥不可用」。.bak 臂先经 parseAndValidateSettingsDoc，
+                //   而该函数**无条件**先调 ensureOrLoadKey ⇒ 密钥不可用时 .bak 会被同判「也无效」⇒ 落到下面
+                //   「无可用 .bak」臂。故「密钥不可用」下**两臂皆不可用 ⇒ 不写盘**。本臂真正可达的场景是
+                //   「密钥可用但加密失败」——即 buildSettingsJson 因 aes256gcmEncrypt 失败返回
+                //   {"_error":"encrypt_error"} stub，此时 .bak 用同一把**可用**密钥仍能解析成功 ⇒ 才真正回退
+                //   .bak。属极罕见分支。
+                outErr += "; 内存配置不可写（" + memWhyNot + "），回退 .bak";
+                if (std::filesystem::exists(bakPath_)) {
+                    std::string bakTxt, e2;
+                    if (readFileAll(bakPath_, bakTxt, e2)) {
+                        AppConfig bakCfg;
+                        if (parseAndValidateSettingsDoc(bakTxt, bakCfg, e2)) {
+                            std::string ioErr;
+                            if (writeFileAll(rbTmp, bakTxt, ioErr) && moveReplaceWriteThrough(rbTmp, configPath_, ioErr)) {
+                                outErr += "; 已用 .bak 写回 config.json（本次不应用）";
+                            } else {
+                                std::error_code rec;
+                                std::filesystem::remove(rbTmp, rec);
+                                outErr += "; 回滚写入失败: " + ioErr;
+                            }
+                        } else {
+                            outErr += "; .bak 也无效: " + e2;
+                        }
+                    } else {
+                        outErr += "; 读取 .bak 失败: " + e2;
+                    }
+                } else {
+                    // ③ 后果（**可达**：密钥不可用时两臂皆不可用，正是走这里）：坏文件已被隔离 ⇒ config.json
+                    //   **不存在**。下次启动进入「不存在」分支 ⇒ loadRejected=false ⇒ 以默认值运行、configStatus
+                    //   报 ok（密钥也坏时为 degraded）⇒ **用户原配置永远不会被自动恢复**——只能人工把
+                    //   config.json.corrupt.<ts> 改名回 config.json。需人工介入，非自愈。
+                    outErr += "; 无可用 .bak，本次不写盘; 原配置未自动恢复，需人工从 config.json.corrupt.* 改回";
+                }
+            }
+            // 记录**实际**当前 mtime（写回内容时文件已被本次改写；隔离后若未写回则文件不存在、取默认值），
+            // 打断 1 秒轮询的重复重读（否则会每秒重读一份已判定为坏 / 已被替换的文件，产生 IO / 日志噪声）。
+            // ⚠️ 残余不一致（如实登记，非第三种语义）：本路径返回时内存配置保持原样（不应用）。
+            //   · 首选路径（内存快照写回）下磁盘与内存**语义一致（非字节一致）**——buildSettingsJson 会重加密
+            //     postUrl（新 nonce）、对 inference.* 走归一化/钳制、且**不**序列化 AppConfig.configPath，
+            //     故两份 JSON 不是字节等价；这正是 FACE-CONFIG-010 要达到的目标；
+            //   · 回退 .bak 路径下 .bak 可能比内存中生效的配置更旧 ⇒ 「磁盘 = 旧 .bak，内存 = 较新配置」
+            //     短暂不一致，直到下一次真实变更或重启才收敛。该回退仅在「密钥可用但内存加密失败」的极罕见
+            //     分支发生，是为「不应用」语义（不重启管线、不撤销用户最近一次 PUT）付出的代价。
             std::error_code cec;
             if (std::filesystem::exists(configPath_)) {
                 lastWriteTime_ = std::filesystem::last_write_time(configPath_, cec);

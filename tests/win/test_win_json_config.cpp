@@ -4,10 +4,12 @@
 
 #include <windows.h>
 
+#include <cstdio>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <io.h>  // MSVC: _dup/_dup2/_close/_fileno（FACE-CONFIG-012 stderr 重定向捕获）
 #include <iostream>
 #include <string>
 #include <vector>
@@ -91,6 +93,53 @@ bool writeAllText(const std::filesystem::path& p, const std::string& data) {
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
     return static_cast<bool>(out);
 }
+
+// FACE-CONFIG-012：把 stderr（含 std::cerr）重定向到文件以捕获 initialize 的独立可见通道输出。
+// 捕获手段**照抄** tests/win/test_frame_pipeline_reload.cpp 的 _dup/_dup2/freopen 三连（MSVC fd 语义）：
+//   fflush(stdout)/fflush(stderr)/cerr.flush() → _dup 保存原 fd → freopen 指向捕获文件 → 收尾 _dup2 还原。
+// 与先例的差异（本文件是 return-false 风格、存在大量提前 return）：改用 **RAII** 守卫，保证任何提前
+//   return（甚至中途断言失败）都还原 stderr——否则 fd 2 会永久指向捕获文件，后续用例输出全部丢失。
+struct StderrCapture {
+    int savedFd = -1;
+    bool active = false;
+    std::filesystem::path path;
+
+    explicit StderrCapture(const std::filesystem::path& p) : path(p) {
+        fflush(stdout);
+        fflush(stderr);
+        std::cerr.flush();
+        savedFd = _dup(_fileno(stderr));
+        if (savedFd < 0) return;
+        if (freopen(path.string().c_str(), "w", stderr) == nullptr) {
+            _close(savedFd);
+            savedFd = -1;
+            return;
+        }
+        active = true;
+    }
+    // 结束捕获：flush 后还原 stderr，再读回捕获文本（空串 = 捕获不可用或确无输出）。
+    std::string finish() {
+        if (!active) return std::string();
+        fflush(stderr);
+        std::cerr.flush();
+        _dup2(savedFd, _fileno(stderr));
+        _close(savedFd);
+        savedFd = -1;
+        active = false;
+        std::string out;
+        std::ifstream in(path, std::ios::binary);
+        if (in.is_open()) out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return out;
+    }
+    ~StderrCapture() {
+        if (!active) return;
+        // 兜底还原（用例未调 finish 就提前 return 时）。
+        fflush(stderr);
+        std::cerr.flush();
+        _dup2(savedFd, _fileno(stderr));
+        _close(savedFd);
+    }
+};
 
 // 文件的唯一标识（卷序列号 + 文件索引）。重命名（移动）只改目录项、保留 MFT 记录（索引不变）；
 // 拷贝会新建文件、得到不同标识。用于判别隔离是「改名（移动）」还是「拷贝」。
@@ -802,9 +851,10 @@ bool test_config_quarantine_retry_succeeds_after_collisions() {
     return false;  // 未命中预期名 ⇒ 重试/取名逻辑偏离
 }
 
-// FACE-CONFIG-001 补充：热重载被拒但**无可用 .bak** ⇒ 只隔离、不写盘（config.json 不存在）。
-// 补齐此前只覆盖启动路径的空白：热重载的隔离 + 「无 .bak 不写盘」语义（config.json 早退）。
-bool test_config_reload_rejected_no_bak_quarantines_without_write() {
+// FACE-CONFIG-001 / FACE-CONFIG-010 补充：热重载被拒且**无可用 .bak** ⇒ 用内存中当前生效的配置写回。
+// （FACE-CONFIG-010 之前：无 .bak 即不写盘，config.json 消失、磁盘与内存脱节；现在即便无 .bak 也把内存
+//   配置写回，磁盘与内存保持一致。）
+bool test_config_reload_rejected_no_bak_rewrites_from_memory() {
     const auto dir = makeTempDir("reload_reject_no_bak");
     const auto cfgPath = dir / "config.json";
     ConfigEnvGuard env(cfgPath);
@@ -812,7 +862,8 @@ bool test_config_reload_rejected_no_bak_quarantines_without_write() {
     rk_win::WinJsonConfigStore store;
     std::string warn;
     store.initialize(warn);
-    if (std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置条件防呆
+    if (std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置条件防呆：无 .bak
+    const std::uint64_t gen0 = store.generation();
 
     const std::string bad = "{\"camera\": { \"fps\": 30 ";
     if (!writeAllText(cfgPath, bad)) return false;
@@ -823,15 +874,78 @@ bool test_config_reload_rejected_no_bak_quarantines_without_write() {
     store.pollReloadOnce(applied, err);
 
     if (applied) return false;
+    if (store.generation() != gen0) return false;  // 不应用：代数不变
     // 原文件被隔离（逐字节保全）。
     const auto corrupts = listCorruptConfigs(dir);
     if (corrupts.size() != 1) return false;
     std::string qtext;
     if (!readAllText(corrupts[0], qtext) || qtext != bad) return false;
-    // config.json 不存在（无 .bak ⇒ 不写盘）；无回滚临时文件残留。
-    if (std::filesystem::exists(cfgPath)) return false;
+    // FACE-CONFIG-010：无 .bak 也写回内存配置 ⇒ config.json 存在且是一份合法 settings 文档。
+    if (!std::filesystem::exists(cfgPath)) return false;
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    if (back == bad) return false;  // 不得把坏内容原地留回
+    rk_win::JsonValue backDoc;
+    std::string berr;
+    if (!rk_win::parseJson(back, backDoc, berr) || !backDoc.isObject()) return false;
+    std::string schemaErr;
+    if (!rk_win::JsonSchemaValidator::validate(
+            rk_win::JsonSchemaValidator::buildSettingsDocSchema(), backDoc, &schemaErr)) {
+        return false;  // 写回的必须是可再次装载的合法配置（而非 _error stub / 坏内容）
+    }
+    // 无回滚临时文件残留。
     if (std::filesystem::exists(dir / "config.json.rollback.tmp")) return false;
     return true;
+}
+
+// FACE-CONFIG-010（**核心判别**）：热重载被拒时写回 config.json 的必须是**内存中当前生效的配置**，
+// 而非可能更旧的 .bak（.bak 是「上一次写入前」的副本，会静默回退用户最近一次成功 PUT）。
+// 构造：initialize 落地默认（width=640）→ PUT width=800（此后 .bak = width 640 的旧配置）→ 外部把
+//   config.json 改成坏内容 → pollReloadOnce 被拒。修复前写回 .bak ⇒ 磁盘 width=640；修复后写回内存
+//   ⇒ 磁盘 width=800。本用例对磁盘内容直接断言，红在「回滚源用 .bak」这一改法上。
+bool test_config_reload_rejected_rewrites_memory_not_stale_bak() {
+    const auto dir = makeTempDir("reload_reject_memory_not_bak");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+    if (store.current().camera.width != 800) return false;
+    if (!std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置条件：.bak 存在才有判别力
+    const std::uint64_t gen0 = store.generation();
+
+    // 坏内容（JSON 可解析但被 schema 拒：minFaceSizePx 期望 number）。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["minFaceSizePx"] = rk_win::JsonValue::makeString("80");
+    if (!writeAllText(cfgPath, rk_win::toJsonString(doc, true))) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+    if (applied) return false;
+    if (store.generation() != gen0) return false;
+    if (store.current().camera.width != 800) return false;  // 不应用：内存仍为 PUT 后的 800
+
+    // ★ 写回的 config.json 必须是内存配置（width=800），而非 .bak（width=640）。
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    rk_win::JsonValue backDoc;
+    std::string berr;
+    if (!rk_win::parseJson(back, backDoc, berr) || !backDoc.isObject()) return false;
+    const rk_win::JsonValue* cam = backDoc.find("camera");
+    if (!cam || !cam->isObject()) return false;
+    const rk_win::JsonValue* wv = cam->find("width");
+    if (!wv || !wv->isNumber()) return false;
+    return wv->n == 800;  // 修复前 = 640（旧 .bak）⇒ 红
 }
 
 // FACE-CONFIG-001 补充（**核心**）：热重载被拒 ⇒ 隔离 + 保全证据 + **不应用**。
@@ -840,8 +954,9 @@ bool test_config_reload_rejected_no_bak_quarantines_without_write() {
 //   initialize 落地默认配置（width=640）→ PUT 改 width=800（此后 .bak = width=640 的旧配置）
 //   → 外部把 config.json 改成**坏内容**。修复前（rolledBack 跳过守卫）：隔离后采纳 .bak ⇒
 //   cfg_.camera.width 变回 640 且 generation+1（经 win_local_service_main 触发管线 FullRestart）
-//   ——即一次无关的外部坏写静默撤销用户最近一次 PUT。修复后：隔离坏文件、把 .bak 写回 config.json，
-//   但内存仍为 width=800、generation 不变、outApplied=false。本用例对每一环分别断言。
+//   ——即一次无关的外部坏写静默撤销用户最近一次 PUT。修复后：隔离坏文件、把**内存中当前生效的配置**
+//   （width=800）写回 config.json（FACE-CONFIG-010：不再用可能更旧的 .bak），但内存仍为 width=800、
+//   generation 不变、outApplied=false。本用例对每一环分别断言。
 bool test_config_reload_rejected_quarantines_and_not_applied() {
     const auto dir = makeTempDir("reload_reject_not_applied");
     const auto cfgPath = dir / "config.json";
@@ -886,6 +1001,149 @@ bool test_config_reload_rejected_quarantines_and_not_applied() {
     if (store.generation() != gen0) return false;
     // (d) 内存配置仍是原来那份（width=800；修复前会被 .bak 回滚成 640）。
     if (store.current().camera.width != 800) return false;
+    return true;
+}
+
+// ②（对抗审查收口）：**密钥不可用**时热重载被拒 ⇒ 内存与 .bak **两臂皆不可用** ⇒ 不写盘。
+// 判据：.bak 臂先经 parseAndValidateSettingsDoc，而该函数**无条件**先调 ensureOrLoadKey；密钥不可用
+//   时 .bak 会被同判「也无效」⇒ 落到「无可用 .bak」臂。故「密钥不可用」**不会**回退 .bak、也不会把内存
+//   stub 写回——而是两者都不写。修复前的注释/文档把「密钥不可用」当作回退 .bak 的场景，属失实（本用例
+//   给出可判别证据：outErr 必须含「.bak 也无效」，且不得发生写回）。
+bool test_config_reload_rejected_key_unavailable_bak_unusable() {
+    const auto dir = makeTempDir("reload_key_bad_bak_unusable");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 先落盘一份合法配置（含密钥），并把 config.json 复制为 .bak（schema-valid 且以当前密钥加密）。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!std::filesystem::exists(cfgPath)) return false;
+    {
+        std::string t;
+        if (!readAllText(cfgPath, t)) return false;
+        if (!writeAllText(dir / "config.json.bak", t)) return false;
+    }
+    const std::uint64_t gen0 = store.generation();
+
+    // 2) 破坏密钥：此后 buildSettingsJson 与 parseAndValidateSettingsDoc 都取不到可用密钥。
+    if (!writeAllText(dir / "config.key.dpapi", "!!!not-base64!!!")) return false;
+
+    // 3) 外部把 config.json 改成坏内容（截断 JSON）。
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";
+    if (!writeAllText(cfgPath, bad)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+
+    if (applied) return false;
+    if (store.generation() != gen0) return false;             // 不应用：代数不变
+    // ★ 判别断言：.bak 因同一把密钥不可用而被判无效（而非「回退 .bak 成功」）。
+    if (err.find(".bak 也无效") == std::string::npos) return false;
+    // 两臂皆不可用 ⇒ 不写盘：config.json 已被隔离 ⇒ 不存在。
+    if (std::filesystem::exists(cfgPath)) return false;
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) return false;
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext) || qtext != bad) return false;
+    if (std::filesystem::exists(dir / "config.json.rollback.tmp")) return false;  // 无临时残留
+    return true;
+}
+
+// ③（对抗审查收口）：密钥不可用 + 无 .bak ⇒ 不写盘；config.json 已隔离 ⇒ **不存在** ⇒ 下次启动进入
+//   「不存在」分支 ⇒ 不判 rejected、以默认值运行（密钥也坏 ⇒ degraded 可见）⇒ **用户原配置永不自动恢复**，
+//   需人工把 config.json.corrupt.* 改名回 config.json。本用例把「不写盘 → 下次启动不 rejected」这一后果
+//   端到端钉住（判别力：若回滚改成「无 .bak 也写默认/写内存」，config.json 会存在且本用例的 not-exist 断言红）。
+bool test_config_reload_rejected_key_unavailable_no_bak_no_selfheal() {
+    const auto dir = makeTempDir("reload_key_bad_no_bak");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置：确无 .bak
+    const std::uint64_t gen0 = store.generation();
+
+    if (!writeAllText(dir / "config.key.dpapi", "!!!not-base64!!!")) return false;
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";
+    if (!writeAllText(cfgPath, bad)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+
+    if (applied) return false;
+    if (store.generation() != gen0) return false;
+    // ★ 走「无可用 .bak」臂，并如实报告「原配置未自动恢复」。
+    if (err.find("无可用 .bak") == std::string::npos) return false;
+    if (err.find("未自动恢复") == std::string::npos) return false;
+    // 不写盘 ⇒ config.json 不存在（坏文件仅在隔离产物里）。
+    if (std::filesystem::exists(cfgPath)) return false;
+    if (listCorruptConfigs(dir).size() != 1) return false;
+
+    // ③ 端到端后果：下次启动走「不存在」分支 ⇒ 不判 rejected（降级为默认值；密钥坏 ⇒ 有告警可见）。
+    rk_win::WinJsonConfigStore store2;
+    std::string warn2;
+    store2.initialize(warn2);
+    if (store2.configRejectedOnLoad()) return false;   // 非 rejected：config.json 本就不存在
+    if (store2.initWarning().empty()) return false;    // 密钥仍坏 ⇒ degraded 必须在诊断上可见
+    return true;
+}
+
+// ④（对抗审查收口）：initialize 成功分支里的级联路径迁移写盘失败**不再被吞** ⇒ 并入 warnOut/initWarning_
+//   ⇒ health 体现为 degraded。此前 (void) 吞掉且成功分支无条件清空 initWarning_ ⇒ 迁移未持久化却报 ok。
+// 构造（确定性）：迁移写盘走 writeAtomicallyWithBackup，其临时名为固定 `config.json.tmp`；用**目录**占住
+//   该名 ⇒ writeFileAll 必失败 ⇒ 迁移写盘必失败（且不影响读取既有 config.json）。
+bool test_config_cascade_migration_write_failure_degrades() {
+    const auto dir = makeTempDir("cascade_migration_write_fail");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 落盘默认配置，再把 cascadePath 经 PUT 指到旧的 tests/data 路径（resolvePathFromExeDir 转绝对路径）。
+    rk_win::WinJsonConfigStore seed;
+    std::string w;
+    seed.initialize(w);
+    if (!seed.updateFromJsonBody("{\"recognition\":{\"cascadePath\":\"tests/data/lbpcascade_frontalface.xml\"}}").ok) {
+        return false;
+    }
+    // 读回确认「旧 cascade 路径」且该文件不存在（否则迁移分支不会触发 ⇒ 本用例构造失败，响亮返回）。
+    std::filesystem::path oldCascadePath;
+    {
+        std::string txt;
+        if (!readAllText(cfgPath, txt)) return false;
+        rk_win::JsonValue doc;
+        std::string perr;
+        if (!rk_win::parseJson(txt, doc, perr) || !doc.isObject()) return false;
+        const rk_win::JsonValue* rec = doc.find("recognition");
+        if (!rec || !rec->isObject()) return false;
+        const rk_win::JsonValue* cp = rec->find("cascadePath");
+        if (!cp || !cp->isString()) return false;
+        oldCascadePath = cp->s;
+    }
+    if (oldCascadePath.empty()) return false;
+    if (std::filesystem::exists(oldCascadePath)) return false;  // 场景前提：旧文件确实不存在
+
+    // 2) 用目录占住写盘临时名 config.json.tmp ⇒ 迁移写盘必失败。
+    {
+        std::error_code ec;
+        std::filesystem::create_directory(dir / "config.json.tmp", ec);
+        if (ec) return false;
+    }
+
+    // 3) 重新 initialize（读既有 config.json）⇒ 命中迁移分支、写盘失败 ⇒ 必须降级可见。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    if (warn.find("级联路径迁移未持久化") == std::string::npos) return false;  // 失败不再被吞
+    if (store.initWarning().empty()) return false;                             // health 可见（degraded）
+    if (store.configRejectedOnLoad()) return false;                            // 成功分支：不是 rejected
+    // 内存已改指新路径（迁移在内存生效），只是未落盘。
+    if (store.current().recognition.cascadePath.string().find("assets") == std::string::npos) return false;
     return true;
 }
 
@@ -974,4 +1232,64 @@ bool test_config_unknown_key_rejected() {
         return false;  // 未知键被接受 ⇒ 收束未生效
     }
     return !schemaErr.empty();  // 失败须可见
+}
+
+// FACE-CONFIG-012：装载失败时 initialize 的**独立可见通道**（stderr 直写，FACE-CONFIG-001）必须有输出，
+// 且含失败原因与（隔离成功时的）隔离文件名。此前该通道**零测试覆盖**（stderr 直写无人断言）。
+// 判别力：删掉 initialize 里那句 std::cerr 直写（或把它降级为仅写 EventLogger）⇒ captured 为空 ⇒ 红。
+bool test_config_load_failure_writes_stderr() {
+    const auto dir = makeTempDir("stderr_load_failure");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 坏 JSON（截断）：readFileAll 成功、parseJson 失败 ⇒ 判定为「无法装载」⇒ 隔离 + stderr 输出。
+    const std::string bad = "{\"camera\": ";
+    if (!writeAllText(cfgPath, bad)) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    std::string captured;
+    {
+        StderrCapture cap(dir / "stderr_capture.log");
+        store.initialize(warn);
+        captured = cap.finish();
+    }
+    // 场景已构造（否则后续断言无意义）。
+    if (!store.configRejectedOnLoad()) return false;
+    // 失败原因原文必须出现在 stderr 通道上。
+    if (captured.find("配置装载失败") == std::string::npos) return false;
+    if (captured.find("JSON 解析失败") == std::string::npos) return false;
+    // 隔离文件名（隔离成功时）也必须出现在 stderr 通道上。
+    const std::string qname = store.initQuarantineFileName();
+    if (qname.empty()) return false;
+    if (captured.find(qname) == std::string::npos) return false;
+    return true;
+}
+
+// FACE-CONFIG-012（另一半，同样重要）：合法配置装载成功时 stderr **必须为空**——正常启动零输出，
+// 不得污染既有输出（含 harness / ctest 的 stderr）。
+bool test_config_healthy_load_silent_stderr() {
+    const auto dir = makeTempDir("stderr_healthy_silent");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 先生成一份合法 config.json（首次 initialize 走默认值落盘；该次不在捕获区间内）。
+    {
+        rk_win::WinJsonConfigStore seed;
+        std::string w;
+        seed.initialize(w);
+    }
+    if (!std::filesystem::exists(cfgPath)) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    std::string captured;
+    {
+        StderrCapture cap(dir / "stderr_capture.log");
+        store.initialize(warn);
+        captured = cap.finish();
+    }
+    if (!warn.empty()) return false;               // 健康装载无告警
+    if (store.configRejectedOnLoad()) return false;
+    return captured.empty();                       // ★ 正常启动零输出
 }
