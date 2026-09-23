@@ -147,6 +147,29 @@ bool quarantineConfigFile(const std::filesystem::path& p, std::filesystem::path&
     return false;
 }
 
+// 落盘前置闸门：序列化产物必须能通过 settings schema。
+// 为什么必须有：密钥不可用（config.key.dpapi 损坏 / 跨用户复制 / DPAPI 不可用）时，
+//   buildSettingsJson 返回 {"schemaVersion":1,"_error":"..."} 错误 stub。它一旦落盘，
+//   下次启动必被 schema 拒 ⇒ 再隔离一次、再写同一份 stub ⇒ 隔离文件无清理地累积，
+//   且 health 的 configStatus 永久 rejected。拒写非法产物即打断该自持续循环
+//   （下次启动 config.json 不存在，走正常分支）。
+// whyNot 回传具体原因，供 warnOut 做「失败要有可见性」输出。
+static bool serializedDocIsWritable(const std::string& pretty, std::string& whyNot) {
+    whyNot.clear();
+    JsonValue doc;
+    std::string perr;
+    if (!parseJson(pretty, doc, perr)) {
+        whyNot = "序列化产物不是合法 JSON: " + perr;
+        return false;
+    }
+    std::string serr;
+    if (!JsonSchemaValidator::validate(JsonSchemaValidator::buildSettingsDocSchema(), doc, &serr)) {
+        whyNot = "序列化产物未通过 schema: " + serr;
+        return false;
+    }
+    return true;
+}
+
 // --- 加解密字段格式 ---
 static bool parseEncryptedStringObject(const JsonValue& v, AesGcmCiphertext& ct, std::string& err) {
     err.clear();
@@ -844,6 +867,11 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                 lastGoodJsonPretty_ = pretty;
                 std::error_code ec;
                 lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
+                // 诊断字段永远描述**最近一次** initialize：成功路径同样无条件复位，
+                // 否则同一 store 二次 initialize 会残留上一轮的 rejected / warning / 隔离名。
+                configRejectedOnLoad_ = false;
+                initWarning_.clear();
+                initQuarantineFileName_.clear();
                 return true;
             }
         }
@@ -879,14 +907,24 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
     AppConfig cfg = loadConfigFromIniOrDefault();
     cfg.configPath = configPath_;
     const std::string pretty = buildSettingsJson(cfg, false, true);
+    // 落盘前置闸门：序列化产物必须自洽（能过 settings schema）。密钥不可用时 buildSettingsJson
+    // 返回错误 stub，写盘会让「下次启动必被 schema 拒 ⇒ 再隔离、再写同一 stub」自持续循环。
+    std::string notWritable;
+    const bool serializable = serializedDocIsWritable(pretty, notWritable);
     // 隔离失败（loadRejected 且未取得隔离文件名）⇒ config.json 仍是那份坏配置，跳过写盘以免覆盖销毁。
-    const bool skipWrite = loadRejected && quarantineName.empty();
+    const bool skipWrite = !serializable || (loadRejected && quarantineName.empty());
     if (!skipWrite) {
         std::string writeErr;
         if (!writeAtomicallyWithBackup(pretty, writeErr)) {
             warnOut = warnOut.empty() ? ("写入默认 JSON 配置失败: " + writeErr) : (warnOut + "; " + writeErr);
             // 即使落盘失败，也允许继续用内存配置运行
         }
+    } else if (!serializable) {
+        // 失败要有可见性：把「为何拒写」并入 warnOut（经 initWarning 暴露为 health.configWarning），
+        // 使「密钥不可用」这一状况在诊断上可区分于其它告警。
+        const std::string reason =
+            "默认配置序列化未通过 schema（密钥不可用或加密失败），本次不落盘: " + notWritable;
+        warnOut = warnOut.empty() ? reason : (warnOut + "; " + reason);
     }
 
     {
@@ -1152,54 +1190,98 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         wt = std::filesystem::last_write_time(configPath_, ec);
         if (ec) return true;
         if (lastWriteTime_ == wt) return true;
-        if (!readFileAll(configPath_, txt, outErr)) return false;
+        if (!readFileAll(configPath_, txt, outErr)) {
+            // 记录**已观察到的 mtime**：文件持续不可读（权限 / 独占占用 / 半写）时，若不记录，
+            // 1 秒轮询会反复重读同一份不可读文件并反复失败（IO / 日志噪声）。记录后
+            // lastWriteTime_ == wt ⇒ 下次轮询在上一行直接早退，等价于「等待真正的下一次变更」。
+            lastWriteTime_ = wt;
+            return false;
+        }
     }
 
     AppConfig cfg;
     std::string parseErr;
     if (!parseAndValidateSettingsDoc(txt, cfg, parseErr)) {
-        // 回滚：尝试使用 .bak
-        outErr = "热重载校验失败，将尝试回滚: " + parseErr;
+        // 热重载校验失败：与启动路径（initialize）对齐的**证据保全**——先把坏文件改名另存
+        // （config.json.corrupt.<毫秒时间戳>），使其不被随后写盘覆盖。
+        // ⚠️ 该保全**仅限本次处理**（不变量有同样时限）：隔离产物不会被自动清理，但原位置的后续写入
+        //    （PUT / 下一次热重载）仍按各自既有语义进行，故「不被就地覆盖」只保证到本次处理结束。
+        outErr = "热重载校验失败: " + parseErr;
+        std::filesystem::path movedTo;
+        std::string qerr;
+        if (!quarantineConfigFile(configPath_, movedTo, qerr)) {
+            // 隔离失败 ⇒ 坏文件仍在原位。记录**已观察到的 mtime**，否则 1 秒轮询会反复重读同一份
+            // 坏文件并反复失败（IO / 日志噪声）。
+            outErr += "; 隔离失败（" + qerr + "），保留原文件";
+            std::lock_guard<std::mutex> lock(mu_);
+            std::error_code wec;
+            lastWriteTime_ = std::filesystem::last_write_time(configPath_, wec);
+            return false;
+        }
+        outErr += "; 原配置已隔离为 " + movedTo.filename().string();
+        // 隔离已把坏文件挪走；随后按既有语义把 .bak 写回 config.json，使磁盘上仍有一份可用配置。
+        // **但不采纳** .bak 进内存：.bak 是「上一次写入前」的副本，可能比内存中正在生效的配置更旧；
+        // 采纳它（cfg_ = bakCfg 且 generation+1）等于用一次**无关的外部坏写**撤销用户最近一次成功 PUT，
+        // 并经 generation 触发整条管线 FullRestart——这正是本次修复要消除的语义。
         if (std::filesystem::exists(bakPath_)) {
             std::string bakTxt, e2;
             if (readFileAll(bakPath_, bakTxt, e2)) {
                 AppConfig bakCfg;
                 if (parseAndValidateSettingsDoc(bakTxt, bakCfg, e2)) {
-                    // 恢复 .bak -> config.json
                     std::string ioErr;
                     const std::filesystem::path tmp = configPath_.parent_path() / L"config.json.rollback.tmp";
                     if (writeFileAll(tmp, bakTxt, ioErr) && moveReplaceWriteThrough(tmp, configPath_, ioErr)) {
-                        cfg = bakCfg;
-                        txt = bakTxt;
+                        outErr += "; 已用 .bak 写回 config.json（本次不应用）";
                     } else {
                         outErr += "; 回滚写入失败: " + ioErr;
-                        return false;
                     }
                 } else {
                     outErr += "; .bak 也无效: " + e2;
-                    return false;
                 }
             } else {
                 outErr += "; 读取 .bak 失败: " + e2;
-                return false;
             }
         } else {
-            return false;
+            // 无可用 .bak：不写盘。坏文件已被隔离 ⇒ 下次轮询因 config.json 不存在直接早退。
+            outErr += "; 无可用 .bak，本次不写盘";
         }
+        // 记录**实际**当前 mtime（写回 .bak 时文件已被本次改写；隔离后文件不存在则取默认值），
+        // 打断 1 秒轮询的重复重读（否则会每秒重读一份已判定为坏 / 已被替换的文件，产生 IO / 日志噪声）。
+        // ⚠️ 残余不一致（如实登记，非第三种语义）：本路径把 .bak 写回磁盘后即返回，内存配置保持原样。
+        //   若 .bak 比内存中生效的配置更旧，则「磁盘 = 旧 .bak，内存 = 较新配置」不一致，直到下一次
+        //   真实变更或重启才收敛。这是为「不应用」语义（不重启管线、不撤销用户最近一次 PUT）付出的代价。
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            std::error_code cec;
+            if (std::filesystem::exists(configPath_)) {
+                lastWriteTime_ = std::filesystem::last_write_time(configPath_, cec);
+            } else {
+                lastWriteTime_ = std::filesystem::file_time_type{};
+            }
+        }
+        return false;  // ★ 不应用：不 cfg_ = cfg、不 generation+1、outApplied 保持 false
     }
 
     cfg.configPath = configPath_;
     const std::string pretty = buildSettingsJson(cfg, false, true);
     {
         std::lock_guard<std::mutex> lock(mu_);
-        const auto currentWt = std::filesystem::last_write_time(configPath_, ec);
-        if (!ec && currentWt != wt) {
+        std::error_code cec;
+        const auto currentWt = std::filesystem::last_write_time(configPath_, cec);
+        if (!cec && currentWt != wt) {
             // 文件在读取后被再次修改，放弃本次更新以避免覆盖
             outErr = "配置在读取期间被外部修改，放弃热重载";
             return false;
         }
         cfg_ = cfg;
-        lastGoodJsonPretty_ = pretty;
+        // 序列化产物若为错误 stub（密钥运行期失效 ⇒ buildSettingsJson 返回 {"_error":...}），不得
+        // 记为「最近良好序列化」——否则后续 PUT 会以该 stub 为 base 合并（updateFromJsonBody 对自身
+        // 产物另有 "_error" 检查，此处对齐同一闸门）。
+        if (pretty.find("\"_error\"") == std::string::npos) {
+            lastGoodJsonPretty_ = pretty;
+        }
+        // 本路径未写盘，wt 仍是当前 mtime（上面已确认读取期间无外部修改），直接沿用即可；
+        // 写入 lastWriteTime_ 使下一次轮询在同一 mtime 上早退（避免每秒重读同一份内容）。
         lastWriteTime_ = wt;
         generation_.fetch_add(1);  // 外部写入成功 reload：配置代数 +1
     }

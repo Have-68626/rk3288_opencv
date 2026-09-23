@@ -53,6 +53,18 @@ bool touchConfigFile(const std::filesystem::path& cfgPath) {
     return !ec;
 }
 
+// 把文件 mtime 拨快 +2s（以当前实际 mtime 为基准）。用于「已整份覆盖写入新内容」的场景：
+// reloadFromDisk 做 lastWriteTime_ == wt 精确比较，粗粒度文件系统（FAT 2s 粒度）或两次写入落同一
+// tick 时，覆盖写不会刷新出与 store 记录不同的 mtime，导致 applied=false 的 flaky。须在关闭写流
+// 之后调用（touchConfigFile 的同因教训：流仍打开时析构 flush 会把 mtime 覆盖回写入时刻）。
+bool bumpMtimePlus2s(const std::filesystem::path& p) {
+    std::error_code ec;
+    const auto base = std::filesystem::last_write_time(p, ec);
+    if (ec) return false;
+    std::filesystem::last_write_time(p, base + std::chrono::seconds(2), ec);
+    return !ec;
+}
+
 // 列出目录下所有 "config.json.corrupt." 前缀文件（FACE-CONFIG-001 隔离命名含毫秒时间戳 ⇒ 不得硬编码文件名）。
 std::vector<std::filesystem::path> listCorruptConfigs(const std::filesystem::path& dir) {
     std::vector<std::filesystem::path> out;
@@ -78,6 +90,33 @@ bool writeAllText(const std::filesystem::path& p, const std::string& data) {
     if (!out.is_open()) return false;
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
     return static_cast<bool>(out);
+}
+
+// 文件的唯一标识（卷序列号 + 文件索引）。重命名（移动）只改目录项、保留 MFT 记录（索引不变）；
+// 拷贝会新建文件、得到不同标识。用于判别隔离是「改名（移动）」还是「拷贝」。
+struct FileId {
+    DWORD volume = 0;
+    DWORD indexHigh = 0;
+    DWORD indexLow = 0;
+};
+
+bool fileIdOf(const std::filesystem::path& p, FileId& idOut) {
+    const HANDLE h = CreateFileW(p.wstring().c_str(), 0,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    BY_HANDLE_FILE_INFORMATION info{};
+    const bool ok = GetFileInformationByHandle(h, &info) != FALSE;
+    CloseHandle(h);
+    if (!ok) return false;
+    idOut.volume = info.dwVolumeSerialNumber;
+    idOut.indexHigh = info.nFileIndexHigh;
+    idOut.indexLow = info.nFileIndexLow;
+    return true;
+}
+
+bool sameFileId(const FileId& a, const FileId& b) {
+    return a.volume == b.volume && a.indexHigh == b.indexHigh && a.indexLow == b.indexLow;
 }
 
 }  // namespace
@@ -575,4 +614,364 @@ bool test_config_quarantine_failure_preserves_original() {
     if (!readOk) return false;
     if (after != bad) return false;      // ★ 核心断言：原文件逐字节未被动过
     return true;
+}
+
+// FACE-CONFIG-006（命名格式）+ FACE-CONFIG-007（隔离 = 改名/移动而非拷贝）合并用例。
+//
+// (1) 命名格式：隔离产物必须为 config.json.corrupt.<十进制毫秒>。断言后缀为纯数字且位数 ≥ 12
+//     ——毫秒时间戳自 epoch 约 1.7e12（13 位），秒级约 1.7e9（10 位），故位数可判「毫秒而非秒」；
+//     后缀非纯十进制则说明换成了秒/其它后缀（如 .bak）。
+// (2) 移动判据：比对隔离**前后**两个文件的唯一标识（卷序列号 + 文件索引）。重命名只改目录项、
+//     保留 MFT 记录（文件索引不变）；拷贝会新建文件、得到不同标识。故「标识相同」⟺ 隔离是移动而非拷贝。
+//     判别力说明：仅断言「隔离内容与原内容逐字节相同」**不能**区分移动与拷贝（拷贝也满足）；
+//     若把 quarantineConfigFile 改成 copy_file + 覆盖原文件，本用例的标识比对立即变红。
+bool test_config_quarantine_move_and_name() {
+    const auto dir = makeTempDir("quarantine_move_name");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";  // 截断 JSON；内容独特，便于逐字节比对
+    if (!writeAllText(cfgPath, bad)) return false;
+
+    FileId before{};                                // 隔离前原文件的身份
+    if (!fileIdOf(cfgPath, before)) return false;   // 构造不出场景则响亮失败，绝不静默通过
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) return false;         // 隔离成功：恰好一个 corrupt 产物
+
+    // (1) 命名格式：config.json.corrupt.<十进制毫秒>
+    const std::string name = corrupts[0].filename().string();
+    const std::string prefix = "config.json.corrupt.";
+    if (name.rfind(prefix, 0) != 0) return false;
+    const std::string suffix = name.substr(prefix.size());
+    if (suffix.size() < 12) return false;           // 位数不足 ⇒ 很可能是秒级时间戳
+    for (const char c : suffix) {
+        if (c < '0' || c > '9') return false;       // 非纯十进制（秒/其它后缀）⇒ 红
+    }
+
+    // 内容逐字节保全（移动与拷贝都满足，仅证明证据完整，不作判别）。
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext) || qtext != bad) return false;
+
+    // (2) 移动判据：隔离产物与原文件是**同一个文件**（唯一标识不变）。
+    FileId after{};
+    if (!fileIdOf(corrupts[0], after)) return false;
+    return sameFileId(before, after);
+}
+
+// FACE-CONFIG-006（时间戳冲突重试）：候选名全部被占满 ⇒ 隔离失败并**保留原文件**。
+//
+// 构造（自适应 + 封顶，替代早期「固定预建 8192 个」的做法）：
+//   quarantineConfigFile 以「调用时刻的毫秒 ms」为基准，尝试 [ms, ms+99] 共 100 个连号候选名。
+//   我们先在 [t0, t0+N-1] 预建占位文件（t0 = 预建前测得的毫秒）。因 ms ≥ t0 + elapsed（elapsed = 预建
+//   耗时），窗口右端 ms+99 ≤ t0 + elapsed + 99；只要 N ≥ elapsed + 200，就有 t0+N-1 ≥ t0+elapsed+199
+//   ≥ ms+99 ⇒ 候选窗被完全覆盖 ⇒ 隔离必然失败。判据**自适应**：循环持续预建直到 N ≥ elapsed + 200
+//   （每 64 个文件重测一次 elapsed），不依赖任何「预建耗时 < 固定窗口」的固定假设。
+//   （订正：早前 8192 个固定占位 + 「余量数百倍」的说法不实——实际余量仅约 82×（8192/99），且加宽固定
+//    窗口会同时抬高预建成本、比值不变，慢盘/杀软下仍会偶发红。故改为自适应判据。）
+//   封顶：若磁盘极慢 / 杀软逐文件扫描（每文件 ≈1ms ⇒ elapsed ≈ N，判据永不满足），到 N > 200000 或
+//   elapsed > 60s 即停止并**跳过**（打一行 stderr 说明），而非判失败——这是「构造不出场景」而不是
+//   「被测行为错误」，静默通过或偶发红都比显式跳过更糟。
+//
+// 判别力（订正早前的不实描述）：
+//   · 若**去掉** quarantineConfigFile 的 `exists(dst) → continue` 预探（本平台 rename 会**覆盖**已存在
+//     目标），attempt=0 会覆盖某个占位 ⇒ 隔离「成功」⇒ initQuarantineFileName() 非空 ⇒ 用例变红。
+//   · 反之，**仅**把取名恒定为 attempt=0 而**保留**预探时，`exists(dst)` 恒真 ⇒ 仍穷尽 100 次后失败、
+//     用例**仍绿**。故本用例判的是「预探 + 连号重试」的组合，早前「恒用 attempt=0 会让用例变红」不成立。
+//   · 同时要求原文件逐字节未被覆盖（隔离失败 ⇒ 不落盘默认值；「不被就地覆盖」仅限本次装载，见源码注释）。
+bool test_config_quarantine_timestamp_collision_preserves_original() {
+    const auto dir = makeTempDir("quarantine_collision");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";
+    if (!writeAllText(cfgPath, bad)) return false;
+
+    const auto nowMs = [] {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    };
+    const std::uint64_t t0 = nowMs();
+    std::uint64_t created = 0;
+    std::uint64_t elapsed = 0;
+    bool capped = false;
+    for (;;) {
+        if (created > 200000 || elapsed > 60000) { capped = true; break; }
+        if (created >= elapsed + 200) break;  // 已覆盖候选窗且留 200ms 余量
+        if (!writeAllText(dir / ("config.json.corrupt." + std::to_string(t0 + created)), "")) return false;
+        ++created;
+        if ((created & 63) == 0) elapsed = nowMs() - t0;  // 周期性重测，避免每文件一次 syscall
+    }
+    if (capped) {
+        std::cerr << "[skip] test_config_quarantine_timestamp_collision_preserves_original: 场景未能构造"
+                     "（占位未达覆盖窗内 200ms 余量：N=" << created << ", elapsed=" << elapsed << "ms），本用例跳过"
+                  << std::endl;
+        return true;  // 构造不出场景 ⇒ 跳过，不判失败（见上方封顶说明）
+    }
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    // 覆盖性复核（防偶发红）：隔离调用时刻 ms ≤ tAfter（本行测得）。若 tAfter+99 ≤ t0+N-1 仍成立，则
+    // 候选窗 [ms, ms+99] 必被 [t0, t0+N-1] 完整覆盖（因 ms ≤ tAfter ⇒ ms+99 ≤ tAfter+99 ≤ t0+N-1）⇒
+    // 隔离**必然**失败。若此条不成立（占位期间/初始化出现 >100ms 级停顿），场景未能构造 ⇒ 跳过而非判失败。
+    const std::uint64_t tAfter = nowMs();
+    if (tAfter + 100 > t0 + created) {
+        std::cerr << "[skip] test_config_quarantine_timestamp_collision_preserves_original: 场景未能构造"
+                     "（预建跨度未覆盖调用时刻候选窗：t0+created=" << (t0 + created) << ", tAfter=" << tAfter
+                  << "），本用例跳过" << std::endl;
+        return true;
+    }
+
+    // 隔离必然失败：无隔离文件名、告警含失败原因、原文件未被覆盖。
+    if (!store.configRejectedOnLoad()) return false;
+    if (!store.initQuarantineFileName().empty()) return false;  // 覆盖了占位 ⇒ 红
+    if (warn.find("隔离失败") == std::string::npos) return false;
+    std::string after;
+    if (!readAllText(cfgPath, after)) return false;
+    if (after != bad) return false;  // ★ 原文件逐字节未被动过
+    return true;
+}
+
+// FACE-CONFIG-006 补充：隔离**重试成功**路径（上方 collision 用例只压「穷尽失败」路径）。
+//
+// 构造：占位候选窗的**前若干个**名字 [t0, t0+K]（t0 = 占位前测得的毫秒），使 attempt=0..K 落空、
+//   下一个空位（= t0+K+1）命中 ⇒ 隔离成功，产物名应恰为 t0+K+1（即 ms + attempt，attempt = t0+K+1−ms ≥ 1）。
+// 判据为何成立：quarantine 的 ms 取自其调用时刻（≥ t0）；若「占位 → pollReloadOnce」全程在 K 毫秒内
+//   完成（tAfter ≤ t0+K），则 ms ≤ tAfter ≤ t0+K ⇒ 候选 [ms, ms+99] 中被占位的恰为 [ms, t0+K]，
+//   首个空位 = t0+K+1 ⇒ 产物后缀必为 t0+K+1 且 attempt ≥ 1（attempt=0 的产物名会落在被占位区间内）。
+// 约束：若超出 K 毫秒（慢盘 / 杀软），场景未能构造 ⇒ 打一行 stderr 说明并**跳过**（不偶发失败）。
+bool test_config_quarantine_retry_succeeds_after_collisions() {
+    const auto dir = makeTempDir("quarantine_retry_success");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 先 initialize 落地默认配置（同时生成密钥），使后面 pollReloadOnce 只做轻量的 reload，
+    // 不把 DPAPI 初始化耗时计入 K 窗口。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置条件：无 .bak（fresh 目录）
+
+    // 外部把 config.json 写成坏内容并拨快 mtime。
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";
+    if (!writeAllText(cfgPath, bad)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    const auto nowMs = [] {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    };
+    const std::uint64_t K = 50;
+    const std::uint64_t t0 = nowMs();
+    for (std::uint64_t i = 0; i <= K; ++i) {
+        if (!writeAllText(dir / ("config.json.corrupt." + std::to_string(t0 + i)), "")) return false;
+    }
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+    const std::uint64_t tAfter = nowMs();
+    if (tAfter > t0 + K) {
+        std::cerr << "[skip] test_config_quarantine_retry_succeeds_after_collisions: 场景未能构造"
+                     "（占位 + poll 超出 K=" << K << "ms 窗口），本用例跳过" << std::endl;
+        return true;
+    }
+
+    if (applied) return false;  // 被拒 ⇒ 不应用
+    // 隔离成功：产物名 = t0+K+1（首个未占位候选 = ms + attempt，attempt ≥ 1）。
+    const std::uint64_t expect = t0 + K + 1;
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != (K + 2)) return false;  // K+1 个占位 + 1 个隔离产物
+    for (const auto& p : corrupts) {
+        if (p.filename().string() == "config.json.corrupt." + std::to_string(expect)) {
+            std::string txt;
+            if (!readAllText(p, txt) || txt != bad) return false;  // 逐字节保全
+            return true;
+        }
+    }
+    return false;  // 未命中预期名 ⇒ 重试/取名逻辑偏离
+}
+
+// FACE-CONFIG-001 补充：热重载被拒但**无可用 .bak** ⇒ 只隔离、不写盘（config.json 不存在）。
+// 补齐此前只覆盖启动路径的空白：热重载的隔离 + 「无 .bak 不写盘」语义（config.json 早退）。
+bool test_config_reload_rejected_no_bak_quarantines_without_write() {
+    const auto dir = makeTempDir("reload_reject_no_bak");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置条件防呆
+
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";
+    if (!writeAllText(cfgPath, bad)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+
+    if (applied) return false;
+    // 原文件被隔离（逐字节保全）。
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) return false;
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext) || qtext != bad) return false;
+    // config.json 不存在（无 .bak ⇒ 不写盘）；无回滚临时文件残留。
+    if (std::filesystem::exists(cfgPath)) return false;
+    if (std::filesystem::exists(dir / "config.json.rollback.tmp")) return false;
+    return true;
+}
+
+// FACE-CONFIG-001 补充（**核心**）：热重载被拒 ⇒ 隔离 + 保全证据 + **不应用**。
+//
+// 判别力：这是本轮「回退改动前语义」的行为钉。构造使 .bak 合法但比内存配置**更旧**：
+//   initialize 落地默认配置（width=640）→ PUT 改 width=800（此后 .bak = width=640 的旧配置）
+//   → 外部把 config.json 改成**坏内容**。修复前（rolledBack 跳过守卫）：隔离后采纳 .bak ⇒
+//   cfg_.camera.width 变回 640 且 generation+1（经 win_local_service_main 触发管线 FullRestart）
+//   ——即一次无关的外部坏写静默撤销用户最近一次 PUT。修复后：隔离坏文件、把 .bak 写回 config.json，
+//   但内存仍为 width=800、generation 不变、outApplied=false。本用例对每一环分别断言。
+bool test_config_reload_rejected_quarantines_and_not_applied() {
+    const auto dir = makeTempDir("reload_reject_not_applied");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 落地默认配置，再 PUT 把 width 改成非默认 800（同时把旧配置备份进 .bak）。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+    if (store.current().camera.width != 800) return false;
+    if (!std::filesystem::exists(dir / "config.json.bak")) return false;  // 前置条件：.bak 存在才有判别力
+    const std::uint64_t gen0 = store.generation();
+
+    // 2) 外部把 config.json 改成坏内容（JSON 可解析但被 schema 拒：minFaceSizePx 期望 number）。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["minFaceSizePx"] = rk_win::JsonValue::makeString("80");
+    const std::string bad = rk_win::toJsonString(doc, true);
+    if (!writeAllText(cfgPath, bad)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    // 3) 热重载：必须被拒（不应用）。
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+
+    // (a) 目录出现恰好一个隔离产物。
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) return false;
+    // (b) 隔离文件与坏内容逐字节相同（保全证据，而非删除重建）。
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext)) return false;
+    if (qtext != bad) return false;
+    // (c) 未应用且代数未变（「不撤销最近一次 PUT / 不触发管线重启」的判据）。
+    if (applied) return false;
+    if (store.generation() != gen0) return false;
+    // (d) 内存配置仍是原来那份（width=800；修复前会被 .bak 回滚成 640）。
+    if (store.current().camera.width != 800) return false;
+    return true;
+}
+
+// FACE-CONFIG-002：默认配置**序列化产物未通过 schema**（密钥不可用）时拒绝落盘 stub。
+//
+// 构造（确定性，不依赖墙钟/竞态）：预写 config.key.dpapi 为存在但 base64 非法的内容 ⇒
+//   ensureOrLoadKey 的 base64Decode 失败（即便侥幸解码成功，dpapiUnprotect 也对垃圾字节失败）⇒
+//   密钥不可用 ⇒ buildSettingsJson(..., encryptSensitive=true) 返回 {"schemaVersion":1,"_error":...} stub
+//   ⇒ serializedDocIsWritable 拒之 ⇒ 不落盘。同时**不放** config.json。
+bool test_config_missing_key_rejects_default_write() {
+    const auto dir = makeTempDir("gate_key_unavailable");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 存在但 base64 非法的密钥文件；不写 config.json。
+    if (!writeAllText(dir / "config.key.dpapi", "!!!not-base64!!!")) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    // (a) 拒绝把 stub 落盘 ⇒ config.json 不存在。
+    if (std::filesystem::exists(cfgPath)) return false;
+    // (b) 失败要有可见性：warn 含拒写原因。
+    if (warn.find("序列化未通过 schema") == std::string::npos) return false;
+    // (c) 本轮并无「既有配置被拒」（config.json 本就不存在）。
+    if (store.configRejectedOnLoad()) return false;
+    return true;
+}
+
+// FACE-CONFIG-004：同一 store 二次 initialize 必须复位上一轮的启动诊断。
+// 同一 store 先装载坏配置（⇒ rejected + 隔离），再装载好配置 ⇒ 三个诊断字段全部复位。
+bool test_config_second_initialize_resets_diagnostics() {
+    const auto dir = makeTempDir("second_init_reset");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 坏配置（截断 JSON）⇒ 首次 initialize 判为 rejected 且发生隔离。
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";
+    if (!writeAllText(cfgPath, bad)) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.configRejectedOnLoad()) return false;
+    if (store.initQuarantineFileName().empty()) return false;
+
+    // 2) 二次 initialize：config.json 已被首轮以默认值重新落地 ⇒ 装载成功，三个诊断字段必须复位。
+    store.initialize(warn);
+    if (store.configRejectedOnLoad()) return false;
+    if (!store.initWarning().empty()) return false;
+    if (!store.initQuarantineFileName().empty()) return false;
+    return true;
+}
+
+// FACE-CONFIG 行为级收束：运行时**真的拒绝** schema 不允许的未知键（additionalProperties:false）。
+//
+// 背景：config-contract.test.js 仅查 schema **文本声明**，删掉 JsonSchemaValidator.cpp 的强制块（探针
+//   在 validateSchemaRec 内）它仍绿。本用例钉住**行为**：
+//   (1) PUT 路径（parseAndValidateSettingsDoc 的可达入口，间接经 updateFromJsonBody 的 schema 校验）：
+//       给 camera 段加 schema 不允许的键、顶层加未知段，均必须被拒（res.ok == false）；
+//   (2) 直接对运行时 schema 喂「合法默认文档 + 顶层未知键」⇒ validate 必须返回 false 且 err 非空。
+//   任一强制块被删 ⇒ 未知键被收下 ⇒ 本用例变红。
+bool test_config_unknown_key_rejected() {
+    const auto dir = makeTempDir("unknown_key_reject");
+    ConfigEnvGuard env(dir / "config.json");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    // (1a) camera 段未知键。
+    if (store.updateFromJsonBody("{\"camera\":{\"bogusUnknownKey\":1}}").ok) return false;
+    // (1b) 顶层未知段。
+    if (store.updateFromJsonBody("{\"bogusTopLevel\":{}}").ok) return false;
+
+    // (2) 直接对运行时 schema 喂合法默认文档 + 未知键。
+    const std::string json = store.currentRedactedJsonPretty();
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(json, doc, perr) || !doc.isObject()) return false;
+    doc.o["bogusUnknownKey"] = rk_win::JsonValue::makeNumber(1);
+    std::string schemaErr;
+    if (rk_win::JsonSchemaValidator::validate(
+            rk_win::JsonSchemaValidator::buildSettingsDocSchema(), doc, &schemaErr)) {
+        return false;  // 未知键被接受 ⇒ 收束未生效
+    }
+    return !schemaErr.empty();  // 失败须可见
 }

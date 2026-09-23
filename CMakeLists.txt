@@ -99,7 +99,8 @@ set(RK_ENGINE_TARGETS
 
 # ── 基准预算覆盖（§10.11 D4b）────────────────────────
 # 覆盖 RealtimeBenchmarkConfig.enforceBudget 的平台默认值。
-# ★ 留空 = **不注入**该宏 ⇒ .cpp 的 kDefaultEnforceBudget 回落到 __aarch64__ 判定 ⇒ **零行为变化**。
+# ★ 留空 = **不注入**该宏 ⇒ .cpp 的 kDefaultEnforceBudget 回落到 __aarch64__ 判定 ⇒ **零行为变化**
+#   （唯测试 target `core_unit_tests` 例外，见 `cmake/core.cmake`）。
 #   此处刻意不用布尔 option(OFF)：固定 OFF 会静默改变 Android arm64 行为（超预算从「拒绝发布」变「照发」）。
 set(RK_BENCH_ENFORCE_BUDGET "" CACHE STRING "强制/关闭基准预算判定；留空 = 按架构回落（见 RealtimeFacePipeline.cpp）")
 set_property(CACHE RK_BENCH_ENFORCE_BUDGET PROPERTY STRINGS "" ON OFF)

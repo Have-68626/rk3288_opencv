@@ -63,6 +63,14 @@ bool test_config_rejected_load_quarantines_and_degrades();
 bool test_config_parse_failure_quarantines_and_degrades();
 bool test_config_healthy_load_not_quarantined();
 bool test_config_quarantine_failure_preserves_original();
+bool test_config_quarantine_move_and_name();
+bool test_config_quarantine_timestamp_collision_preserves_original();
+bool test_config_quarantine_retry_succeeds_after_collisions();
+bool test_config_reload_rejected_no_bak_quarantines_without_write();
+bool test_config_reload_rejected_quarantines_and_not_applied();
+bool test_config_missing_key_rejects_default_write();
+bool test_config_second_initialize_resets_diagnostics();
+bool test_config_unknown_key_rejected();
 bool test_reload_endpoint_bumps_generation();
 bool test_openapi_endpoint_returns_spec_json();
 bool test_face_db_plaintext_vuln_documented();
@@ -110,6 +118,14 @@ int main(int argc, char** argv) {
         {"config_parse_failure_quarantines_and_degrades", test_config_parse_failure_quarantines_and_degrades},
         {"config_healthy_load_not_quarantined", test_config_healthy_load_not_quarantined},
         {"config_quarantine_failure_preserves_original", test_config_quarantine_failure_preserves_original},
+        {"config_quarantine_move_and_name", test_config_quarantine_move_and_name},
+        {"config_quarantine_timestamp_collision_preserves_original", test_config_quarantine_timestamp_collision_preserves_original},
+        {"config_quarantine_retry_succeeds_after_collisions", test_config_quarantine_retry_succeeds_after_collisions},
+        {"config_reload_rejected_no_bak_quarantines_without_write", test_config_reload_rejected_no_bak_quarantines_without_write},
+        {"config_reload_rejected_quarantines_and_not_applied", test_config_reload_rejected_quarantines_and_not_applied},
+        {"config_missing_key_rejects_default_write", test_config_missing_key_rejects_default_write},
+        {"config_second_initialize_resets_diagnostics", test_config_second_initialize_resets_diagnostics},
+        {"config_unknown_key_rejected", test_config_unknown_key_rejected},
         {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
         {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
         {"face_db_plaintext_vuln_documented", test_face_db_plaintext_vuln_documented},
