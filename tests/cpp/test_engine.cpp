@@ -1273,3 +1273,34 @@ TEST(EngineTest, ResultCallbackReentryFromEmitGateIsRejectedNotDeadlocked) {
     delete engine;
 }
 
+// ── §10.11 D4b：平台默认值的正向覆盖（本 target **无** RK_BENCH_ENFORCE_BUDGET）──
+//
+// 本 target（core_gtest_tests）经 RK_FACE_INFER_CORE_SOURCES 编译 RealtimeFacePipeline.cpp，
+// 却**不定义** RK_BENCH_ENFORCE_BUDGET（该宏仅当全局选项显式设置时才注入，见 CMakeLists.txt:345；
+// 本仓选项默认留空 ⇒ 零行为变化）⇒ .cpp 的 kDefaultEnforceBudget 走**平台回落分支**
+// （`#elif defined(__aarch64__)` → x64 取 `#else` = false），即生产 x64 的真实默认。
+//
+// 这正是 core_unit_tests 那条用例**覆盖不到**的：core_unit_tests 被注入了该宏，其 .cpp 走 `#if`
+// 分支，`#elif`/`#else` 根本不被编译。故「非 arm64 平台默认 = false」这条语义的唯一断言点在此。
+TEST(RealtimeFacePipelinePlatformDefault, DefaultEnforceBudgetMatchesPlatform) {
+    // 期望值按**平台回落分支**逐字写出，与 RealtimeFacePipeline.cpp 的 kDefaultEnforceBudget 分支
+    // 一一对应。此处的期望值**不得**由 RK_BENCH_ENFORCE_BUDGET 推导——在默认配置下本 target 无该宏，
+    // 推导出来会是空/false，等于把被测对象当成期望值。
+#if defined(RK_BENCH_ENFORCE_BUDGET)
+    // 显式设置构建期选项时，「平台默认」被该选项整体覆盖 ⇒ 「平台回落分支的取值」这一命题在本配置下
+    // 不适用。如实跳过而非按平台推导（否则会假红）。这是「用构建期选项验证 ARM64 语义」时的已知边界。
+    GTEST_SKIP() << "RK_BENCH_ENFORCE_BUDGET 被显式设置：平台回落分支已被构建期选项覆盖，本用例不适用";
+#else
+#if defined(__aarch64__)
+    constexpr bool kExpectedPlatformDefault = true;   // ARM64（RK3288）：默认强制预算
+#else
+    constexpr bool kExpectedPlatformDefault = false;  // 其它平台：仅测量、不强判
+#endif
+    // 默认构造（不调用 setBenchmarkConfig）：bench_ 只能来自构造函数写入的 kDefaultEnforceBudget。
+    RealtimeFacePipeline pipe;
+    EXPECT_EQ(pipe.benchmarkConfig().enforceBudget, kExpectedPlatformDefault)
+        << "构造函数必须把平台默认 kDefaultEnforceBudget 写入 bench_；"
+           "在 x64 上把 RealtimeFacePipeline.cpp 的 #else 改成 true 即令本断言翻红";
+#endif
+}
+

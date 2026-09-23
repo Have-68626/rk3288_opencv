@@ -38,7 +38,32 @@ function canonicalFromSchema(schemaText) {
   return tree;
 }
 
-// 最小缩进式 YAML 提取器：只抽取组件级的 required / properties 键 与 Settings 的 $ref 目标。
+// 在属性子树行内收集「嵌套 type: object」节点，并判定其映射域内是否显式 additionalProperties: false。
+// 节点判定：文本为 `type: object` 或列表项 `- type: object`（属性值内部，缩进 ≥ 10）。
+// 映射域 = 自该节点行起的同层键；键缩进取 `type` token 的列（列表项 `- ` 占两列）。
+// 返回 [{ label, hasNoExtra }]。与下方提取器同风格：按缩进工作，不做完整 YAML 语义解析。
+function scanNestedObjects(subLines) {
+  const nodes = [];
+  for (let k = 0; k < subLines.length; k++) {
+    const node = subLines[k];
+    if (!/^(?:-\s+)?type:\s*object\s*$/.test(node.text)) continue;
+    const isListItem = /^-\s/.test(node.text);
+    const keyIndent = node.indent + (isListItem ? 2 : 0);
+    let hasNoExtra = false;
+    for (let j = k + 1; j < subLines.length; j++) {
+      const l = subLines[j];
+      if (l.indent < keyIndent) break; // 脱离该节点映射域
+      if (isListItem && l.indent === node.indent && /^-\s/.test(l.text)) break; // 同级兄弟列表项
+      if (l.text === "additionalProperties: false") hasNoExtra = true;
+    }
+    nodes.push({ label: node.text, hasNoExtra });
+  }
+  return nodes;
+}
+
+// 最小缩进式 YAML 提取器：抽取组件级的 required / properties 键、Settings 的 $ref 目标，
+// 组件级 additionalProperties 是否为 false（FACE-TEST-001），以及属性值内**嵌套** type: object
+// 节点及其 additionalProperties 收束（FACE-TEST-001①：postUrl 加密分支等嵌套对象的射程补强）。
 // 不做完整 YAML 语义解析，仅按本文件 Settings 区段（schemas: 之下 4 空格组件缩进）的结构工作。
 function extractSettingsComponents(yamlText) {
   const lines = [];
@@ -55,7 +80,7 @@ function extractSettingsComponents(yamlText) {
   while (i < lines.length && lines[i].indent >= 4) {
     if (lines[i].indent !== 4) { i++; continue; }
     const name = lines[i].text.replace(/:$/, "").trim();
-    const comp = { required: [], props: new Set(), refs: new Set() };
+    const comp = { required: [], props: new Set(), refs: new Set(), addPropsFalse: false, nestedObjects: [] };
     i++;
     while (i < lines.length && lines[i].indent >= 6) {
       const l = lines[i];
@@ -74,12 +99,22 @@ function extractSettingsComponents(yamlText) {
           const key = m[1].trim();
           comp.props.add(key);
           i++;
+          const subStart = i;
           while (i < lines.length && lines[i].indent >= 10) {
             const rm = lines[i].text.match(/^\$ref:\s*["']?#\/components\/schemas\/([^"']+)["']?/);
             if (rm) comp.refs.add(rm[1]);
             i++;
           }
+          // FACE-TEST-001①：属性值内的嵌套 type: object 亦须收束（如 postUrl 加密分支，缩进 14）。
+          for (const nested of scanNestedObjects(lines.slice(subStart, i))) {
+            comp.nestedObjects.push({ owner: key, label: nested.label, hasNoExtra: nested.hasNoExtra });
+          }
         }
+      } else if (l.indent === 6 && l.text === "additionalProperties: false") {
+        // 仅组件级（缩进 6）的键收束计入；嵌套对象（缩进 ≥ 10，如 postUrl 的加密分支）
+        // 由上方 properties 内层循环消费，不会被误判为组件级 additionalProperties。
+        comp.addPropsFalse = true;
+        i++;
       } else {
         i++;
       }
@@ -401,4 +436,195 @@ test("recognition 段 required 集：JsonSchemaValidator 运行时 ↔ schema.js
     );
   }
 });
+
+// ---- FACE-TEST-001：additionalProperties 收束的机械防线 ----
+//
+// 背景：上一轮把 Settings 与各 *Settings 段收束为 additionalProperties: false（拒绝未知键），
+// 三处拷贝（openapi.yaml / config.schema.json / JsonSchemaValidator.cpp 运行时 schema）。
+// 但本文件此前只对拍 required 与 properties，**不查 additionalProperties** ⇒ 该收束无任何
+// 自动防线，未来任一处漂移（删掉/改成 true）都不会被发现。
+//
+// 判别逻辑（GREEN）：三处逐段均为显式 additionalProperties: false。
+//   · openapi：复用 extractSettingsComponents 扩展字段 addPropsFalse（仅组件级缩进 6 计入；
+//     postUrl 等嵌套对象由 properties 内层循环消费，不误判）；
+//   · config.schema.json：JSON 解析后逐段读 def.additionalProperties；
+//   · 运行时：在 buildSettingsDocSchema 内按 `props.o["<段>"] = std::move(` 标记切段，逐段回扫
+//     `X.o["additionalProperties"] = JsonValue::makeBool(false);`（同 FACE-ARCWIN-004/006 的切段手法）。
+//
+// 会在下列改法下变红（逐条）：
+//   1) openapi 删掉任一 *Settings 组件的 `additionalProperties: false` 行 → addPropsFalse 为 false；
+//   2) openapi 把某组件改成 `additionalProperties: true`（或其它值）→ 不置 true；
+//   3) openapi 删除 Settings 根组件的该行；
+//   4) config.schema.json 删掉根或任一段的 "additionalProperties": false → 读为 undefined；
+//   5) config.schema.json 把任一处改成 true；
+//   6) JsonSchemaValidator.cpp 删/注释任一段的 `X.o["additionalProperties"] = JsonValue::makeBool(false);`；
+//   7) JsonSchemaValidator.cpp 把任一处改成 makeBool(true)；
+//   8) 新增一个段（openapi + schema 同时加）但运行时漏加 → 运行时逐段回扫缺该段即红。
+test("additionalProperties：openapi Settings/各 *Settings 与 config.schema.json 逐段均为 false", () => {
+  // ① config.schema.json 根 + 每个 object 段
+  assert.equal(
+    schemaRoot.additionalProperties,
+    false,
+    "config.schema.json 根缺 \"additionalProperties\": false"
+  );
+  for (const [section, def] of Object.entries(schemaRoot.properties)) {
+    if (def.type !== "object") continue; // schemaVersion 标量段跳过
+    assert.equal(
+      def.additionalProperties,
+      false,
+      `config.schema.json ${section} 缺 "additionalProperties": false`
+    );
+  }
+
+  // ② openapi.yaml Settings 根 + 每个 *Settings 组件（复用扩展后的提取器 addPropsFalse）
+  assert.ok(comps.Settings, "openapi 缺 Settings 组件");
+  assert.equal(
+    comps.Settings.addPropsFalse,
+    true,
+    "openapi Settings 组件缺 additionalProperties: false"
+  );
+  for (const [section] of Object.entries(canonical)) {
+    const compName = componentName(section);
+    const comp = comps[compName];
+    assert.ok(comp, `openapi 缺 ${compName} 组件`);
+    assert.equal(
+      comp.addPropsFalse,
+      true,
+      `openapi ${compName} 组件缺 additionalProperties: false`
+    );
+  }
+});
+
+// 运行时 schema 逐段回扫：在 [上一段 props.o 标记, 本段 props.o 标记] 行区间内，
+// 是否出现组件级 `X.o["additionalProperties"] = JsonValue::makeBool(false);`。
+function runtimeSectionHasNoExtra(lines, section, contextLabel) {
+  const endIdx = lines.findIndex((l) => l.includes(`props.o["${section}"] = std::move(`));
+  assert.ok(
+    endIdx >= 0,
+    `${contextLabel}: 未定位 props.o["${section}"]（提取标记与源码写法脱节？）`
+  );
+  let startIdx = 0;
+  for (let j = endIdx - 1; j >= 0; j--) {
+    if (/props\.o\["\w+"\]\s*=\s*std::move\(/.test(lines[j])) { startIdx = j + 1; break; }
+  }
+  for (let j = startIdx; j <= endIdx; j++) {
+    if (/\.o\["additionalProperties"\]\s*=\s*JsonValue::makeBool\(false\)/.test(lines[j])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+test("additionalProperties：JsonSchemaValidator 运行时 schema 逐段均为 false", () => {
+  // 边界说明（FACE-TEST-001②，如实披露）：本断言守的是**三处副本的 schema 文本/声明一致性**——
+  // 即运行时 schema 的源码里仍写着 `X.o["additionalProperties"] = JsonValue::makeBool(false);`；
+  // 它**不**证明 runtime 的 validateSchemaRec 真的执行了未知键收束（把该强制块删掉本断言仍绿）。
+  // 运行时是否真的拒绝未知键（行为级），由 Win 侧行为用例覆盖（tests/win/test_win_json_config.cpp，FIX-1 补）。
+  const lines = jsonSchemaValidatorText.split(/\r?\n/);
+  const fnStart = lines.findIndex((l) =>
+    l.includes("JsonValue JsonSchemaValidator::buildSettingsDocSchema()")
+  );
+  assert.ok(fnStart >= 0, "未定位 JsonSchemaValidator::buildSettingsDocSchema()");
+  const firstPropMarker = lines.findIndex(
+    (l, i) => i > fnStart && /props\.o\["\w+"\]\s*=\s*std::move\(/.test(l)
+  );
+  assert.ok(firstPropMarker > fnStart, "buildSettingsDocSchema 内未找到 props.o 段标记");
+
+  // 根 Settings：函数起点到首个 props.o 段标记之间须有 schema.o["additionalProperties"] = false。
+  assert.ok(
+    lines.slice(fnStart, firstPropMarker).some((l) =>
+      /^\s*schema\.o\["additionalProperties"\]\s*=\s*JsonValue::makeBool\(false\)/.test(l)
+    ),
+    "JsonSchemaValidator.cpp 根 Settings 缺 additionalProperties: false"
+  );
+
+  // 各段逐段回扫（段名取自 config.schema.json 的权威段集）。
+  for (const [section] of Object.entries(canonical)) {
+    assert.ok(
+      runtimeSectionHasNoExtra(lines, section, "JsonSchemaValidator.cpp"),
+      `JsonSchemaValidator.cpp 运行时 schema 的 ${section} 段缺 additionalProperties: false`
+    );
+  }
+
+  // 敏感字段加密对象（postUrl 的 object 分支）：buildEncryptedStringSchema 亦须 additionalProperties: false。
+  assert.ok(
+    lines.some((l) =>
+      /^\s*s\.o\["additionalProperties"\]\s*=\s*JsonValue::makeBool\(false\)/.test(l)
+    ),
+    "JsonSchemaValidator.cpp buildEncryptedStringSchema 缺 additionalProperties: false"
+  );
+});
+
+// ---- FACE-TEST-001①：additionalProperties 收束的**嵌套对象**射程补强 ----
+//
+// 背景：此前的 addPropsFalse 断言只覆盖 openapi **组件级（缩进 6）**；给 openapi
+// PosterSettings.postUrl 的**嵌套**加密对象（缩进 14）补的 `additionalProperties: false`
+// 不在射程内 ⇒ 删掉它用例仍绿（四代理审查 S4 抓出的盲区，本批收口）。
+//
+// 权威来源：config.schema.json 的对应嵌套对象 `poster.postUrl.oneOf[1]` 亦为 false
+// （由下方 JSON 侧断言逐节点校验），故嵌套层三处副本（openapi 嵌套 / config.schema.json /
+// 运行时 buildEncryptedStringSchema）同样必须一致。
+//
+// 会在下列改法下变红（逐条）：
+//   a) openapi 删掉 postUrl 加密分支（缩进 14）的 `additionalProperties: false`；
+//   b) openapi 把该行改成 `additionalProperties: true` 或其它值（非精确 false 不置位）；
+//   c) openapi 新增任一 *Settings 属性值内的嵌套 object 却漏配该行；
+//   d) 提取射程失效（scanNestedObjects 抽到 0 个节点）→ 下方 checked 护栏先行失败示警；
+//   e) config.schema.json 删/改任一 type: object 节点（含 postUrl oneOf[1]）的 additionalProperties。
+
+// 递归收集 JSON schema 中所有 type: object 节点（含 oneOf/anyOf 分支与 properties 子树）。
+function collectObjectNodes(node, nodePath, out) {
+  if (!node || typeof node !== "object") return;
+  (node.oneOf || []).forEach((b, i) => collectObjectNodes(b, `${nodePath}.oneOf[${i}]`, out));
+  (node.anyOf || []).forEach((b, i) => collectObjectNodes(b, `${nodePath}.anyOf[${i}]`, out));
+  if (node.type === "object") {
+    out.push({ path: nodePath || "(root)", additionalProperties: node.additionalProperties });
+  }
+  for (const [k, v] of Object.entries(node.properties || {})) {
+    collectObjectNodes(v, `${nodePath}.${k}`, out);
+  }
+}
+
+test("additionalProperties：openapi 各 *Settings 的**嵌套** object 分支亦为 false（postUrl 加密分支在射程内）", () => {
+  // 射程 = config 契约组件（Settings + 各 *Settings）。Envelope 等**非契约**响应组件不纳入：
+  // 其 data/error 为自由结构，不属配置文档契约，刻意不加该约束（纳入会误报）。
+  const contractComps = ["Settings", ...Object.keys(canonical).map(componentName)];
+  let checked = 0;
+  for (const name of contractComps) {
+    const comp = comps[name];
+    assert.ok(comp, `openapi 缺 ${name} 组件`);
+    for (const node of comp.nestedObjects) {
+      checked++;
+      assert.ok(
+        node.hasNoExtra,
+        `openapi ${name}.${node.owner} 的嵌套对象「${node.label}」缺 additionalProperties: false（未知键收束在嵌套层失效）`
+      );
+    }
+  }
+  // 防「静默通过」：射程必须真的命中至少 1 个嵌套对象（当前即 postUrl 加密分支）；
+  // 若提取器与 YAML 写法脱节而抽空，此处先行变红，而非「空 == 空」误判一致。
+  assert.ok(
+    checked > 0,
+    "openapi 未抽到任何嵌套 type: object（postUrl 加密分支应至少在射程内）——提取射程失效"
+  );
+});
+
+test("additionalProperties：config.schema.json 全部 type: object 节点（含嵌套 oneOf 分支）均为 false", () => {
+  const nodes = [];
+  collectObjectNodes(schemaRoot, "", nodes);
+  // 射程自证：必须真的抽到嵌套分支 poster.postUrl.oneOf[1]（否则仅覆盖顶层段 = 旧射程）。
+  assert.ok(
+    nodes.some((n) => n.path === ".poster.postUrl.oneOf[1]"),
+    "config.schema.json 未抽到 poster.postUrl.oneOf[1] 嵌套 object——射程失效"
+  );
+  for (const n of nodes) {
+    assert.equal(
+      n.additionalProperties,
+      false,
+      `config.schema.json ${n.path} 缺 "additionalProperties": false`
+    );
+  }
+});
+
+
 

@@ -122,6 +122,20 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     # tests/cpp/test_track_replay.cpp），故只在此定义。使用边界由下方
     # rk_assert_track_reset_seam_boundary() 双向钉死。
     target_compile_definitions(core_unit_tests PRIVATE RK_ENABLE_TRACK_RESET_SEAM)
+    # §10.11 D4b 测试侧判别力（FACE-TEST-002）：本 target 同时编译 RealtimeFacePipeline.cpp 与
+    # test_realtime_face_pipeline.cpp。全局选项留空时，.cpp 的平台默认回落 __aarch64__（x64 上为
+    # false），恰与头文件默认(恒 false)相同 ⇒ 「构造函数是否真的写入了默认值」在 x64/CI 上不可判别。
+    # 故仅对本**测试** target 显式注入 RK_BENCH_ENFORCE_BUDGET=1，使 kDefaultEnforceBudget 与头文件
+    # 默认相反，从而对**构造写入**产生判别力（删掉构造函数那行赋值即令用例翻红）。生产 target 不受影响。
+    # 全局选项非空时由其经 rk_core INTERFACE 统一注入，此处不再定义（避免宏重定义）。
+    # ⚠️ 代价（如实登记，勿当作已封死）：注入使 `#if defined(RK_BENCH_ENFORCE_BUDGET)` 在本 target
+    #    **恒成立** ⇒ .cpp 的 `#elif defined(__aarch64__)` / `#else` 两个**平台回落分支在此不被编译**，
+    #    即「非 arm64 平台默认 = false」这条语义在 core_unit_tests 内**无任何断言**。该覆盖由
+    #    core_gtest_tests 的 RealtimeFacePipelinePlatformDefault 用例承担（该 target 不定义此宏，
+    #    真走 #else 分支，见 tests/cpp/test_engine.cpp）。故本注入**只**服务于构造写入判别力。
+    if(RK_BENCH_ENFORCE_BUDGET STREQUAL "")
+        target_compile_definitions(core_unit_tests PRIVATE RK_BENCH_ENFORCE_BUDGET=1)
+    endif()
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
