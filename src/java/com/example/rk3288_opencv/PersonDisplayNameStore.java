@@ -55,6 +55,20 @@ final class PersonDisplayNameStore {
     @NonNull
     private FileStoreUtils.FileOps fileOps = FileStoreUtils.DEFAULT_FILE_OPS;
 
+    /**
+     * 平台密钥提供者接缝（**仅测试注入用**）：默认 {@link FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}
+     * （生产走 AndroidKeyStore）；测试可经 {@link #setKeyProviderForTesting} 注入替身，以在纯 JVM 下
+     * 跑真实 AES-GCM 或构造「密钥不可用」场景。
+     *
+     * <p><b>实例字段而非进程级静态</b>（对 {@code FeatureTemplateEncryptedStore} 静态 provider 的扩面
+     * 改造，与 {@link #fileOps} 同构）：本字段只属于本实例，注入**不会**影响其它实例或其它测试类，
+     * 跨实例泄漏在结构上不可能发生。本类的 2 处加密调用（{@link #readPlainBytes}、{@link #save}）
+     * 都以它为首个形参显式传给存储层。
+     */
+    @NonNull
+    private FeatureTemplateEncryptedStore.PlatformKeyProvider keyProvider =
+            FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER;
+
     PersonDisplayNameStore(@NonNull File dir) {
         this.dir = dir;
     }
@@ -65,9 +79,24 @@ final class PersonDisplayNameStore {
         fileOps = (ops != null) ? ops : FileStoreUtils.DEFAULT_FILE_OPS;
     }
 
-    /** 本机是否具备加密能力（API >= 23 且密钥可用）。供调用方避免徒劳的迁移重试。 */
+    /** 仅供测试注入密钥提供者替身；传 null 恢复默认（AndroidKeyStore）实现。**仅影响本实例**。 */
+    @androidx.annotation.VisibleForTesting
+    void setKeyProviderForTesting(@Nullable FeatureTemplateEncryptedStore.PlatformKeyProvider p) {
+        keyProvider = (p != null) ? p : FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER;
+    }
+
+    /**
+     * 本机是否具备加密能力（API &gt;= 23 且密钥可用）。供调用方避免徒劳的迁移重试。
+     *
+     * <p><b>刻意保持 static</b>（如实固化）：这是**设备级**查询而非实例级状态，且唯一生产调用方
+     * {@code MainActivity.migrateLegacyDisplayNames} 以 {@code PersonDisplayNameStore.isSupported()}
+     * 静态调用 —— 改为实例方法会破坏该调用点。故此处传**默认** provider（{@link
+     * FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}），反映真实平台能力；实例级注入只影响
+     * {@link #save}/{@link #readFromDisk} 的加解密路径，不影响本静态能力查询。
+     */
     static boolean isSupported() {
-        return FeatureTemplateEncryptedStore.isPlatformSupported();
+        return FeatureTemplateEncryptedStore.isPlatformSupported(
+                FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER);
     }
 
     /**
@@ -113,7 +142,8 @@ final class PersonDisplayNameStore {
     private byte[] readPlainBytes(@NonNull String personId) {
         FeatureTemplateEncryptedStore.ReadResult rr =
                 FeatureTemplateEncryptedStore.readNameString(
-                        FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), personId, false);
+                        keyProvider, FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId),
+                        personId, false);
         if (rr.code != FeatureTemplateEncryptedStore.Code.OK || rr.plaintext == null) {
             return null;
         }
@@ -164,7 +194,8 @@ final class PersonDisplayNameStore {
         }
         FeatureTemplateEncryptedStore.WriteResult wr =
                 FeatureTemplateEncryptedStore.writeNameString(
-                        FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId), personId, name);
+                        keyProvider, FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, personId),
+                        personId, name);
         if (wr.code != FeatureTemplateEncryptedStore.Code.OK) {
             return false;
         }

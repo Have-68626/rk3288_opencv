@@ -1,6 +1,5 @@
 package com.example.rk3288_opencv;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -43,15 +42,19 @@ public class EnrollmentSessionTest {
     private static final int MV = 7;
     private static final int TSV = 2;
 
+    /**
+     * 供 {@link #newRepo()} 注入到**本用例创建的 repo 实例**上的密钥提供者替身（内存 JCE 密钥）。
+     * 此前是进程级静态注入，改造后经实例的 {@code setKeyProviderForTesting} 注入。
+     */
+    private FeatureTemplateEncryptedStore.PlatformKeyProvider provider;
+
     @Before
     public void setUp() throws Exception {
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(jceProvider());
+        provider = jceProvider();
     }
 
-    @After
-    public void tearDown() {
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
-    }
+    // 无 @After（改造前它用于复位进程级静态 provider）：密钥提供者接缝已是**实例级**，注入只落在
+    // 本用例创建的实例上 ⇒ 无静态状态可复位，跨实例泄漏在结构上不可能发生。
 
     // ---------- ① 状态机 ----------
 
@@ -415,7 +418,7 @@ public class EnrollmentSessionTest {
 
     @Test
     public void commitToRepositoryPersistsMeanTemplateAndBlocksDuplicatePerson() throws Exception {
-        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        AndroidEnrollmentRepository repo = newRepo();
 
         EnrollmentSession s = new EnrollmentSession("alice");
         s.start();
@@ -458,7 +461,7 @@ public class EnrollmentSessionTest {
      */
     @Test
     public void repositoryListFailureRejectsSampleWithRepoUnavailable() throws Exception {
-        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        AndroidEnrollmentRepository repo = newRepo();
         // 写入非法注册表头：list() 返回 CORRUPTED（非 OK）。
         Files.write(repo.registryFile().toPath(),
                 "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
@@ -480,7 +483,7 @@ public class EnrollmentSessionTest {
      */
     @Test
     public void repositoryTemplateReadFailureRejectsSampleInsteadOfSkipping() throws Exception {
-        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        AndroidEnrollmentRepository repo = newRepo();
         assertTrue(repo.add("bob", EnrollmentSession.encodeLe(otherEmbedding()), MV, TSV).isOk());
         // 注册表仍有 bob 条目，但模板文件被删除 -> readTemplate 失败。
         assertTrue("前置条件：删除 bob 模板文件", repo.templateFileFor("bob").delete());
@@ -499,7 +502,7 @@ public class EnrollmentSessionTest {
     /** 正常空库仍可正常注册，失败通道不误伤。 */
     @Test
     public void emptyRepositoryStillAllowsNormalEnrollment() throws Exception {
-        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        AndroidEnrollmentRepository repo = newRepo();
         EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
         s.start();
         assertFalse("空库读取成功，不得置失败标记", s.isExistingLoadFailed());
@@ -509,7 +512,7 @@ public class EnrollmentSessionTest {
     /** 失败标记的生命周期：start() 时确定，cancel()/reset() 后清除。 */
     @Test
     public void cancelAndResetClearExistingLoadFailedFlag() throws Exception {
-        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        AndroidEnrollmentRepository repo = newRepo();
         Files.write(repo.registryFile().toPath(),
                 "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
 
@@ -534,7 +537,7 @@ public class EnrollmentSessionTest {
 
     @Test
     public void commitBeforeCompletionIsRejectedWithoutWriting() throws Exception {
-        AndroidEnrollmentRepository repo = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        AndroidEnrollmentRepository repo = newRepo();
         EnrollmentSession s = new EnrollmentSession("alice");
         s.start();
         s.feed(sample(base(), EnrollmentSession.Pose.FRONT));
@@ -654,6 +657,13 @@ public class EnrollmentSessionTest {
     }
 
     // ---------- 工具 ----------
+
+    /** 构造并在**本实例**上注入测试用密钥提供者替身（避免 6 处构造点各自重复注入）。 */
+    private AndroidEnrollmentRepository newRepo() throws Exception {
+        AndroidEnrollmentRepository r = new AndroidEnrollmentRepository(null, tmp.newFolder());
+        r.setKeyProviderForTesting(provider);
+        return r;
+    }
 
     private static File findRepoRoot() {
         File dir = new File(System.getProperty("user.dir", "."));

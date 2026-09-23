@@ -1,6 +1,5 @@
 package com.example.rk3288_opencv;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -33,31 +32,43 @@ public class PersonDisplayNameStoreTest {
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
 
+    /**
+     * 供各用例显式注入的密钥提供者替身（内存 JCE 密钥）。此前是进程级静态注入
+     * （{@code setPlatformKeyProviderForTesting}），改造后经各实例的 {@code setKeyProviderForTesting}
+     * 注入到**本用例创建的实例**上（见 {@link #newStore(File)}），故持为字段。
+     */
+    private FeatureTemplateEncryptedStore.PlatformKeyProvider provider;
+
     @Before
     public void setUp() throws Exception {
         // §2.5-D / 子代理 4 P4：删除行为接缝已由「进程级静态」改为**实例级注入**
-        // （PersonDisplayNameStore#setFileOpsForTesting），每个测试在**自己创建的实例**上注入，
+        // （PersonDisplayNameStore#setFileOpsForTesting）；本轮密钥提供者接缝同样改为实例级注入
+        // （PersonDisplayNameStore#setKeyProviderForTesting）。每个测试在**自己创建的实例**上注入，
         // 故无需（也无法）在类级 setUp/tearDown 里做跨类复位 —— 跨实例泄漏在结构上不可能发生。
         KeyGenerator kg = KeyGenerator.getInstance("AES");
         kg.init(128);
         final SecretKey key = kg.generateKey();
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(
-                new FeatureTemplateEncryptedStore.PlatformKeyProvider() {
-                    @Override
-                    public boolean isSupported() {
-                        return true;
-                    }
+        provider = new FeatureTemplateEncryptedStore.PlatformKeyProvider() {
+            @Override
+            public boolean isSupported() {
+                return true;
+            }
 
-                    @Override
-                    public SecretKey getOrCreateKeyV1() {
-                        return key;
-                    }
-                });
+            @Override
+            public SecretKey getOrCreateKeyV1() {
+                return key;
+            }
+        };
     }
 
-    @After
-    public void tearDown() {
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
+    // 无 @After（改造前它用于复位进程级静态 provider）：密钥提供者接缝已是实例级，
+    // 各实例由 newStore(File) 就地注入，本测试类不再改写任何静态状态 ⇒ 无静态状态可复位。
+
+    /** 构造并注入测试用密钥提供者替身（避免 21 处构造点各自重复注入）。 */
+    private PersonDisplayNameStore newStore(File storeDir) {
+        PersonDisplayNameStore s = new PersonDisplayNameStore(storeDir);
+        s.setKeyProviderForTesting(provider);
+        return s;
     }
 
     /**
@@ -168,7 +179,7 @@ public class PersonDisplayNameStoreTest {
     /** 未缓存时 get 必须降级为 personId（UI 线程纯读、不触发 IO）。 */
     @Test
     public void getFallsBackToPersonIdWhenUncached() throws Exception {
-        PersonDisplayNameStore s = new PersonDisplayNameStore(tmp.newFolder());
+        PersonDisplayNameStore s = newStore(tmp.newFolder());
         assertEquals("alice", s.get("alice"));
         assertEquals(0, s.cachedCount());
     }
@@ -176,7 +187,7 @@ public class PersonDisplayNameStoreTest {
     /** save 应写穿缓存，随后的 get 立即命中。 */
     @Test
     public void saveWritesThroughCache() throws Exception {
-        PersonDisplayNameStore s = new PersonDisplayNameStore(tmp.newFolder());
+        PersonDisplayNameStore s = newStore(tmp.newFolder());
         assertTrue(s.save("alice", "张三"));
         assertEquals("张三", s.get("alice"));
         assertEquals(1, s.cachedCount());
@@ -186,10 +197,10 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void prefetchDecryptsFromDisk() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore writer = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore writer = newStore(dir);
         assertTrue(writer.save("alice", "张三"));
 
-        PersonDisplayNameStore reader = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore reader = newStore(dir);
         assertEquals("换实例后未预取应降级", "alice", reader.get("alice"));
         reader.prefetch(Collections.singletonList("alice"));
         assertEquals("张三", reader.get("alice"));
@@ -199,7 +210,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void saveRejectsBlankName() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertFalse(s.save("alice", ""));
         assertFalse(s.save("alice", "   "));
         assertFalse(s.save("alice", null));
@@ -211,7 +222,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void prefetchPrunesCacheButKeepsFiles() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
         assertTrue(s.save("bob", "李四"));
         assertEquals(2, s.cachedCount());
@@ -229,7 +240,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeDeletesFileAndCacheEntry() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
         File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
         assertTrue(f.isFile());
@@ -245,7 +256,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeOrphansDeletesOnlyUnlistedNameFiles() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
         assertTrue(s.save("bob", "李四"));
 
@@ -280,7 +291,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeOrphansDeletesOrphanedBackupWhenMainFileGone() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
         assertTrue(s.save("bob", "李四"));
 
@@ -298,7 +309,7 @@ public class PersonDisplayNameStoreTest {
         assertFalse("孤儿 .bak 应已被删除", bobBak.exists());
         assertFalse("主文件不得被读路径的阶段 1 恢复基线复活", bobMain.exists());
         assertNull("清理后新实例不得再读到 bob 的显示名（无 .bak 可复活）",
-                new PersonDisplayNameStore(dir).readFromDisk("bob"));
+                newStore(dir).readFromDisk("bob"));
         assertTrue("在册的 alice 主文件应保留",
                 FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice").exists());
     }
@@ -306,7 +317,9 @@ public class PersonDisplayNameStoreTest {
     /** 平台不支持（API<23）：save 返回 false、prefetch 不崩、get 降级 —— 且绝不落盘明文。 */
     @Test
     public void unsupportedPlatformDegradesWithoutPlaintext() throws Exception {
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(
+        // 本用例需要「平台不支持」的替身（与 setUp 的可用替身相反）；接缝已是**实例级**，
+        // 故在本用例创建的实例上注入，不影响其它实例。
+        FeatureTemplateEncryptedStore.PlatformKeyProvider unsupported =
                 new FeatureTemplateEncryptedStore.PlatformKeyProvider() {
                     @Override
                     public boolean isSupported() {
@@ -317,10 +330,11 @@ public class PersonDisplayNameStoreTest {
                     public SecretKey getOrCreateKeyV1() {
                         throw new AssertionError("不支持时不得取密钥");
                     }
-                });
+                };
 
         File dir = tmp.newFolder();
         PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        s.setKeyProviderForTesting(unsupported);
         assertFalse(s.save("alice", "张三"));
         assertEquals(0, s.cachedCount());
         s.prefetch(Arrays.asList("alice"));            // 不得抛异常
@@ -335,12 +349,12 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void prefetchRefreshesChangedFileInsteadOfServingStaleCache() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore cache = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore cache = newStore(dir);
         assertTrue(cache.save("alice", "旧名"));
         assertEquals("旧名", cache.get("alice"));
 
         // 带外改写：另一个实例写入新值（模拟外部改动 / 密钥轮换后的重写）。
-        PersonDisplayNameStore writer = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore writer = newStore(dir);
         assertTrue(writer.save("alice", "新名"));
 
         cache.prefetch(Collections.singletonList("alice"));
@@ -351,7 +365,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void persistedFileHasNoPlaintext() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "UniquelyNamedPerson"));
         File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
         String text = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
@@ -371,7 +385,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeClearsCacheEvenWhenFileDeleteFails() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
         File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
         assertTrue(f.isFile());
@@ -399,7 +413,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeOrphansDoesNotCountFailedDeletes() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
 
         UndeletableOps ops = new UndeletableOps();
@@ -459,7 +473,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeSwallowsSecurityExceptionAndClearsCache() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "张三"));
         assertEquals(1, s.cachedCount());
         File f = FeatureTemplateEncryptedStore.nameFileForPersonInDir(dir, "alice");
@@ -491,7 +505,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeOrphansContinuesPastThrowingOrphan() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "A"));
         assertTrue(s.save("bob", "B"));
         assertTrue(s.save("carol", "C"));
@@ -531,7 +545,7 @@ public class PersonDisplayNameStoreTest {
     @Test
     public void removeOrphansMixedThrowUndeletableAndRealPinsExactCountAndResidue() throws Exception {
         File dir = tmp.newFolder();
-        PersonDisplayNameStore s = new PersonDisplayNameStore(dir);
+        PersonDisplayNameStore s = newStore(dir);
         assertTrue(s.save("alice", "A"));
         assertTrue(s.save("bob", "B"));
         assertTrue(s.save("carol", "C"));
@@ -581,8 +595,8 @@ public class PersonDisplayNameStoreTest {
     public void injectedOpsArePerInstanceAndDoNotLeak() throws Exception {
         File dirA = tmp.newFolder("a");
         File dirB = tmp.newFolder("b");
-        PersonDisplayNameStore a = new PersonDisplayNameStore(dirA);
-        PersonDisplayNameStore b = new PersonDisplayNameStore(dirB);
+        PersonDisplayNameStore a = newStore(dirA);
+        PersonDisplayNameStore b = newStore(dirB);
         assertTrue(a.save("alice", "A"));
         assertTrue(b.save("bob", "B"));
 
