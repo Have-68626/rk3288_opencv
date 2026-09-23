@@ -618,6 +618,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*d, "modelPath", s)) cfg.dnn.modelPath = resolvePathFromExeDir(s);
         if (getString(*d, "configPath", s)) cfg.dnn.configPath = resolvePathFromExeDir(s);
 
+        // 冗余 env 覆盖（FACE-CONFIG-015）：与函数末尾同名覆盖重复，且同样会被烤进磁盘（见末尾登记块）。
         const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
         if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
 
@@ -684,6 +685,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
             }
         }
 
+        // 冗余 env 覆盖（FACE-CONFIG-015）：与函数末尾同名覆盖重复，且同样会被烤进磁盘（见末尾登记块）。
         const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
         if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
         if (getNumber(*p, "throttleMs", v)) cfg.poster.throttleMs = static_cast<int>(v);
@@ -739,6 +741,27 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     }
 
     // Apply environment variable overrides if present
+    //
+    // ⚠️ FACE-CONFIG-015（已知不对称，本轮**不修**，取方案 (b)：如实登记不修）：
+    //   下面这些 RK_WCFR_* 覆盖（本块 4 个 + 上文 dnn/poster 块内 3 处冗余覆盖的 env 读取行：
+    //   622 / 625 / 689）会被**写回磁盘**。原因：本函数把 env 值**无条件覆盖进 cfg**，而序列化侧
+    //   （toSettingsDocObject / buildSettingsJson）只看到覆盖后的 cfg、**无法回退到用户原值** ⇒ 一旦发生
+    //   「热重载回滚写回」（reloadFromDisk）或 PUT（updateFromJsonBody），两者都经 parseAndValidateSettingsDoc
+    //   → 序列化落盘，env 值就被**烤进 config.json**；此后**不带**该 env 启动时行为随之改变、用户原本的值被静默替换。
+    //   · 这是**既有性质，非本轮引入**：PUT 路径一直如此（且 initialize 成功分支的 lastGoodJsonPretty_
+    //     也由 env 覆盖后的 cfg 序列化而来，故 PUT 的合并基底亦含 env 值；见 `updateFromJsonBody` 的合并基底
+    //     注释——那里的基底**含 env 覆盖值**，旧措辞「解耦环境覆盖项」不成立）。
+    //   · 本轮新增的**触达路径**是「热重载被拒后**无需用户动作**即写回」（FACE-CONFIG-010，属**上一提交**、
+    //     非本批新增），使该不对称更易被触发 ⇒ 值得登记。
+    //   为什么**不**修（选 (b) 的理由）：修法**非平凡**——**注意**：准确说法**不是**「必然引入来源歧义」。
+    //     现有序列化侧只拿到「env 覆盖后的 cfg」，无从分辨哪些字段被 env 覆盖；但存在一条**不涉及**「把用户在
+    //     UI 显式改的值误判成 env 值」那类歧义的可行替代（**后续可选方案**，本轮未做）：
+    //       在 parseAndValidateSettingsDoc 内把「应用 env **之前**的 cfg」留一份**来源快照**；落盘一律用该
+    //       **env-free 快照**，内存 cfg_ 仍用 env-applied 值（load 时 env 照旧重放）。
+    //     其代价：需把「落盘用哪份 cfg」贯穿 **initialize / PUT / 回滚** 三处写盘路径，并新增相应回归用例
+    //     （非平凡、触及面广），故本轮未做。环境变量本身按文档定位为「容器化 / 临时调试」用途，该场景下
+    //     env 值落盘通常可接受；留待有明确需求时实现上述替代方案。
+    //   详见 docs/guides/windows-service/config.md。
     const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
     const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
     const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
@@ -847,6 +870,29 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
     bool loadRejected = false;
     std::string quarantineName;  // 隔离成功后的文件名（非全路径）
 
+    // FACE-CONFIG-014：清扫上一次进程崩溃残留的回滚临时文件。
+    // reloadFromDisk 的回滚写回用**固定名** config.json.rollback.tmp（writeFileAll → moveReplaceWriteThrough），
+    // 进程若在这两步之间崩溃会残留该文件；此前 initialize 与 writeAtomicallyWithBackup **都不清理**它。
+    // 在启动清扫使其「重启即自愈」，无需人工删除。
+    // 安全性（如实评估）：本类**不承诺多实例并发**（见类注释「多实例同时写会冲突」）；默认落盘目录
+    //   %APPDATA%\rk_wcfr 为单用户单实例服务所用。另一进程若真在写同一目录，则同样固定名的
+    //   config.json.tmp（writeAtomicallyWithBackup）本就有同样的多实例暴露 ⇒ 清理本残留并不比既有
+    //   写盘更激进。误删的后果也**可控**：若删除的是一份正在被另一进程使用的回滚 tmp，对方随后的
+    //   moveReplaceWriteThrough 因源文件缺失而失败 ⇒ 该次回滚「不写回」（与「无可用 .bak」臂一样安全，
+    //   不会损坏 config.json）。删除仅针对**该固定名**（不递归、不遍历目录内容）⇒ 合法 config.json /
+    //   .bak / .corrupt.* 均不受影响（负对照见 tests/win/test_win_json_config.cpp）。
+    {
+        // 本处亦持 mu_（FACE-CONFIG-014）：清扫是对**配置目录**的文件系统变更（删除），使其与同批两处
+        //   initialize 写盘补锁同形态，让「对配置目录的变更统一在 mu_ 下」这条口径**可机械复核**。
+        //   死锁核实（逐字）：本临界区**只**调 std::filesystem::remove（不取 mu_、不回调本类任何成员）
+        //   ⇒ 无递归加锁；initialize 处于启动阶段、本无并发消费者 ⇒ 不引入新的锁竞争。故补锁安全。
+        //   （清扫与随后的读取/写盘各自独立成对临界区，不嵌套 ⇒ 无锁序问题。）
+        std::lock_guard<std::mutex> lock(mu_);
+        std::error_code cleanEc;
+        // 清理失败（残留为目录 / 被杀软占用等）不影响启动：残留无正确性影响，下次回滚以 trunc 覆盖它。
+        std::filesystem::remove(configPath_.parent_path() / L"config.json.rollback.tmp", cleanEc);
+    }
+
     // 读取现有 config.json
     if (std::filesystem::exists(configPath_)) {
         std::string txt, err;
@@ -864,9 +910,15 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
                     const std::string prettyMigrated = buildSettingsJson(cfg, false, true);
                     std::string writeErr;
-                    if (!writeAtomicallyWithBackup(prettyMigrated, writeErr)) {
-                        // 只改了内存 cascadePath；写盘失败 ⇒ 磁盘仍是失效的旧路径，下次启动会再次进入本分支。
-                        migrateWarn = "级联路径迁移未持久化（写入 config.json 失败）: " + writeErr;
+                    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
+                    //   本处是 initialize 的**迁移落盘**：启动阶段（早于 startWatching / 轮询循环）本无并发消费者，
+                    //   此处持锁是**幂等加固**：使「写盘必须持锁」在每个调用点一致可见，后人新增写盘路径时照抄该形态。
+                    {
+                        std::lock_guard<std::mutex> lock(mu_);
+                        if (!writeAtomicallyWithBackup(prettyMigrated, writeErr)) {
+                            // 只改了内存 cascadePath；写盘失败 ⇒ 磁盘仍是失效的旧路径，下次启动会再次进入本分支。
+                            migrateWarn = "级联路径迁移未持久化（写入 config.json 失败）: " + writeErr;
+                        }
                     }
                 }
 
@@ -926,7 +978,14 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
     const bool skipWrite = !serializable || (loadRejected && quarantineName.empty());
     if (!skipWrite) {
         std::string writeErr;
-        if (!writeAtomicallyWithBackup(pretty, writeErr)) {
+        bool writeOk = false;
+        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
+        //   同迁移分支：initialize 处于启动阶段、无并发消费者，持锁为**幂等加固**（统一约束形态）。
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            writeOk = writeAtomicallyWithBackup(pretty, writeErr);
+        }
+        if (!writeOk) {
             warnOut = warnOut.empty() ? ("写入默认 JSON 配置失败: " + writeErr) : (warnOut + "; " + writeErr);
             // 即使落盘失败，也允许继续用内存配置运行
         }
@@ -997,7 +1056,11 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         return r;
     }
 
-    // 基于已知落盘的纯净 JSON（解耦环境覆盖项），深度合并 patch，再校验+落盘
+    // 基于已知落盘的 JSON 深度合并 patch，再校验+落盘。
+    // ⚠️ 该基底**含 env 覆盖值**——**不是**「解耦环境覆盖项」的纯净值（旧措辞已判定为假，就地订正）：
+    //   lastGoodJsonPretty_ 由**已套用** RK_WCFR_* 覆盖（parseAndValidateSettingsDoc 末尾）的 cfg 序列化而来，
+    //   故一次 PUT 会把**当时的 env 值**顺带写回 config.json。属既有性质、非本批引入，详见
+    //   parseAndValidateSettingsDoc 末尾的 FACE-CONFIG-015 登记块与 docs/guides/windows-service/config.md。
     std::string lastJson;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -1064,6 +1127,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         r.details.push_back(prettyEnc);
         return r;
     }
+    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
     // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘与内存提交（cfg_/generation_）必须在**同一** mu_ 临界区内，
     //   以便与 reloadFromDisk 回滚段的「取快照 → 序列化 → 写回磁盘」互斥，杜绝「回滚线程用旧快照覆盖已提交的
     //   新 PUT」这一竞态（详见 reloadFromDisk 回滚处的同因注释）。
@@ -1164,6 +1228,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
         r.details.push_back(prettyEnc);
         return r;
     }
+    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
     // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘 + 内存提交同处一个 mu_ 临界区，与 PUT / 热重载回滚写回互斥，
     //   杜绝「回滚线程用旧快照覆盖已提交的新配置」。writeAtomicallyWithBackup / writeFileAll **均不取 mu_**
     //   （逐字核实）⇒ 无递归加锁；本函数仅此一把锁 ⇒ 无锁序问题。
@@ -1224,6 +1289,19 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         // （config.json.corrupt.<毫秒时间戳>），使其不被随后写盘覆盖。
         // ⚠️ 该保全**仅限本次处理**（不变量有同样时限）：隔离产物不会被自动清理，但原位置的后续写入
         //    （PUT / 下一次热重载）仍按各自既有语义进行，故「不被就地覆盖」只保证到本次处理结束。
+        // ⚠️ **既有缺陷登记（非本批引入、本轮不修）**：`quarantineConfigFile` 是**改名**（rename），
+        //    不在 FACE-CONFIG-013「写入 config.json 内容必须持 mu_」的射程内，故下面这次调用**不持 mu_**。
+        //    由此存在一条**可达竞态**（三路对抗审查独立推演，时序一致）：
+        //      ① 本函数开头的读锁临界区（`{ std::lock_guard ... }`）已**释放 mu_**；② watch 线程在锁外解析 txt 被判坏；
+        //      ③ 此窗口内 HTTP 线程 PUT 成功，写盘合法配置 B 并提交 cfg_=B；
+        //      ④ 本线程随即执行 quarantineConfigFile，把**这份刚写好的合法 B** 改名成 config.json.corrupt.<ts>
+        //         ⇒ 凭空伪造一条 corrupt 证据（且下述 outErr 谎称隔离了「坏配置」），该证据永不自清；
+        //      ⑤ 再持锁把 cfg_(=B) 写回——在「内存序列化不可写 ⇒ 回退 .bak」那条臂里，磁盘会退成**更旧的
+        //         .bak** 而内存是 B ⇒ 正是 FACE-CONFIG-010 刚消除的「磁盘/内存分歧」。
+        //    **为何本轮不修**：修锁结构（如让隔离也进入 mu_ 临界区，或「持锁复核 mtime 未变才隔离」）需要
+        //      并发判别用例与测试接缝，而本类当前**没有**
+        //      并发用例；用户已明确决定「并发与不变量专项（带测试接缝）计入后续任务、暂停不做」⇒ 此处仅如实
+        //      登记，不改变锁结构（见 WinJsonConfig.h 类级不变量同因登记）。
         outErr = "热重载校验失败: " + parseErr;
         std::filesystem::path movedTo;
         std::string qerr;
@@ -1251,7 +1329,8 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         //   后者会轮转 .bak（把 config.json.bak 改名为 .bak.1），搅乱本轮「隔离证据 → 回滚」的证据链。
         // **不采纳**任何回滚内容进内存（不 cfg_ = ...、不 generation+1）：避免一次无关的外部坏写撤销用户
         //   最近一次成功 PUT 并经 generation 触发整条管线 FullRestart——这是本次修复要保住的语义。
-        // ── 并发互斥（FACE-CONFIG-010 竞态收口；本文件三处写盘路径统一用 mu_ 串行化）──
+        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
+        // ★ 并发互斥（FACE-CONFIG-010 竞态收口；本文件所有写盘调用点统一用 mu_ 串行化）
         // 以下「取内存快照 → 序列化 → 写回磁盘 → 记录 mtime」**整段**必须在 mu_ 临界区内完成，与
         // updateFromJsonBody（PUT）及 rotateKeyAndReencrypt 的「写盘 + 内存提交」互斥。
         // 否则失效时序（三路对抗审查逐字推演，已复核为真实可达）：回滚线程取到旧快照 A → 并发 PUT 成功
@@ -1261,11 +1340,15 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         //   版变成竞态版。
         // 为何直接用 mu_ 而非新增专用写锁：mu_ 已是内存态的唯一锁；本段调用的 buildSettingsJson /
         //   serializedDocIsWritable / writeFileAll / moveReplaceWriteThrough / parseAndValidateSettingsDoc
-        //   均**不取 mu_**（逐字核实）⇒ 不会递归加锁；三处写盘路径都只用 mu_ 一把锁 ⇒ 无锁序问题、无死锁。
+        //   均**不取 mu_**（逐字核实）⇒ 不会递归加锁；所有写盘调用点都只用 mu_ 一把锁 ⇒ 无锁序问题、无死锁。
         //   代价：写盘期间 mu_ 被持有 ⇒ current() 短暂阻塞（本路径只在检测到外部坏写时触发，罕见）。
+        //   ⚠️ 代价不止「一次文件写」：本临界区还含 **AES-256-GCM 加密**（buildSettingsJson 对 poster.postUrl
+        //     重加密）、**DPAPI 解保护**（ensureOrLoadKey）与**多次文件 I/O**（写 tmp + 原子替换；.bak 臂还要
+        //     先读 .bak），故读侧（任何需 cfg_ 的调用，如 current()）最坏阻塞 ≈ **一次完整回滚**，而非单次 write。
         // rbTmp 为**固定名** `config.json.rollback.tmp`：写入 + moveReplaceWriteThrough 成功即消失；但进程
-        //   若在写盘中途崩溃**会残留**该文件（initialize 与 writeAtomicallyWithBackup 都不清理它）。残留无
-        //   正确性影响（下次回滚以 trunc 覆盖），仅占一份磁盘空间，属已知登记项（见 config.md）。
+        //   若在写盘中途崩溃**会残留**该文件。FACE-CONFIG-014 已修：initialize 启动时会清扫该残留（见其内
+        //   注释与 WinJsonConfig.h），故残留最多存活到下次启动，无需人工处理。残留无正确性影响（下次回滚以
+        //   trunc 覆盖），仅占一份磁盘空间。
         const std::filesystem::path rbTmp = configPath_.parent_path() / L"config.json.rollback.tmp";
         {
             std::lock_guard<std::mutex> lock(mu_);
