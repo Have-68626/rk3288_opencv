@@ -586,8 +586,22 @@ function collectObjectNodes(node, nodePath, out) {
 }
 
 test("additionalProperties：openapi 各 *Settings 的**嵌套** object 分支亦为 false（postUrl 加密分支在射程内）", () => {
-  // 射程 = config 契约组件（Settings + 各 *Settings）。Envelope 等**非契约**响应组件不纳入：
-  // 其 data/error 为自由结构，不属配置文档契约，刻意不加该约束（纳入会误报）。
+  // 射程 = config 契约组件。判据（可机械复核）：契约组件 ≡ 出现在 config.schema.json 顶层段的
+  //   对象组件 ∪ {Settings 根}，即 ["Settings", ...Object.keys(canonical).map(componentName)]；
+  //   不在此集合内者即**非契约**，不纳入本断言（见下方 contractComps 定义）。
+  //   非契约者 = 不在 contractComps 中的组件（当前为 Envelope 系；另有 BadRequest / NotFound /
+  //   ServiceUnavailable 等响应/错误组件，其结构不在配置文档契约的提取器辖区）。
+  //   此处**刻意不写死「N 个组件 / M 个 type:object 节点」之类的计数**：openapi 一演进计数即静默
+  //   过期，正属本仓批评过的「注释漂移」；判据以 contractComps 的机械定义为准，由代码自证。
+  // 为何刻意排斥 Envelope 系（非契约 ⇒ 不应加 additionalProperties: false 约束）：
+  //   · Envelope.data 是**纯自由结构**——该节点只有 `type: object`，既无 properties 也无
+  //     additionalProperties（逐字见 openapi.yaml：description 为「响应数据（具体结构因端点而异）」）；
+  //     响应 data 的形态随端点而异（Settings / 模型列表 / 人脸库快照 …），本就不可枚举。
+  //   · Envelope.error 是 **API 响应错误结构**（code/message/details），属**响应**契约而非**配置文档**
+  //     契约；其 details 承载自由诊断串，对之收束未知键与其用途冲突。
+  //   故纳入会**误报**：探针实测二者的 hasNoExtra 均为 false，必然令下方断言变红。
+  // 契约组件内当前的嵌套 type:object 仅 PosterSettings.postUrl（oneOf 加密分支）一个，已在射程内；
+  //   若未来在契约组件属性值内新增嵌套对象而漏配该行，scanNestedObjects 会自动纳入并令断言变红。
   const contractComps = ["Settings", ...Object.keys(canonical).map(componentName)];
   let checked = 0;
   for (const name of contractComps) {
