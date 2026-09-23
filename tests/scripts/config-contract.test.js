@@ -317,19 +317,22 @@ test("recognition 段字段集：WinJsonConfig 序列化/解析 ↔ 运行时 sc
 // 与上面的「字段集（properties）」校验互补：properties 描述「允许出现哪些键」，
 // required 描述「启动校验时必须出现哪些键」。二者是**独立的契约面**。
 //
-// 本批（FACE-ARCWIN-006/007）新增 identifyThresholdArcFace 时**刻意只进 properties、不进 required**：
-// 既有部署的 config.json 都没有该键，若设为必填会在启动校验时报「缺少必填字段」而被拒 ⇒ 升级即损坏配置。
-// 反之，cascadePath 等 6 个既有键是 required——它们是历史契约，不能悄悄从 required 里掉出去。
+// 本批（FACE-ARCWIN-006/007）把 identifyThresholdArcFace **收束进 required**（三处同步）。
+// 迁移安全由**键级规范化**承担：WinJsonConfig.cpp 的 normalizeRecognitionKeys 在 schema 校验前
+// 对 recognition 段做「缺键补默认」（补入值取 defaultAppConfig()，与解析侧缺键回退一致），
+// 故既有缺该键的 config.json 仍能通过校验、不会被拒 ⇒ 不会被 initialize 的 INI 迁移分支覆盖。
+// 而 cascadePath 等 6 个既有键本就是历史 required，不能悄悄掉出去。
 //
-// 若不机械看护 required，未来有人误把 identifyThresholdArcFace 加进 required（迁移安全静默破坏），
-// 或改了运行时 required 却漏同步 config.schema.json/openapi.yaml，都不会被本测试发现。
+// 反之，arcFaceInputName / arcFaceOutputName 仍**刻意不进 required**：它们的「空串 = OpenCV 自动」
+// 是合法默认值，语义与阈值不同，键级规范化亦不为其补位。若不机械看护，未来有人误把它们加进
+// required（迁移破坏），或改了运行时 required 却漏同步 config.schema.json/openapi.yaml，都不会被发现。
 //
 // 需要一致的 required 三处拷贝：
 //   ① src/win/src/JsonSchemaValidator.cpp  buildSettingsDocSchema()（**运行时**；形如
 //      req.a.push_back(JsonValue::makeString("k"))，是字面量，可静态可靠抽取）
 //   ② docs/windows-web-spa/config.schema.json  recognition.required
 //   ③ docs/windows-web-spa/openapi.yaml  RecognitionSettings.required
-const RECOGNITION_OPTIONAL_KEYS = ["identifyThresholdArcFace", "arcFaceInputName", "arcFaceOutputName"];
+const RECOGNITION_OPTIONAL_KEYS = ["arcFaceInputName", "arcFaceOutputName"];
 
 test("recognition 段 required 集：JsonSchemaValidator 运行时 ↔ schema.json ↔ openapi", () => {
   // ① 运行时 required：先切出识别段，再在段内抽 req.a.push_back(JsonValue::makeString("k"))。
@@ -356,7 +359,8 @@ test("recognition 段 required 集：JsonSchemaValidator 运行时 ↔ schema.js
   ];
 
   // 防「静默通过」：每处 required 必须非空、无重复（字面量数 == 去重键数）、且**不含刻意可选的键**。
-  // 最后一条把「identifyThresholdArcFace 等刻意不进 required」钉死在测试里——这正是迁移安全的护栏。
+  // 「刻意可选」= 两个节点名（空串即 OpenCV 自动，属合法默认值）；identifyThresholdArcFace 已在本批
+  // 收束进 required，其迁移安全由「规范化先补键」保证，故下方另有一条**必须包含**它的反向护栏。
   for (const { label, keys } of sources) {
     assert.ok(
       keys.length > 0,
@@ -373,6 +377,15 @@ test("recognition 段 required 集：JsonSchemaValidator 运行时 ↔ schema.js
         `${label}: required 含刻意可选键 ${opt}（既有 config.json 缺该键会在启动校验被拒 ⇒ 迁移破坏）`
       );
     }
+  }
+
+  // 反向护栏（本批收束）：identifyThresholdArcFace 必须出现在三处 required——其迁移安全由
+  // WinJsonConfig.cpp 的键级规范化承担（校验前补默认），故可以且应当设为必填。
+  for (const { label, keys } of sources) {
+    assert.ok(
+      keys.includes("identifyThresholdArcFace"),
+      `${label}: required 缺 identifyThresholdArcFace（本批已收束进 required；缺失即回退到迁移破坏风险）`
+    );
   }
 
   // 主断言：三处 required 集与 ② config.schema.json 两两一致，失败信息逐键列出缺/多。

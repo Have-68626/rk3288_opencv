@@ -31,7 +31,7 @@
     "recognition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cascadePath", "databasePath", "arcFaceModelPath", "minFaceSizePx", "identifyThreshold", "enrollSamples"],
+      "required": ["cascadePath", "databasePath", "arcFaceModelPath", "minFaceSizePx", "identifyThreshold", "identifyThresholdArcFace", "enrollSamples"],
       "properties": {
         "cascadePath": { "type": "string" },
         "databasePath": { "type": "string" },

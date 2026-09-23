@@ -288,12 +288,15 @@ bool test_config_masked_echo_preserves_real_value() {
 
 // FACE-ARCWIN-006/007 迁移不变式：既有 config.json 缺 identifyThresholdArcFace 时必须被接受并取默认 0.45。
 //
-// 为什么必须有这条：identifyThresholdArcFace 是本批新增键，**刻意不进 schema.required**
-// （既有部署的 config.json 都没有该键；若设为必填，这些配置会在启动校验时报「缺少必填字段」而被拒
-// ⇒ 升级即损坏配置）。现有 roundtrip 用例喂入的是**默认序列化**（已含该键），因此**没有**任何测试
-// 覆盖「缺该键的既有配置」这条迁移路径。本用例手工构造一份缺该键的配置走 store.initialize（启动加载）
-// 路径，钉住「加载成功 + 缺键落到默认 0.45」。若未来有人把该键误加进 required，或解析处不再是
-// 「键缺失时保留默认」，本用例立即变红。
+// 为什么必须有这条：identifyThresholdArcFace 已**收束进 schema.required**（三处同步）。既有部署的
+// config.json 都没有该键，若不做补偿，这些配置会在启动校验时报「缺少必填字段」而被拒；更糟的是
+// WinJsonConfigStore::initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支并无条件覆盖写
+// config.json ⇒ 静默丢弃用户全部配置。补偿即 WinJsonConfig.cpp 的 normalizeRecognitionKeys：在
+// schema 校验前对 recognition 段「缺键补默认」（补入值取 defaultAppConfig()，与解析侧缺键回退一致）。
+// 现有 roundtrip 用例喂入的是**默认序列化**（已含该键），因此**没有**任何测试覆盖「缺该键的既有配置」
+// 这条迁移路径。本用例手工构造一份缺该键的配置走 store.initialize（启动加载）路径，钉住
+// 「加载成功 + 缺键落到默认 0.45 + 后续落盘重新含该键」的端到端行为。若未来有人删掉规范化、或解析处
+// 不再是「键缺失时保留默认」，本用例立即变红。
 bool test_config_missing_arcface_threshold_key_migrates() {
     // 清空会改写配置解析结果的环境覆盖项（与 roundtrip 测试一致，保证加载结果确定性）
     SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
@@ -333,12 +336,29 @@ bool test_config_missing_arcface_threshold_key_migrates() {
         if (!out) return false;
     }
 
-    // 3) 启动加载该缺键配置：必须被接受（warn 为空）且取默认 0.45。
+    // 3) 启动加载该缺键配置：规范化在校验前补齐该键 ⇒ 必须被接受（warn 为空）且取默认 0.45。
     rk_win::WinJsonConfigStore store2;
     std::string warn;
     store2.initialize(warn);
-    if (!warn.empty()) return false;  // 缺键配置被拒（如误加入 required）即为迁移破坏
-    return store2.current().recognition.identifyThresholdArcFace == 0.45;
+    if (!warn.empty()) return false;  // 缺键配置被拒（规范化缺失/误删）即为迁移破坏
+    if (store2.current().recognition.identifyThresholdArcFace != 0.45) return false;
+
+    // 4) 端到端落盘：initialize 成功本身不重写 config.json（仅在级联迁移分支落盘），故经一次空 patch
+    //    PUT 触发写，断言落盘产物重新含该键且值 = 规范化补入的默认 0.45（防「加载能用但一写就丢」）。
+    if (!store2.updateFromJsonBody("{}").ok) return false;
+    std::string after;
+    {
+        std::ifstream in(cfgPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        after.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    rk_win::JsonValue docAfter;
+    std::string aerr;
+    if (!rk_win::parseJson(after, docAfter, aerr) || !docAfter.isObject()) return false;
+    const rk_win::JsonValue* recAfter = docAfter.find("recognition");
+    if (!recAfter || !recAfter->isObject()) return false;
+    const rk_win::JsonValue* vAfter = recAfter->find("identifyThresholdArcFace");
+    return vAfter && vAfter->isNumber() && vAfter->n == 0.45;
 }
 
 // FACE-ARCWIN-007 边界：identifyThresholdArcFace 值域 [0,1]（余弦相似度），越界值必须被 schema 拒绝。
