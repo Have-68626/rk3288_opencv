@@ -58,8 +58,9 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
 原文为「仅回显服务名与端口」。现追加三字段，动机见 `docs/guides/windows-service/config.md`：
 配置装载失败需要一个**不依赖被拒那份配置**的可见通道。
 
-- `configStatus`（**恒出现**）：`ok` / `rejected`。`rejected` = 既有 `config.json` 存在但无法装载
-  （不可读 / JSON 解析失败 / schema 校验被拒），服务以默认值启动。
+- `configStatus`（**恒出现**）：`ok` / `rejected` / `unknown`。`rejected` = 既有 `config.json` 存在但无法装载
+  （不可读 / JSON 解析失败 / schema 校验被拒），服务以默认值启动；`ok` = 正常装载；`unknown` = 诊断通道
+  缺失（`ctx.settings` 为空，无法判定配置状态，仅内部测试路径可达）。
 - `configWarning`（**仅本次启动有告警时出现**）：服务端告警原文。
 - `configQuarantinedTo`（**仅发生隔离时出现**）：被改名另存的坏配置**文件名**（非全路径）。
 
@@ -70,8 +71,12 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
   （这正是「独立可见通道」的含义）；
 - ⚠️ `configWarning` 是服务端原文，**可能含文件系统路径**，故本端点内容应按**本机可见**对待；
 - 已按本文件 §1 的冻结流程同步实现与测试（`WinJsonConfig` 的三个诊断访问器 +
-  `JsonEndpointHandlers::handleGetHealth`；用例 `HttpFacesAuth.HealthExposesConfigStatusOk` 与
-  `HttpFacesAuth.HealthExposesRejectedConfigStatus`）。
+  `JsonEndpointHandlers::handleGetHealth`；用例 `HttpFacesAuth.HealthExposesConfigStatusOk`、
+  `HttpFacesAuth.HealthExposesRejectedConfigStatus` 与 `HttpFacesAuth.AnonymousWhitelistRemainsPublic`
+  ——后者以 `store=nullptr` 断言 `configStatus:"unknown"`，补齐三态证据）。
+- ⚠️ `configStatus` 由二值（`ok` / `rejected`）扩为三值（新增 `unknown`，对应 `ctx.settings`
+  为空的诊断通道缺失场景）属**事后同步**：`JsonEndpointHandlers::handleGetHealth` 先行改为
+  「settings 为空时置 `unknown`、不再回落 `ok`」，本小节随后如实回填，非事前冻结。
 
 ### 3.2 需认证（启用认证后全部需有效 token）
 
