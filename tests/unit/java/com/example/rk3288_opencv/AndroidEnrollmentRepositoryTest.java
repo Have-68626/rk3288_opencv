@@ -8,6 +8,9 @@ import org.junit.rules.TemporaryFolder;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.SecureRandom;
@@ -638,6 +641,67 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals("a 的替身调用数不得因 b 的操作而变化", aCallsAfterRemove, opsA.attempted.size());
     }
 
+    // ---------- ⑭ 结构守卫：无静态接缝（FACE-TEST-003 与存储侧对偶） ----------
+
+    /**
+     * **结构守卫**（FACE-TEST-003 补齐）：{@code AndroidEnrollmentRepository} 上**不存在**静态注入入口 /
+     * 静态接缝类型字段（本类的两个接缝 {@link FileStoreUtils.FileOps} 与 {@link
+     * FeatureTemplateEncryptedStore.PlatformKeyProvider} 均为**实例字段**，注入只作用在本实例）。
+     *
+     * <p>与 {@code FeatureTemplateEncryptedStoreTest.featureTemplateEncryptedStoreExposesNoStaticInjectionSeam}
+     * 同口径。此前本类仅有**行为性**守卫 {@link #injectedOpsArePerInstanceAndDoNotLeak}，缺**结构性**守卫：
+     * {@code fileStoreUtilsExposesNoStaticInjectionSeam} 只反射 {@code FileStoreUtils.class}，不覆盖本类。
+     *
+     * <p><b>判据（含 FACE-TEST-003 收紧）</b>：
+     * <ul>
+     *   <li><b>方法①（收紧）</b>：不存在「名为 {@code set*} 且带接缝类型参数」的**静态**方法 ——
+     *       **不限返回类型**（堵「返回非 void 的静态 setter」）、**不限参数个数**（堵「多参静态 setter」）；</li>
+     *   <li><b>方法②</b>：不存在「返回 {@code void} 且参数恰为一个接缝类型」的静态方法；</li>
+     *   <li><b>字段③</b>：不存在任何静态接缝类型字段。</li>
+     * </ul>
+     *
+     * <p><b>为何不误伤既有合法 API</b>：本类合法注入方法 {@code setFileOpsForTesting} /
+     * {@code setKeyProviderForTesting} 均为**实例**方法 ⇒ 方法判据（先过滤 {@code static}）不命中；静态
+     * 工厂 {@code forDefaultGallery}/{@code forScope}、静态 {@code dirLockForTesting} 等均不带接缝参数类型。</p>
+     *
+     * <p><b>会红在哪些改法上</b>：把 {@code setFileOpsForTesting}/{@code setKeyProviderForTesting} 改为
+     * {@code static}，或新增「返回非 void / 多参」的静态 setter ⇒ 判据①红；新增任意静态接缝类型字段 ⇒
+     * 字段判据红。</p>
+     *
+     * <p><b>边界（如实声明）</b>：仍只按**形态**判据（setter 命名 + 接缝参数/字段类型）；以其它类型或非
+     * setter 命名承载的静态注入不覆盖。</p>
+     */
+    @Test
+    public void androidEnrollmentRepositoryExposesNoStaticInjectionSeam() {
+        for (Method m : AndroidEnrollmentRepository.class.getDeclaredMethods()) {
+            if (!Modifier.isStatic(m.getModifiers())) {
+                continue;   // 合法注入方法在本类均为**实例**方法，故只查静态
+            }
+            boolean hasSeamParam = false;
+            for (Class<?> p : m.getParameterTypes()) {
+                if (isSeamType(p)) {
+                    hasSeamParam = true;
+                    break;
+                }
+            }
+            assertFalse("不应暴露静态注入入口（名为 set* 且带接缝类型参数的静态方法，"
+                            + "不限返回类型/参数个数）：" + m.getName(),
+                    m.getName().startsWith("set") && hasSeamParam);
+            boolean voidSingleSeam = m.getReturnType() == void.class
+                    && m.getParameterCount() == 1
+                    && isSeamType(m.getParameterTypes()[0]);
+            assertFalse("不应暴露静态注入入口（返回 void 且参数恰为一个接缝类型）：" + m.getName(),
+                    voidSingleSeam);
+        }
+        for (Field f : AndroidEnrollmentRepository.class.getDeclaredFields()) {
+            assertFalse("AndroidEnrollmentRepository 不应持有任何静态接缝类型字段（FileOps / PlatformKeyProvider）"
+                            + "——默认值请引用 FileStoreUtils.DEFAULT_FILE_OPS / "
+                            + "FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER，静态字段会成为进程级可变注入入口："
+                            + f.getName(),
+                    Modifier.isStatic(f.getModifiers()) && isSeamType(f.getType()));
+        }
+    }
+
     // ---------- 工具 ----------
 
     /**
@@ -689,6 +753,12 @@ public class AndroidEnrollmentRepositoryTest {
         byte[] out = new byte[len];
         new SecureRandom(new byte[]{(byte) seed}).nextBytes(out);
         return out;
+    }
+
+    /** 类型是否为任一测试接缝（{@link FileStoreUtils.FileOps} / {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}）。 */
+    private static boolean isSeamType(Class<?> type) {
+        return FileStoreUtils.FileOps.class.isAssignableFrom(type)
+                || FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(type);
     }
 
     private static FeatureTemplateEncryptedStore.PlatformKeyProvider jceProvider() throws Exception {

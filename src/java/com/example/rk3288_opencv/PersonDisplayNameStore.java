@@ -88,15 +88,17 @@ final class PersonDisplayNameStore {
     /**
      * 本机是否具备加密能力（API &gt;= 23 且密钥可用）。供调用方避免徒劳的迁移重试。
      *
-     * <p><b>刻意保持 static</b>（如实固化）：这是**设备级**查询而非实例级状态，且唯一生产调用方
-     * {@code MainActivity.migrateLegacyDisplayNames} 以 {@code PersonDisplayNameStore.isSupported()}
-     * 静态调用 —— 改为实例方法会破坏该调用点。故此处传**默认** provider（{@link
-     * FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}），反映真实平台能力；实例级注入只影响
-     * {@link #save}/{@link #readFromDisk} 的加解密路径，不影响本静态能力查询。
+     * <p><b>实例方法而非 static</b>（FACE-JAVA-001 修复，与 {@code AndroidEnrollmentRepository.
+     * isEnrollmentEnabled()} 这一同类能力查询对齐）：读本实例的 {@link #keyProvider} 字段，故「平台
+     * 支持判定」这一维度在测试中**可注入** —— 注入「不支持」替身即可在纯 JVM 下断言判定为 false。
+     *
+     * <p><b>调用点</b>：唯一生产调用方 {@code MainActivity.migrateLegacyDisplayNames} 改为
+     * {@code displayNameStore().isSupported()}；该实例经惰性双检锁取得（与本方法内既有的
+     * {@code store.save(...)} 同一实例），获取无额外代价。默认（未注入）时 {@link #keyProvider} 即
+     * {@link FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}，判定恒等于真实平台能力。
      */
-    static boolean isSupported() {
-        return FeatureTemplateEncryptedStore.isPlatformSupported(
-                FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER);
+    boolean isSupported() {
+        return FeatureTemplateEncryptedStore.isPlatformSupported(keyProvider);
     }
 
     /**
