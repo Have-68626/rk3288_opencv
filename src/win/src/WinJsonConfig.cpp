@@ -462,6 +462,11 @@ static bool getString(const JsonValue& o, const char* k, std::string& out) {
     return true;
 }
 
+// 键级规范化（FACE-ARCWIN-006/007 迁移过渡）。定义见本文件 parseAndValidateSettingsDoc 之后。
+// 前置声明置于此，仅为保持定义靠近其唯一调用点之外的既有函数布局（定义体含 doc.find 字面量，
+// 放在本处会前移既有静态切片测试的识别段起点）。
+static void normalizeRecognitionKeys(JsonValue& doc);
+
 bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, std::string& outErr) const {
     outErr.clear();
     JsonValue doc;
@@ -470,6 +475,9 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         outErr = "JSON 解析失败: " + perr;
         return false;
     }
+    // 迁移过渡（FACE-ARCWIN-006/007）：先补齐 recognition 段缺键，再做 required 收束后的 schema 校验。
+    // 否则既有缺 identifyThresholdArcFace 的 config.json 会被拒，进而穿透 INI 分支覆盖用户配置。
+    normalizeRecognitionKeys(doc);
     std::string schemaErr;
     if (!JsonSchemaValidator::validate(JsonSchemaValidator::buildSettingsDocSchema(), doc, &schemaErr)) {
         outErr = "Schema 校验失败: " + schemaErr;
@@ -689,6 +697,26 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
 
     cfgOut = std::move(cfg);
     return true;
+}
+
+// FACE-ARCWIN-006/007 迁移过渡：键级规范化——**只补本批新收束进 required 的那一个键**。
+//
+// 为什么需要：identifyThresholdArcFace 已进入 schema.required（见 JsonSchemaValidator.cpp），而既有部署的
+// config.json 没有该键（它随本批才进入序列化）。若不先补齐，老配置会在启动校验被拒；而
+// WinJsonConfigStore::initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支、以 INI/默认值
+// **覆盖写 config.json**（仅留一条 warn），用户配置即被丢弃。
+//
+// 为什么**只补这一个键**（刻意不推广到 recognition 段其余键）：其余 8 个键的接受/拒绝语义属历史契约，
+// 本批不应改动。若一并补默认，「删除 cascadePath 等必填键」会从「校验失败 ⇒ 回滚 .bak」静默变成
+// 「以默认值接受」——属未声明的行为放宽。补入值与解析侧「键缺失保留结构体默认」同源，故本规范化
+// 不改变任何**已被接受**配置的解析结果，只让新增的 required 校验能通过。
+static void normalizeRecognitionKeys(JsonValue& doc) {
+    JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return;
+    if (!rec->find("identifyThresholdArcFace")) {
+        rec->o["identifyThresholdArcFace"] =
+            JsonValue::makeNumber(defaultAppConfig().recognition.identifyThresholdArcFace);
+    }
 }
 
 std::string WinJsonConfigStore::buildSettingsJson(const AppConfig& cfg, bool redacted, bool encryptSensitive) const {

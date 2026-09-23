@@ -181,6 +181,9 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         req.a.push_back(JsonValue::makeString("arcFaceModelPath"));
         req.a.push_back(JsonValue::makeString("minFaceSizePx"));
         req.a.push_back(JsonValue::makeString("identifyThreshold"));
+        // 已加入 required（FACE-ARCWIN-006/007 收束）：配套的键级规范化
+        // （normalizeRecognitionKeys）保证既有缺键配置在启动校验前先被补齐默认值。
+        req.a.push_back(JsonValue::makeString("identifyThresholdArcFace"));
         req.a.push_back(JsonValue::makeString("enrollSamples"));
         r.o["required"] = std::move(req);
         JsonValue rp = JsonValue::makeObject();
@@ -188,7 +191,9 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         rp.o["databasePath"] = objStr();
         rp.o["arcFaceModelPath"] = objStr();
         // ArcFace 节点名（FACE-ARCWIN-001）：可选，默认空串=OpenCV 自动。
-        // 刻意不加入 required——空串是合法默认值，仅当用户显式覆盖图命名时才需设置。
+        // 保持不加入 required——空串是合法默认值，仅当用户显式覆盖图命名时才需设置。
+        // 与 identifyThresholdArcFace 不同：后者的「合法默认」由键级规范化补齐，
+        // 故已收束进 required；节点名无此语义，继续可选。
         rp.o["arcFaceInputName"] = objStr();
         rp.o["arcFaceOutputName"] = objStr();
         rp.o["minFaceSizePx"] = objBoolInt(true, 10, 10000);
@@ -201,8 +206,9 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         }
         {
             // ArcFace 专用阈值（余弦相似度，FACE-ARCWIN-006/007）：值域取 [0,1]。
-            // 与 LBPH 的 identifyThreshold 量纲不同，故独立成键；刻意不加入 required
-            // （默认有值 0.45）——若设为必填，既有 config.json 缺该键会在启动校验时被拒（迁移破坏）。
+            // 与 LBPH 的 identifyThreshold 量纲不同，故独立成键。
+            // 已加入 required（见上方 req 数组）：配套的键级规范化保证既有缺键 config.json
+            // 在启动校验前先被补齐默认值 0.45，避免升级即被拒。
             JsonValue t = JsonValue::makeObject();
             t.o["type"] = JsonValue::makeString("number");
             t.o["minimum"] = JsonValue::makeNumber(0.0);

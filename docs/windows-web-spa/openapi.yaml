@@ -385,6 +385,7 @@ components:
 
     Settings:
       type: object
+      additionalProperties: false
       description: 完整配置对象
       required:
         - schemaVersion
@@ -426,6 +427,7 @@ components:
 
     CameraSettings:
       type: object
+      additionalProperties: false
       description: 摄像头采集配置
       required:
         - preferredDeviceId
@@ -458,6 +460,7 @@ components:
 
     RecognitionSettings:
       type: object
+      additionalProperties: false
       description: 人脸识别配置
       required:
         - cascadePath
@@ -465,6 +468,7 @@ components:
         - arcFaceModelPath
         - minFaceSizePx
         - identifyThreshold
+        - identifyThresholdArcFace
         - enrollSamples
       properties:
         cascadePath:
@@ -514,6 +518,7 @@ components:
 
     InferenceSettings:
       type: object
+      additionalProperties: false
       description: 推理节流配置
       required:
         - throttleMode
@@ -532,6 +537,7 @@ components:
 
     DnnSettings:
       type: object
+      additionalProperties: false
       description: DNN（深度学习）推理配置
       required:
         - enable
@@ -609,6 +615,7 @@ components:
 
     ModelSettings:
       type: object
+      additionalProperties: false
       description: 模型加载配置（缺省时全部回退默认值）
       properties:
         detection:
@@ -642,6 +649,7 @@ components:
 
     HttpSettings:
       type: object
+      additionalProperties: false
       description: HTTP 服务配置
       required:
         - enable
@@ -660,6 +668,7 @@ components:
 
     PosterSettings:
       type: object
+      additionalProperties: false
       description: 识别结果推送配置
       required:
         - enable
@@ -727,6 +736,7 @@ components:
 
     LogSettings:
       type: object
+      additionalProperties: false
       description: 日志配置
       required:
         - logDir
@@ -752,6 +762,7 @@ components:
 
     UiSettings:
       type: object
+      additionalProperties: false
       description: 用户界面配置
       required:
         - windowWidth
@@ -779,6 +790,7 @@ components:
 
     DisplaySettings:
       type: object
+      additionalProperties: false
       description: 显示输出配置（服务渲染用）
       required:
         - outputIndex
@@ -875,6 +887,7 @@ components:
 
     AccelerationSettings:
       type: object
+      additionalProperties: false
       description: 硬件加速器配置
       required:
         - enableOpenCL
