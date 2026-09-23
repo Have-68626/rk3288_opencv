@@ -77,6 +77,7 @@ bool test_config_second_initialize_resets_diagnostics();
 bool test_config_unknown_key_rejected();
 bool test_config_load_failure_writes_stderr();
 bool test_config_healthy_load_silent_stderr();
+bool test_config_initialize_cleans_stale_rollback_tmp();
 bool test_reload_endpoint_bumps_generation();
 bool test_openapi_endpoint_returns_spec_json();
 bool test_face_db_plaintext_vuln_documented();
@@ -138,6 +139,7 @@ int main(int argc, char** argv) {
         {"config_unknown_key_rejected", test_config_unknown_key_rejected},
         {"config_load_failure_writes_stderr", test_config_load_failure_writes_stderr},
         {"config_healthy_load_silent_stderr", test_config_healthy_load_silent_stderr},
+        {"config_initialize_cleans_stale_rollback_tmp", test_config_initialize_cleans_stale_rollback_tmp},
         {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
         {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
         {"face_db_plaintext_vuln_documented", test_face_db_plaintext_vuln_documented},

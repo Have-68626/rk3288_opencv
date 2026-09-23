@@ -1128,6 +1128,12 @@ bool test_config_cascade_migration_write_failure_degrades() {
     if (std::filesystem::exists(oldCascadePath)) return false;  // 场景前提：旧文件确实不存在
 
     // 2) 用目录占住写盘临时名 config.json.tmp ⇒ 迁移写盘必失败。
+    // ⚠️ **隐式耦合（钉住，勿无意打破）**：本构造依赖「initialize **不清理** config.json.tmp 这个名字」——
+    //    若将来把 FACE-CONFIG-014 的启动清扫「对称化」地扩到 config.json.tmp（与本轮的 rollback.tmp 并列），
+    //    该目录占位会在 initialize 开始时被删掉 ⇒ 迁移写盘**反而成功** ⇒ 本用例前提被**静默**打破（断言失真
+    //    且不报错）。本批刻意**只清 rollback.tmp**：它由 reloadFromDisk 回滚的**固定名**产生、可被进程崩溃残留；
+    //    而 config.json.tmp 由 writeAtomicallyWithBackup 每次写盘即时产生并即时消费，**不清它正是本用例的构造基础**。
+    //    （判别补强见 test_config_initialize_cleans_stale_rollback_tmp 中「config.json.tmp 必须仍在」的断言。）
     {
         std::error_code ec;
         std::filesystem::create_directory(dir / "config.json.tmp", ec);
@@ -1292,4 +1298,63 @@ bool test_config_healthy_load_silent_stderr() {
     if (!warn.empty()) return false;               // 健康装载无告警
     if (store.configRejectedOnLoad()) return false;
     return captured.empty();                       // ★ 正常启动零输出
+}
+
+// FACE-CONFIG-014：initialize 必须清扫上一次进程崩溃残留的回滚临时文件 config.json.rollback.tmp。
+//
+// 背景：reloadFromDisk 的回滚写回用**固定名** config.json.rollback.tmp（writeFileAll → moveReplaceWriteThrough），
+//   进程若在这两步之间崩溃会残留该文件；修复前 initialize 与 writeAtomicallyWithBackup 都不清理它。
+// 判别力：
+//   (1) 正对照：预置一份残留 config.json.rollback.tmp ⇒ initialize 后必须**不存在** ⇒ 红在「不清扫」上。
+//   (2) 负对照：清理必须**只针对该固定名**、不得波及合法资产——预置 `.bak` 与一份隔离产物
+//       `config.json.corrupt.<毫秒>`，initialize 后它们（以及 config.json 本身）必须仍在；若清理被写成
+//       remove_all / 通配删除，或误删 config.json，本组断言立即变红。
+bool test_config_initialize_cleans_stale_rollback_tmp() {
+    const auto dir = makeTempDir("init_clean_rollback_tmp");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 先落盘一份合法配置（负对照载体之一）。
+    {
+        rk_win::WinJsonConfigStore seed;
+        std::string w;
+        seed.initialize(w);
+    }
+    if (!std::filesystem::exists(cfgPath)) return false;
+
+    // 2) 预置崩溃残留（固定名）+ 两类**不得**被波及的合法资产。
+    const std::filesystem::path rbTmp = dir / "config.json.rollback.tmp";
+    const std::filesystem::path bakFile = dir / "config.json.bak";
+    const std::filesystem::path corruptSample = dir / "config.json.corrupt.1700000000000";
+    // 3b) FACE-CONFIG-014 判别补强：再预置一个**普通文件** config.json.tmp ⇒ initialize 后它必须仍在。
+    //   若清扫被写成「同时清 config.json.tmp」（或通配删除），下面 §4 的对应断言立即变红 ⇒ 使
+    //   「清扫**只**针对 rollback.tmp」有可执行判据（否则实现即使误清该名，本组其余断言仍会照绿）。
+    //   ⚠️ 这里刻意用**普通文件**而非目录：目录占位是 test_config_cascade_migration_write_failure_degrades
+    //   的构造手段（用**另一临时目录**强制迁移写盘失败），两者目录不同、互不干扰，但语义不同——勿混淆。
+    const std::filesystem::path cfgTmp = dir / "config.json.tmp";
+    if (!writeAllText(rbTmp, "{\"schemaVersion\":1}")) return false;
+    if (!writeAllText(bakFile, "{\"schemaVersion\":1}")) return false;
+    if (!writeAllText(corruptSample, "evidence")) return false;
+    if (!writeAllText(cfgTmp, "{\"schemaVersion\":1}")) return false;
+    if (!std::filesystem::exists(rbTmp)) return false;  // 场景已构造（否则后续断言退化）
+
+    // 3) initialize 必须清扫残留。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (std::filesystem::exists(rbTmp)) return false;   // ★ 残留未清 ⇒ 红
+    // ★ 清扫只针对 rollback.tmp：config.json.tmp 不得被扫（否则变红）。
+    if (!std::filesystem::exists(cfgTmp)) return false;
+
+    // 4) 负对照：清理只针对该固定名，合法资产不受影响，且 config.json 仍可再次正常装载。
+    if (!std::filesystem::exists(cfgPath)) return false;
+    if (!std::filesystem::exists(bakFile)) return false;
+    if (!std::filesystem::exists(corruptSample)) return false;
+    if (!std::filesystem::exists(cfgTmp)) return false;
+    rk_win::WinJsonConfigStore store2;
+    std::string warn2;
+    store2.initialize(warn2);
+    if (!warn2.empty()) return false;
+    if (store2.configRejectedOnLoad()) return false;
+    return true;
 }
