@@ -1426,6 +1426,19 @@ void Engine::renderResults() {
 #endif
         if (snapshotIdentityVer != identityVersion_.load(std::memory_order_acquire)) {
             clearStableIdentities(outcome.tracks);
+            // FACE-PIPE-017：校验② 只在绘制**之后**才清身份——若不重绘，1407 已画上的认证**绿框**会随
+            // 发布帧发出，而对外视图已变 Unknown，形成同帧「绿框 + AUTH_FAIL Unknown」的自相矛盾。此处
+            // 就地重绘，令**发布帧像素**与对外视图在本帧内一致。放门内，是因为校验② 是发布前最后一道
+            // 判定：撤销必须在 publish 返回前就不残留旧 VERIFIED，重绘必须与清身份同处这一不可分的窗口。
+            // 必须与绘制路径（1400）同条件：仅人脸帧在 1404 clone 出独立缓冲，重绘才安全；无脸帧
+            // （tracks.empty()）的 renderFrame 仍与输入帧别名（浅拷贝），就地绘制会写共享缓冲、与渲染
+            // 线程并发撕裂（见 1401-1403）。故此处**不 clone**——只覆写已 clone 的那块缓冲，保持临界区轻量。
+            // ⚠️ 不追求像素级还原：drawTracks 对未认证身份用较细线宽（2，认证为 3）且标签更短，故原认证框
+            //    的最外 1px 与更长标签的残余可能留下。本重绘消除的是「被读成已认证」的误导，不是把该区域
+            //    恢复成绘制前的像素——那需要门内 clone，与上面的轻量约束冲突。
+            if (!outcome.tracks.empty()) {
+                drawTracks(outcome.renderFrame, outcome.tracks);
+            }
         }
         publisher_->publish(std::move(outcome));
     }

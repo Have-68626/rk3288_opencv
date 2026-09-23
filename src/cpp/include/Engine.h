@@ -484,6 +484,21 @@ private:
     //
     // 于是「回调**同线程**同步回入」不再构成 ABBA 死锁，而是立刻得到明确错误。该路径当前**生产不可达**
     //（Android onNativeResult 仅投递、不同步回入；src/win/ 未注册结果回调），故对现有使用者**零行为变化**。
+    //
+    // 回调实现契约（FACE-PIPE-018：把上面那句隐含约定升格为**成文约束**）。门内会经 publish 同步调用
+    // 结果回调（Android 侧即 JNI 上行 sendRecognitionResult → MainActivity.onNativeResult），且该回调
+    // 运行在**持本门**的临界区内。故回调实现必须遵守：
+    //   · **仅投递**——如 runOnUiThread 投递后立即返回；**不得**同步回入 Engine 任何会取 tracksMu_ /
+    //     identityEmitMu_ 的公开 API（穷尽集见上），也**不得**在回调内长时间持锁或阻塞等待其它线程
+    //     （阻塞等待会把本临界区的持锁时间拉长到不可控）。
+    //   · 该约束的**强制执行点**是 FACE-PIPE-015 的重入检测（非仅靠注释自觉）：renderResults 在持门
+    //     临界区内经 RAII `IdentityEmitGateScope`（Engine.cpp:68，于 1422 行实例化）置位进程级
+    //     thread_local `t_insideIdentityEmitGate`（Engine.cpp:62）；上述 5 个公开入口内联调用
+    //     `reenteredFromIdentityEmitGate`（Engine.cpp:81）检测，命中即以固定 reason
+    //     "re-entered from result callback while holding identity emit gate" 记录并**拒绝执行**——
+    //     于是同步回入得到的是明确错误，而非 ABBA 死锁。
+    //   · 时间上**有界但非强制上界**：该上行受结果节流，观测量级为每秒 ≤1–1.5 次、单次 0.1–1 ms。
+    //     节流参数可变，**不得**据此假定回调耗时不会增长；此处的「有界」纯属观测，不是硬保证。
     mutable std::mutex identityEmitMu_;
 
     // #1 注册采集：enabled 为原子快速分支；回调在锁内复制快照、锁外调用，避免回调同步重入
