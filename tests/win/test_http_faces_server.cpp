@@ -483,12 +483,20 @@ TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
 }
 
 // 匿名白名单：health / acceleration 在启用认证后仍无需 token。
+// 唯一以 store=nullptr 请求 health 的用例，故在此钉死 configStatus:"unknown"（ctx.settings 为
+// 空 ⇒ 状态未知，不得回落 "ok"）。
 TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
     {
         const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
         const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 200) << r.response;
+        // 「无法判定配置状态」与「配置已校验正常」是两种语义：store 为 nullptr 时必须报
+        // unknown，混同为 ok 会让「配置被拒」在监控侧静默通过。
+        EXPECT_NE(r.response.find("\"configStatus\":\"unknown\""), std::string::npos) << r.response;
+        // 判空不得吞掉既有字段：name/port 仍须出现。
+        EXPECT_NE(r.response.find("\"name\":\"rk_wcfr\""), std::string::npos) << r.response;
+        EXPECT_NE(r.response.find("\"port\":"), std::string::npos) << r.response;
     }
     {
         const std::string req = "GET /api/v1/acceleration HTTP/1.1\r\nHost: t\r\n\r\n";
