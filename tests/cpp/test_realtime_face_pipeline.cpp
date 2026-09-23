@@ -353,3 +353,30 @@ TEST(RealtimeFacePipeline, DestructorWaitsForPendingAsyncReload) {
     EXPECT_TRUE(r.ok) << r.evidence;
     EXPECT_EQ(r.generation, 1u);
 }
+
+// enforceBudget 的默认值须平台中立（头文件恒 false），真实平台默认只在 .cpp 决定。
+TEST(RealtimeFacePipeline, DefaultEnforceBudgetMatchesArchitecture) {
+    // (a) 平台中立性回归护栏（任何平台可判）：拦住「有人把 #if __aarch64__ 放回头文件」的复发。
+    RealtimeBenchmarkConfig cfg;
+    EXPECT_FALSE(cfg.enforceBudget)
+        << "头文件默认值必须平台中立（恒 false）；架构相关默认只允许在 .cpp 的 "
+           "kDefaultEnforceBudget 决定——把 __aarch64__ 分支留在头文件会让「平台默认值」"
+           "随宏状态漂移，并在宏改由人工维护后产生同一 target 内的定义不一致";
+
+    // (b) 默认管线行为：未调用 setBenchmarkConfig 的管线，其 bench_ 由构造时的
+    //     kDefaultEnforceBudget 决定，超预算时按该默认行事。
+    auto ctl = makeControls();
+    ctl->p95 = 500.0;  // 必然超预算（p95BudgetMs = 250.0）
+    RealtimeFacePipeline pipe(makeMutableHooks(ctl));
+    const RealtimeReloadResult r = pipe.reload(validManifest(), "", "arm64-v8a", "");
+#if defined(__aarch64__) || (defined(RK_BENCH_ENFORCE_BUDGET) && RK_BENCH_ENFORCE_BUDGET != 0)
+    // ARM64（或显式注入预算强制）默认强判：超预算必须拒绝激活。
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(r.reason, "runtime_init_failed");
+#else
+    // 非 ARM64 默认只测量不强判：超预算仍应激活成功（不返回 runtime_init_failed）。
+    EXPECT_TRUE(r.ok) << r.evidence;
+#endif
+    // ★ 残余（如实）：CI 仅在 x64 运行 ⇒ __aarch64__ 分支不被 CI 验证。机械保证主要压在
+    //    CMake 侧配置期断言（接缝白名单）+ 本用例 (a) 让头文件保持平台中立。
+}
