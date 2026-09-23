@@ -343,6 +343,38 @@ public class PersonDisplayNameStoreTest {
     }
 
     /**
+     * 判别性用例（FACE-JAVA-001）：{@code isSupported()} 已由 static 改为**实例方法**，必须读**本实例**
+     * 的 {@code keyProvider} 字段 —— 使「平台支持判定」这一维度在测试中**可注入**。
+     *
+     * <p><b>为何是判别性的</b>：两个实例注入**相反**的替身，断言结果相反。若 {@code isSupported()} 仍读
+     * **静态默认** {@code FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER}，则两次调用必返回**同一**值，
+     * 「一真一假」不可能同时成立 ⇒ 至少一条断言红（且若默认实现在纯 JVM 下触达未 mock 的
+     * {@code android.os.Build}，会直接抛异常 ⇒ 同样红）。
+     */
+    @Test
+    public void isSupportedReflectsInjectedProviderPerInstance() throws Exception {
+        // setUp 注入的 provider.isSupported() == true。
+        PersonDisplayNameStore supported = newStore(tmp.newFolder());
+        assertTrue("支持态实例的支持判定应为 true（读本实例 provider）", supported.isSupported());
+
+        FeatureTemplateEncryptedStore.PlatformKeyProvider unsupported =
+                new FeatureTemplateEncryptedStore.PlatformKeyProvider() {
+                    @Override
+                    public boolean isSupported() {
+                        return false;
+                    }
+
+                    @Override
+                    public SecretKey getOrCreateKeyV1() {
+                        throw new AssertionError("不支持时不得取密钥");
+                    }
+                };
+        PersonDisplayNameStore notSupported = new PersonDisplayNameStore(tmp.newFolder());
+        notSupported.setKeyProviderForTesting(unsupported);
+        assertFalse("不支持态实例的支持判定应为 false（读本实例 provider）", notSupported.isSupported());
+    }
+
+    /**
      * 预取必须**重新解密**而非「命中即跳过」（A2 审计 Low 修复）：文件被带外改动后，下一次预取
      * 应反映磁盘现状，而不是一直显示陈旧名字。
      */
@@ -674,5 +706,79 @@ public class PersonDisplayNameStoreTest {
         }
         // 编译期引用：证明 DEFAULT_FILE_OPS 仍对同包可见（生产调用方的默认实例）。
         assertTrue("DEFAULT_FILE_OPS 应对同包可见且非空", FileStoreUtils.DEFAULT_FILE_OPS != null);
+    }
+
+    /**
+     * **结构守卫**（FACE-TEST-003 补齐）：{@code PersonDisplayNameStore} 上**不存在**静态注入入口 /
+     * 静态接缝类型字段（本类的两个接缝 {@link FileStoreUtils.FileOps} 与 {@link
+     * FeatureTemplateEncryptedStore.PlatformKeyProvider} 均为**实例字段**，注入只作用在本实例）。
+     *
+     * <p>与 {@code FeatureTemplateEncryptedStoreTest.featureTemplateEncryptedStoreExposesNoStaticInjectionSeam}
+     * 同口径（本仓 JVM 内串行测试模型下，任何「一次注入、全局生效」都会跨类污染）。
+     *
+     * <p><b>判据（含 FACE-TEST-003 收紧）</b>：
+     * <ul>
+     *   <li><b>方法①（收紧）</b>：不存在「名为 {@code set*} 且带接缝类型参数」的**静态**方法 ——
+     *       **不限返回类型**（堵「返回非 void 的静态 setter」）、**不限参数个数**（堵「多参静态 setter」）；</li>
+     *   <li><b>方法②</b>：不存在「返回 {@code void} 且参数恰为一个接缝类型」的静态方法；</li>
+     *   <li><b>字段③</b>：不存在任何静态接缝类型字段（默认值请引用
+     *       {@code FileStoreUtils.DEFAULT_FILE_OPS} / {@code FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER}，
+     *       静态字段会成为进程级可变注入入口）。</li>
+     * </ul>
+     *
+     * <p><b>为何不误伤既有合法 API</b>：本类的合法注入方法 {@code setFileOpsForTesting} /
+     * {@code setKeyProviderForTesting} 均为**实例**方法 ⇒ 方法判据（先过滤 {@code static}）不命中；
+     * {@code isSupported()} 修复后亦为实例方法。
+     *
+     * <p><b>会红在哪些改法上</b>：
+     * <ul>
+     *   <li>把 {@code setFileOpsForTesting} 或 {@code setKeyProviderForTesting} 改为 {@code static}（或
+     *       新增任一同名形态的静态 setter）⇒ 判据①红；</li>
+     *   <li><b>新增返回非 void 的静态 setter</b>（如 {@code static FileOps setFileOpsForTesting(FileOps o)}）
+     *       ⇒ 判据①红（旧形态判据会漏过）；</li>
+     *   <li><b>新增多参静态 setter</b>（如 {@code static void setFileOpsForTesting(FileOps o, boolean reset)}）
+     *       ⇒ 判据①红（旧形态判据会漏过）；</li>
+     *   <li>新增**任意**静态接缝类型字段（如 {@code private static FileOps fileOps}）⇒ 字段判据红。</li>
+     * </ul>
+     *
+     * <p><b>边界（如实声明）</b>：仍只按**形态**判据（setter 命名 + 接缝参数/字段类型）。以**其它类型**
+     * 承载（静态 {@code Consumer<FileOps>} 等）或以**非 setter 命名**承载（{@code static void install(...)}）
+     * 的静态注入，本条**不覆盖**。
+     */
+    @Test
+    public void personDisplayNameStoreExposesNoStaticInjectionSeam() {
+        for (Method m : PersonDisplayNameStore.class.getDeclaredMethods()) {
+            if (!Modifier.isStatic(m.getModifiers())) {
+                continue;   // 合法注入方法在本类均为**实例**方法，故只查静态
+            }
+            boolean hasSeamParam = false;
+            for (Class<?> p : m.getParameterTypes()) {
+                if (isSeamType(p)) {
+                    hasSeamParam = true;
+                    break;
+                }
+            }
+            assertFalse("不应暴露静态注入入口（名为 set* 且带接缝类型参数的静态方法，"
+                            + "不限返回类型/参数个数）：" + m.getName(),
+                    m.getName().startsWith("set") && hasSeamParam);
+            boolean voidSingleSeam = m.getReturnType() == void.class
+                    && m.getParameterCount() == 1
+                    && isSeamType(m.getParameterTypes()[0]);
+            assertFalse("不应暴露静态注入入口（返回 void 且参数恰为一个接缝类型）：" + m.getName(),
+                    voidSingleSeam);
+        }
+        for (Field f : PersonDisplayNameStore.class.getDeclaredFields()) {
+            assertFalse("PersonDisplayNameStore 不应持有任何静态接缝类型字段（FileOps / PlatformKeyProvider）"
+                            + "——默认值请引用 FileStoreUtils.DEFAULT_FILE_OPS / "
+                            + "FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER，静态字段会成为进程级可变注入入口："
+                            + f.getName(),
+                    Modifier.isStatic(f.getModifiers()) && isSeamType(f.getType()));
+        }
+    }
+
+    /** 类型是否为任一测试接缝（{@link FileStoreUtils.FileOps} / {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}）。 */
+    private static boolean isSeamType(Class<?> type) {
+        return FileStoreUtils.FileOps.class.isAssignableFrom(type)
+                || FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(type);
     }
 }

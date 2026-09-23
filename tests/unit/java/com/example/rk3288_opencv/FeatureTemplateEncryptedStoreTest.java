@@ -380,38 +380,60 @@ public class FeatureTemplateEncryptedStoreTest {
      * **结构守卫**：{@code FeatureTemplateEncryptedStore} 上**不再存在**静态注入入口 / 可变静态
      * provider 字段（本轮把平台密钥提供者从静态改为方法形参）。
      *
-     * <p><b>为什么不用「任意名、参数恰为一个 {@code PlatformKeyProvider} 的静态方法即判为注入入口」
-     * 这条原判据</b>：改造后 {@code isPlatformSupported(PlatformKeyProvider)} **本身就是单参静态方法**，
-     * 会**误命中**、使守卫恒红 —— 原判据在本类已失效。故改用**明确判据**：
+     * <p><b>判据（FACE-TEST-003 收紧，堵住纯形态判据的已知绕过路径）</b>：
      * <ul>
-     *   <li><b>方法维度</b>：不存在「返回 {@code void} 且参数恰为一个 {@code PlatformKeyProvider}」的
-     *       静态方法（这正是静态注入入口的形态）；且**不得**存在名为
-     *       {@code setPlatformKeyProviderForTesting} 的方法（不限静态）。</li>
-     *   <li><b>字段维度</b>：静态 {@code PlatformKeyProvider} 字段必须 {@code final}，且**唯一**允许的
-     *       常量名是 {@link FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}（与
-     *       {@code DEFAULT_FILE_OPS} 完全同构）。</li>
+     *   <li><b>方法①（收紧）</b>：不存在「名为 {@code set*}（setter 命名约定）且带 {@code
+     *       PlatformKeyProvider} 参数」的**静态**方法 —— **不限返回类型**（堵「返回非 void 的静态
+     *       setter」）、**不限参数个数**（堵「多参静态 setter」）。</li>
+     *   <li><b>方法②（保留原形态）</b>：不存在「返回 {@code void} 且参数恰为一个 {@code
+     *       PlatformKeyProvider}」的静态方法；且不得存在名为 {@code setPlatformKeyProviderForTesting}
+     *       的方法（不限静态）。</li>
+     *   <li><b>字段③</b>：静态 {@code PlatformKeyProvider} 字段必须 {@code final}，且唯一允许的常量名是
+     *       {@link FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}（与 {@code DEFAULT_FILE_OPS}
+     *       完全同构）。</li>
      * </ul>
+     *
+     * <p><b>为何收紧后仍不误伤既有合法 API</b>：{@code isPlatformSupported(PlatformKeyProvider)} 虽是
+     * 静态单参方法，但其名以 {@code is} 开头（**非 setter**）且返回 {@code boolean} ⇒ 判据①②均不命中，守卫
+     * 仍绿。
      *
      * <p><b>双向</b>：既断言「无静态注入入口 / 无可变静态字段」，也断言 {@code DEFAULT_KEY_PROVIDER}
      * 仍对同包可见且非空（生产调用方的默认实例）。
      *
-     * <p><b>打红方式</b>（改任一处即红）：
+     * <p><b>会红在哪些改法上</b>：
      * <ul>
      *   <li>把静态注入方法 {@code setPlatformKeyProviderForTesting} 加回（或新增任一同形态静态方法）
-     *       ⇒ 方法断言红；</li>
+     *       ⇒ 判据②/③红；</li>
+     *   <li><b>新增返回非 void 的静态 setter</b>（如 {@code static PlatformKeyProvider
+     *       setPlatformKeyProviderForTesting(PlatformKeyProvider p)}）⇒ 判据①红（**旧形态判据会漏过**）；</li>
+     *   <li><b>新增多参静态 setter</b>（如 {@code static void setPlatformKeyProviderForTesting(
+     *       PlatformKeyProvider p, boolean reset)}）⇒ 判据①红（**旧形态判据会漏过**）；</li>
      *   <li>新增**任意**可变静态 {@code PlatformKeyProvider} 字段（如 {@code private static volatile
      *       PlatformKeyProvider platformKeyProvider}）—— 仅放行唯一合法常量 {@code DEFAULT_KEY_PROVIDER}
      *       ⇒ 字段断言红。</li>
      * </ul>
      *
-     * <p><b>边界（如实声明，与 {@code fileStoreUtilsExposesNoStaticInjectionSeam} 同）</b>：只按**形态**
-     * 判据。若有人以**其它类型**承载静态注入（如静态 {@code Consumer<PlatformKeyProvider>}、
-     * 静态 {@code Map} 缓存替身），本条**不覆盖**。
+     * <p><b>边界（如实声明，与 {@code fileStoreUtilsExposesNoStaticInjectionSeam} 同）</b>：仍只按**形态**
+     * 判据（setter 命名 + 接缝参数类型）。若有人以**其它类型**承载静态注入（如静态 {@code
+     * Consumer<PlatformKeyProvider>}、静态 {@code Map} 缓存替身），或以**非 setter 命名**承载（如
+     * {@code static void install(PlatformKeyProvider p)}），本条**不覆盖**。
      */
     @Test
     public void featureTemplateEncryptedStoreExposesNoStaticInjectionSeam() {
         for (Method m : FeatureTemplateEncryptedStore.class.getDeclaredMethods()) {
-            boolean voidSingleProvider = Modifier.isStatic(m.getModifiers())
+            boolean isStatic = Modifier.isStatic(m.getModifiers());
+            boolean hasProviderParam = false;
+            for (Class<?> p : m.getParameterTypes()) {
+                if (FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(p)) {
+                    hasProviderParam = true;
+                    break;
+                }
+            }
+            // 判据①（收紧）：名为 set* 且带 PlatformKeyProvider 参数的静态方法 —— 不限返回类型/参数个数。
+            assertFalse("不应暴露静态注入入口（名为 set* 且带 PlatformKeyProvider 参数的静态方法，"
+                            + "不限返回类型/参数个数）：" + m.getName(),
+                    isStatic && m.getName().startsWith("set") && hasProviderParam);
+            boolean voidSingleProvider = isStatic
                     && m.getReturnType() == void.class
                     && m.getParameterCount() == 1
                     && FeatureTemplateEncryptedStore.PlatformKeyProvider.class
