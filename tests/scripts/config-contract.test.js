@@ -320,7 +320,7 @@ test("recognition 段字段集：WinJsonConfig 序列化/解析 ↔ 运行时 sc
 // 本批（FACE-ARCWIN-006/007）把 identifyThresholdArcFace **收束进 required**（三处同步）。
 // 迁移安全由**键级规范化**承担：WinJsonConfig.cpp 的 normalizeRecognitionKeys 在 schema 校验前
 // 对 recognition 段做「缺键补默认」（补入值取 defaultAppConfig()，与解析侧缺键回退一致），
-// 故既有缺该键的 config.json 仍能通过校验、不会被拒 ⇒ 不会被 initialize 的 INI 迁移分支覆盖。
+// 故既有缺该键的 config.json 仍能通过校验、不会被拒 ⇒ 不会降级为默认值运行。
 // 而 cascadePath 等 6 个既有键本就是历史 required，不能悄悄掉出去。
 //
 // 反之，arcFaceInputName / arcFaceOutputName 仍**刻意不进 required**：它们的「空串 = OpenCV 自动」

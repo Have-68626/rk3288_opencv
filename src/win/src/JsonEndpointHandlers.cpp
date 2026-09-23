@@ -325,6 +325,32 @@ HttpResp handleGetHealth(const HttpReq&, EndpointContext& ctx) {
     JsonValue d = JsonValue::makeObject();
     d.o["name"] = JsonValue::makeString("rk_wcfr");
     d.o["port"] = JsonValue::makeNumber(static_cast<double>(ctx.port));
+
+    // FACE-CONFIG-001「独立可见通道」：把启动期配置装载结果暴露在 health 上。
+    // 为何放在 health：
+    //  - 该端点位于匿名白名单（HttpFacesServer::isAnonymousPath 显式放行 health/acceleration），
+    //    免 Bearer token 即可读取，监控无需持有凭据；
+    //  - 启动流程中 initialize() 先于 http.start() 完成（win_local_service_main.cpp:115 vs :143），
+    //    故即便 config.json 被拒、http.port 回落默认值，health 仍能读到诊断状态；
+    //  - 「能连上 health」只取决于端口回落，与配置是否被拒无关 —— 这正是本通道成立的前提。
+    // 字段出现策略：configStatus 恒出现，使监控能区分「配置正常（ok）」与「对端是旧版本、
+    // 尚未实现本字段」；configWarning / configQuarantinedTo 仅在确有值时才出现，避免噪声。
+    // 只读：不触碰任何可变状态，不引入锁或缓存。
+    // ctx.settings 在生产（win_local_service_main）恒非空；但测试路径可传 nullptr（见
+    // test_http_faces_server.cpp 的 runHttpRequest(..., nullptr)），故必须判空兜底 ——
+    // 空指针解引用会砸掉整个服务，代价远高于少一个诊断字段。
+    const bool rejected = ctx.settings && ctx.settings->configRejectedOnLoad();
+    d.o["configStatus"] = JsonValue::makeString(rejected ? "rejected" : "ok");
+    if (ctx.settings) {
+        const std::string warning = ctx.settings->initWarning();
+        if (!warning.empty()) {
+            d.o["configWarning"] = JsonValue::makeString(warning);
+        }
+        const std::string quarantined = ctx.settings->initQuarantineFileName();
+        if (!quarantined.empty()) {
+            d.o["configQuarantinedTo"] = JsonValue::makeString(quarantined);
+        }
+    }
     return okJson(std::move(d));
 }
 

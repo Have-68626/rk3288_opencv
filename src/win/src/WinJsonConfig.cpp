@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <sstream>
 
@@ -109,6 +110,41 @@ bool moveReplaceWriteThrough(const std::filesystem::path& src, const std::filesy
     err = "平台不支持原子替换";
     return false;
 #endif
+}
+
+// 保全证据：把无法装载的 config.json 改名另存。命名对齐 Java 侧
+// FeatureTemplateEncryptedStore.quarantine：<原文件名>.corrupt.<毫秒时间戳>，同目录。
+// ⚠️ 与 Java 版有一处**语义差异，勿想当然**：Java 的 File.renameTo 在 Windows 上走 MoveFileW，
+//    目标已存在时**失败**；而 C++ 的 std::filesystem::rename 按标准**替换**已存在的非目录文件
+//    （MSVC 用 MoveFileExW + MOVEFILE_REPLACE_EXISTING）。所以「不覆盖更早的隔离证据」**不是**
+//    rename 给的，而是下面那句 `exists(dst) → continue` 预探给的——**不要删掉它**。
+// 另一处差异（有意更严）：失败必须回报调用方（Java 版忽略 renameTo 返回值），调用方据此做到
+//    「隔离失败时不落盘默认值」。
+// 返回 false 时 movedTo 无意义，err 说明原因。
+bool quarantineConfigFile(const std::filesystem::path& p, std::filesystem::path& movedTo, std::string& err) {
+    err.clear();
+    movedTo.clear();
+    const auto dir = p.parent_path();
+    const std::string baseName = p.filename().string();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    std::error_code ec;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const std::filesystem::path dst = dir / (baseName + ".corrupt." + std::to_string(ms + attempt));
+        // 先探存在性：本平台 rename 会**覆盖**已存在目标（与 Java 的 renameTo 相反），
+        // 故必须自行探测，否则会销毁更早的隔离证据；冲突则换名重试。
+        if (std::filesystem::exists(dst, ec)) continue;
+        std::filesystem::rename(p, dst, ec);
+        if (!ec) {
+            movedTo = dst;
+            return true;
+        }
+        err = "重命名失败: " + ec.message();
+        return false;
+    }
+    err = "无法为隔离文件分配唯一名称（时间戳冲突）";
+    return false;
 }
 
 // --- 加解密字段格式 ---
@@ -476,7 +512,8 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         return false;
     }
     // 迁移过渡（FACE-ARCWIN-006/007）：先补齐 recognition 段缺键，再做 required 收束后的 schema 校验。
-    // 否则既有缺 identifyThresholdArcFace 的 config.json 会被拒，进而穿透 INI 分支覆盖用户配置。
+    // 否则既有缺 identifyThresholdArcFace 的 config.json 会被拒，进而降级为默认值运行（历史行为更糟：
+    // 穿透 INI 分支覆盖用户配置；FACE-CONFIG-001 已改为先隔离坏文件再以默认值启动）。
     normalizeRecognitionKeys(doc);
     std::string schemaErr;
     if (!JsonSchemaValidator::validate(JsonSchemaValidator::buildSettingsDocSchema(), doc, &schemaErr)) {
@@ -702,9 +739,11 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
 // FACE-ARCWIN-006/007 迁移过渡：键级规范化——**只补本批新收束进 required 的那一个键**。
 //
 // 为什么需要：identifyThresholdArcFace 已进入 schema.required（见 JsonSchemaValidator.cpp），而既有部署的
-// config.json 没有该键（它随本批才进入序列化）。若不先补齐，老配置会在启动校验被拒；而
-// WinJsonConfigStore::initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支、以 INI/默认值
+// config.json 没有该键（它随本批才进入序列化）。若不先补齐，老配置会在启动校验被拒 ⇒ 降级为默认值运行。
+// 历史行为（修复前）：initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支、以 INI/默认值
 // **覆盖写 config.json**（仅留一条 warn），用户配置即被丢弃。
+// 现行为（FACE-CONFIG-001）：校验被拒时先把坏配置改名另存再以默认值启动，不再覆盖销毁；但缺键的既有
+// 配置仍会降级运行，故仍须在此补齐，使其走「加载成功」路径。
 //
 // 为什么**只补这一个键**（刻意不推广到 recognition 段其余键）：其余 8 个键的接受/拒绝语义属历史契约，
 // 本批不应改动。若一并补默认，「删除 cascadePath 等必填键」会从「校验失败 ⇒ 回滚 .bak」静默变成
@@ -781,12 +820,14 @@ bool WinJsonConfigStore::writeAtomicallyWithBackup(const std::string& jsonPretty
 bool WinJsonConfigStore::initialize(std::string& warnOut) {
     warnOut.clear();
 
+    // 本次启动是否因「既有 config.json 无法装载」而降级运行。两条失败路径（不可读 / 被拒）共用此标记。
+    bool loadRejected = false;
+    std::string quarantineName;  // 隔离成功后的文件名（非全路径）
+
     // 读取现有 config.json
     if (std::filesystem::exists(configPath_)) {
         std::string txt, err;
-        if (!readFileAll(configPath_, txt, err)) {
-            warnOut = err;
-        } else {
+        if (readFileAll(configPath_, txt, err)) {
             AppConfig cfg;
             if (parseAndValidateSettingsDoc(txt, cfg, err)) {
                 const auto oldCascade = resolvePathFromExeDir(L"tests/data/lbpcascade_frontalface.xml");
@@ -805,18 +846,47 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                 lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
                 return true;
             }
-            warnOut = err;
         }
+        // 到这里：config.json 存在，但不可读 或 解析/schema 校验被拒 ⇒ 无法装载。
+        // 不变量（**仅限本次 initialize**）：登记为 rejected 时，config.json 要么改名另存、要么原封
+        // 不动——隔离失败就跳过落盘，绝不就地覆盖它。⚠️ 该不变量**不延伸到进程后续生命周期**：
+        // 此后的 PUT（updateFromJsonBody）与热重载（reloadFromDisk 的 .bak 回滚）都会按各自的既有
+        // 语义重写 config.json（PUT 会先备份到 .bak）。故隔离失败且服务继续运行时，那份坏配置
+        // **可能被后续写入替换**——「保全」只保证到本次启动结束。
+        loadRejected = true;
+        warnOut = err;  // 保留原有原因原文（IO 错误 / 解析或 schema 错误）
+
+        std::filesystem::path movedTo;
+        std::string qerr;
+        if (quarantineConfigFile(configPath_, movedTo, qerr)) {
+            quarantineName = movedTo.filename().string();
+            warnOut += "; 原配置已隔离为 " + quarantineName;
+        } else {
+            // 隔离失败 ⇒ 原坏文件仍在，绝不能落盘默认值（那会覆盖销毁它）
+            warnOut += "; 隔离失败（" + qerr + "），已保留原文件、本次不落盘默认值";
+        }
+    }
+
+    // 独立可见通道：stderr 是 initialize 阶段**唯一**不依赖任何配置来源的输出通道——它只写 fd 2，
+    // 既不读配置，也不需要 EventLogger/StructuredLogger 已打开（那两者此刻尚未初始化，其目录还要由
+    // 随后生效的配置决定）。此处刻意不用 rklog：本服务（src/win/）**根本未接入 rklog**。
+    // 仅装载失败时输出，正常启动零输出（不污染既有测试输出）。
+    if (loadRejected) {
+        std::cerr << "[rk_wcfr] 配置装载失败，本次以默认值降级运行: " << warnOut << std::endl;
     }
 
     // 迁移：从旧 INI 读取（兼容已有流程），然后落盘为 JSON
     AppConfig cfg = loadConfigFromIniOrDefault();
     cfg.configPath = configPath_;
-    std::string writeErr;
     const std::string pretty = buildSettingsJson(cfg, false, true);
-    if (!writeAtomicallyWithBackup(pretty, writeErr)) {
-        warnOut = warnOut.empty() ? ("写入默认 JSON 配置失败: " + writeErr) : (warnOut + "; " + writeErr);
-        // 即使落盘失败，也允许继续用内存配置运行
+    // 隔离失败（loadRejected 且未取得隔离文件名）⇒ config.json 仍是那份坏配置，跳过写盘以免覆盖销毁。
+    const bool skipWrite = loadRejected && quarantineName.empty();
+    if (!skipWrite) {
+        std::string writeErr;
+        if (!writeAtomicallyWithBackup(pretty, writeErr)) {
+            warnOut = warnOut.empty() ? ("写入默认 JSON 配置失败: " + writeErr) : (warnOut + "; " + writeErr);
+            // 即使落盘失败，也允许继续用内存配置运行
+        }
     }
 
     {
@@ -825,8 +895,26 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
         lastGoodJsonPretty_ = pretty;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::exists(configPath_) ? std::filesystem::last_write_time(configPath_, ec) : std::filesystem::file_time_type{};
+        configRejectedOnLoad_ = loadRejected;
+        initWarning_ = warnOut;
+        initQuarantineFileName_ = quarantineName;
     }
     return true;
+}
+
+std::string WinJsonConfigStore::initWarning() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return initWarning_;
+}
+
+bool WinJsonConfigStore::configRejectedOnLoad() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return configRejectedOnLoad_;
+}
+
+std::string WinJsonConfigStore::initQuarantineFileName() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return initQuarantineFileName_;
 }
 
 AppConfig WinJsonConfigStore::current() const {

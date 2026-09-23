@@ -26,6 +26,7 @@ as_of=2026-06-23
 - 配置文件：`%APPDATA%\rk_wcfr\config.json`（支持热重载）
 - 密钥文件：`%APPDATA%\rk_wcfr\config.key.dpapi`（DPAPI 保护）
 - 配置备份：同目录 `config.json.bak` 与 `.bak.1` 至 `.bak.5`
+- 坏配置证据：同目录 `config.json.corrupt.<毫秒时间戳>` —— 启动时 `config.json` 存在但无法装载（不可读 / JSON 解析失败 / schema 被拒）时，坏文件被改名另存于此（服务随之以默认值启动；若隔离失败则保留原文件不覆盖）。该类文件不会被自动清理，需人工处置。
 - `ErrorLog/` 是仓库内人工收集用户报错与复现材料的位置，不是本地服务自动生成的运行时数据目录。
 
 ## 端口调整
