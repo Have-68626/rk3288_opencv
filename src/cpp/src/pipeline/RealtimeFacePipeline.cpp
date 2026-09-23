@@ -30,6 +30,19 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// 预算强制默认值：优先取构建期显式选项（RK_BENCH_ENFORCE_BUDGET），否则回落架构判定。
+// 把 #if 从**头文件**挪到 TU 内部，是为了让 RealtimeBenchmarkConfig 的定义在所有 TU/所有
+// 目标下逐字一致（ODR 安全）——编译期按目标预定义 __aarch64__ 本身是 ODR 安全的，但只要
+// 该分支留在头文件里，一旦将来改成人工维护的显式宏就有静默 UB 的入口。
+constexpr bool kDefaultEnforceBudget =
+#if defined(RK_BENCH_ENFORCE_BUDGET)
+    RK_BENCH_ENFORCE_BUDGET != 0;
+#elif defined(__aarch64__)
+    true;
+#else
+    false;
+#endif
+
 double durationMs(Clock::time_point a, Clock::time_point b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
 }
@@ -294,7 +307,11 @@ RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
 
 RealtimeFacePipeline::RealtimeFacePipeline() : RealtimeFacePipeline(makeDefaultRealtimePipelineHooks()) {}
 
-RealtimeFacePipeline::RealtimeFacePipeline(RealtimePipelineHooks hooks) : hooks_(std::move(hooks)) {}
+RealtimeFacePipeline::RealtimeFacePipeline(RealtimePipelineHooks hooks)
+    : hooks_(std::move(hooks)) {
+    // 头文件里 enforceBudget 恒为 false（平台中立、ODR 安全）；真实的平台默认值在此写入。
+    bench_.enforceBudget = kDefaultEnforceBudget;
+}
 
 RealtimeFacePipeline::~RealtimeFacePipeline() {
     // 先等待所有 reloadAsync worker 结束再析构成员：worker 捕获 this，

@@ -69,19 +69,22 @@ public:
         long long timestampMs,
         bool detectionRan);
 
-    // 清空全部内部轨迹（撤销所有稳定身份）。作为 TrackCoordinator 公共原语保留，
-    // 供需要「硬清空」（连同轨迹本体与 bbox 一并丢弃）的场景或单测直接调用：
-    // 被删除的人不应因旧轨迹仍持有其 stableId 而持续被判为 VERIFIED（第三波审查 #2）。
-    // 注：Engine 侧图库变更统一走 applyGalleryUpdate→resetIdentitiesExcept（精准撤销、
-    // 不丢框），不再经本全清路径。
-    // **保留 nextTrackId_**：不回退计数器，避免新轨迹复用已对外发布过的 trackId，
-    // 造成旧帧回调/日志中的 trackId 指向不同目标的复用歧义。
-    // 线程安全：本方法非线程安全；调用方须保证与 update() 互斥。
-    // ⚠️ **当前生产侧零调用**：Engine 的图库变更一律走 resetIdentitiesExcept（见上），
-    //    生产路径不调用本方法；它**保留为公共原语**，以备将来遇到需要「硬清空」
-    //    （连同轨迹本体与 bbox 一并丢弃）的场景；当前实际调用者只有单测与回放载体
-    //    （test_track_coordinator / test_track_replay）。
+    // 测试接缝：清空全部内部轨迹（撤销所有稳定身份）。当前**生产侧零调用**——Engine 的图库
+    // 变更一律走 resetIdentitiesExcept（精准撤销、不丢框），不经本全清路径；实际调用者只有
+    // 单测与回放载体（test_track_coordinator / test_track_replay）。
+    // 语义：新帧必须重新累计确认帧数，被删除的人不会因旧轨迹残留 stableId 而持续被判 VERIFIED
+    //   （第三波审查 #2）；**保留 nextTrackId_**：不回退计数器，避免新轨迹复用已对外发布过的
+    //   trackId，造成「同一 trackId 先后指向不同目标」的复用歧义。
+    // 线程安全：非线程安全；调用方须保证与 update() 互斥。
+    //
+    // ⚠️ 本方法**仅供测试接缝使用**，其可见性由编译期宏 RK_ENABLE_TRACK_RESET_SEAM 约束——
+    //    未定义该宏的 target 里 reset() 根本不存在（调用即编译失败），故生产目标无法误用。
+    //    该宏**不改变 ABI**（对比 RK_ENABLE_TEST_SEAMS：后者会让 Engine 的析构由非虚变虚、
+    //    多出 vptr，属 ABI 变更）；本宏只增删一个成员函数声明，不改变对象布局。
+    //    允许携带该宏的 target 白名单由 CMake 侧的接缝白名单配置期断言强制（见 cmake/core.cmake）。
+#if defined(RK_ENABLE_TRACK_RESET_SEAM)
     void reset();
+#endif
 
     // 按图库有效身份**精准撤销**（第三波审查 #1：reset() 过宽——多人场景删除/注册
     // **一人**会瞬时抹掉其他人的稳定身份、需重新累计 stableFrames）。

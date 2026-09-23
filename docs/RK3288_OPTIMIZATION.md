@@ -119,9 +119,11 @@ echo performance > /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor
 | 前后台切换 | 50 次后仍可恢复；`CameraService 重启次数 = 0` | `research/appendix-c.md:485` |
 | 内存预算 | `≤ 512MB` | `RK3288_CONSTRAINTS.md` §1.2 |
 
-- **A3 的机制**：常量 `RealtimeBenchmarkConfig.p95BudgetMs=250.0`，`enforceBudget` 仅在 `__aarch64__`
-  下为 `true`；非 ARM64 只测量不强判。超预算时管线**必须拒绝激活**并给出 `基准超预算: p95_ms=…`
-  或等价 reason，**不得静默启用**该 profile。
+- **A3 的机制**：常量 `RealtimeBenchmarkConfig.p95BudgetMs=250.0`。`enforceBudget` 的**平台默认值
+  由 `RealtimeFacePipeline.cpp` 的 `kDefaultEnforceBudget` 在构造时决定**（未注入构建期显式选项
+  `RK_BENCH_ENFORCE_BUDGET` 时回落 `__aarch64__`）；头文件里的字段默认值**恒为 `false`**，以保
+  ODR 安全（不在头文件按架构分支）。故 ARM64 默认强判、非 ARM64 只测量不强判。超预算时管线
+  **必须拒绝激活**并给出 `基准超预算: p95_ms=…` 或等价 reason，**不得静默启用**该 profile。
 - ⚠️ **`≤ 512MB` 内存预算当前没有任何自动断言**——它只在 `RK3288_CONSTRAINTS.md` §1.2 作为建议值存在，
   没有对应的验收脚本或 CI 检查在跑。引用时不得假定它「已被验证」。
 

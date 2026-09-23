@@ -104,11 +104,13 @@ struct RealtimeBenchmarkConfig {
     int warmupIters = 10;
     int timedIters = 50;
     double p95BudgetMs = 250.0;
-#if defined(__aarch64__)
-    bool enforceBudget = true;  // ARM64（RK3288）强制预算
-#else
-    bool enforceBudget = false;  // 其他平台仅测量、不强判
-#endif
+    // enforceBudget 的默认值**刻意不在头文件按架构分支判定**。现状 `#if defined(__aarch64__)` 本身并
+    // 不构成 ODR 违规（编译器按目标预定义该宏，同一 target 内天然一致；不同架构的 target 是互不链接的
+    // 独立二进制）。下沉到 .cpp 的理由是**可观测性与可维护性**：让「平台默认值」只有一个定义位置、
+    // 且与构建期显式选项 RK_BENCH_ENFORCE_BUDGET 解耦——否则该 `#if` 一旦改由人工维护的宏表达，
+    // 同一 target 内就会真的出现定义不一致（静默 UB，非编译期报错）。故此处默认恒为 false；
+    // 真实的平台默认值由 RealtimeFacePipeline.cpp 的 kDefaultEnforceBudget 在构造时写入 bench_。
+    bool enforceBudget = false;
 };
 
 /**

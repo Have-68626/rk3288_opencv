@@ -148,6 +148,7 @@ std::vector<TrackView> TrackCoordinator::update(
     return views();
 }
 
+#if defined(RK_ENABLE_TRACK_RESET_SEAM)
 void TrackCoordinator::reset() {
     // 清空内部轨迹：撤销全部稳定身份（stableId），使新帧必须重新累计确认帧数，
     // 被删除的人不会再因旧轨迹残留 stableId 而持续输出 VERIFIED（第三波审查 #2）。
@@ -155,6 +156,7 @@ void TrackCoordinator::reset() {
     // 消除「同一 trackId 先后指向不同目标」的对外歧义。
     tracks_.clear();
 }
+#endif
 
 void TrackCoordinator::resetIdentitiesExcept(const std::vector<std::string>& keepIds) {
     // 第三波审查 #1：reset() 过宽——多人场景下删除/注册一人会瞬时抹掉其他人身份。

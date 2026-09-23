@@ -97,6 +97,13 @@ set(RK_ENGINE_TARGETS
     win_unit_tests win_face_database_perf
 )
 
+# ── 基准预算覆盖（§10.11 D4b）────────────────────────
+# 覆盖 RealtimeBenchmarkConfig.enforceBudget 的平台默认值。
+# ★ 留空 = **不注入**该宏 ⇒ .cpp 的 kDefaultEnforceBudget 回落到 __aarch64__ 判定 ⇒ **零行为变化**。
+#   此处刻意不用布尔 option(OFF)：固定 OFF 会静默改变 Android arm64 行为（超预算从「拒绝发布」变「照发」）。
+set(RK_BENCH_ENFORCE_BUDGET "" CACHE STRING "强制/关闭基准预算判定；留空 = 按架构回落（见 RealtimeFacePipeline.cpp）")
+set_property(CACHE RK_BENCH_ENFORCE_BUDGET PROPERTY STRINGS "" ON OFF)
+
 # ── libyuv 选项 ────────────────────────────────────
 if(ANDROID)
     set(_rk_enable_libyuv_default ON)
@@ -332,6 +339,13 @@ if(NOT ANDROID)
     # 宏对二者一致故无 ODR/布局不一致；生产构建不定义 → Engine 无虚函数、无 vptr（ABI 稳定）。
     # 不全局定义：core_unit_tests 等 target 不编译 test_engine.cpp/Engine.cpp，无需该宏。
     target_compile_definitions(core_gtest_tests PRIVATE RK_ENABLE_TEST_SEAMS)
+    # §10.11 D4b：基准预算覆盖宏。core_gtest_tests 同 /EHsc、RK_ENABLE_TEST_SEAMS 一样**不走公共
+    # 循环、也不链接 rk_core**，故在此单独补注入（它同样经 ${RK_FACE_INFER_CORE_SOURCES} 编译
+    # RealtimeFacePipeline.cpp）。留空 = 不注入 ⇒ 零行为变化（见上方 option 注释）。
+    if(NOT RK_BENCH_ENFORCE_BUDGET STREQUAL "")
+        target_compile_definitions(core_gtest_tests PRIVATE
+            "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
+    endif()
     target_link_libraries(core_gtest_tests GTest::gtest_main ${RK_OPENCV_FULL_LIBS})
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
@@ -396,9 +410,34 @@ foreach(t ${RK_ENGINE_TARGETS})
     endif()
 endforeach()
 
+# ── 基准预算覆盖注入（§10.11 D4b）────────────────────────
+# 仅当 RK_BENCH_ENFORCE_BUDGET 被**显式设置**（ON/OFF 皆算，空串不算）时注入。判据刻意用
+# `NOT ... STREQUAL ""` 而非 `if(...)`：后者会把 OFF 当作假值，导致「显式关闭」在 Android arm64
+# 上静默失效（超预算仍拒绝发布）。
+#   · 主注入点 = rk_core 的 INTERFACE 定义：rk_core 是 INTERFACE 库，链它的 target 自动获得；
+#     本仓其唯一消费者 core_unit_tests 正好编译 RealtimeFacePipeline.cpp。
+#   · 以下 target 同样编译 RealtimeFacePipeline.cpp，却**不链接 rk_core**，故显式补注入：
+#     rk3288_cli / face_infer_unit_tests（本文件）与 native-lib（cmake/android.cmake，仅 Android 存在）。
+#   · core_gtest_tests 已在其实义处单独注入（它不走公共循环）。
+# 统一性由 rk_assert_bench_budget_uniformity() 在配置期强制。
+if(NOT RK_BENCH_ENFORCE_BUDGET STREQUAL "")
+    target_compile_definitions(rk_core INTERFACE
+        "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
+    foreach(t rk3288_cli face_infer_unit_tests native-lib)
+        if(TARGET ${t})
+            target_compile_definitions(${t} PRIVATE
+                "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
+        endif()
+    endforeach()
+endif()
+
 # 编译器契约 — 在所有 target 定义之后统一应用
 rk_apply_compiler_contract()
 # 配置期断言（RW8 ①）— 契约应用后独立读回 COMPILE_OPTIONS，验证 flag 已落到 target
 rk_assert_contract_flags()
 # 配置期断言（FACE-CLEAN-019）— 锁定测试接缝宏只出现在允许的 target 上（两个方向都查）
 rk_assert_test_seam_boundary()
+# 配置期断言（§10.8）— 锁定测试接缝宏 RK_ENABLE_TRACK_RESET_SEAM 只出现在 core_unit_tests 上
+rk_assert_track_reset_seam_boundary()
+# 配置期断言（§10.11 D4b）— 凡编译 RealtimeFacePipeline.cpp 的 target 必须统一携带基准预算宏
+rk_assert_bench_budget_uniformity()

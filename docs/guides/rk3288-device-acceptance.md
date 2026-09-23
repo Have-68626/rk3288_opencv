@@ -49,7 +49,7 @@ as_of=2026-09-18
 - **判据**：
   - p95 **≤ 250ms** → 允许激活；
   - p95 **> 250ms** → 管线**必须拒绝激活**并显式给出原因（`基准超预算: p95_ms=...` 或等价 reason），**不得静默启用**该 profile。
-  - 说明：`RealtimeBenchmarkConfig.p95BudgetMs=250.0`，`enforceBudget` 仅在 `__aarch64__` 下为 `true`；非 ARM64 只测量不强判。
+  - 说明：`RealtimeBenchmarkConfig.p95BudgetMs=250.0`；`enforceBudget` 的**平台默认值由 `RealtimeFacePipeline.cpp` 的 `kDefaultEnforceBudget` 在构造时决定**（未注入构建期显式选项 `RK_BENCH_ENFORCE_BUDGET` 时回落 `__aarch64__`），头文件里的字段默认值**恒为 `false`** 以保 ODR 安全（不在头文件按架构分支）。故 ARM64 默认强判、非 ARM64 只测量不强判。
 - **证据**：基准输出与最终 `effective`/`reason`。
 
 ### A4. 6.25% 面积标准样本稳定检出

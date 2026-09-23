@@ -114,6 +114,14 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     # S-SEC-B09-003：test_checked_arith.cpp 结构测试需定位源码根以读取接入点源文件
     target_compile_definitions(core_unit_tests PRIVATE RK_TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(core_unit_tests PRIVATE GTest::gtest GTest::gtest_main rk_core)
+    # §10.8 测试接缝宏 RK_ENABLE_TRACK_RESET_SEAM：让 TrackCoordinator::reset() 仅在测试侧可见
+    # （见 src/cpp/include/pipeline/TrackCoordinator.h:86）。本宏**不改变 ABI**——与 RK_ENABLE_TEST_SEAMS
+    # 不同：后者令 Engine 的析构由非虚变虚、多出 vptr（属 ABI 变更），白名单被严格限定为
+    # core_gtest_tests；本宏只增删一个成员函数声明，不改变对象布局，故不复用后者。
+    # reset() 的测试调用点**全部**在 core_unit_tests（tests/cpp/test_track_coordinator.cpp、
+    # tests/cpp/test_track_replay.cpp），故只在此定义。使用边界由下方
+    # rk_assert_track_reset_seam_boundary() 双向钉死。
+    target_compile_definitions(core_unit_tests PRIVATE RK_ENABLE_TRACK_RESET_SEAM)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
@@ -310,6 +318,121 @@ function(rk_assert_test_seam_boundary)
             message(FATAL_ERROR
                 "CONTRACT_ASSERT_FAIL: 测试 target ${t} 未携带 RK_ENABLE_TEST_SEAMS "
                 "(测试接缝会静默失效：BarrierEngine 将覆写一个非虚函数且不报错)")
+        endif()
+    endforeach()
+endfunction()
+
+# ── 配置期断言（§10.8）：测试接缝宏 RK_ENABLE_TRACK_RESET_SEAM 的使用边界 ──
+# 该宏把 `TrackCoordinator::reset()` 从「不存在」变为「存在且可调用」
+# （src/cpp/include/pipeline/TrackCoordinator.h:86）。它**不改变任何 target 的 ABI**——与
+# RK_ENABLE_TEST_SEAMS 有本质区别：后者让 `Engine` 析构由非虚变虚、多出 vptr（ABI 变更），
+# 其白名单因此被 rk_assert_test_seam_boundary 严格限定为 core_gtest_tests。故本宏**不复用**后者：
+#   · 复用会把一个「改 ABI、且白名单受限」的宏借给 core_unit_tests，既不必要又危险；
+#   · reset() 的测试调用点全在 core_unit_tests，本宏只需出现在它一个 target 上。
+# 后果全在编译期：宏缺失 ⇒ reset() 静默不存在 ⇒ 调用它的测试**编译失败**（响亮，非运行期静默）。
+# 仍双向钉死：① 除白名单外任何 target 都**不得携带**；② 白名单内的 target **必须携带**。
+#
+# 扫描集合显式带上 core_gtest_tests（它不在 RK_ENGINE_TARGETS）与 INTERFACE 库 rk_core（与孪生断言
+# rk_assert_test_seam_boundary 的 RK_TEST_SEAM_SCANNED_INTERFACE_LIBS 对齐）：若将来有人给它们或
+# 任何非白名单 target 加上该宏，配置期即 FATAL，不留运行期隐患。只扫 target 自身的定义读不到 INTERFACE
+# 传播值，故这里必须把接口库单列进扫描集合，否则「把宏挂到 rk_core」这条向量会完全静默。
+set(RK_TRACK_RESET_SEAM_TARGETS core_unit_tests)
+set(RK_TRACK_RESET_SEAM_SCANNED_INTERFACE_LIBS rk_core)
+function(rk_assert_track_reset_seam_boundary)
+    # 「断言被跳过」必须与「断言通过」在日志里**长得不一样**（同 rk_assert_test_seam_boundary）。
+    # 仅当白名单 target 在本配置下不存在时提示（如 RK_SKIP_OPENCV / Android 下 core_unit_tests 缺失）。
+    if(NOT TARGET ${RK_TRACK_RESET_SEAM_TARGETS})
+        message(STATUS
+            "rk_assert_track_reset_seam_boundary: 白名单 target ${RK_TRACK_RESET_SEAM_TARGETS} 在本配置下不存在"
+            "⇒ 方向② 不适用；方向① 仍照常执行")
+    endif()
+    foreach(t ${RK_ENGINE_TARGETS} ${RK_TRACK_RESET_SEAM_TARGETS} core_gtest_tests ${RK_TRACK_RESET_SEAM_SCANNED_INTERFACE_LIBS})
+        if(NOT TARGET ${t})
+            continue()
+        endif()
+        # 同时看「自身定义」与「自身对外传播的定义」，任一含该宏都算该 target 携带它
+        #（未设置时 get_target_property 返回 <var>-NOTFOUND，if() 判假，归一化后可靠——
+        # 写法照抄 rk_assert_test_seam_boundary:301-305）。
+        get_target_property(_rk_tr_defs ${t} COMPILE_DEFINITIONS)
+        get_target_property(_rk_tr_iface ${t} INTERFACE_COMPILE_DEFINITIONS)
+        if(NOT _rk_tr_defs)
+            set(_rk_tr_defs "")
+        endif()
+        if(NOT _rk_tr_iface)
+            set(_rk_tr_iface "")
+        endif()
+        set(_rk_tr_seam_defs "${_rk_tr_defs};${_rk_tr_iface}")
+
+        if(_rk_tr_seam_defs MATCHES "RK_ENABLE_TRACK_RESET_SEAM")
+            if(NOT ${t} IN_LIST RK_TRACK_RESET_SEAM_TARGETS)
+                message(FATAL_ERROR
+                    "CONTRACT_ASSERT_FAIL: target ${t} 携带 RK_ENABLE_TRACK_RESET_SEAM "
+                    "(唯一允许携带它的 target 是: ${RK_TRACK_RESET_SEAM_TARGETS})")
+            endif()
+        elseif(${t} IN_LIST RK_TRACK_RESET_SEAM_TARGETS)
+            message(FATAL_ERROR
+                "CONTRACT_ASSERT_FAIL: 测试 target ${t} 未携带 RK_ENABLE_TRACK_RESET_SEAM "
+                "(宏缺失会让 TrackCoordinator::reset() 静默不存在 ⇒ 调用它的测试编译失败或接缝静默失效)")
+        endif()
+    endforeach()
+endfunction()
+
+# ── 配置期断言（§10.11 D4b）：基准预算覆盖宏 RK_BENCH_ENFORCE_BUDGET 的统一性 ──
+# 该宏覆盖 RealtimeBenchmarkConfig.enforceBudget 的平台默认值（见 RealtimeFacePipeline.cpp 的
+# kDefaultEnforceBudget）。风险不在单 target 内部（同一 .cpp 只编译一次），而在「显式选项只施加到
+# 部分编译该文件的 target」：test_realtime_face_pipeline.cpp 依据宏的有无/取值推断期望行为，
+# 一旦它与编译 RealtimeFacePipeline.cpp 的 target 对宏的可见性不一致，断言与实现就会错位。
+# 故把「凡编译 RealtimeFacePipeline.cpp 的 target 都必须携带该宏」钉死。
+# 留空（未显式设置）⇒ 不注入、按 __aarch64__ 回落，无统一性可查；此时「跳过」须与「通过」长得不一样。
+set(RK_BENCH_BUDGET_SCANNED_INTERFACE_LIBS rk_core)
+function(rk_assert_bench_budget_uniformity)
+    if(RK_BENCH_ENFORCE_BUDGET STREQUAL "")
+        message(STATUS
+            "rk_assert_bench_budget_uniformity: RK_BENCH_ENFORCE_BUDGET 未显式设置"
+            "⇒ 预算按 __aarch64__ 回落，跳过一致性断言")
+        return()
+    endif()
+    foreach(t ${RK_ENGINE_TARGETS} core_gtest_tests)
+        if(NOT TARGET ${t})
+            continue()
+        endif()
+        get_target_property(_rk_bb_srcs ${t} SOURCES)
+        if(NOT _rk_bb_srcs OR NOT _rk_bb_srcs MATCHES "RealtimeFacePipeline\\.cpp")
+            continue()
+        endif()
+        # 有效定义 = 自身 COMPILE_DEFINITIONS ∪ 自身 INTERFACE_COMPILE_DEFINITIONS
+        #（归一化写法照抄 rk_assert_test_seam_boundary:293-301）。
+        get_target_property(_rk_bb_defs ${t} COMPILE_DEFINITIONS)
+        get_target_property(_rk_bb_iface ${t} INTERFACE_COMPILE_DEFINITIONS)
+        if(NOT _rk_bb_defs)
+            set(_rk_bb_defs "")
+        endif()
+        if(NOT _rk_bb_iface)
+            set(_rk_bb_iface "")
+        endif()
+        set(_rk_bb_all "${_rk_bb_defs};${_rk_bb_iface}")
+        # 也接受「经 INTERFACE 库 rk_core 传播」的形态（core_unit_tests 正是以此方式携带）：
+        # 宏挂在 rk_core 的 INTERFACE_COMPILE_DEFINITIONS 上，只有链接它的 target 生效，而
+        # get_target_property(<消费者> COMPILE_DEFINITIONS) 读不到它（同接缝断言记录的 M1 教训）。
+        if(NOT _rk_bb_all MATCHES "RK_BENCH_ENFORCE_BUDGET")
+            get_target_property(_rk_bb_libs ${t} LINK_LIBRARIES)
+            foreach(_rk_lib ${RK_BENCH_BUDGET_SCANNED_INTERFACE_LIBS})
+                if(NOT TARGET ${_rk_lib})
+                    continue()
+                endif()
+                if(_rk_bb_libs AND ${_rk_lib} IN_LIST _rk_bb_libs)
+                    get_target_property(_rk_lib_defs ${_rk_lib} INTERFACE_COMPILE_DEFINITIONS)
+                    if(_rk_lib_defs MATCHES "RK_BENCH_ENFORCE_BUDGET")
+                        set(_rk_bb_all "${_rk_bb_all};${_rk_lib_defs}")
+                    endif()
+                endif()
+            endforeach()
+        endif()
+        if(NOT _rk_bb_all MATCHES "RK_BENCH_ENFORCE_BUDGET")
+            message(FATAL_ERROR
+                "CONTRACT_ASSERT_FAIL: target ${t} 编译 RealtimeFacePipeline.cpp "
+                "却未携带 RK_BENCH_ENFORCE_BUDGET"
+                "（显式选项未被统一施加 ⇒ 同一进程内预算语义分歧）")
         endif()
     endforeach()
 endfunction()
