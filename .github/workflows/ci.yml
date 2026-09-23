@@ -351,13 +351,20 @@ jobs:
           #     Annotations 面板，比 ::notice:: 显著，避免这类问题被长期当噪声忽略（退化成「永久装饰」）。
           #   · notice 级 = 瞬时抖动：仅 apt 网络/临时故障，下轮环境恢复即自愈，不值得拉高为 warning。
           # 无论哪级都同时把原因写进 $GITHUB_OUTPUT（skipped / skipped_reason），使「连续 N 次跳过」
-          # 可被下游 step 或外部统计消费（本 step 声明 id: check_native_lib_compile）。
+          # 可被下游 step 或外部统计消费（本 step 声明 id: check_native_lib_compile）。FACE-CI-003 起，
+          # 该输出已有下游消费者：本 job 末尾的「Report native-lib check outcome」step 会读 skipped 并把
+          # 跳过状态写进 Step Summary（此前该输出无任何 step 读取，属「可被消费但无人消费」）。
           # Step Summary 恒以加粗 + 引用块明示「本次未执行 ⇒ 盲区仍打开」，让人一眼看出这不是「通过」。
           # ⚠️ 有意不 exit 非零、不把 warning 升级为失败：本 job 非阻断，变红会与设计冲突、并跳过后继 step。
           skip_env_not_ready() {
             # $1 = 严重度（warning | notice）；$2 = 人类可读的未就绪原因
             local level="$1" reason="$2"
-            echo "::${level}::环境未就绪：$reason——跳过 native-lib.cpp 语法检查（非代码问题）。"
+            # 注解 title 按【事件类别】固定（FACE-CI-003），使只看 PR Annotations 面板的标题即可分辨类别，
+            # 而不必读文案正文：布局级/配置级环境未就绪 → env-not-ready；瞬时抖动 → env-transient。
+            # title 只改显示名，不改严重度（warning 仍 warning、notice 仍 notice），也不改阻断性。
+            local title="env-transient"
+            if [ "$level" = "warning" ]; then title="env-not-ready"; fi
+            echo "::${level} title=${title}::环境未就绪：$reason——跳过 native-lib.cpp 语法检查（非代码问题）。"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             echo "skipped_reason=$reason" >> "$GITHUB_OUTPUT"
             {
@@ -484,7 +491,41 @@ jobs:
             echo ''
             echo '本告警**不阻断** job（有意取舍：先观察一轮全绿再考虑转正为门禁）。'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning title=native-lib.cpp compile check failed::native-lib.cpp failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases downgraded to ::notice::); see job summary."
+          echo "::warning title=native-lib-compile-failed::native-lib.cpp failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases downgraded to ::notice::); see job summary."
+
+      # [FACE-CI-003] 给上一步（check_native_lib_compile）写出的 skipped / skipped_reason 输出加【下游消费者】
+      # ——此前该输出无任何 step 读取，「连续 N 次跳过」无法被统计，跳过只剩一句 ::notice::/::warning::
+      # 便再无痕迹。本步非阻断：不 exit 1、不引入任何第三方 action、if: always() 恒执行、脚本体恒以 exit 0
+      # 结束（与本 job 对 native-lib 检查「非门禁」的定位一致），只做可见化，不改变任何 step 的成败语义。
+      # 相对上一步自带的 Step Summary 的增量价值（非纯冗余）：上一步只在【真跳过】时写摘要；若它被 GitHub
+      # 因上游 step 失败而跳过（outcome=skipped）或根本没走到（outcome 为空），则不会有任何摘要。本步用
+      # 按 outcome 归为「跳过 / 已执行通过 / 编译失败 / 未运行」四类，覆盖 outcome 的 5 个可能取值
+      # （success / failure / cancelled / skipped / 空），补齐那段无摘要的盲区。
+      # ⚠️ 能力边界（如实）：Step Summary 每次 run 独立，本步只能反映【本次】是否跳过；跨 run 的「连续跳过
+      #    次数」需外部（run 历史 / 外部监控）统计，本步不声称能自行累加——它只保证「每次跳过」都有可见落点。
+      - name: Report native-lib check outcome (visibility only, non-blocking)
+        if: always()
+        env:
+          NL_SKIPPED: ${{ steps.check_native_lib_compile.outputs.skipped }}
+          NL_SKIP_REASON: ${{ steps.check_native_lib_compile.outputs.skipped_reason }}
+          NL_OUTCOME: ${{ steps.check_native_lib_compile.outcome }}
+        run: |
+          set -uo pipefail
+          if [ "${NL_SKIPPED}" = "true" ]; then
+            {
+              echo ":warning: **本 job 的 native-lib.cpp 语法检查：跳过**（原因：${NL_SKIP_REASON:-未知}）"
+              echo ''
+              echo '> 连续跳过意味着「native-lib.cpp 真实实现从未被 CI 编译」这一盲区持续未闭合；'
+              echo '> 请检查环境（Android NDK / libopencv-dev 头 / pkg-config）而非忽略本提示。'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${NL_OUTCOME}" = "success" ]; then
+            echo ':white_check_mark: 本 job 的 native-lib.cpp 语法检查：**已执行并通过**（仅编译期语义，不覆盖运行期）。' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${NL_OUTCOME}" = "failure" ]; then
+            echo ':x: 本 job 的 native-lib.cpp 语法检查：**编译失败**（编译期错误）——见上方告警与摘要。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo ":grey_question: 本 job 的 native-lib.cpp 语法检查：**本次未运行**（上游 step 未成功，outcome=${NL_OUTCOME:-空}）——盲区状态未知。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
 
       - name: Upload Artifacts
         if: always()
