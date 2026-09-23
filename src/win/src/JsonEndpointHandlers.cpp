@@ -333,19 +333,32 @@ HttpResp handleGetHealth(const HttpReq&, EndpointContext& ctx) {
     //  - 启动流程中 initialize() 先于 http.start() 完成（win_local_service_main.cpp:115 vs :143），
     //    故即便 config.json 被拒、http.port 回落默认值，health 仍能读到诊断状态；
     //  - 「能连上 health」只取决于端口回落，与配置是否被拒无关 —— 这正是本通道成立的前提。
-    // 字段出现策略：configStatus 恒出现，使监控能在「配置正常（ok）/被拒（rejected）」「状态
-    // 未知（unknown，诊断通道缺失）」与「对端是旧版本、尚未实现本字段」之间区分；configWarning /
+    // 字段出现策略：configStatus 恒出现，使监控能在「配置正常（ok）/降级（degraded）/被拒（rejected）」
+    // 「状态未知（unknown，诊断通道缺失）」与「对端是旧版本、尚未实现本字段」之间区分；configWarning /
     // configQuarantinedTo 仅在确有值时才出现，避免噪声。
     // 只读：不触碰任何可变状态，不引入锁或缓存。
     // ctx.settings 在生产（win_local_service_main）恒非空；但测试路径可传 nullptr（见
     // test_http_faces_server.cpp 的 runHttpRequest(..., nullptr)），故必须判空兜底（回落
     // unknown）—— 空指针解引用会砸掉整个服务。
-    // configStatus 三态：ok=配置正常装载；rejected=启动期配置被拒（已改名另存并以默认值启动）；
-    // unknown=无法判定（ctx.settings 为空，见上）。未知不可当正常 —— "ok" 是「配置已校验通过」
-    // 的正向信号，若诊断通道缺失时回落 "ok"，配置被拒会在监控侧静默通过，失去本通道的意义。
+    // configStatus 四态（FACE-CONFIG-011）：ok=装载成功且本次启动无告警；degraded=装载完成但本次启动
+    //   存在告警（默认配置写盘失败 / 序列化未通过 schema 等，即 initWarning 非空）；rejected=启动期配置
+    //   被拒（已改名另存并以默认值启动）；unknown=无法判定（ctx.settings 为空，见上）。
+    //   判据优先级：unknown > rejected > degraded > ok。
+    //   ⚠️ degraded 只在「非 rejected 且 initWarning 非空」时成立：已逐条核实 initialize 中所有给 warnOut
+    //   赋值的路径——(1) 三条落在「既有配置无法装载」的 rejected 分支（被 rejected 优先吞掉）；(2) 默认
+    //   配置落盘失败；(3) 序列化未通过 schema（密钥不可用）而拒写。后两类均为真实降级，**无良性提示**，
+    //   故不会把正常情况误判为 degraded。
+    // 未知不可当正常 —— "ok" 是「配置已校验通过且无告警」的正向信号，若诊断通道缺失时回落 "ok"，
+    // 配置被拒/降级会在监控侧静默通过，失去本通道的意义。
     const char* configStatus = "unknown";
     if (ctx.settings) {
-        configStatus = ctx.settings->configRejectedOnLoad() ? "rejected" : "ok";
+        if (ctx.settings->configRejectedOnLoad()) {
+            configStatus = "rejected";
+        } else if (!ctx.settings->initWarning().empty()) {
+            configStatus = "degraded";
+        } else {
+            configStatus = "ok";
+        }
     }
     d.o["configStatus"] = JsonValue::makeString(configStatus);
     if (ctx.settings) {
