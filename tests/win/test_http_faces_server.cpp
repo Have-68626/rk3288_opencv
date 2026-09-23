@@ -400,6 +400,26 @@ std::unique_ptr<rk_win::WinJsonConfigStore> makeAuthConfigStore(const std::wstri
     return store;
 }
 
+// FACE-CONFIG-001：先写入一份无法装载的 config.json（截断的非法 JSON），再初始化 store，
+// 复现「既有 config.json 存在但无法装载 ⇒ 改名另存证据 + 以默认值启动」的被拒路径。
+// 用于验证 health 的独立可见通道在被拒启动时确实暴露诊断（configStatus=rejected）。
+std::unique_ptr<rk_win::WinJsonConfigStore> makeRejectedConfigStore(const std::wstring& name) {
+    const auto base = std::filesystem::temp_directory_path() / L"rk3288_opencv_win_auth_tests" / name;
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::filesystem::create_directories(base, ec);
+    const auto cfgPath = base / L"config.json";
+    {
+        std::ofstream ofs(cfgPath, std::ios::binary);
+        ofs << "{ \"http\": { \"port\": 8090 ";  // 截断：非良构 JSON ⇒ 无法装载
+    }
+    AuthEnvGuard cfgGuard(L"RK_WCFR_CONFIG", cfgPath.c_str());
+    auto store = std::make_unique<rk_win::WinJsonConfigStore>();
+    std::string warn;
+    (void)store->initialize(warn);
+    return store;
+}
+
 }  // namespace
 
 // exploit 证据（兼容模式）：未配置 token 时，无 Authorization 头的管理写请求先成功。
@@ -476,6 +496,36 @@ TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 200) << r.response;
     }
+}
+
+// FACE-CONFIG-001 独立可见通道（正常装载侧）：从空目录初始化 store（无 config.json ⇒
+// 落入默认值分支，configRejectedOnLoad=false），health 必须恒带 configStatus:"ok"。
+// 断言 configStatus 的存在性即证明旧配置被拒时的监控语义可与「对端旧版本」区分。
+TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
+    auto store = makeAuthConfigStore(L"health_ok_config");
+    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+    const auto r = runHttpRequest(nullptr, req, store.get());
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 200) << r.response;
+    EXPECT_NE(r.response.find("\"configStatus\":\"ok\""), std::string::npos) << r.response;
+    // 正常装载无告警/无隔离 ⇒ 按需字段不出现。
+    EXPECT_EQ(r.response.find("\"configWarning\""), std::string::npos) << r.response;
+    EXPECT_EQ(r.response.find("\"configQuarantinedTo\""), std::string::npos) << r.response;
+}
+
+// FACE-CONFIG-001 独立可见通道（被拒侧）：config.json 存在但无法装载 ⇒ 以默认值启动，
+// health 必须暴露 configStatus:"rejected"、configWarning（告警文本）与 configQuarantinedTo
+// （被改名另存为证据的坏文件名）。注意：该用例依赖 IMP-CFG-core 冻结接口的实现语义，
+// 若其实现改变（例如解析失败不触发隔离），此处会如实变红。
+TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
+    auto store = makeRejectedConfigStore(L"health_rejected_config");
+    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+    const auto r = runHttpRequest(nullptr, req, store.get());
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 200) << r.response;
+    EXPECT_NE(r.response.find("\"configStatus\":\"rejected\""), std::string::npos) << r.response;
+    EXPECT_NE(r.response.find("\"configWarning\""), std::string::npos) << r.response;
+    EXPECT_NE(r.response.find("\"configQuarantinedTo\""), std::string::npos) << r.response;
 }
 
 // RED→GREEN：SSE 流（StreamSessionRunner 旁路）在启用认证后必须 401。
@@ -1194,6 +1244,12 @@ TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
     GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
+    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
     GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, UnauthenticatedStreamRejectedWhenAuthEnabled) {

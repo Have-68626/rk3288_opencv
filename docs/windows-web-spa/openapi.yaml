@@ -18,6 +18,25 @@ paths:
   /api/v1/health:
     get:
       summary: 健康检查
+      description: |
+        匿名白名单端点（无需 Bearer token 即可读取）。除 `name` / `port` 外，data 另暴露
+        启动期配置诊断（FACE-CONFIG-001「独立可见通道」）：
+
+        - `configStatus`（字符串，**始终出现**）：取值 `ok` 或 `rejected`。当 config.json
+          存在但无法装载（不可读 / JSON 解析失败 / schema 校验被拒）时，服务以默认值启动，
+          此时为 `rejected`；否则为 `ok`。恒出现使监控能区分「配置正常」与「对端为旧版本、
+          尚未实现本字段」。
+        - `configWarning`（字符串，**仅在本次启动存在告警时出现**）：initialize 的告警文本副本。
+        - `configQuarantinedTo`（字符串，**仅在发生隔离时出现**）：被改名另存为证据的坏配置
+          文件名（形如 `config.json.corrupt.<毫秒时间戳>`）。
+
+        该端点仅监听 127.0.0.1，且位于匿名白名单（无需 Bearer token）。可达性前提：`http.enable`
+        为真且监听端口未被占用。⚠️ 「配置被拒 ⇒ 端口回落 8080」只在**无旧 INI、无
+        `RK_WCFR_HTTP_PORT`、且 8080 未被占用**时成立；沿用旧 INI 时端口可能被 INI 改写，
+        `http.enable=false` 时该端点根本不存在 ⇒ **不能假定「监控始终可连」**。
+
+        ⚠️ `configWarning` 是服务端告警原文，**可能包含文件系统路径**（例如 `%APPDATA%` 下的配置
+        路径）。故本端点虽仅回环可达，其内容仍应按**本机可见**对待。
       responses:
         "200":
           description: 服务正常运行

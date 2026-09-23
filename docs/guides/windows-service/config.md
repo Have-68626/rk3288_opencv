@@ -11,6 +11,7 @@ as_of=2026-06-23
 ## 文件位置
 - 配置文件：`%APPDATA%\rk_wcfr\config.json` （可通过 `RK_WCFR_CONFIG` 环境变量覆盖）
 - 备份文件：`%APPDATA%\rk_wcfr\config.json.bak`，并轮转保留 `.bak.1` 至 `.bak.5`（若覆盖配置路径，则备份文件在其同级目录）
+- 坏配置证据：同目录 `config.json.corrupt.<毫秒时间戳>` —— 这是**另一类**文件，区别于上述 `.bak` 轮转副本：`config.json` 在启动时存在但无法装载时，坏文件被改名另存于此以保全证据，**不会被自动清理**（需人工处置）。
 - 密钥文件（DPAPI 保护）：`%APPDATA%\rk_wcfr\config.key.dpapi` （同上，伴随配置路径生成）
 
 ### 其它支持的环境变量覆盖
@@ -23,6 +24,8 @@ as_of=2026-06-23
 ## 校验（JSON Schema）
 - Schema 文件：`docs/windows-web-spa/config.schema.json`
 - 服务端会在启动与每次写入/热重载时对配置进行校验；校验失败会拒绝写入，并在热重载场景回滚到上一次有效配置。
+- **启动时若 `config.json` 存在但无法装载**（不可读 / JSON 解析失败 / schema 校验被拒）：服务会把坏文件**改名另存**为同目录 `config.json.corrupt.<毫秒时间戳>`（同目录、保全证据、不覆盖不丢弃），随后**以默认值启动**；若改名（隔离）失败，则**保留原文件不覆盖**。
+- 该启动期失败有**两个独立可见通道**：进程 **stderr**（零配置依赖）与 **`GET /api/v1/health`**（匿名可读、无需 token）——health 响应中的 `configStatus`（`ok` / `rejected`）、`configWarning`（告警文本，仅有告警时出现）、`configQuarantinedTo`（被隔离的坏文件名，仅发生隔离时出现）三个字段。
 
 ## 敏感字段加密
 

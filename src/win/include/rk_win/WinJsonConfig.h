@@ -29,7 +29,10 @@ public:
     WinJsonConfigStore();
     ~WinJsonConfigStore();
 
-    // 初始化：从 config.json 读取；不存在则尝试从旧 ini 迁移；失败则使用默认值并落盘。
+    // 初始化：从 config.json 读取；不存在则尝试从旧 ini 迁移并以默认值落盘。
+    // 若 config.json 存在却无法装载（不可读 / 解析或 schema 校验被拒）：先将其改名另存
+    // （config.json.corrupt.<毫秒时间戳>，保全证据），再以默认值启动；隔离失败则保留原文件、本次不落盘。
+    // 装载失败的原因经 warnOut 与下列三个诊断访问器暴露给独立可见通道。
     bool initialize(std::string& warnOut);
 
     // 当前生效配置（线程安全复制）
@@ -56,6 +59,18 @@ public:
     bool pollReloadOnce(bool& outApplied, std::string& outErr);  // 便于测试/无线程环境
 
     std::filesystem::path configPath() const { return configPath_; }
+
+    // ── FACE-CONFIG-001 启动装载诊断（供独立可见通道读取）──
+    // initWarning：initialize 的告警文本副本；空串 = 本次启动无告警。
+    std::string initWarning() const;
+    // configRejectedOnLoad：既有 config.json 存在但**无法装载**（不可读 / 解析或 schema 校验被拒），
+    // 因而本次以默认值运行（降级启动）。
+    bool configRejectedOnLoad() const;
+    // initQuarantineFileName：被改名另存的坏配置**文件名**（非全路径）。空串 = 本次未发生隔离，
+    //   涵盖三种情形：装载成功、config.json 本就不存在、以及**隔离失败**。
+    //   configRejectedOnLoad()==true 且本项为空 ⇒ 即「隔离失败」，此时原文件**未被覆盖**——
+    //   但该保全**仅限本次 initialize**（后续 PUT / 热重载会按各自既有语义重写 config.json）。
+    std::string initQuarantineFileName() const;
 
 private:
     bool reloadFromDisk(bool& outApplied, std::string& outErr);
@@ -85,6 +100,11 @@ private:
     AppConfig cfg_{};
     std::string lastGoodJsonPretty_;  // 用于回滚/调试输出（不含密钥）
     std::atomic<std::uint64_t> generation_{0};
+
+    // FACE-CONFIG-001 启动装载诊断，由 initialize 在 mu_ 保护下写入，由三个 const 访问器读取。
+    bool configRejectedOnLoad_ = false;   // 既有配置无法装载 ⇒ 本次降级启动
+    std::string initWarning_;             // initialize 的告警文本副本；空串 = 无告警
+    std::string initQuarantineFileName_;  // 坏配置被另存的文件名；空串 = 未隔离（非降级启动）或隔离失败
 };
 
 }  // namespace rk_win

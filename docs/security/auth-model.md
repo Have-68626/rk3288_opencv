@@ -48,10 +48,30 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
 | 路径 | 原因 |
 |---|---|
 | 静态文件（非 `/api` 前缀，如 `/`、`/assets/*`、`/index.html`） | 前端资源，无敏感动作；写操作被 `handleStaticOrFallback` 以 405 拒绝 |
-| `GET /api/v1/health` | 健康检查：仅回显服务名与端口，供进程监督/负载探测 |
+| `GET /api/v1/health` | 健康检查：回显服务名、端口，以及**启动期配置诊断**三字段（`configStatus` / `configWarning` / `configQuarantinedTo`，见下方「健康端点的启动期配置诊断」），供进程监督/负载探测 |
 | `GET /api/v1/acceleration` | 只读状态：当前加速配置与活动后端摘要，不含密钥/凭据 |
 
 > 判定函数：非 `/api` 前缀恒匿名；`/api` 下仅上述两个 GET 端点匿名。
+
+#### 健康端点的启动期配置诊断（FACE-CONFIG-001，2026-09-23 追加；**本小节为规格条款变更**）
+
+原文为「仅回显服务名与端口」。现追加三字段，动机见 `docs/guides/windows-service/config.md`：
+配置装载失败需要一个**不依赖被拒那份配置**的可见通道。
+
+- `configStatus`（**恒出现**）：`ok` / `rejected`。`rejected` = 既有 `config.json` 存在但无法装载
+  （不可读 / JSON 解析失败 / schema 校验被拒），服务以默认值启动。
+- `configWarning`（**仅本次启动有告警时出现**）：服务端告警原文。
+- `configQuarantinedTo`（**仅发生隔离时出现**）：被改名另存的坏配置**文件名**（非全路径）。
+
+边界（据此仍维持 §3.1 的最小权限口径）：
+
+- 端点仍**仅监听 127.0.0.1**，仍**只读**、无写能力、不含密钥/凭据；
+- 新增字段**不回读被拒的那份配置**——只读 `initialize` 写入的三个内存标志，故配置不可信时它依然有效
+  （这正是「独立可见通道」的含义）；
+- ⚠️ `configWarning` 是服务端原文，**可能含文件系统路径**，故本端点内容应按**本机可见**对待；
+- 已按本文件 §1 的冻结流程同步实现与测试（`WinJsonConfig` 的三个诊断访问器 +
+  `JsonEndpointHandlers::handleGetHealth`；用例 `HttpFacesAuth.HealthExposesConfigStatusOk` 与
+  `HttpFacesAuth.HealthExposesRejectedConfigStatus`）。
 
 ### 3.2 需认证（启用认证后全部需有效 token）
 

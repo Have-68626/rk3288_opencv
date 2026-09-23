@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -50,6 +51,33 @@ bool touchConfigFile(const std::filesystem::path& cfgPath) {
     if (ec) return false;
     std::filesystem::last_write_time(cfgPath, base + std::chrono::seconds(2), ec);
     return !ec;
+}
+
+// 列出目录下所有 "config.json.corrupt." 前缀文件（FACE-CONFIG-001 隔离命名含毫秒时间戳 ⇒ 不得硬编码文件名）。
+std::vector<std::filesystem::path> listCorruptConfigs(const std::filesystem::path& dir) {
+    std::vector<std::filesystem::path> out;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        if (e.path().filename().string().rfind("config.json.corrupt.", 0) == 0) out.push_back(e.path());
+    }
+    return out;
+}
+
+// 读文件全部内容（失败返回 false）。用于逐字节比对隔离产物。
+bool readAllText(const std::filesystem::path& p, std::string& out) {
+    out.clear();
+    std::ifstream in(p, std::ios::binary);
+    if (!in.is_open()) return false;
+    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return true;
+}
+
+// 覆盖写文件全部内容（失败返回 false）。
+bool writeAllText(const std::filesystem::path& p, const std::string& data) {
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    return static_cast<bool>(out);
 }
 
 }  // namespace
@@ -289,9 +317,10 @@ bool test_config_masked_echo_preserves_real_value() {
 // FACE-ARCWIN-006/007 迁移不变式：既有 config.json 缺 identifyThresholdArcFace 时必须被接受并取默认 0.45。
 //
 // 为什么必须有这条：identifyThresholdArcFace 已**收束进 schema.required**（三处同步）。既有部署的
-// config.json 都没有该键，若不做补偿，这些配置会在启动校验时报「缺少必填字段」而被拒；更糟的是
-// WinJsonConfigStore::initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支并无条件覆盖写
-// config.json ⇒ 静默丢弃用户全部配置。补偿即 WinJsonConfig.cpp 的 normalizeRecognitionKeys：在
+// config.json 都没有该键，若不做补偿，这些配置会在启动校验时报「缺少必填字段」而被拒 ⇒ 降级为默认值
+// 运行（历史行为更糟：WinJsonConfigStore::initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支
+// 并无条件覆盖写 config.json ⇒ 静默丢弃用户全部配置；FACE-CONFIG-001 已改为先隔离坏文件再以默认值启动）。
+// 补偿即 WinJsonConfig.cpp 的 normalizeRecognitionKeys：在
 // schema 校验前对 recognition 段「缺键补默认」（补入值取 defaultAppConfig()，与解析侧缺键回退一致）。
 // 现有 roundtrip 用例喂入的是**默认序列化**（已含该键），因此**没有**任何测试覆盖「缺该键的既有配置」
 // 这条迁移路径。本用例手工构造一份缺该键的配置走 store.initialize（启动加载）路径，钉住
@@ -376,4 +405,174 @@ bool test_config_arcface_threshold_out_of_range_rejected() {
 
     const auto res = store.updateFromJsonBody("{\"recognition\":{\"identifyThresholdArcFace\":55}}");
     return !res.ok;
+}
+
+// FACE-CONFIG-001 T1：config.json 存在但被 schema 拒绝 ⇒ 先改名另存（保全证据）再以默认值启动。
+//
+// 判别性断言：隔离文件内容必须与原坏文件**逐字节相同**——否则只是「删掉重建」，不是保全证据。
+bool test_config_rejected_load_quarantines_and_degrades() {
+    const auto dir = makeTempDir("reject_quarantine");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 先落盘一份默认（合法）配置，作为「真实用户配置」基底。
+    {
+        rk_win::WinJsonConfigStore s;
+        std::string w;
+        s.initialize(w);
+    }
+    // 2) 引入单处类型错误：minFaceSizePx 期望 number，改为字符串 ⇒ JSON 可解析但 schema 拒绝。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["minFaceSizePx"] = rk_win::JsonValue::makeString("80");
+    const std::string bad = rk_win::toJsonString(doc, true);
+    if (!writeAllText(cfgPath, bad)) return false;
+
+    // 3) 启动装载：坏配置必须被隔离且降级启动。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    // (e) 诊断访问器：降级启动 + 有隔离文件名 + 告警副本一致。
+    if (!store.configRejectedOnLoad()) return false;
+    const std::string qname = store.initQuarantineFileName();
+    if (qname.empty()) return false;
+    if (store.initWarning() != warn) return false;
+    // (d) 告警非空且含隔离文件名。
+    if (warn.empty() || warn.find(qname) == std::string::npos) return false;
+
+    // (a) 目录里恰好一个隔离文件，且名字与访问器一致（时间戳 → 只能前缀匹配，不得硬编码）。
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) return false;
+    if (corrupts[0].filename().string() != qname) return false;
+    // (b) 隔离文件内容与原坏文件逐字节相同（保全证据）。
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext)) return false;
+    if (qtext != bad) return false;
+
+    // (c) config.json 仍存在（以默认值重新落地），且可被再次正常装载。
+    if (!std::filesystem::exists(cfgPath)) return false;
+    rk_win::WinJsonConfigStore store2;
+    std::string warn2;
+    store2.initialize(warn2);
+    if (!warn2.empty()) return false;
+    if (store2.configRejectedOnLoad()) return false;
+    return true;
+}
+
+// FACE-CONFIG-001 T2：语法坏 JSON（截断）同属「无法装载」⇒ 同样隔离 + 降级，且内容逐字节保全。
+// 覆盖 parseAndValidateSettingsDoc 的「解析失败」分支（readFileAll 成功、parseJson 失败）。
+bool test_config_parse_failure_quarantines_and_degrades() {
+    const auto dir = makeTempDir("parse_quarantine");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    const std::string bad = "{\"camera\": ";  // 截断，parseJson 必然失败
+    if (!writeAllText(cfgPath, bad)) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    if (!store.configRejectedOnLoad()) return false;
+    const std::string qname = store.initQuarantineFileName();
+    if (qname.empty()) return false;
+    if (warn.empty() || warn.find(qname) == std::string::npos) return false;
+
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) return false;
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext)) return false;
+    if (qtext != bad) return false;
+    return true;
+}
+
+// FACE-CONFIG-001 T3（负对照）：合法 config.json 不得被隔离，且无告警、非降级启动。
+bool test_config_healthy_load_not_quarantined() {
+    const auto dir = makeTempDir("healthy_no_quarantine");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 先落盘一份默认（合法）配置。
+    {
+        rk_win::WinJsonConfigStore s;
+        std::string w;
+        s.initialize(w);
+    }
+    if (!std::filesystem::exists(cfgPath)) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    if (!warn.empty()) return false;
+    if (store.configRejectedOnLoad()) return false;
+    if (!store.initQuarantineFileName().empty()) return false;
+    if (!store.initWarning().empty()) return false;
+    if (!listCorruptConfigs(dir).empty()) return false;  // 健康配置绝不产生隔离文件
+    return true;
+}
+
+// FACE-CONFIG-001 T4（**核心不变量**）：隔离失败时，坏配置**永不**被销毁。
+// 修复前的失效模式是「无法装载 ⇒ 无条件覆盖写 config.json」，坏文件被整份丢弃；新语义的底线是：
+// 坏文件**要么改名另存、要么原封不动**——绝不允许「既没另存、又被覆盖」这第三种结局。
+// 构造手段：以**独占句柄**（dwShareMode = 0）持有 config.json ⇒ 随后对该文件的 rename 会失败
+//（Windows 上目标句柄未共享删除权限时 MoveFileEx 报 sharing violation）。此时：
+//   · 隔离必然失败 ⇒ initQuarantineFileName() 必须为空、目录里不得出现 *.corrupt.*；
+//   · config.json 内容必须与写入时**逐字节相同** —— 这就是「保全证据」的可执行判据。
+// 附带：本用例实际走的是「不可读」分支（独占句柄使 ifstream 打开即失败），补齐了此前只覆盖
+// 「解析失败」的空白。
+// ⚠️ **判别力边界（如实标注）**：本构造下**写盘本身也会失败**——`writeAtomicallyWithBackup` 的
+//    `MoveFileExW` 对同一个独占句柄同样报 sharing violation，故「原文件未被销毁」在这里**也会**由
+//    「覆盖恰好失败」达成。也就是说，本用例断言的是**结果**，它**不能**把 initialize 里的
+//    `skipWrite` 护栏（「隔离失败 ⇒ 不落盘」）与「落盘恰好也失败了」区分开。
+//    为补上该护栏的判别力，本用例**另加一条副作用断言**：若 `skipWrite` 被移除而写盘路径被进入，
+//    `writeAtomicallyWithBackup` 会在替换目标**之前**先做 `.bak` 轮转（把既有 `config.json.bak`
+//    改名为 `.bak.1`）——这一步不触碰被独占句柄锁住的 config.json，因此**必然成功**。
+//    于是「`.bak` 原封不动且不存在 `.bak.1`」即可判别「写盘路径未被进入」。
+bool test_config_quarantine_failure_preserves_original() {
+    const auto dir = makeTempDir("quarantine_failure_preserves");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    const std::string bad = "{\"camera\": { \"fps\": 30 ";  // 截断 JSON；内容独特，便于逐字节比对
+    if (!writeAllText(cfgPath, bad)) return false;
+    // 预置一份 .bak，用于判别「写盘路径是否被进入」（见上方判别力边界说明）。
+    if (!writeAllText(dir / "config.json.bak", "{\"schemaVersion\":1}")) return false;
+
+    const HANDLE hold = CreateFileW(cfgPath.wstring().c_str(), GENERIC_READ, 0, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // 构造不出场景时必须**响亮失败**，绝不静默跳过——否则本用例会退化成恒真断言。
+    if (hold == INVALID_HANDLE_VALUE) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const bool rejected = store.configRejectedOnLoad();
+    const bool noQuarantineName = store.initQuarantineFileName().empty();
+    const bool noCorruptFile = listCorruptConfigs(dir).empty();
+    const bool warned = !warn.empty();
+    const bool bakUntouched = std::filesystem::exists(dir / "config.json.bak");
+    const bool noBakRotation = !std::filesystem::exists(dir / "config.json.bak.1");
+
+    CloseHandle(hold);  // 释放独占句柄，随后才可安全读回原文件
+
+    std::string after;
+    const bool readOk = readAllText(cfgPath, after);
+
+    if (!rejected) return false;         // 独占句柄下不可读 ⇒ 必须判定为「无法装载」
+    if (!warned) return false;           // 失败必须可见（warnOut，并同时直写 stderr）
+    if (!noQuarantineName) return false; // 隔离确实失败了
+    if (!noCorruptFile) return false;    // 失败就不该有隔离产物
+    if (!bakUntouched) return false;     // .bak 被轮转 ⇒ 写盘路径被进入（skipWrite 护栏失效）
+    if (!noBakRotation) return false;    // 同上，双保险（轮转产物出现即证明写盘被调用）
+    if (!readOk) return false;
+    if (after != bad) return false;      // ★ 核心断言：原文件逐字节未被动过
+    return true;
 }
