@@ -69,6 +69,14 @@ final class PersonDisplayNameStore {
     private FeatureTemplateEncryptedStore.PlatformKeyProvider keyProvider =
             FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER;
 
+    /**
+     * @param dir 显示名目录。**构造器不得触碰文件系统**（不 {@code mkdirs}、不扫描）：本实例与
+     *            {@link #isSupported()} 同处 {@code MainActivity.displayNameStore()} 的构造路径上，
+     *            而该路径在「平台不支持」早退时也会被走到（一次纯能力查询）；若在构造期建目录，API&lt;23
+     *            设备会凭空多出永远用不到的 {@code files/face_names/} 空目录（FACE-JAVA-002）。
+     *            目录由**写入**路径惰性创建（{@code save} → {@code FeatureTemplateEncryptedStore.
+     *            writeEnvelopeAtomically} 在需要时才 {@code mkdirs}）。
+     */
     PersonDisplayNameStore(@NonNull File dir) {
         this.dir = dir;
     }

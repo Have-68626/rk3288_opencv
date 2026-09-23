@@ -4607,7 +4607,17 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         }, "FacePersonDelete").start();
     }
 
-    /** 显示名缓存（惰性 + 双检锁，与 modelManager()/enrollmentRepository() 同法）。 */
+    /**
+     * 显示名缓存（惰性 + 双检锁，与 modelManager()/enrollmentRepository() 同法）。
+     *
+     * <p><b>构造路径不得建目录（FACE-JAVA-002 修复）</b>：本 accessor 也会在「平台不支持」的早退路径上被
+     * 取到（{@code migrateLegacyDisplayNames} 的 {@code displayNameStore().isSupported()} 是一次纯能力
+     * 查询；{@code refreshGalleryFromRepository} 更是**无条件**先取实例）。若在构造路径里 {@code mkdirs()}，
+     * API&lt;23 设备会凭空多出一个**永远用不到**的 {@code files/face_names/} 空目录。故此处**只计算路径
+     * 对象**（{@code new File} 无文件系统副作用），目录的实际创建推迟到**首次写入**
+     * （{@code FeatureTemplateEncryptedStore.writeEnvelopeAtomically} 写到该目录时才 mkdirs）；
+     * 读取路径（prefetch / readFromDisk / removeOrphans）在目录缺失时本就按「无文件」正确处理。
+     */
     @NonNull
     private PersonDisplayNameStore displayNameStore() {
         PersonDisplayNameStore s = displayNameStore;
@@ -4616,9 +4626,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 s = displayNameStore;
                 if (s == null) {
                     // 与模板目录分开：孤儿清理只扫本目录，构造上不可能误删模板文件。
-                    File dir = new File(getFilesDir(), "face_names");
-                    if (!dir.exists()) dir.mkdirs();
-                    s = new PersonDisplayNameStore(dir);
+                    // 仅构造路径对象；目录由写入路径惰性创建（见方法 javadoc）。
+                    s = new PersonDisplayNameStore(new File(getFilesDir(), "face_names"));
                     displayNameStore = s;
                 }
             }

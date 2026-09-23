@@ -375,6 +375,59 @@ public class PersonDisplayNameStoreTest {
     }
 
     /**
+     * 判别性用例（FACE-JAVA-002）：构造 {@link PersonDisplayNameStore} 与查询平台能力**不得**触碰文件
+     * 系统 —— 显示名目录只在**真正写入**时才惰性创建。
+     *
+     * <p><b>背景</b>：{@code MainActivity.displayNameStore()}（惰性双检锁 accessor）此前在**构造路径**里就
+     * {@code mkdirs()} 出 {@code files/face_names/}；而 accessor 也是「平台不支持」早退路径取实例的入口
+     * （{@code migrateLegacyDisplayNames} 只做 {@code displayNameStore().isSupported()} 这个纯能力查询），
+     * 于是 API&lt;23 设备上凭空多出一个**永远用不到**的空目录。修法：把目录创建从 accessor 的构造路径移出，
+     * 交还**写入**路径惰性完成。
+     *
+     * <p><b>为何是判别性的</b>：以**不存在的目录**构造实例（{@link TemporaryFolder} 下的子路径），只做能力
+     * 查询与纯缓存读，断言目录仍 {@code !exists()}。若有人把 {@code mkdirs()} 重新塞回本类构造器、或塞进
+     * {@link PersonDisplayNameStore#isSupported()} / {@code get()}，本断言立即红 —— 正对应「早退路径凭空建
+     * 目录」的回归。（打红方式：在构造器里加 {@code if (!dir.exists()) dir.mkdirs();}。）
+     *
+     * <p><b>边界（如实声明）</b>：真正的早退路径在 {@code MainActivity}，其目录名取自
+     * {@code getFilesDir()}（Android 运行时），且 {@code MainActivity} 是 {@code AppCompatActivity}
+     * （纯 JVM 不可构造、本仓无 Robolectric）⇒ **JVM 单测无法逐字观测 MainActivity 那一半**。本用例钉住的是
+     * 使该修法成立的**存储层不变量**（构造 + 能力查询无文件系统副作用），并配合下方「写入才建目录」用例
+     * 证明惰性创建确实发生，而非「干脆不建目录」。
+     */
+    @Test
+    public void constructionAndCapabilityQueryDoNotCreateDir() throws Exception {
+        File absent = new File(tmp.newFolder(), "face_names_absent");
+        assertFalse("前置：目标目录不应存在", absent.exists());
+
+        PersonDisplayNameStore s = new PersonDisplayNameStore(absent);
+        s.setKeyProviderForTesting(provider);
+
+        assertTrue("能力查询应仍为真（读本实例 provider，与目录无关）", s.isSupported());
+        assertEquals("未缓存应降级为 personId", "alice", s.get("alice"));
+        assertFalse("构造 + 能力查询不得创建目录（FACE-JAVA-002 早退路径副作用）", absent.exists());
+    }
+
+    /**
+     * 与上一条配对：目录应在**首次写入**时惰性出现（证明修法是「推迟创建」而非「不创建」）。
+     *
+     * <p>写入路径经 {@code FeatureTemplateEncryptedStore.writeEnvelopeAtomically} 在父目录缺失时才
+     * {@code mkdirs} —— 故 save 成功后目录必已就位。
+     */
+    @Test
+    public void saveLazilyCreatesDir() throws Exception {
+        File absent = new File(tmp.newFolder(), "face_names_lazy");
+        assertFalse("前置：目标目录不应存在", absent.exists());
+
+        PersonDisplayNameStore s = new PersonDisplayNameStore(absent);
+        s.setKeyProviderForTesting(provider);
+
+        assertTrue(s.save("alice", "张三"));
+        assertTrue("写入才是目录被创建的时机", absent.isDirectory());
+        assertEquals("张三", s.get("alice"));
+    }
+
+    /**
      * 预取必须**重新解密**而非「命中即跳过」（A2 审计 Low 修复）：文件被带外改动后，下一次预取
      * 应反映磁盘现状，而不是一直显示陈旧名字。
      */
