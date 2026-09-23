@@ -82,15 +82,21 @@ public final class FeatureTemplateEncryptedStore {
     private static final SecureRandom RNG = new SecureRandom();
 
     /**
-     * 平台密钥提供者（测试接缝）。
+     * 平台密钥提供者（接缝形参）。
      *
-     * <p>生产实现：API &gt;= 23 时走 AndroidKeyStore（{@link Api23}）。测试可在 JVM 上注入
-     * JCE 内存密钥，从而在无 Android 运行时的情况下验证加解密与清零逻辑。
+     * <p>生产实现：API &gt;= 23 时走 AndroidKeyStore（{@link Api23}）。测试可在 JVM 上传入
+     * JCE 内存密钥替身，从而在无 Android 运行时的情况下验证加解密与清零逻辑。
+     *
+     * <p><b>⚠️ 本接口**不是** {@code @VisibleForTesting}（与 {@code FileStoreUtils.FileOps} /
+     * {@code FaceModelManager.FileOps} 对齐注解哲学）</b>：注入点改为**实例级 + 方法形参**后，本类型
+     * 是**生产内部类型** —— 5 个加密方法与 {@link #isPlatformSupported} 都以它为首个形参，两个生产
+     * 调用方（{@code AndroidEnrollmentRepository} / {@code PersonDisplayNameStore}）各持**实例字段**
+     * （默认 {@link #DEFAULT_KEY_PROVIDER}），测试替身也由此**显式传入**。仅**注入方法**
+     * （各调用方的 {@code setKeyProviderForTesting}）才是测试专用；此前把注解放到接口上会误导读者。
      *
      * <p>红线：AAD 构造与 {@link Api23} 的密钥生成逻辑保持不变，此处仅把“平台是否支持 /
      * 如何取密钥”改为可注入，不改变生产路径行为。
      */
-    @androidx.annotation.VisibleForTesting
     interface PlatformKeyProvider {
         boolean isSupported();
 
@@ -105,7 +111,18 @@ public final class FeatureTemplateEncryptedStore {
         }
     }
 
-    private static final PlatformKeyProvider DEFAULT_KEY_PROVIDER = new PlatformKeyProvider() {
+    /**
+     * 默认（生产）密钥提供者：API &gt;= 23 时走 AndroidKeyStore（{@link Api23}），否则视为不支持。
+     *
+     * <p><b>包级可见</b>：只给同包的调用方（{@code AndroidEnrollmentRepository} /
+     * {@code PersonDisplayNameStore}）与单元测试使用，作为各自实例字段的默认值。它仍是
+     * {@code static final} 不可变常量，故**不存在**可被篡改的进程级可变状态
+     * （与 {@code FileStoreUtils.DEFAULT_FILE_OPS} 完全同构）。
+     *
+     * <p>⚠️ 本类**不再**持有任何可变静态 provider 字段：provider 一律由调用方经**方法形参**传入
+     * （见 {@link #write} 等的首个形参 {@code keyProvider}）—— 进程级静态注入入口已移除。
+     */
+    static final PlatformKeyProvider DEFAULT_KEY_PROVIDER = new PlatformKeyProvider() {
         @Override
         public boolean isSupported() {
             return Build.VERSION.SDK_INT >= 23;
@@ -122,18 +139,15 @@ public final class FeatureTemplateEncryptedStore {
         }
     };
 
-    private static volatile PlatformKeyProvider platformKeyProvider = DEFAULT_KEY_PROVIDER;
-
-    /** 仅供测试注入；传 null 恢复默认（AndroidKeyStore）实现。 */
+    /**
+     * 当前平台是否支持 AES-GCM 落盘（生产等价于 SDK_INT &gt;= 23）。
+     *
+     * <p>{@code keyProvider} 由调用方**显式传入**（与 5 个加密方法同构）；本类不持有进程级静态
+     * provider，故不存在跨实例 / 跨测试类的注入泄漏 —— 注入点已下移到两个生产调用方的**实例字段**。
+     */
     @androidx.annotation.VisibleForTesting
-    static void setPlatformKeyProviderForTesting(@Nullable PlatformKeyProvider provider) {
-        platformKeyProvider = (provider != null) ? provider : DEFAULT_KEY_PROVIDER;
-    }
-
-    /** 当前平台是否支持 AES-GCM 落盘（生产等价于 SDK_INT &gt;= 23）。 */
-    @androidx.annotation.VisibleForTesting
-    static boolean isPlatformSupported() {
-        return platformKeyProvider.isSupported();
+    static boolean isPlatformSupported(@NonNull PlatformKeyProvider keyProvider) {
+        return keyProvider.isSupported();
     }
 
     /** 读取回调：明文仅在该回调内有效，回调返回后立即被清零，调用方如需保留必须自行复制。 */
@@ -216,7 +230,8 @@ public final class FeatureTemplateEncryptedStore {
      *         （**拒绝而非截断**）；{@link Code#UNSUPPORTED_PLATFORM} = 平台不支持（API&lt;23）。
      */
     @NonNull
-    public static WriteResult writeNameString(@NonNull File dstFile,
+    public static WriteResult writeNameString(@NonNull PlatformKeyProvider keyProvider,
+                                              @NonNull File dstFile,
                                               @NonNull String personId,
                                               @NonNull String displayName) {
         byte[] plain = displayName.getBytes(StandardCharsets.UTF_8);
@@ -224,11 +239,11 @@ public final class FeatureTemplateEncryptedStore {
             if (plain.length == 0 || plain.length > MAX_NAME_BYTES) {
                 return new WriteResult(Code.BAD_FORMAT);
             }
-            if (!platformKeyProvider.isSupported()) {
+            if (!keyProvider.isSupported()) {
                 return new WriteResult(Code.UNSUPPORTED_PLATFORM);
             }
 
-            SecretKey key = platformKeyProvider.getOrCreateNameKey();
+            SecretKey key = keyProvider.getOrCreateNameKey();
             byte[] aad = buildNameAad(personId);
 
             Cipher cipher;
@@ -258,31 +273,33 @@ public final class FeatureTemplateEncryptedStore {
      *                            personId，通常传 false 即可（避免在显示名目录堆积隔离文件）。
      */
     @NonNull
-    public static ReadResult readNameString(@NonNull File srcFile,
+    public static ReadResult readNameString(@NonNull PlatformKeyProvider keyProvider,
+                                            @NonNull File srcFile,
                                             @NonNull String personId,
                                             boolean quarantineOnCorrupt) {
-        if (!platformKeyProvider.isSupported()) {
+        if (!keyProvider.isSupported()) {
             return new ReadResult(Code.UNSUPPORTED_PLATFORM, null);
         }
         return readEnvelope(srcFile,
-                () -> platformKeyProvider.getOrCreateNameKey(),
+                () -> keyProvider.getOrCreateNameKey(),
                 () -> buildNameAad(personId),
                 quarantineOnCorrupt);
     }
 
     @NonNull
-    public static WriteResult write(@NonNull Context ctx,
+    public static WriteResult write(@NonNull PlatformKeyProvider keyProvider,
+                                    @NonNull Context ctx,
                                     @NonNull File dstFile,
                                     @NonNull String userId,
                                     @NonNull byte[] plaintextTemplate,
                                     int modelVersion,
                                     int templateSchemaVersion) {
-        if (!platformKeyProvider.isSupported()) {
+        if (!keyProvider.isSupported()) {
             return new WriteResult(Code.UNSUPPORTED_PLATFORM);
         }
 
         try {
-            SecretKey key = platformKeyProvider.getOrCreateKeyV1();
+            SecretKey key = keyProvider.getOrCreateKeyV1();
             byte[] aad = buildAad(userId, modelVersion, templateSchemaVersion);
             Cipher cipher;
             try {
@@ -356,17 +373,18 @@ public final class FeatureTemplateEncryptedStore {
      * 生产代码请使用 {@link #readAndConsume}，由库保证使用后清零，避免明文长期驻留。
      */
     @NonNull
-    public static ReadResult read(@NonNull Context ctx,
+    public static ReadResult read(@NonNull PlatformKeyProvider keyProvider,
+                                  @NonNull Context ctx,
                                   @NonNull File srcFile,
                                   @NonNull String userId,
                                   int modelVersion,
                                   int templateSchemaVersion,
                                   boolean quarantineOnCorrupt) {
-        if (!platformKeyProvider.isSupported()) {
+        if (!keyProvider.isSupported()) {
             return new ReadResult(Code.UNSUPPORTED_PLATFORM, null);
         }
         return readEnvelope(srcFile,
-                () -> platformKeyProvider.getOrCreateKeyV1(),
+                () -> keyProvider.getOrCreateKeyV1(),
                 () -> buildAad(userId, modelVersion, templateSchemaVersion),
                 quarantineOnCorrupt);
     }
@@ -473,14 +491,15 @@ public final class FeatureTemplateEncryptedStore {
      * @return {@code OK} 表示回调已成功执行且明文已清零；其余 code 与 {@link #read} 一致。
      */
     @NonNull
-    public static ReadResult readAndConsume(@NonNull Context ctx,
+    public static ReadResult readAndConsume(@NonNull PlatformKeyProvider keyProvider,
+                                            @NonNull Context ctx,
                                             @NonNull File srcFile,
                                             @NonNull String userId,
                                             int modelVersion,
                                             int templateSchemaVersion,
                                             boolean quarantineOnCorrupt,
                                             @NonNull PlaintextConsumer consumer) {
-        ReadResult rr = read(ctx, srcFile, userId, modelVersion, templateSchemaVersion, quarantineOnCorrupt);
+        ReadResult rr = read(keyProvider, ctx, srcFile, userId, modelVersion, templateSchemaVersion, quarantineOnCorrupt);
         if (rr.code != Code.OK || rr.plaintext == null) {
             return new ReadResult(rr.code, null);
         }

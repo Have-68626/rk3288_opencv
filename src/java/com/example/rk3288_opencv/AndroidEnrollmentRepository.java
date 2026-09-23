@@ -194,6 +194,20 @@ public final class AndroidEnrollmentRepository {
     private FileStoreUtils.FileOps fileOps = FileStoreUtils.DEFAULT_FILE_OPS;
 
     /**
+     * 平台密钥提供者接缝（**仅测试注入用**）：默认 {@link FeatureTemplateEncryptedStore#DEFAULT_KEY_PROVIDER}
+     * （生产走 AndroidKeyStore）；测试可经 {@link #setKeyProviderForTesting} 注入 JCE 内存密钥替身，
+     * 以在纯 JVM 下跑真实 AES-GCM。
+     *
+     * <p><b>实例字段而非进程级静态</b>（对 {@code FeatureTemplateEncryptedStore} 静态 provider 的扩面
+     * 改造，与 {@link #fileOps} 同构）：本字段只属于本实例，注入**不会**影响其它实例或其它测试类，
+     * 跨实例泄漏在结构上不可能发生。本类的 3 处加密调用（{@link #isEnrollmentEnabled}、
+     * {@link #add}、{@link #readTemplate}）都以它为首个形参显式传给存储层。
+     */
+    @NonNull
+    private FeatureTemplateEncryptedStore.PlatformKeyProvider keyProvider =
+            FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER;
+
+    /**
      * 通用作用域构造：模板与注册表都落在 {@code scopeDir} 内。
      *
      * @param ctx       应用上下文；仅默认工厂需要，测试可直接传 null
@@ -212,6 +226,12 @@ public final class AndroidEnrollmentRepository {
     @androidx.annotation.VisibleForTesting
     void setFileOpsForTesting(@Nullable FileStoreUtils.FileOps ops) {
         fileOps = (ops != null) ? ops : FileStoreUtils.DEFAULT_FILE_OPS;
+    }
+
+    /** 仅供测试注入密钥提供者替身；传 null 恢复默认（AndroidKeyStore）实现。**仅影响本实例**。 */
+    @androidx.annotation.VisibleForTesting
+    void setKeyProviderForTesting(@Nullable FeatureTemplateEncryptedStore.PlatformKeyProvider p) {
+        keyProvider = (p != null) ? p : FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER;
     }
 
     /** 默认 gallery：与存储层默认目录一致（{@code files/face_templates}）。 */
@@ -244,7 +264,7 @@ public final class AndroidEnrollmentRepository {
 
     /** API &gt;= 23 且密钥可用时为 true。低版本返回 false。 */
     public boolean isEnrollmentEnabled() {
-        return FeatureTemplateEncryptedStore.isPlatformSupported();
+        return FeatureTemplateEncryptedStore.isPlatformSupported(keyProvider);
     }
 
     /** API &lt; 23：只读预览模式。 */
@@ -293,7 +313,7 @@ public final class AndroidEnrollmentRepository {
             }
 
             FeatureTemplateEncryptedStore.WriteResult wr = FeatureTemplateEncryptedStore.write(
-                    ctx, tpl, userId, template, modelVersion, templateSchemaVersion);
+                    keyProvider, ctx, tpl, userId, template, modelVersion, templateSchemaVersion);
             if (wr.code != FeatureTemplateEncryptedStore.Code.OK) {
                 return new Result(mapStoreCode(wr.code), null, describe(wr.code));
             }
@@ -425,7 +445,8 @@ public final class AndroidEnrollmentRepository {
                 return new Result(Status.NOT_FOUND, null, "未找到该人员");
             }
             FeatureTemplateEncryptedStore.ReadResult rr = FeatureTemplateEncryptedStore.readAndConsume(
-                    ctx, templateFileFor(userId), userId, e.modelVersion, e.templateSchemaVersion, true,
+                    keyProvider, ctx, templateFileFor(userId), userId, e.modelVersion,
+                    e.templateSchemaVersion, true,
                     new FeatureTemplateEncryptedStore.PlaintextConsumer() {
                         @Override
                         public void accept(@NonNull byte[] plaintextTemplate) {

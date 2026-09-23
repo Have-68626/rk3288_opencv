@@ -1,6 +1,5 @@
 package com.example.rk3288_opencv;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -29,9 +28,9 @@ import static org.junit.Assert.assertTrue;
 /**
  * AndroidEnrollmentRepository（任务 16）单元测试。
  *
- * <p>通过 {@link FeatureTemplateEncryptedStore#setPlatformKeyProviderForTesting} 注入 JCE 内存密钥，
- * 使 AndroidKeyStore + AES-GCM 的真实加解密能在纯 JVM（Gradle unit test）上运行，从而覆盖：
- * 新增、覆盖拒绝、读取、删除、损坏文件、密钥不可用、API&lt;23 只读预览。
+ * <p>通过 {@link AndroidEnrollmentRepository#setKeyProviderForTesting} 在**本用例创建的实例**上注入
+ * JCE 内存密钥替身，使 AndroidKeyStore + AES-GCM 的真实加解密能在纯 JVM（Gradle unit test）上运行，
+ * 从而覆盖：新增、覆盖拒绝、读取、删除、损坏文件、密钥不可用、API&lt;23 只读预览。
  */
 public class AndroidEnrollmentRepositoryTest {
 
@@ -41,18 +40,20 @@ public class AndroidEnrollmentRepositoryTest {
     private static final int MV = 7;
     private static final int TSV = 2;
 
+    /**
+     * 供各用例注入到**本用例创建的 repo 实例**上的密钥提供者替身（内存 JCE 密钥）。此前是进程级静态
+     * 注入，改造后由各实例的 {@code setKeyProviderForTesting} 注入（见 {@link #newRepo(File)}）。
+     */
+    private FeatureTemplateEncryptedStore.PlatformKeyProvider provider;
+
     @Before
     public void setUp() throws Exception {
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(jceProvider());
+        provider = jceProvider();
     }
 
-    @After
-    public void tearDown() {
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(null);
-        // §2.5-D / 子代理 4 P4：删除行为接缝已由「进程级静态」改为**实例级注入**
-        // （AndroidEnrollmentRepository#setFileOpsForTesting）。本类若注入替身，只在**本用例创建的
-        // repo 实例**上生效，不再需要、也无法做跨类全局复位 —— 跨实例泄漏在结构上不可能发生。
-    }
+    // 无 @After（改造前它用于复位进程级静态 provider）：密钥提供者接缝已是**实例级**，各实例由
+    // newRepo(File) 就地注入，本测试类不再改写任何静态状态 ⇒ 无静态状态可复位。删除接缝的实例级
+    // 注入（setFileOpsForTesting）同理只需逐个用例自洽，无需跨类全局复位 —— 跨实例泄漏结构上不可能。
 
     // ---------- ① 新增 + 读取（并验证使用后清零） ----------
 
@@ -180,7 +181,7 @@ public class AndroidEnrollmentRepositoryTest {
         AndroidEnrollmentRepository repo = newRepo();
         assertEquals(AndroidEnrollmentRepository.Status.OK, repo.add("alice", templateBytes(16, 7), MV, TSV).status);
 
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(brokenProvider());
+        repo.setKeyProviderForTesting(brokenProvider());
         assertEquals(AndroidEnrollmentRepository.Status.KEYSTORE_ERROR,
                 repo.add("bob", templateBytes(16, 8), MV, TSV).status);
         assertEquals(AndroidEnrollmentRepository.Status.KEYSTORE_ERROR,
@@ -199,7 +200,7 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(AndroidEnrollmentRepository.Status.OK, repo.add("alice", templateBytes(24, 9), MV, TSV).status);
 
         // 模拟 API < 23
-        FeatureTemplateEncryptedStore.setPlatformKeyProviderForTesting(unsupportedProvider());
+        repo.setKeyProviderForTesting(unsupportedProvider());
 
         assertFalse(repo.isEnrollmentEnabled());
         assertTrue(repo.isReadOnlyPreview());
@@ -418,8 +419,8 @@ public class AndroidEnrollmentRepositoryTest {
                 AndroidEnrollmentRepository.dirLockForTesting(dir),
                 AndroidEnrollmentRepository.dirLockForTesting(new File(dir.getAbsolutePath())));
 
-        AndroidEnrollmentRepository r1 = new AndroidEnrollmentRepository(null, dir);
-        AndroidEnrollmentRepository r2 = new AndroidEnrollmentRepository(null, dir);
+        AndroidEnrollmentRepository r1 = newRepo(dir);
+        AndroidEnrollmentRepository r2 = newRepo(dir);
         assertSame("同目录的不同仓库实例必须共享锁",
                 AndroidEnrollmentRepository.dirLockForTesting(r1.scopeDir()),
                 AndroidEnrollmentRepository.dirLockForTesting(r2.scopeDir()));
@@ -431,7 +432,7 @@ public class AndroidEnrollmentRepositoryTest {
         final int n = 8;
         final AndroidEnrollmentRepository[] repos = new AndroidEnrollmentRepository[n];
         for (int i = 0; i < n; i++) {
-            repos[i] = new AndroidEnrollmentRepository(null, dir);
+            repos[i] = newRepo(dir);
         }
         final CountDownLatch start = new CountDownLatch(1);
         final AtomicInteger ok = new AtomicInteger();
@@ -604,8 +605,8 @@ public class AndroidEnrollmentRepositoryTest {
     public void injectedOpsArePerInstanceAndDoNotLeak() throws Exception {
         File dirA = tmp.newFolder("a");
         File dirB = tmp.newFolder("b");
-        AndroidEnrollmentRepository a = new AndroidEnrollmentRepository(null, dirA);
-        AndroidEnrollmentRepository b = new AndroidEnrollmentRepository(null, dirB);
+        AndroidEnrollmentRepository a = newRepo(dirA);
+        AndroidEnrollmentRepository b = newRepo(dirB);
         assertEquals(AndroidEnrollmentRepository.Status.OK,
                 a.add("alice", templateBytes(16, 71), MV, TSV).status);
         assertEquals(AndroidEnrollmentRepository.Status.OK,
@@ -674,7 +675,14 @@ public class AndroidEnrollmentRepositoryTest {
     }
 
     private AndroidEnrollmentRepository newRepo() throws Exception {
-        return new AndroidEnrollmentRepository(null, tmp.newFolder());
+        return newRepo(tmp.newFolder());
+    }
+
+    /** 构造并在**本实例**上注入测试用密钥提供者替身（避免 6 处构造点各自重复注入）。 */
+    private AndroidEnrollmentRepository newRepo(File dir) {
+        AndroidEnrollmentRepository r = new AndroidEnrollmentRepository(null, dir);
+        r.setKeyProviderForTesting(provider);
+        return r;
     }
 
     private static byte[] templateBytes(int len, int seed) {
