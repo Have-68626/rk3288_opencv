@@ -46,8 +46,13 @@ import java.util.List;
  *   <li>姿态配额：正脸 4 / 左脸 2 / 右脸 2（{@link Reason#POSE_QUOTA_EXCEEDED}）。</li>
  *   <li>与已收样本一致性：与任一已收样本 cosine {@code >= 0.75}
  *       （低于则视为不同人/异常帧，{@link Reason#INCONSISTENT_IDENTITY}）。</li>
- *   <li>现有模板可校验：若开始会话时现有模板快照读取失败（{@link Reason#REPO_UNAVAILABLE}），
- *       说明无法判断是否重复，直接拒绝本次样本，绝不按“库中无重复”放行。</li>
+ *   <li>现有模板可校验：若开始会话时现有模板快照读取失败，**或枚举不完整（注册表存在被跳过并
+ *       隔离的损坏行，其模板仍在磁盘）**（{@link Reason#REPO_UNAVAILABLE}），说明无法判断是否
+ *       重复，直接拒绝本次样本，绝不按“库中无重复”放行。
+ *       ⚠️ 该门的判据是 {@code AndroidEnrollmentRepository.ListResult#isEnumerationComplete()}，
+ *       它排除的是**行级跳过**与整体不可读；从 {@code .bak} 恢复时枚举**仍可能缺行**
+ *       （备份可能早于最近一次 add，新条目还留在未被消费的 {@code .tmp} 里）而该判据仍为 true。
+ *       该缺口如实登记、未修，详见 {@code ListResult#isEnumerationComplete} 的 javadoc。</li>
  *   <li>与现有模板重复阻止：与任一已注册模板 cosine {@code >= 0.55} 即判定为重复人员
  *       （{@link Reason#DUPLICATE_PERSON}），避免同一人被重复注册。</li>
  * </ol>
@@ -129,9 +134,21 @@ public final class EnrollmentSession {
         POSE_QUOTA_EXCEEDED,
         INCONSISTENT_IDENTITY,
         DUPLICATE_PERSON,
-        /** 现有模板仓库不可读，无法校验是否重复；为防重复注册而拒绝本次样本。 */
+        /** 现有模板仓库不可读**或枚举不完整**，无法校验是否重复；为防重复注册而拒绝本次样本。 */
         REPO_UNAVAILABLE
     }
+
+    /*
+     * 待办 N1（本批引入的可用性收敛，如实登记、未修）：REPO_UNAVAILABLE 不是一次性拒绝，而是
+     * **每一帧都拒绝**——失败标记在 start() 快照阶段即落定（见 existingLoadFailed），判定点在
+     * feed 的 6.5) 步对每个样本前置返回 false ⇒ 会话永远集不满 8 样本、commitTo 永不执行 ⇒
+     * 注册表只要存在**一行**坏行，经 UI 的「注册」就完全不可用。而清除坏行只能靠一次成功的
+     * add/remove（persistRegistry 只序列化 entries）：add 已被本门切断，自愈实际只剩 remove；
+     * 且注册表「只剩坏行」时 list().entries 为空 ⇒ 人员列表里没有可删条目
+     * ⇒ 用户从 UI 无法自愈（只能清除应用数据或手工编辑注册表）。
+     * 修复方向：给坏行一个可删条目/显式的「重写注册表」入口，或让门只拦「枚举缺行」的那次注册
+     * 而非整场会话。改动面涉及 MainActivity 的注册与人员管理 UI，须与产品拍板后单独实施。
+     */
 
     /** 人脸检测框（帧像素坐标，右/下为开区间）。 */
     public static final class Box {
@@ -385,8 +402,17 @@ public final class EnrollmentSession {
             @Override
             public boolean forEach(@NonNull final ExistingTemplateConsumer consumer) {
                 AndroidEnrollmentRepository.ListResult list = repo.list();
-                if (!list.isOk()) {
-                    // 清单读取失败：无法枚举既有模板，如实报告失败，不得静默空遍历放行。
+                if (!list.isEnumerationComplete()) {
+                    // 清单整体不可读（!isOk()），或注册表存在**被跳过并隔离的损坏行**
+                    // （skippedLineCount > 0）：后者虽 status==OK，但被跳过者不在枚举内、其模板仍在磁盘
+                    // ⇒ 这些人可被重复注册。故与「整体不可读」同口径拒收，绝不把不完整枚举当成
+                    // “库中无重复”。
+                    // ⚠️ 判据刻意用 isEnumerationComplete()（= isOk() && skippedLineCount == 0）而非
+                    //     !authoritative：后者在「无注册表文件」时也为 false（无法区分全新安装与索引丢失，
+                    //     见 loadRegistry），用它会把全新安装误判为不可注册。
+                    // ⚠️ 该判据**不是**「枚举绝无缺行」的强保证：从 .bak 恢复时备份可能早于最近一次
+                    //     add（新条目还留在未被消费的 .tmp 里），此时枚举确实缺行而本判据仍为 true。
+                    //     该缺口见 ListResult#isEnumerationComplete 的 javadoc，此处如实登记、未修。
                     return false;
                 }
                 for (final AndroidEnrollmentRepository.Entry entry : list.entries) {
@@ -630,7 +656,7 @@ public final class EnrollmentSession {
         return accepted.size() + existingSnapshot.size() + (meanTemplate != null ? 1 : 0);
     }
 
-    /** 现有模板快照是否读取失败；仅供测试断言失败标记在 start/cancel/reset 间的生命周期。 */
+    /** 现有模板快照是否读取失败**或枚举不完整**；仅供测试断言失败标记在 start/cancel/reset 间的生命周期。 */
     @VisibleForTesting
     synchronized boolean isExistingLoadFailed() {
         return existingLoadFailed;

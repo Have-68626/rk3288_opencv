@@ -29,8 +29,12 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
- * FaceModelManager（任务 14）单元测试：SAF ZIP 导入安全（Zip Slip / 文件数 / 256MiB 上限）、
+ * FaceModelManager（任务 14 首批）单元测试：SAF ZIP 导入安全（Zip Slip / 文件数 / 256MiB 上限）、
  * manifest 契约校验、sha256 引脚、原子启用、native 自检门禁、失败保留原配置、profile 切换。
+ *
+ * <p>后续批次追加（见下文各节标题）：目录替换**事务记录**与提交代次、**提交见证**、**回滚意图标记**、
+ * 实例级 {@code FileOps} 注入接缝、{@code .staging/} 暂存布局。本类 javadoc 的上述清单只是首批范围，
+ * **不是**本文件覆盖的全部契约。
  *
  * <p>native 依赖通过 {@link FaceModelManager.NativeRuntime} 假实现注入，因此可在纯 JVM 运行，
  * 不加载 so。限额通过包内构造器注入小值，避免真的构造 256MiB 数据。
@@ -799,12 +803,14 @@ public class FaceModelManagerTest {
      * {@code recoverProfileDirIfNeeded()} 必须兜底：把滞留备份还原为激活目录，且状态与实际目录一致
      * （还原的是**旧模型内容**、不误报就绪）。
      *
-     * <p><b>场景构造说明</b>：无法在纯 JVM 下稳定地让 {@code rollbackProfileSwap} 内部的
-     * {@code bak.renameTo(target)} 失败——该 rename 发生在「删除新 target → 还原旧 bak」之间的极短
-     * 窗口内，测试无法注入句柄；若改用「持有独占文件句柄令 rename 失败」构造，则依赖 Windows 文件锁
-     * 语义，而 Android Gradle 单测跑在 Linux（持句柄仍可 rename 目录），跨平台 flaky。故按**等价**方式
-     * 直接构造「target 缺失 + {@code .bak_<id>} 存在」这一回滚失败后的磁盘现场，再调 {@code status()}
-     * 验证兜底路径。它与 {@link #statusRecoversActiveDirFromSwapBackup}（崩溃窗口）共用同一
+     * <p><b>场景构造说明</b>：{@code rollbackProfileSwap} 的还原改名现已走 {@code FaceModelManager.FileOps}
+     * 接缝（{@code setFileOpsForTesting} + {@code FaultyFileOps.failRenameFromName(".bak_<id>")}），
+     * 故「回滚 rename 失败」**本可**由注入构造——活证据见
+     * {@link #failedRollbackWithUnwritableMarkerReportsUnrecorded}（{@code FAILED_UNRECORDED} 只能由该
+     * 注入到达）与 {@link #renameFailureDuringDirSwapRestoresOldConfigAndClearsTxn}。此处仍保留
+     * 「直接构造终态」的写法，仅因本用例考察的是**恢复契约**（读出「target 缺失 + {@code .bak_<id>}
+     * 存在」这一现场后如何收敛），而非写入器自身的失败分支。它与
+     * {@link #statusRecoversActiveDirFromSwapBackup}（崩溃窗口）共用同一
      * {@code recoverProfileDirIfNeeded} 契约；此处额外断言还原的是**旧模型内容**、状态与真实目录一致。
      */
     @Test
@@ -878,8 +884,11 @@ public class FaceModelManagerTest {
      * 旧模型永久滞留，激活指针却指向那个激活失败的新包（{@code buildStatus} 还会把它误报成就绪）。
      *
      * <p>修复后：回滚时写入 {@code .rollback_<id>} 意图标记，恢复逻辑据此先删新目录、再还原备份。
-     * 本用例直接构造「target 存在 + bak 存在 + 标记存在」现场（删除失败无法在纯 JVM 稳定注入，
-     * 与 {@link #rollbackRenameFailureStrandedBackupIsRecoveredByStatus()} 同法按等价方式构造）。
+     * 本用例直接构造「target 存在 + bak 存在 + 标记存在」现场，与
+     * {@link #rollbackRenameFailureStrandedBackupIsRecoveredByStatus()} 同法按**等价方式**构造终态
+     * ——「删除失败」**本可**由注入构造（{@code FaultyFileOps.failDelete} 是平台无关的纯布尔闸门，
+     * 见 {@link #deleteFailureDuringTxnRecoveryKeepsSceneAndReportsError}），此处走终态构造只是因本用例
+     * 考察的是**恢复契约**（读出该现场后如何收敛），而非删除失败分支本身。
      *
      * <p>关键 RED 断点：修复前 target 内是一个**校验合法的新包**，{@code status()} 会把它当成激活配置
      * 而报 ready——正是审查指出的「把失败的新目录当作激活配置」。
@@ -945,8 +954,10 @@ public class FaceModelManagerTest {
      * 而**不是**对 {@code activate()} 中新增的 {@code clearRollbackMarker} 那行的**判别性**证据——
      * 在本用例构造的「标记在 + 备份已消费」现场里，前置的 {@code recoverProfileDirIfNeeded} 已经
      * 把它清掉了，删掉那行测试仍会通过。真正需要那行的现场是「标记在 + 备份在 + target 删不掉」，
-     * 而「删除失败」无法在纯 JVM 下跨平台稳定注入（Android Gradle 单测跑在 Linux，持句柄仍可
-     * 删目录/文件；Windows 侧的只读文件语义不可移植）——与既有回滚用例同处的构造限制。
+     * 而「删除失败」**本可**由注入构造（{@code FaultyFileOps.failDelete} / {@code failDeleteForName}
+     * 是平台无关的纯布尔闸门，{@code deleteRecursivelyQuietly} 经 {@code fileOps.deleteRecursively}
+     * 接缝，活证据见 {@link #deleteFailureDuringTxnRecoveryKeepsSceneAndReportsError}）；此处保留
+     * 「直接构造终态」的写法，仅因本用例考察的是**结果与状态一致**这条契约，而非删除失败分支本身。
      */
     @Test
     public void activateClearsPendingRollbackMarkerSoResultAndStatusAgree() throws Exception {
@@ -987,8 +998,12 @@ public class FaceModelManagerTest {
      * {@code ATOMIC_RENAME_FAILED}，**唯有状态码断言会失败**——因为调用方的 {@code buildStatus}
      * 仍会经 {@code recoverProfileDirIfNeeded} 就地完成还原（本构造下标记目录 {@code exists()==true}，
      * 恰使恢复生效），故**内容断言会通过**。此点经第三代理实测确认，勿再声称「内容断言也会失败」。
-     * <b>不能判别什么</b>：「删除成功但改名失败 → 崩溃窗口恢复」那条组合无法在纯 JVM 下稳定构造
-     *（需 target 不可删）；真实「无标记」场景（标记文件建不出来而非被占成目录）的端状态亦与之不同。
+     * <b>不能判别什么</b>：「删除成功但改名失败」这一步**可构造**（{@code ops.failRenameFromName(".bak_<id>")}，
+     * 见 {@link #commitWitnessIsRevokedBeforeRollbackSoFailedRollbackStaysUncommitted} 与
+     * {@link #failedRollbackWithUnwritableMarkerReportsUnrecorded}），但这两者构造的现场分别是
+     * 「指针写失败」「标记写失败」，与「无记录、由崩溃窗口分支还原」不同，故本用例不判别后者的端状态
+     * （该端状态由 {@link #statusRecoversActiveDirFromSwapBackup} 直接构造覆盖）；真实「无标记」场景
+     *（标记文件建不出来而非被占成目录）的端状态亦与之不同。
      */
     @Test
     public void rollbackStillCompletesWhenMarkerCannotBeWritten() throws Exception {
@@ -1021,6 +1036,95 @@ public class FaceModelManagerTest {
                 java.util.Arrays.equals(oldBin, readFile(new File(target, DET_BIN))));
         // 清理人造标记目录，避免污染后续断言。
         deleteRecursively(marker);
+    }
+
+    /**
+     * **ε-A-3 判别性用例**（A3 确认此前缺失）：{@code rollbackProfileSwap} 的第三种结局
+     * {@code RollbackOutcome.FAILED_UNRECORDED}（= 回滚失败 **且** 恢复意图标记未能落盘）
+     * 在本用例加入**之前**是**零驱动、零断言**——该枚举三值里只有它的文案「且未能记录恢复意图」
+     * 在全仓无任何用例命中，把枚举改坏（恒返回 {@code FAILED_RECORDED}）也不会有测试变红。
+     *
+     * <p><b>构造：两个接缝各管一半</b>
+     * <ol>
+     *   <li>令 {@code writeRollbackMarker} 必失败 ⇒ {@code recorded == false}：把标记路径预建成
+     *       **非空目录**（该写入走裸 {@code FileOutputStream}、不经 {@code fileOps}，故只能用这个
+     *       平台无关的办法，与 {@link #rollbackStillCompletesWhenMarkerCannotBeWritten} 同法）；</li>
+     *   <li>令回滚的 {@code .bak_p1 → p1} 改名失败 ⇒ 回不到 {@code RESTORED}：
+     *       {@code ops.failRenameFromName(".bak_p1")}（该改名走 {@code fileOps.rename} 接缝，
+     *       且闸门只看**源名**，故不会连替换那一步 {@code p1 → .bak_p1} 一起打断）。</li>
+     * </ol>
+     * 两者同时成立才落到 {@code FAILED_UNRECORDED}：只做 ① 得到 {@code RESTORED}
+     * （见 {@link #rollbackStillCompletesWhenMarkerCannotBeWritten}），只做 ② 得到
+     * {@code FAILED_RECORDED}。
+     *
+     * <p><b>为何断言文案而不只看状态码</b>：三种结局都返回 {@code ATOMIC_RENAME_FAILED}，
+     * 状态码**不具判别力**；区分它们的是文案——{@code FAILED_RECORDED} 向用户承诺「将由启动恢复」，
+     * 本结局恰恰**不得**承诺。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>{@code rollbackProfileSwap} 末尾改成恒 {@code FAILED_RECORDED}（或漏掉 {@code recorded}
+     *       判断）⇒ 文案变「将由启动恢复」⇒ 两条文案断言同时红；</li>
+     *   <li>让 {@code writeRollbackMarker} 恒返回 {@code true} ⇒ 同上；</li>
+     *   <li>在回滚失败分支顺手清掉标记 / 删掉滞留备份 ⇒ 第三条断言红。</li>
+     * </ul>
+     *
+     * <p>注意 {@code failRenameFromName(".bak_p1")} 会**同时**挡住随后 {@code buildStatus()} 里
+     * {@code recoverProfileDirIfNeeded} 试图做的那次还原——无论它最终落到哪个分支：本类所有会做
+     * {@code .bak_p1 → p1} 改名的分支都以**源名 {@code .bak_p1}** 为闸门（事务分支
+     * {@code rollbackDirOnly}/{@code recoverTxnLegacy}、旧标记分支、崩溃窗口分支），故备份
+     * **仍未**被消费。这正是本用例能读到 {@code FAILED_UNRECORDED} 文案（而非「旧配置已回滚就位」）
+     * 的前提，不是偶然。
+     *
+     * <p>⚠️ <b>更正（勿再沿用「那处按约定丢弃 rename 返回值」这一说法）</b>：本用例构造的现场
+     * **不会**走到那个「刻意丢弃返回值」的分支，理由有二：
+     * <ol>
+     *   <li>「恢复路径刻意不检查 rename 返回值」在本类特指 {@code recoverProfileDirIfNeeded} 的
+     *       <b>崩溃窗口分支</b>（{@code if (!target.exists() && bak.exists()) { fileOps.rename(...); }}
+     *       —— 见该方法 javadoc 的「rename 返回值的契约分界」）；</li>
+     *   <li>本用例把标记路径预建成**非空目录**，故 {@code marker.exists() == true}，即便没有事务
+     *       记录也不会落到「无任何记录」的崩溃窗口分支；而它实际会落到的分支（事务 / 旧标记）
+     *       <b>都检查</b> rename 返回值，并据此决定是否清标记 / 清记录。</li>
+     * </ol>
+     * 即：备份未被消费的原因是**改名被闸门挡住**，与「返回值被丢弃」无关。
+     */
+    @Test
+    public void failedRollbackWithUnwritableMarkerReportsUnrecorded() throws Exception {
+        FaultyFileOps ops = new FaultyFileOps();
+        FakeRuntime rt = new FakeRuntime();
+        File dir = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(dir, rt);
+        m.setFileOpsForTesting(ops);
+        try {
+            Map<String, byte[]> v1 = defaultFiles("v1");
+            assertTrue(m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v1, "lic"), v1)),
+                    ABI, true).isOk());
+
+            // ① 令 writeRollbackMarker 必失败（裸 FileOutputStream 撞非空目录 ⇒ 抛异常 ⇒ recorded=false）
+            File marker = new File(dir, ".rollback_p1");
+            assertTrue(marker.mkdirs());
+            assertTrue(new File(marker, "keep").createNewFile());
+            // ② 令回滚的 .bak_p1 → p1 改名失败 ⇒ 不进 RESTORED
+            ops.failRenameFromName(".bak_p1");
+
+            // ③ 触发 rollbackProfileSwap：同名覆盖 + 激活失败
+            rt.activateOk = false;
+            rt.activateReason = "runtime_init_failed";
+            Map<String, byte[]> v2 = defaultFiles("v2");
+            FaceModelManager.Result r =
+                    m.importZip(stream(zip("", manifest("p1", "[\"arm64-v8a\"]", v2, "lic"), v2)),
+                            ABI, true);
+
+            assertEquals(FaceModelManager.Status.ATOMIC_RENAME_FAILED, r.status);
+            // ★ 判别性断言：FAILED_RECORDED 走的是「将由启动恢复」，二者文案互斥
+            assertTrue("应走 FAILED_UNRECORDED 文案，实际=" + r.message,
+                    r.message.contains("且未能记录恢复意图"));
+            assertFalse("不得错报 FAILED_RECORDED 文案（那是「将由启动恢复」的承诺）",
+                    r.message.contains("将由启动恢复"));
+            assertTrue("旧目录应滞留 .bak_p1", new File(dir, ".bak_p1").isDirectory());
+        } finally {
+            m.setFileOpsForTesting(null);
+        }
     }
 
     // ---------- ⑱ 任务 A：目录替换事务记录 ----------

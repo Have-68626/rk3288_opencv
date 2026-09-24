@@ -22,10 +22,14 @@ import static org.junit.Assert.assertTrue;
  * <ol>
  *   <li>显示名**不再以明文写入 SharedPreferences**；</li>
  *   <li>采集期显示名**仅存内存**，且该赋值发生在启动采集**之前**；</li>
- *   <li>加密落盘**只发生在注册成功分支**（图库替换成功之后）；</li>
+ *   <li>加密落盘**只发生在注册提交路径**（{@code add} 成功之后），且与图库替换结果**解耦**
+ *       ——契约演变见 {@link #encryptedPersistHappensInCommitPathDecoupledFromGallery}；</li>
  *   <li>取消与销毁都清空内存显示名；</li>
  *   <li>迁移顺序为「加密 → 验证可读 → 删原值」。</li>
  * </ol>
+ * 后续批次追加的契约（孤儿清理只用注册表完整集合、{@code authoritative} 门禁、历史明文清除只删显示名键
+ * 且同步 {@code commit()}、清除需二次确认）与 FACE-JAVA-002/003「{@code MainActivity} 全文不得建目录」
+ * 见各自用例的 javadoc；本列表只列首批 5 条，**不是**全部已锁定契约。
  */
 public class MainActivityDisplayNameLifecycleTest {
 
@@ -231,8 +235,13 @@ public class MainActivityDisplayNameLifecycleTest {
      *
      * <p><b>判据为何能扩为「全文」（FACE-JAVA-003 收口）</b>：已只读核实 —— {@code MainActivity.java}
      * 全文件**没有任何真实建目录调用**（{@code mkdir}/{@code mkdirs}/{@code createDirectories} 仅出现在
-     * {@code displayNameStore()} 的 javadoc 注释里，注释在判别前被剥离）⇒「全文不得含建目录字面量」在
-     * **当前代码上为绿**，不会误红。
+     * {@code displayNameStore()} 附近的两处 javadoc 注释里，注释在判别前被剥离）⇒「全文不得含建目录
+     * 字面量」在**当前代码上为绿**，不会误红。<b>核实时点 2026-09-23</b>：该事实随文件演进会失效，
+     * 失效时本用例会**真红** —— 这正是它的作用，不是「已永久保证为绿」。
+     *
+     * <p><b>判据射程（精确表述，勿按「三个字面量」理解）</b>：判据 = 剥离注释与字符串/字符字面量后的
+     * **全文子串匹配**，命中**两个子串**之一即红 —— {@code mkdir}（覆盖 {@code mkdirs}/{@code mkdir}，
+     * 也覆盖 {@code Os.mkdir} 等**一切名字里带 {@code mkdir} 的调用**）与 {@code createDirectories}。
      *
      * <p><b>判别力</b>：把 {@code if (!dir.exists()) dir.mkdirs();} 加回 {@code displayNameStore()} 方法体内
      * ⇒ 本用例红；把它**抽成私有方法**（如 {@code ensureFaceNamesDir()}）再由 accessor 调用 ⇒ **仍红**
@@ -242,14 +251,21 @@ public class MainActivityDisplayNameLifecycleTest {
      * <p><b>仍可绕过（本守卫拦不住的路径，如实声明，勿高估）</b>：判据扩为「全文」后，「把建目录抽到被
      * accessor 调用的私有方法」这一**旧绕过路径已被堵死**（方法体仍在本文件内，字面量仍在 ⇒ 仍红）。剩余：
      * <ol>
-     *   <li>用其它建目录 API 绕开这三个字面量（如 {@code Os.mkdir}、反射、第三方工具）——文本匹配即失效；</li>
+     *   <li>用**不含上述两个子串**的建目录 API 绕开（{@code java.nio.file.Files.createDirectory}
+     *       **单数** —— 它既不含 {@code createDirectories}、也不含 {@code mkdir}，完全在射程外；JNI；
+     *       经反射以**字符串方法名**建目录，如 {@code getDeclaredMethod("mkdirs")} —— 该字符串字面量
+     *       在判别前就被剥离；第三方工具库内部建目录）——文本匹配即失效。
+     *       <b>注意</b>：{@code File.mkdir}/{@code File.mkdirs}/{@code Os.mkdir} 仍**在**射程内
+     *       （都含子串 {@code mkdir}），**不得**把它们当漏网者；</li>
      *   <li>{@code PersonDisplayNameStoreTest} 的两条用例只直接 {@code new PersonDisplayNameStore(dir)}、
      *       不走 MainActivity 路径，钉住的是「存储层构造器与能力查询无文件系统副作用」，本用例的全文判据
      *       只管 MainActivity 这一半（{@code AppCompatActivity}，纯 JVM 不可构造）。</li>
      * </ol>
      * <p><b>假红面（残量，如实声明）</b>：判别前已剥离**全文**的行/块注释与字符串/字符字面量，故在注释或
      * 字面量里出现这些词均**不会**误红；但若这些词作为**真实标识符**出现在代码里（如变量名
-     * {@code dirToMkdir}），仍会误红——此类假红需人工甄别，属词法匹配的固有代价。
+     * {@code mkdirCount}），仍会误红——此类假红需人工甄别，属词法匹配的固有代价。匹配**区分大小写**
+     * （{@code String.contains} 逐码点比较），故 {@code dirToMkdir} 这种只含大写 {@code M} 的标识符
+     * **不会**误红（它不含小写子串 {@code mkdir}）。
      * 根因：本用例（及本文件全部守卫）是**字面匹配**，等价重排 / 抽取即绕过；真正的行为级锁定需要在
      * JVM 内构造 {@code MainActivity}（本仓无 Robolectric/Mockito）。故它**不是「已封死」**，只是当前
      * **唯一可行**的自动化近似——{@code PersonDisplayNameStoreTest} 的两条用例只钉住「存储层构造器与
@@ -263,6 +279,7 @@ public class MainActivityDisplayNameLifecycleTest {
                 text.contains("private PersonDisplayNameStore displayNameStore()"));
         // FACE-JAVA-003 收口：判据由「accessor 方法体内」升级为「全文」——已只读核实 MainActivity 全文件
         // 无任何真实建目录调用（mkdir/mkdirs/createDirectories 仅出现在 javadoc 注释里，被剥离）。
+        // 该核实是**时点事实**（2026-09-23）：文件演进使其失效时本用例会真红，那正是它的作用。
         // 剥离注释与字符串/字符字面量后，整个 MainActivity 源码不得含建目录字面量。
         String code = stripCommentsAndLiterals(text);
         assertFalse("MainActivity 全文不得创建目录（File.mkdir/mkdirs，FACE-JAVA-002/003）",

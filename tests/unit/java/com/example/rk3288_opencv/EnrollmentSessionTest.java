@@ -9,6 +9,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -28,8 +29,9 @@ import static org.junit.Assert.assertTrue;
  * EnrollmentSession（任务 17）单元测试。
  *
  * <p>覆盖：状态机、逐条采样门槛的拒收路径、姿态配额、8 样本均值 + L2 归一、
- * 与现有模板的重复阻止、取消/完成后的向量清零、与
- * {@link AndroidEnrollmentRepository} 的提交对接，以及“不存照片/不写日志”的源码结构守卫。
+ * 与现有模板的重复阻止、现有模板来源不可用（读取失败 / 单模板读取失败 / 注册表枚举不完整）时的拒收、
+ * 取消/完成后的向量清零、与 {@link AndroidEnrollmentRepository} 的提交对接，
+ * 以及“不存照片/不写日志”的源码结构守卫。
  *
  * <p>测试不加载 native so：每帧 embedding 由纯 Java 构造的确定向量提供，指标（灰度统计、
  * Laplacian 方差、姿态）由 {@link EnrollmentSession.ImageMetrics} 直接计算，全部可在纯 JVM 运行。
@@ -453,7 +455,7 @@ public class EnrollmentSessionTest {
         assertEquals(EnrollmentSession.Reason.DUPLICATE_PERSON, dup.reason);
     }
 
-    // ---------- ⑦b 仓库不可用：无法判重时绝不放行（第二波审查 #4） ----------
+    // ---------- ⑦b 仓库不可用/枚举不完整：无法判重时绝不放行（第二波审查 #4） ----------
 
     /**
      * list() 失败（注册表头损坏）时，现有模板来源必须上报失败，判定点拒绝样本，
@@ -495,6 +497,50 @@ public class EnrollmentSessionTest {
 
         EnrollmentSession.FeedResult r = s.feed(sample(base(), EnrollmentSession.Pose.FRONT));
         assertFalse("存在不可读模板时不得放行注册", r.accepted);
+        assertEquals(EnrollmentSession.Reason.REPO_UNAVAILABLE, r.reason);
+        assertEquals(0, s.acceptedCount());
+    }
+
+    /**
+     * 注册表存在**被跳过并隔离的损坏行**时，`list()` 虽仍返回 OK，但枚举结果**不完整**：
+     * 被跳过者不在 `list().entries` 内、其模板却仍在磁盘 ⇒ 该人的重复样本本可被放行。
+     * 故必须与「整体不可读」同口径拒收（{@link EnrollmentSession.Reason#REPO_UNAVAILABLE}），
+     * 绝不把不完整枚举当成“库中无重复”。
+     *
+     * <p><b>为什么本条不可省</b>：本类此前只覆盖了「坏头 → CORRUPTED」与「单模板读取失败」两条
+     * 失败通道，而「status==OK 但条目集缺行」这一条**零覆盖** —— 它恰是唯一能区分
+     * `skippedLineCount > 0` 与 `!isOk()` 两种判据的场景。
+     *
+     * <p><b>判别点</b>：删掉 `fromRepository` 里的那道门（或让它恒为真）⇒ `feed` 放行
+     * （bob 的模板与 base() 不相似，判重不拦）、`isExistingLoadFailed()` 为 false，
+     * 三条断言同时红。把门换成恒用 `!list.isOk()`（丢掉枚举完整性这一项）⇒ 本条红、
+     * 而 {@link #repositoryListFailureRejectsSampleWithRepoUnavailable} 仍绿 —— 这正是本条
+     * 不可被后者替代的原因。与 {@link #emptyRepositoryStillAllowsNormalEnrollment} 合起来，
+     * 把门钉在 **「status==OK 且无被跳过的损坏行」** 这一判据上（其实现即
+     * `AndroidEnrollmentRepository.ListResult#isEnumerationComplete()`，本批已由内联表达式
+     * 改为直接调用该方法）：只有它既拒「不完整枚举」、又放行「全新安装」。
+     */
+    @Test
+    public void incompleteRegistryEnumerationRejectsSampleWithRepoUnavailable() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertTrue(repo.add("bob", EnrollmentSession.encodeLe(otherEmbedding()), MV, TSV).isOk());
+
+        // 合法头与条目之后追加一行垃圾：单行损坏被隔离，整表仍可读，但枚举已缺行。
+        Files.write(repo.registryFile().toPath(),
+                "this-is-a-corrupt-row\n".getBytes(StandardCharsets.UTF_8),
+                StandardOpenOption.APPEND);
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertTrue("前置条件：单行损坏不得使整表不可读", list.isOk());
+        assertEquals("前置条件：必须恰好跳过 1 行", 1, list.skippedLineCount);
+
+        EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
+        s.start();
+        assertTrue("枚举不完整必须落定失败标记（被跳过者的模板仍在磁盘）",
+                s.isExistingLoadFailed());
+
+        EnrollmentSession.FeedResult r = s.feed(sample(base(), EnrollmentSession.Pose.FRONT));
+        assertFalse("枚举不完整不得放行注册（否则可重复注册被跳过者）", r.accepted);
         assertEquals(EnrollmentSession.Reason.REPO_UNAVAILABLE, r.reason);
         assertEquals(0, s.acceptedCount());
     }

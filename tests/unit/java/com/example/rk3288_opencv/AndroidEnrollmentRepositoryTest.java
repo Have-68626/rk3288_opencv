@@ -33,7 +33,10 @@ import static org.junit.Assert.assertTrue;
  *
  * <p>通过 {@link AndroidEnrollmentRepository#setKeyProviderForTesting} 在**本用例创建的实例**上注入
  * JCE 内存密钥替身，使 AndroidKeyStore + AES-GCM 的真实加解密能在纯 JVM（Gradle unit test）上运行，
- * 从而覆盖：新增、覆盖拒绝、读取、删除、损坏文件、密钥不可用、API&lt;23 只读预览。
+ * 从而覆盖：新增、覆盖拒绝、读取、删除、损坏文件、密钥不可用、API&lt;23 只读预览；以及
+ * 注册表字段语义（整文件长度/摘要）、删除与新增的原子性与回滚、单行损坏跳过与条目集权威性、
+ * 枚举完整性判据（`isEnumerationComplete`，判重门的在册依据）、
+ * 崩溃恢复（`.bak` 回退的**触发范围**与不触发情形）、同目录跨实例共享锁、接缝的实例级不泄漏。
  */
 public class AndroidEnrollmentRepositoryTest {
 
@@ -98,6 +101,42 @@ public class AndroidEnrollmentRepositoryTest {
         for (byte b : seen[0]) {
             assertEquals("读取返回后内存明文必须被清零", 0, b);
         }
+    }
+
+    // ---------- ①b 注册表存的是模板**文件**（envelope 全量）的长度与摘要（FACE-PIPE-010③ 新8） ----------
+
+    /**
+     * 判别性断言：`ciphertextSize` / `ciphertextSha256Hex` 虽名为「密文」，实际算的是**整个加密
+     * 模板文件** —— 自行回读落盘字节、自行算长度与摘要，再与字段比对，可区分「算整个 envelope」
+     * 与「只算 ct+tag 段」两种实现（后者会少 64B 头）。
+     *
+     * <p>并同时按**列位**断言落盘值：注册表是位置式六列文本、无列名，改错列只会静默丢元数据。
+     *
+     * <p><b>打红方式</b>：把 `add` 里的 {@code raw} 换成只取密文段（跳过 envelope 头）再算长度/摘要
+     * ⇒ 长度断言、摘要断言与第 4/5 列断言同时红。
+     */
+    @Test
+    public void registryRecordsWholeTemplateFileSizeAndDigest() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        byte[] template = templateBytes(64, 81);
+        AndroidEnrollmentRepository.Result add = repo.add("alice", template, MV, TSV);
+        assertEquals(AndroidEnrollmentRepository.Status.OK, add.status);
+        assertNotNull(add.entry);
+
+        File tpl = repo.templateFileFor("alice");
+        byte[] onDisk = Files.readAllBytes(tpl.toPath());
+        assertTrue("前置：envelope 含头部 ⇒ 文件长度必须大于「明文长度+16B GCM tag」，否则本用例无区分度",
+                onDisk.length > template.length + 16);
+
+        assertEquals("字段应是整个加密模板文件的字节数（含 envelope 头），而非纯密文段长度",
+                onDisk.length, add.entry.ciphertextSize);
+        assertEquals("字段应是对整个加密模板文件取的 SHA-256，而非仅密文段的摘要",
+                FeatureTemplateEncryptedStore.sha256Hex(onDisk), add.entry.ciphertextSha256Hex);
+
+        String[] cols = registryEntryFields(repo, 0);
+        assertEquals("注册表条目应为六列（位置式，无列名）", 6, cols.length);
+        assertEquals("第 4 列应是模板文件字节数", onDisk.length, Long.parseLong(cols[3]));
+        assertEquals("第 5 列应是模板文件 SHA-256", add.entry.ciphertextSha256Hex, cols[4]);
     }
 
     // ---------- ② 覆盖拒绝 ----------
@@ -331,6 +370,50 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
     }
 
+    // ---------- ⑧b add 回滚失败必须如实上报（T3 缺口 1） ----------
+
+    /**
+     * 注册表写失败后回滚模板**失败**时，`message` 必须如实说明，不得谎报「已回滚模板」。
+     *
+     * <p><b>为什么必须钉住</b>：孤儿模板存在时，`add` 在模板存在性检查处恒返 `DUPLICATE_USER`，
+     * 而 `remove` 先查注册表、无条目即 `NOT_FOUND` ⇒ 删不掉，UI 无自愈路径。该分支此前**零覆盖**
+     * （原实现连 {@code deleteWithBackup} 的返回值都没接），失败时文案是假的。
+     *
+     * <p><b>打红方式</b>：把 {@code boolean rolledBack = …} 去掉、改回无条件「注册表写入失败，
+     * 已回滚模板」⇒ 文案断言红。
+     */
+    @Test
+    public void addReportsRollbackFailureWhenTemplateRemovalFails() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+
+        // 用非空目录堵住注册表临时文件路径，强制 persistRegistry 失败
+        //（手法同 removeKeepsTemplateWhenRegistryWriteFails）。
+        File tmpPath = new File(repo.scopeDir(), AndroidEnrollmentRepository.REGISTRY_FILE_NAME + ".tmp");
+        assertTrue(tmpPath.mkdirs());
+        assertTrue(new File(tmpPath, "block").createNewFile());
+
+        // 删除替身恒失败 ⇒ 模板回滚失败（模板**写入**走存储层真实文件系统，不受该替身影响）。
+        repo.setFileOpsForTesting(new UndeletableOps());
+        AndroidEnrollmentRepository.Result add;
+        try {
+            add = repo.add("alice", templateBytes(16, 82), MV, TSV);
+        } finally {
+            repo.setFileOpsForTesting(null);
+        }
+
+        assertFalse("注册表写入失败应回滚模板并返回错误", add.isOk());
+        assertTrue("模板回滚失败必须如实上报，实际文案=" + add.message,
+                add.message.contains("回滚失败"));
+        assertTrue("前置：模板确实残留为孤儿（否则上面的文案断言无意义）",
+                repo.templateFileFor("alice").exists());
+        assertEquals("孤儿模板的后果：该 userId 之后每次 add 恒返 DUPLICATE_USER（无 UI 自愈路径）",
+                AndroidEnrollmentRepository.Status.DUPLICATE_USER,
+                repo.add("alice", templateBytes(16, 83), MV, TSV).status);
+
+        new File(tmpPath, "block").delete();
+        tmpPath.delete();
+    }
+
     // ---------- ⑨ 单行损坏跳过/隔离（#7） ----------
 
     @Test
@@ -352,6 +435,9 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
 
         // 一次成功写入会自愈：损坏行被清除，且不影响后续新增。
+        // ⚠️ 这里走的是**仓库 API 直调**。经注册 UI 的 add 在本批之后**不可达**（EnrollmentSession
+        // 的判重门对有损坏行的会话拒收每一帧 ⇒ 会话永远集不满 8 样本），故 UI 侧的自愈只剩 remove
+        // 一条路；详见 ListResult#isEnumerationComplete 的 javadoc 与待办 N1。
         assertEquals(AndroidEnrollmentRepository.Status.OK,
                 repo.add("bob", templateBytes(16, 32), MV, TSV).status);
         AndroidEnrollmentRepository.ListResult healed = repo.list();
@@ -380,7 +466,8 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(1, list.skippedLineCount);
         assertFalse("有损坏行 ⇒ 条目集不权威（不得据此删除派生数据）", list.authoritative);
 
-        // 一次成功写入自愈后，重新变为权威。
+        // 一次成功写入自愈后，重新变为权威。（同为仓库 API 直调；经 UI 的 add 被判重门挡住，
+        // 自愈只剩 remove 一条路 —— 见 ListResult#isEnumerationComplete 的 javadoc。）
         assertEquals(AndroidEnrollmentRepository.Status.OK,
                 repo.add("bob", templateBytes(16, 32), MV, TSV).status);
         assertTrue("自愈后应恢复权威", repo.list().authoritative);
@@ -411,6 +498,95 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
         assertEquals("应从备份取回 alice", 1, list.entries.size());
         assertFalse("从备份恢复的条目集不得视为权威", list.authoritative);
+    }
+
+    // ---------- ⑨c status != OK 时 authoritative 无定义（契约锁定） ----------
+
+    /**
+     * 契约锁定：`authoritative` **仅在 `status == OK` 时有意义**。
+     *
+     * <p>构造「主文件缺失 + 备份存在但备份自身不可解析」：`loadRegistry` 把备份的解析结果**原样**
+     * 返回（`CORRUPTED`），此时 `RegistrySnapshot.authoritative` 保持构造默认值 —— 它**不是** false。
+     * 故消费方（显示名孤儿清理等破坏性对账）必须先用 `isOk()` 门禁；本用例把该门禁钉住，
+     * 而不去断言那个「未定义」的字段值本身。
+     *
+     * <p><b>打红方式</b>：让该路径返回 `OK` + 空条目集（例如把「备份也解析失败」折叠成「空库」）
+     * ⇒ 前两条断言红 —— 那正是「把索引丢失伪装成空库」的回归。改写默认值（或在 CORRUPTED 路径上
+     * 显式把 `authoritative` 置 false）⇒ 第三条断言红。
+     *
+     * <p><b>如实声明覆盖边界</b>：第三条钉的是该「未定义」字段的**观测值**（构造默认值），
+     * 它**不是**生产门禁 —— 本用例不、也无法验证真实消费者（`MainActivity.refreshGalleryFromRepository`
+     * 的 `!list.isOk()` 早退、`EnrollmentSession.fromRepository` 的枚举完整性判据）是否真的先过门；
+     * 那两处由各自的源码/行为用例覆盖。把消费者里的 `isOk()` 门删掉，本用例**仍然全绿**。
+     */
+    @Test
+    public void authoritativeIsMeaninglessWhenStatusNotOk() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        // 主文件缺失 + 备份存在但备份自身损坏。
+        Files.write(bakFor(repo).toPath(), "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals("备份也不可解析时应如实上报，不得伪装成空库",
+                AndroidEnrollmentRepository.Status.CORRUPTED, list.status);
+        assertFalse("status != OK ⇒ 消费方必须先用 isOk() 门禁，不得据本字段做破坏性对账",
+                list.isOk());
+        // 未定义但有观测值：该路径原样返回备份的解析结果，authoritative 保持构造默认值 true
+        //（**不是** false）—— 钉住「该值来自默认值、无人刻意置 false」这一现状。
+        assertTrue("status != OK 时 authoritative 的观测值为构造默认值 true（未定义，不得据此对账）",
+                list.authoritative);
+    }
+
+    // ---------- ⑨d 枚举完整性判据（非破坏性判重门禁） ----------
+
+    /**
+     * {@link AndroidEnrollmentRepository.ListResult#isEnumerationComplete()} 服务**非破坏性**的判重：
+     * 损坏行被跳过时枚举缺行 —— 判重漏一个在册者会让同一张脸被重复注册。
+     *
+     * <p>它与 {@code authoritative} **不同口径**，本用例钉死其中最关键的一处分歧：全新安装时
+     * `authoritative==false`（无法区分「全新安装」与「索引丢失」）但枚举**完整**。
+     * 这正是不能在判重路径上改用 `authoritative` 的原因 —— 那会让全新安装永远无法注册。
+     *
+     * <p><b>接线状况（本用例的判别力从此才成立）</b>：该方法此前在生产**零引用**
+     *（`EnrollmentSession.fromRepository` 写的是同义的内联表达式，`MainActivity` 用的是
+     * `authoritative`），故本条当时只钉住一个「生产不用」的方法 —— 把真实判据改坏时本用例仍绿。
+     * 现已把 `fromRepository` 的门改为调用本方法，新 API 真正接线。
+     * ⚠️ 但真正的**行为**门禁仍在 `EnrollmentSessionTest` 的两条用例
+     *（`incompleteRegistryEnumerationRejectsSampleWithRepoUnavailable` 与
+     * `emptyRepositoryStillAllowsNormalEnrollment`，一拒一放）——
+     * 只改本方法而不改调用点，本用例不会红。
+     *
+     * <p><b>覆盖边界（如实声明）</b>：本用例只覆盖「无注册表文件」与「有损坏行」两种输入，
+     * **不**覆盖 {@code .bak} 恢复路径 —— 该路径下本方法同样返回 true，而枚举**可能真的缺行**
+     * （备份可能早于最近一次 add），详见该方法 javadoc 里登记的缺口。故本用例不能当作
+     * 「判重依据始终可靠」的证据。
+     *
+     * <p><b>打红方式</b>：把 {@code isEnumerationComplete} 退化成 `return authoritative;`
+     * ⇒「全新目录 ⇒ true」红；去掉其 `skippedLineCount == 0` 项 ⇒「有坏行 ⇒ false」红。
+     */
+    @Test
+    public void enumerationCompletenessIsIndependentOfAuthoritative() throws Exception {
+        // ① 全新目录：无注册表文件 ⇒ 非权威（破坏性对账不得据此删除），但枚举完整（无缺行）。
+        AndroidEnrollmentRepository repo = newRepo();
+        AndroidEnrollmentRepository.ListResult fresh = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, fresh.status);
+        assertFalse("无注册表 ⇒ 非权威", fresh.authoritative);
+        assertTrue("但无损坏行 ⇒ 枚举完整，不得阻断全新安装的判重/注册",
+                fresh.isEnumerationComplete());
+
+        // ② 正常库（注册表文件存在、无坏行）⇒ 枚举完整。
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 91), MV, TSV).status);
+        assertTrue("正常库的枚举完整", repo.list().isEnumerationComplete());
+
+        // ③ 追加一行垃圾（合法头 + 单行损坏被隔离）⇒ status 仍 OK，但枚举缺行。
+        try (FileOutputStream fos = new FileOutputStream(repo.registryFile(), true)) {
+            fos.write("this-is-a-corrupt-row\n".getBytes(StandardCharsets.UTF_8));
+        }
+        AndroidEnrollmentRepository.ListResult partial = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, partial.status);
+        assertEquals(1, partial.skippedLineCount);
+        assertFalse("有被跳过的损坏行 ⇒ 枚举不完整（被跳过者仍可能在册）",
+                partial.isEnumerationComplete());
     }
 
     // ---------- ⑩ 同目录跨实例共享锁（#6） ----------
@@ -580,6 +756,42 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals("alice", list.entries.get(0).userId);
     }
 
+    // ---------- ⑫b 头损坏不回退 .bak（刻意收窄，行为锁定） ----------
+
+    /**
+     * 行为锁定：**只有 IO_ERROR 触发 .bak 回退，CORRUPTED 不触发**（判据范围见 `loadRegistry` 注释）。
+     *
+     * <p>与既有 {@link #unreadableMainRecoversFromBackup} 同构，把「非空目录占用主文件」换成
+     * 「写入非法魔数」：主文件头损坏 + 备份**可解析**时仍报 `CORRUPTED`，且**不得消费备份**。
+     * 理由：写入器经 tmp→rename 替换，崩溃窗口只产生「缺失/不可读」；头损坏来自外部破坏，
+     * 用可能同样陈旧、未必完好的 bak 覆盖回去反而可能丢增量。
+     *
+     * <p><b>打红方式</b>：把判据改成 {@code IO_ERROR || CORRUPTED} ⇒ status 变 OK、条目集取自备份，
+     * 前两条断言即红（第三条「bak 是否仍在盘上」取决于平台 rename 语义，不作为判红依据）。
+     */
+    @Test
+    public void corruptHeaderDoesNotConsumeBackup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 84), MV, TSV).status);
+        byte[] good = Files.readAllBytes(repo.registryFile().toPath());
+
+        // 主文件头损坏（外部破坏的形态）；备份本身完全可解析。
+        Files.write(repo.registryFile().toPath(),
+                "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
+        File bak = bakFor(repo);
+        Files.write(bak.toPath(), good);
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals("头损坏应判 CORRUPTED，不得改用备份",
+                AndroidEnrollmentRepository.Status.CORRUPTED, list.status);
+        assertTrue("条目集不得来自备份（否则等于放宽了回退判据）", list.entries.isEmpty());
+        assertTrue("不得消费备份：bak 必须原样留在盘上", bak.exists());
+        assertEquals("主文件不得被备份覆盖", "NOT_A_REGISTRY",
+                new String(Files.readAllBytes(repo.registryFile().toPath()),
+                        StandardCharsets.UTF_8).trim());
+    }
+
     // ---------- ⑬ 实例级注入不跨实例泄漏（子代理 3 N2 补的结构性守卫，与存储侧对偶） ----------
 
     /**
@@ -730,6 +942,16 @@ public class AndroidEnrollmentRepositoryTest {
     /** 注册表备份文件路径；与实现约定的 {@code <主文件名>.bak} 保持一致。 */
     private static File bakFor(AndroidEnrollmentRepository repo) {
         return new File(repo.scopeDir(), AndroidEnrollmentRepository.REGISTRY_FILE_NAME + ".bak");
+    }
+
+    /**
+     * 读注册表第 {@code index} 条条目的空格分隔字段（跳过首行魔数）。
+     *
+     * <p>注册表是**位置式**六列文本、无列名 ⇒ 改错列只会静默丢元数据，故按列位断言而不是只看字段。
+     */
+    private static String[] registryEntryFields(AndroidEnrollmentRepository repo, int index) throws Exception {
+        List<String> lines = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        return lines.get(1 + index).trim().split("\\s+");
     }
 
     private static String repeat(char c, int count) {

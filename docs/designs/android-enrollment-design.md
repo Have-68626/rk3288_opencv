@@ -7,7 +7,7 @@ as_of=2026-09-12
 # Android 端人员注册设计（目标 vs 已落地）
 
 
-**状态**: 部分落地。核心数据层与注册会话已实现并有单测覆盖；**注册 UI 与冷启动恢复已接线（任务 18）**，但**注册闭环因缺 native 逐帧特征源仍不可用（Blocker，待补）**。
+**状态**: 部分落地。核心数据层与注册会话已实现并有单测覆盖；**注册 UI、冷启动恢复与逐帧特征源（#1）均已接线**——`NativeFaceBridge.startEnrollmentCapture` + `onEnrollmentFrame` 回调把逐帧 (embedding, box, landmarks, 质量指标) 喂进 8 样本会话。原「**缺 native 逐帧特征源**」这一 Blocker 的证据**已不成立**；但**真机闭环验收仍未做**（见 §3），故不得据此宣称注册闭环已在设备上可用。
 
 **范围**: Android App（`src/java/com/example/rk3288_opencv/` 与 JNI `src/cpp/jni/native_face_bridge.cpp`）。
 
@@ -18,15 +18,15 @@ as_of=2026-09-12
 | 能力 | 目标 | 状态 | 本地证据 / 边界 |
 |---|---|---|---|
 | 加密模板仓库 | 模板向量加密落盘、人员主数据与模板分离 | **已落地** | `AndroidEnrollmentRepository` + `FeatureTemplateEncryptedStore`（AndroidKeyStore + AES-GCM）；注册表 `face_registry_v1.dat` 只存元数据，不含向量 |
-| 注册表落盘崩溃安全 | 中断不丢索引、可自愈 | **已落地** | `persistRegistry` 阶段替换 + `.bak` 恢复；单行损坏跳过隔离，成功写时自愈 |
+| 注册表落盘崩溃安全 | 中断不丢索引、可自愈 | **已落地（自愈有边界）** | `persistRegistry` 阶段替换 + `.bak` 恢复；单行损坏跳过隔离；**自愈需一次成功的 `add`/`remove`**（只序列化枚举到的条目），边界见 §2.1「容错」第二条 |
 | 八样本注册会话 | 采样门槛 + 姿态配额 + 均值模板 | **已落地（任务 17）** | `EnrollmentSession`：8 样本、正4/左2/右2，L2 归一均值模板 |
-| 重复人保护 | 拒绝重复注册 | **已落地** | `EnrollmentSession` 与现有模板 cosine ≥ 0.55 判 `DUPLICATE_PERSON`；仓库侧 `DUPLICATE_USER` |
+| 重复人保护 | 拒绝重复注册 | **已落地** | `EnrollmentSession` 与现有模板 cosine ≥ 0.55 判 `DUPLICATE_PERSON`；仓库侧 `DUPLICATE_USER`；判重前先过「枚举完整性」门（`ListResult.isEnumerationComplete()`） |
 | 模板加解密落盘 | 由仓库闭环完成 | **已落地** | `AndroidEnrollmentRepository.add/remove/readTemplate/list/get` 接线加密存储 |
-| JNI 管线桥 | Android 端能真实检测/识别 | **已落地（P1-2 修复）** | `NativeFaceBridge` 8 个 native 方法；`loadProfile` 仅校验/暂存，`activateRuntime` 决定 `effective` |
+| JNI 管线桥 | Android 端能真实检测/识别 | **已落地（P1-2 修复）** | `NativeFaceBridge` 10 个 native 方法；`loadProfile` 仅校验/暂存，`activateRuntime` 决定 `effective` |
 | 模型管理器 | 用户导入 ZIP、校验、原子启用 | **已落地** | `FaceModelManager.importZip`，详见 `docs/designs/model-acquisition-import.md` |
-| 注册 UI 接线 | 把会话接到预览页/注册按钮 | **已接线（任务 18）** | `MainActivity.bindModelManagementUi` 绑定注册按钮 → `showFaceRegisterDialog`/`startEnrollment`；会话构造于 `:3809`，完成时经仓库 `add` 落盘于 `:3932` |
-| 注册闭环（逐帧特征源） | 预览帧喂入 8 样本会话并完成采集 | **未落地（Blocker，待补）** | `MainActivity.feedEnrollmentSample`（`:3903`）无生产调用方；JNI 未暴露逐帧 embedding，采集恒停在 0/8，详见 §3 |
-| 冷启动恢复 | 重启后恢复已注册库/激活态 | **已落地（任务 18）** | `MainActivity.restoreActiveProfileOnStartup`（`:3553`，`onCreate` `:1886` 调用）：先重建图库 → `replaceGallery`，再读 `active_profile` → `activate` 回放激活 |
+| 注册 UI 接线 | 把会话接到预览页/注册按钮 | **已接线（任务 18）** | `MainActivity.bindModelManagementUi`（`:3782`）绑定注册按钮（`:3793`）→ `showFaceRegisterDialog`（`:4140`）/`startEnrollment`（`:4179`）；会话构造于 `:4221`，完成时经仓库 `add` 落盘于 `:4477` |
+| 注册闭环（逐帧特征源） | 预览帧喂入 8 样本会话并完成采集 | **已接线（#1）；真机未验收** | `MainActivity.startNativeEnrollmentCapture`（`:4348` 调 `NativeFaceBridge.startEnrollmentCapture`）→ native `onEnrollmentCaptureSample` → 回调 `MainActivity.onEnrollmentFrameFromNative`（`:4401`）→ `feedEnrollmentSample`（`:4447`）；JNI 已暴露逐帧 embedding/几何/质量指标。⚠️ 开启失败（无 Engine / 模型未激活）或判重门不过时仍恒停在 0/8，详见 §3 |
+| 冷启动恢复 | 重启后恢复已注册库/激活态 | **已落地（任务 18）** | `MainActivity.restoreActiveProfileOnStartup`（`:3936`，`onCreate` 内 `:2152` 调用）：先重建图库 → `replaceGallery`，再读 `active_profile` → `activate` 回放激活 |
 | 低版本（API < 23）只读降级 | 只读预览 + 注册入口禁用 | **已落地** | 写操作返回 `UNSUPPORTED_PLATFORM`；`list/get` 读取放行 |
 | 双端模板互通 | Android/Win 模板直通 | **未实现（研究项）** | 顶层设计 §8.7；当前不假设直通 |
 
@@ -39,6 +39,7 @@ as_of=2026-09-12
 存储布局（默认作用域 `files/face_templates/`，与 `FeatureTemplateEncryptedStore.defaultDir` 一致）：
 
 - `face_registry_v1.dat` —— gallery 级单表注册表，记录**元数据**：`hex(userId) mv sv ciphertextSize sha256hex createdAtMs`，**不含任何生物特征向量**。
+  ⚠️ 第 4/5 列（`ciphertextSize`/`sha256hex`）名实不符属历史遗留：实际存的是**整个加密模板文件**（envelope 全量 = 头 64B + 密文 + tag）的字节数与 SHA-256，**不是**纯密文段。改名会牵动 `MainActivity` 的**展示读点**（该处只读 `e.ciphertextSize`，不读摘要列），未随本批实施，读代码时以 `AndroidEnrollmentRepository.Entry` 的字段注释为准。
 - `u_<sha256(userId)>.bin` —— 每人加密模板，由 `FeatureTemplateEncryptedStore` 以 AndroidKeyStore + AES-GCM 落盘。
 
 关键设计取舍：
@@ -54,8 +55,11 @@ as_of=2026-09-12
 - **历史明文键：默认保留 + 用户确认后清除（已决策）**：**不在启动、升级或迁移失败时自动删除**。检测到历史键时提示「本设备仍保留未加密的历史显示名，当前不用于展示，可手动清除」；清除需**二次确认**（明确「显示名不可恢复，人员 ID 和模板不受影响」）；**仅删除显示名对应键，禁止清空整个 SharedPreferences**；`commit()` 落盘成功后才提示完成。
   理由：保留是**避免未经同意丢失数据**，**不是**低估历史 PII 风险——而是把它当作**兼容旧数据的明确例外**。**只要历史键存在，就不得宣称「设备上已无明文 PII」**；「注册功能在 API<23 不可用」也不能替代对其他写入路径的检查（已核查：全仓除 `PersonDisplayNameStore.save`（加密）外，**无其他显示名写入路径**）。
 - **并发**：按规范化 `scopeDir` 路径共享静态锁，串行化同目录多实例的 `add/remove/readTemplate/list/get`。
-- **容错**：单行损坏跳过并计数（`skippedLineCount`），仅文件头（魔数 `FREG1`/版本）损坏才判 `CORRUPTED`；后续成功写入自愈。
+- **容错**：单行损坏跳过并计数（`skippedLineCount`），仅文件头（魔数 `FREG1`/版本）损坏才判 `CORRUPTED`；**自愈需一次成功的 `add`/`remove`**（`persistRegistry` 只序列化**枚举到的**条目，被跳过的坏行不在其中）。
+  ⚠️ **自愈边界（如实；本批之后收窄，已在代码中登记为待办 N1，未修）**：注册路径的判重门（`EnrollmentSession.fromRepository` → `ListResult.isEnumerationComplete()`）在存在坏行时对**每一帧**样本返回 `REPO_UNAVAILABLE`，会话永远集不满 8 样本 ⇒ 经 UI 的 `add` **不可达**，**自愈实际只剩 `remove` 一条路**。而 `remove` 的 UI 入口（`MainActivity.showPersonManagementDialog`，`:4644`）按 `list().entries` 列条目：注册表**只剩被跳过的坏行**时 `entries` 为空 ⇒ 列表里**没有任何可删条目**（本批已改为如实弹提示而非「暂无已注册人员」，但出路未变）⇒ **用户从 UI 无法自愈**（只能清除应用数据或手工修文件）。本批已把该损坏信息补上 UI 可见性（人员列表对话框的 message / 空列表 Toast / 采集进度区提示），但**未**提供修复入口。
+  ⚠️ 另：`status==OK && skipped==0` **不足以**支撑「可安全用作判重依据」——从 `.bak` 恢复时备份可能早于最近一次 `add`（新条目只存在于未被消费的 `.tmp` 里），此时枚举**确实缺行**而该判据仍为 true；该缺口未修，见 `ListResult.isEnumerationComplete()` 的 javadoc。
 - **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；中间退出导致主文件缺失时，`loadRegistry` 先用 `.bak` 恢复为主文件再解析，避免把唯一索引伪装成空库。
+  ⚠️ **回退范围刻意只含「主文件缺失 / 不可读」（`IO_ERROR`），不含头损坏（`CORRUPTED`）**：写入器经 tmp→rename 替换，崩溃窗口产生的形态是「缺失/不可读」，头损坏只可能来自**外部**破坏（截断/覆写）；从同样可能陈旧、未必完好的 `.bak` 覆盖回去反而可能丢增量。该范围已由行为锁定用例 `corruptHeaderDoesNotConsumeBackup` 钉住，放宽前须先拍板。
 - **API < 23**：`add/remove/readTemplate` 返回 `UNSUPPORTED_PLATFORM`；`list/get` 放行用于只读预览。
 
 ### 2.2 八样本注册会话 `EnrollmentSession`（任务 17）
@@ -63,26 +67,31 @@ as_of=2026-09-12
 状态机：`IDLE --start()--> COLLECTING --第 8 个样本被接受--> COMPLETED`，任意态可 `cancel()/reset()`；`reset()` 回 `IDLE`。
 
 - **内存与隐私**：不接收、不保存任何图像像素；样本只含调用方测好的数值指标与 512 维 embedding。集满即求均值、L2 归一，只保留一个均值模板；取消/复位清零；本类不调用日志接口。
-- **采样门槛（按检查顺序）**：单确认脸（`faceCount==1`）→ 检测置信度 ≥ 0.5 → 面积占比 ≥ 10% → Laplacian 方差 ≥ 80 → 灰度均值 ∈ [50, 205] → 灰度标准差 ≥ 25 → 姿态可判定 → 姿态配额（正4/左2/右2）→ 与已收样本 cosine ≥ 0.75（否则视为不同人/异常帧）→ 现有模板快照必须可读（读取失败 `REPO_UNAVAILABLE` 直接拒绝，**绝不按“库中无重复”放行**）→ 与现有模板 cosine ≥ 0.55 判重复人员。
+- **采样门槛（按检查顺序）**：单确认脸（`faceCount==1`）→ 检测置信度 ≥ 0.5 → 面积占比 ≥ 10% → Laplacian 方差 ≥ 80 → 灰度均值 ∈ [50, 205] → 灰度标准差 ≥ 25 → 姿态可判定 → 姿态配额（正4/左2/右2）→ 与已收样本 cosine ≥ 0.75（否则视为不同人/异常帧）→ **现有模板快照必须可读且枚举完整**（读取失败，或注册表存在被跳过并隔离的坏行 ⇒ `REPO_UNAVAILABLE` 直接拒绝，**绝不按“库中无重复”放行**）→ 与现有模板 cosine ≥ 0.55 判重复人员。
+  ⚠️ 该门拒绝的是**每一帧**（失败标记在 `start()` 的快照阶段即落定），故注册表只要有坏行，整场采集恒停在 0/8；其可用性后果见 §2.1「自愈边界」。另：判据 `isEnumerationComplete()` **不覆盖** `.bak` 恢复路径的缺行。
 - **常量**：`EMBEDDING_DIM=512`、`TARGET_SAMPLES=8`、`QUOTA_FRONT/LEFT/RIGHT=4/2/2`、`MIN_DET_SCORE=0.5`、`MIN_AREA_RATIO=0.10`、`MIN_LAPLACIAN_VARIANCE=80`、`MIN_GRAY_MEAN=50`、`MAX_GRAY_MEAN=205`、`MIN_GRAY_STD=25`、`MIN_SAMPLE_COSINE=0.75`、`DUPLICATE_TEMPLATE_COSINE=0.55`、`POSE_YAW_THRESHOLD=0.15`。
 - **阈值来源**：Laplacian/灰度/面积占比/cosine/L2 归一复用 `ImageMetrics` 静态实现；姿态默认由关键点偏航代理分类（`ImageMetrics.classifyPose`），调用方可直接给 `Pose`。
 
 ### 2.3 JNI 管线桥 `NativeFaceBridge`
 
-运行时动态注册（`registerFaceBridgeMethods`），类 `com/example/rk3288_opencv/NativeFaceBridge`，共 8 个方法：
+运行时动态注册（`registerFaceBridgeMethods`），类 `com/example/rk3288_opencv/NativeFaceBridge`，共 **10** 个 native 方法（下表 8 个 + #1 注册采集的 2 个逐帧 API）：
 
 | 方法 | 作用 | 生产调用方 |
 |---|---|---|
-| `loadProfile(manifestJson, currentAbi)` | 仅校验 manifest 格式/ABI 并暂存（`validated:true`，**不代表生效**） | `FaceModelManager` |
-| `activateRuntime(manifestJson, baseDir, currentAbi, galleryDir)` | 绑定实时管线；Engine 未创建时暂存为 pending，创建后补激活 | `FaceModelManager` |
-| `replaceGallery(personIds, embeddings)` | 替换内存图库 | `MainActivity.refreshGalleryFromRepository`（`:4027`） |
+| `loadProfile(manifestJson, currentAbi)` | 仅校验 manifest 格式/ABI 并暂存（`validated:true`，**不代表生效**） | `FaceModelManager`（`:176`） |
+| `activateRuntime(manifestJson, baseDir, currentAbi, galleryDir)` | 绑定实时管线；Engine 未创建时暂存为 pending，创建后补激活 | `FaceModelManager`（`:189`） |
+| `replaceGallery(personIds, embeddings)` | 替换内存图库 | `MainActivity.refreshGalleryFromRepository`（`:4566`，调用点 `:4609`） |
+| `startEnrollmentCapture(embeddingBuffer)` | #1 开启逐帧注册采集：注册回调并复用调用方传入的 direct buffer | `MainActivity.startNativeEnrollmentCapture`（`:4338`） |
+| `stopEnrollmentCapture()` | #1 关闭采集并清除回调（幂等） | `MainActivity.stopNativeEnrollmentCapture`（`:4361`） |
 | `beginEnrollment(personId, embedding)` | 登记注册意图 | 暂无 |
 | `cancelEnrollment()` | 取消注册 | 暂无 |
 | `getEnrollmentStatus()` | 查询注册状态 | 暂无 |
 | `takeEnrollmentTemplate()` | 取走模板字节（取走即清零） | 暂无 |
-| `getRuntimeStatus()` | 运行时状态 JSON：`profileValidated`/`profileLoaded`/`profileId`/`embeddingDim`/`galleryLoaded`/`galleryCount`/`galleryDim`/`enrollmentState`/`effective`/`reason` | `FaceModelManager`（`:136`）、`MainActivity`（`:621`） |
+| `getRuntimeStatus()` | 运行时状态 JSON：`profileValidated`/`profileLoaded`/`profileId`/`embeddingDim`/`galleryLoaded`/`galleryCount`/`galleryDim`/`enrollmentState`/`effective`/`reason` | `FaceModelManager`（`:182`）、`MainActivity`（`:740`） |
 
-> 注册类 JNI 方法现状：`beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` **仍无生产调用方**。闭环缺逐帧特征源（见 §3）；Java 侧完成注册走 `EnrollmentSession.meanTemplateLe()` + 仓库 `add`，不经过这 4 个 native 方法。`MainActivity.cancelEnrollmentInternal` 是会话侧取消，非 `cancelEnrollment` JNI 调用。
+> 非 native 的 JNI **回调**（Java 侧 `private static`，不入上表）：`onEnrollmentFrame(ByteBuffer, float[])` 由 `startEnrollmentCapture` 缓存的 `GetStaticMethodID` 回调，生产实现是 `MainActivity.onEnrollmentFrameFromNative`（`:4401`，监听器于 `:4347` 注册）。
+>
+> 注册类 JNI 方法现状：`beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` **仍无生产调用方**（属实）。但注册闭环**已不再缺逐帧特征源**——#1 的 `startEnrollmentCapture`/`stopEnrollmentCapture` + `onEnrollmentFrame` 回调即逐帧入口（见 §3）；Java 侧完成注册仍走 `EnrollmentSession.meanTemplateLe()` + 仓库 `add`，不经过这 4 个 native 方法。`MainActivity.cancelEnrollmentInternal` 是会话侧取消，非 `cancelEnrollment` JNI 调用。
 
 语义要点：
 
@@ -96,11 +105,13 @@ APK 不内置模型，用户经 SAF 导入 ZIP；校验链、ZIP 契约与原子
 
 ## 3. 未落地（任务 18 及以后）
 
-- **注册闭环的逐帧特征源（Blocker，待补）**：注册 UI 已接线——`EnrollmentSession` 由 `MainActivity.startEnrollment`（`:3809`）构造，采样进度/拒绝原因由对话框轮询展示，完成时经仓库 `add`（`:3932`）加密落盘并 `replaceGallery` 刷新运行中图库；但**当前 JNI 契约未暴露逐帧 (embedding, box, landmarks, 质量指标)**，`feedEnrollmentSample`（`:3903`）无生产调用方，会话恒停在 0/8，闭环不可用。`NativeFaceBridge.beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` 4 个注册类原生方法**仍无生产调用方**。
-- **冷启动恢复**：已落地——`restoreActiveProfileOnStartup`（`:3553`，`onCreate` `:1886` 调用）先由加密仓库重建内存图库并 `replaceGallery`，再读取 `active_profile` 回放 `activate`；后台执行、失败不阻塞启动，reason 如实展示。
+- **注册闭环的逐帧特征源（#1，已接线；真机未验收）**：注册 UI 已接线——`EnrollmentSession` 由 `MainActivity.startEnrollment`（`:4179`）构造（`:4221`），采样进度/拒绝原因由对话框轮询展示，完成时经仓库 `add`（`:4477`）加密落盘并 `replaceGallery` 刷新运行中图库。逐帧特征源也已接线：`startNativeEnrollmentCapture`（`:4338`）调 `NativeFaceBridge.startEnrollmentCapture`（`:4348`）→ native `onEnrollmentCaptureSample` → 回调 `MainActivity.onEnrollmentFrameFromNative`（`:4401`）→ `feedEnrollmentSample`（`:4447`）。因此原文「JNI 未暴露逐帧 embedding / `feedEnrollmentSample` 无生产调用方 / 会话恒停在 0/8」**均不再成立**，不再作为 Blocker 证据。
+  ⚠️ **仍未落地的部分（如实）**：(a) **真机闭环验收未做**——本机/CI 只能证明接线与结构，不能证明 RK3288 上能真实采满 8 样本（真机验收见 `docs/guides/rk3288-device-acceptance.md`）；(b) 采集开启失败时（无 Engine、模型未激活、native 未接通）`startEnrollmentCapture` 返回非 ok，本类只记日志并断开监听器，进度区停在 0/8；(c) 注册表存在坏行时判重门拒收每一帧（见 §2.1 自愈边界）。故当前表述应为「**接线完成、真机闭环未验收**」，既不得宣称闭环已在设备上可用，也不得再称其因缺特征源而不可用。`NativeFaceBridge.beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` 4 个注册类原生方法**仍无生产调用方**（属实）。
+- **冷启动恢复**：已落地——`restoreActiveProfileOnStartup`（`:3936`，`onCreate` 内 `:2152` 调用）先由加密仓库重建内存图库并 `replaceGallery`，再读取 `active_profile` 回放 `activate`；后台执行、失败不阻塞启动，reason 如实展示。
+- **注册表损坏时的 UI 修复入口（待办 N1，未修）**：注册表存在坏行时 `add` 自愈被切断，而「只剩坏行」时人员列表为空、没有可删条目 ⇒ 用户从 UI 无出路（详见 §2.1 自愈边界）。本批只补了**可见性**（人员列表对话框 / 空列表 Toast / 采集进度区），**未**提供修复入口。
 - **身份证件/人员域扩展**：人员域对象、权限、审计、双端同步均未实现（顶层设计目标项）。
 
-Android 端的注册能力当前应表述为“**数据层与会话可用、注册 UI 已接线，但逐帧特征源缺失导致注册闭环不可用（Blocker，待补）**”，不得宣称注册闭环已可用。
+Android 端的注册能力当前应表述为“**数据层与会话可用、注册 UI 与逐帧特征源均已接线，但真机闭环尚未验收**”；同时须带上两条限定：① 注册表存在坏行时注册会被判重门拒绝且**从 UI 无修复出路**（待办 N1）；② 从 `.bak` 恢复后枚举可能缺行，判重保证不完整。
 
 ## 4. 安全与隐私约束（已落地部分）
 
@@ -114,4 +125,6 @@ Android 端的注册能力当前应表述为“**数据层与会话可用、注�
 
 - 注册表 userId 可逆编码（hex）是刻意取舍，若合规升级要求标识不可逆，需同步改造 `list` 展示策略。
 - 模板双端互通仍为研究项，Android 与 Windows 模板不假设可直认。
-- 低版本只读模式下注册入口的门禁已在 `MainActivity.startEnrollment`（`:3804`，`AndroidEnrollmentRepository.isEnrollmentEnabled`）实现：点击后返回 `unsupportedReason()` 的受控失败；如要求进入前即置灰按钮，仍待 UI 层补充。
+- **注册表损坏时的 UI 修复入口缺失（待办 N1）**：见 §2.1 自愈边界与 §3；本批只补可见性，未给入口。
+- **判重保证不完整**：`ListResult.isEnumerationComplete()` 不覆盖 `.bak` 恢复路径（备份可能早于最近一次 `add` ⇒ 枚举可能真缺行而判据仍为 true）。修法需要「比对备份与主文件的时间戳/条目数」或改用不可逆随机 id，未在本批实施。
+- 低版本只读模式下注册入口的门禁已在 `MainActivity.startEnrollment`（`:4179`，`AndroidEnrollmentRepository.isEnrollmentEnabled` 判据在 `:4208`）实现：点击后返回 `unsupportedReason()` 的受控失败；如要求进入前即置灰按钮，仍待 UI 层补充。

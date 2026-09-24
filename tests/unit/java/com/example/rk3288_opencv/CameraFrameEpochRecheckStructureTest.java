@@ -36,7 +36,16 @@ import static org.junit.Assert.assertTrue;
  * 上述两类由**行为性**用例把关：Camera2 见
  * {@link Camera2CaptureControllerTest#frameNotCommittedIfEpochStaleAtSubmitPoint}，
  * CameraX 见
- * {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochStaleAtSubmitPoint}。
+ * {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochStaleAtSubmitPoint}
+ * （**提交前**分支）与
+ * {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochAlreadyStaleAtEntry}
+ * （**入口**分支）。
+ *
+ * <p><b>计数断言（{@code countOccurrences(text, RECHECK) >= 2}）的边界</b>：它是**文本计数**，
+ * 判据为下界——只判「两处 {@code isCurrent(capturedEpoch)} 都在、且其中一处落在
+ * rotation→submit 之间」，**不判极性、不判条件恒假**（写成 {@code if (x && false)}、或去掉
+ * {@code !}，都照样命中）。语义判别一律由上述行为性用例承担；且**入口分支**的行为对偶目前只有
+ * CameraX 有（Camera2 侧尚无对偶用例，其入口分支仅被本计数覆盖）。
  */
 public class CameraFrameEpochRecheckStructureTest {
 
@@ -48,6 +57,9 @@ public class CameraFrameEpochRecheckStructureTest {
     public void camera2RechecksEpochImmediatelyBeforeSubmit() throws IOException {
         String text = stripCommentsAndLiterals(readSource("Camera2CaptureController.java"));
         assertRecheckBetweenRotationAndSubmit(text, "Camera2CaptureController.onImageAvailable");
+        // 边界见类 javadoc：本计数不判极性、不判条件恒假（`&& false` 亦命中）；语义判别见
+        // CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochStaleAtSubmitPoint（提交前）
+        // 与 #frameNotCommittedIfEpochAlreadyStaleAtEntry（入口）。
         assertTrue("完成帧路径应恰好有入口 + 提交前两处 isCurrent(capturedEpoch) 复检",
                 countOccurrences(text, RECHECK) >= 2);
     }
@@ -56,6 +68,9 @@ public class CameraFrameEpochRecheckStructureTest {
     public void cameraXRechecksEpochImmediatelyBeforeSubmit() throws IOException {
         String text = stripCommentsAndLiterals(readSource("CameraXCaptureController.java"));
         assertRecheckBetweenRotationAndSubmit(text, "CameraXCaptureController.analyze");
+        // 边界见类 javadoc：本计数不判极性、不判条件恒假（`&& false` 亦命中）；语义判别见
+        // CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochStaleAtSubmitPoint（提交前）
+        // 与 #frameNotCommittedIfEpochAlreadyStaleAtEntry（入口）。
         assertTrue("完成帧路径应恰好有入口 + 提交前两处 isCurrent(capturedEpoch) 复检",
                 countOccurrences(text, RECHECK) >= 2);
     }

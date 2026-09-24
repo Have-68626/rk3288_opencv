@@ -22,8 +22,8 @@ import java.util.List;
  * <h2>存储布局（gallery 目录）</h2>
  * <ul>
  *   <li>{@code face_registry_v1.dat} —— 单表注册表（gallery 级），记录已注册人员的<b>元数据</b>：
- *       userId、模型版本、模板 schema 版本、密文大小、密文 SHA-256、入册时间。
- *       表内<b>不含任何生物特征向量</b>。</li>
+ *       userId、模型版本、模板 schema 版本、加密模板<b>文件</b>（envelope 全量）大小、
+ *       该文件 SHA-256、入册时间。表内<b>不含任何生物特征向量</b>。</li>
  *   <li>{@code u_<sha256(userId)>.bin} —— 每位人员的加密模板，由
  *       {@link FeatureTemplateEncryptedStore} 以 AndroidKeyStore + AES-GCM 落盘。</li>
  * </ul>
@@ -36,7 +36,8 @@ import java.util.List;
  *       因此枚举/gallery 索引必须依赖一张表。</li>
  *   <li>API &lt; 23 无 AndroidKeyStore AES-GCM，无法解密任何密文；若注册表也加密，则低版本
  *       连“只读预览”都做不了。注册表明文才能让低版本列出人员元数据。</li>
- *   <li>注册表里只有密文的 SHA-256/大小，没有明文模板或特征向量，泄漏风险远低于模板本身。</li>
+ *   <li>注册表里只有加密模板<b>文件</b>（envelope 全量）的 SHA-256/大小，没有明文模板或特征向量，
+ *       泄漏风险远低于模板本身。</li>
  *   <li><b>userId 是可逆编码而非加密（明文档化取舍）</b>：注册表用 hex 编码 userId
  *       （见 {@link #persistRegistry}），hex 只是编码、可还原明文，并非哈希。这是刻意取舍——
  *       {@link #list} 需要在低版本上展示人员标识以支撑预览，改为加盐哈希会直接牺牲该能力；
@@ -45,14 +46,33 @@ import java.util.List;
  * </ul>
  *
  * <h2>并发</h2>
- * 实例方法不再使用实例级 {@code synchronized}：{@link #forDefaultGallery}/{@link #forScope}
+ * 实例方法不再用方法级 {@code synchronized} 修饰符：{@link #forDefaultGallery}/{@link #forScope}
  * 每次都会 {@code new}，同目录多实例并发读改写注册表会丢更新。改为按<b>规范化 scopeDir 路径</b>
  * 共享静态锁（{@link FileStoreUtils#dirLockFor}），使同目录的所有实例串行化 add/remove/readTemplate/list/get。
  *
  * <h2>注册表容错</h2>
  * 单行条目损坏时<b>跳过并隔离该行</b>，保留其余可解析条目，{@link ListResult#skippedLineCount}
- * 报告跳过数；只有文件头（魔数/版本）损坏或整体不可读才判定为 {@link Status#CORRUPTED}。
- * 后续一次成功的 add/remove 会重写注册表，顺带清除已跳过的损坏行（自愈）。
+ * 报告跳过数；只有文件头（魔数 {@code FREG1}，版本随魔数一同编码）损坏才判定为
+ * {@link Status#CORRUPTED}，而<b>整体不可读判 {@link Status#IO_ERROR}</b>（两者都不可被当作空库）。
+ *
+ * <p><b>自愈（如实边界，勿夸大）</b>：{@link #persistRegistry} 只序列化本次传进去的 {@code entries}
+ * （被跳过的坏行不在其中），故一次成功的 {@link #add}/{@link #remove} 会重写注册表、顺带清除
+ * 已跳过的损坏行。但自愈的前提是**能走到那次写**：
+ * <ul>
+ *   <li>注册 UI 路径下 {@link EnrollmentSession#fromRepository} 以
+ *       {@link ListResult#isEnumerationComplete()} 为判重门，存在损坏行时对**每一帧**样本返回
+ *       {@link EnrollmentSession.Reason#REPO_UNAVAILABLE} ⇒ 会话永远集不满 8 样本 ⇒ 经 UI 的
+ *       {@code add} 不可达。即**自愈实际只剩 {@code remove} 一条路**。</li>
+ *   <li>{@code remove} 的 UI 入口按 {@code list().entries} 列条目：若注册表**只剩被跳过的坏行**
+ *       （{@code entries} 为空），列表里没有任何可删条目 ⇒ <b>用户从 UI 无法自愈</b>，
+ *       只能清除应用数据或手工编辑注册表。（本批已把该情形改为如实提示注册表损坏，
+ *       但仍**没有**可删条目，故出路未变。）</li>
+ *   <li>{@link ListResult#message}（「注册表有 N 行损坏，已跳过」）与
+ *       {@link ListResult#skippedLineCount} 是**可观测通道**，但状态码仍为 {@link Status#OK}
+ *       ⇒ 只展示 {@code !isOk()} 文案的消费方看不到损坏信息。</li>
+ * </ul>
+ * ⚠️ 上述可用性收敛（判重门切断 add 自愈 + 只剩坏行时 UI 无出路）**尚未修复**，
+ * 登记为待办 N1；修复方向是给坏行本身一个可删条目或一个显式的「重写注册表」入口。
  *
  * <p><b>崩溃恢复（P1-3）</b>：{@link #persistRegistry} 采用
  * 「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」阶段替换。若在中间阶段进程退出，
@@ -74,7 +94,8 @@ public final class AndroidEnrollmentRepository {
     /** 注册表首行魔数/版本：文件头损坏或版本不符时判定为 CORRUPTED。 */
     private static final String REGISTRY_MAGIC = "FREG1";
 
-    /** 合法条目字段数：hex(userId) mv sv ciphertextSize sha256hex createdAtMs。 */
+    /** 合法条目字段数：hex(userId) mv sv ciphertextSize sha256hex createdAtMs
+     *  （第 4/5 列存的是加密模板**文件**全量值，见 {@link Entry} 字段注释）。 */
     private static final int REGISTRY_FIELD_COUNT = 6;
 
     /** 默认作用域目录名，与 {@link FeatureTemplateEncryptedStore#defaultDir(Context)} 保持一致。 */
@@ -107,9 +128,25 @@ public final class AndroidEnrollmentRepository {
         @NonNull public final String userId;
         public final int modelVersion;
         public final int templateSchemaVersion;
-        /** 加密模板文件字节数。 */
+        /**
+         * 加密模板<b>文件</b>的字节数 —— 即整个 envelope（魔数+版本+IV+AAD+密文+tag）的长度，
+         * <b>不是</b>纯密文（ct+tag）段的长度，两者相差 64B 头。
+         *
+         * <p>⚠️ <b>字段名 {@code ciphertext*} 是历史遗留，名实不符</b>。改名会牵动
+         * {@code MainActivity} 的人员列表展示读点（{@code "  模板 " + e.ciphertextSize}），
+         * 未在本批一并实施；消费方以本注释为准。
+         */
         public final long ciphertextSize;
-        /** 加密模板密文的 SHA-256（小写十六进制），用于完整性来源核对，不是模板明文摘要。 */
+        /**
+         * 加密模板<b>文件</b>（envelope 全量）的 SHA-256（小写十六进制），用于完整性来源核对；
+         * 既不是模板明文摘要，也不是仅密文段的摘要。
+         *
+         * <p>⚠️ <b>字段名 {@code ciphertext*} 是历史遗留，名实不符</b>：实际计算与比对的对象是
+         * 整个 envelope，比纯密文多 64B 头
+         * （{@code MAGIC4 + VERSION1 + ivLen1 + iv12 + aadLen2 + aad40 + ctLen4}）。
+         * 改名约束同 {@link #ciphertextSize}（展示读点），本字段当前**无生产读点** ——
+         * 仅测试与 {@link #persistRegistry} 的注册表序列化在读写它。
+         */
         @NonNull public final String ciphertextSha256Hex;
         public final long createdAtMs;
 
@@ -156,10 +193,53 @@ public final class AndroidEnrollmentRepository {
          * 条目集是否**权威**（即「就是全部已注册人员」）。跳过损坏行 / 从 {@code .bak} 恢复 /
          * 无注册表文件时均为 false。
          *
+         * <p>⚠️ <b>仅当 {@link #status} == {@link Status#OK} 时该判据才有意义；
+         * {@code status != OK} 时其值<b>未定义</b>。例如「主文件缺失 + 备份存在但备份自身
+         * 解析失败」这条路径会把备份的解析结果原样返回（{@code loadRegistry}），此时
+         * {@code status} 为 {@code CORRUPTED}/{@code IO_ERROR}，而本字段仍是构造默认值。
+         * 消费方必须先用 {@link #isOk()} 门禁，不得直接读本字段。
+         *
          * <p><b>破坏性对账必须以此为前提</b>：用非权威集合做差集删除会误删仍注册者的派生数据
          * （显示名孤儿清理即其一）。
          */
         public boolean authoritative = true;
+
+        /**
+         * 条目集是否**可安全用作「是否已存在此人」的判重依据**
+         * （= {@link #status} 为 {@link Status#OK} 且无被跳过的损坏行）。
+         *
+         * <p><b>与 {@link #authoritative} 的分工（勿混用）</b>：{@code authoritative} 是**破坏性对账**
+         * （差集删除）的前提，从严 —— 无注册表文件时也算 false（刻意兼容「全新安装」与「索引丢失」
+         * 两种情况，见 {@code loadRegistry}）。本判据服务**非破坏性**的判重：判重漏一个在册者
+         * 会让同一张脸被重复注册。无注册表文件时 {@link #skippedLineCount} == 0 恒成立，此时
+         * 「同名 userId 重复注册」由 {@code add()} 的 {@code tpl.exists()} 门独立拦截，不需要在此
+         * 拒收 —— 否则全新安装将永远无法注册。
+         *
+         * <p>⚠️ <b>本判据是「必要条件」而非「充分条件」，与 {@code .bak} 恢复不是「等价口径」</b>：
+         * 它只排除**行级**跳过与整体不可读。从 {@code .bak} 恢复这条路径**仍是缺口**：
+         * 崩溃窗口「模板已落盘 → 注册表 dst→bak 已完成 → tmp→dst 未完成」下，新条目只存在于
+         * 未被消费的 {@code .tmp} 里，{@code loadRegistry} 从 {@code .bak} 恢复得到的是**缺该行**的
+         * 条目集，而该人的模板文件已在磁盘 ⇒ 对判重而言**就是缺行**，本判据却因
+         * {@code status == OK && skipped == 0} 报 true。故 {@code .bak} 恢复路径下「库中是否已有此人」
+         * 的判定仍不可靠；该副作用**未被本判据覆盖**，如实登记为待办（未修）。
+         *
+         * <p>等价于 {@code isOk() && skippedLineCount == 0}。在 {@code status == OK} 的前提下，
+         * 本判据与 {@code authoritative} 的分歧出现在两处，**性质不同**：
+         * <ul>
+         *   <li><b>无注册表文件</b>（本判据 true、{@code authoritative} false）—— 刻意如此：
+         *       必须放行全新安装的注册，见上；</li>
+         *   <li><b>从 {@code .bak} 恢复</b>（备份自身无坏行时本判据 true、{@code authoritative} false）
+         *       —— <b>真缺口</b>，理由同上段。故本判据不能用于为该路径的枚举完整性背书。</li>
+         * </ul>
+         * 无论哪种情况，本判据都不能替代 {@code authoritative} 去门禁**破坏性对账**；
+         * {@code status != OK} 时 {@code authoritative} 本身无定义（见上），不构成可比较的分歧。
+         *
+         * <p><b>接线现状</b>：{@link EnrollmentSession#fromRepository} 的判重门即以本方法为判据
+         * （此前是同义的内联表达式），故本方法是**生产接线**、非纯工具方法。
+         */
+        public boolean isEnumerationComplete() {
+            return status == Status.OK && skippedLineCount == 0;
+        }
 
         ListResult(@NonNull Status status, @NonNull List<Entry> entries,
                    int skippedLineCount, @NonNull String message) {
@@ -318,12 +398,19 @@ public final class AndroidEnrollmentRepository {
                 return new Result(mapStoreCode(wr.code), null, describe(wr.code));
             }
 
-            // 写入成功后回读密文，计算长度与密文摘要（注册表只存密文摘要，不存模板明文）。
+            // 写入成功后回读**整个加密模板文件**（envelope 全量），计算其长度与摘要；
+            // 注册表只存该文件摘要，不存模板明文（字段名 ciphertext* 为历史遗留，见 Entry 注释）。
             Entry entry;
             byte[] raw = readFileQuietly(tpl);
             if (raw == null || raw.length == 0) {
-                FileStoreUtils.deleteWithBackup(tpl, fileOps);
-                return new Result(Status.IO_ERROR, null, "写入后无法回读模板文件");
+                // 回滚 A（回读失败）：本分支在纯 JVM 下**不可构造**，故不加读接缝 ——
+                // FileStoreUtils.FileOps 只有 delete/exists、**无 read**；写入（write）与回读
+                // （readFileQuietly 裸 FileInputStream）之间也没有任何可注入点，而 tpl.exists()
+                // 用的是裸 File.exists()。为唯一消费者给全仓共享接口加方法，成本大于收益。
+                boolean rolledBack = FileStoreUtils.deleteWithBackup(tpl, fileOps);
+                return new Result(Status.IO_ERROR, null, rolledBack
+                        ? "写入后无法回读模板文件"
+                        : "写入后无法回读模板文件，且模板回滚失败（可能残留孤儿模板）");
             }
             entry = new Entry(userId, modelVersion, templateSchemaVersion, raw.length,
                     FeatureTemplateEncryptedStore.sha256Hex(raw), System.currentTimeMillis());
@@ -333,8 +420,15 @@ public final class AndroidEnrollmentRepository {
             Status persisted = persistRegistry(next);
             if (persisted != Status.OK) {
                 // 注册表写失败 -> 回滚模板，保持模板文件与注册表一致。
-                FileStoreUtils.deleteWithBackup(tpl, fileOps);
-                return new Result(persisted, null, "注册表写入失败，已回滚模板");
+                // 回滚必须检查返回值：deleteWithBackup 返回「主文件是否确实已不存在」，
+                // 失败即留下**孤儿模板** —— 该 userId 之后每次 add 都会撞上上面的 tpl.exists()
+                // 恒返 DUPLICATE_USER，而 remove 先查注册表、无条目即 NOT_FOUND ⇒ 删不掉，
+                // UI 无自愈路径。故失败时文案必须如实，不得谎报「已回滚」。
+                // 注：本分支不 catch SecurityException（与 remove 不同），保持既有语义未变。
+                boolean rolledBack = FileStoreUtils.deleteWithBackup(tpl, fileOps);
+                return new Result(persisted, null, rolledBack
+                        ? "注册表写入失败，已回滚模板"
+                        : "注册表写入失败，且模板回滚失败（可能残留孤儿模板，需重装或手动清理）");
             }
             return new Result(Status.OK, entry, "");
         }
@@ -490,6 +584,9 @@ public final class AndroidEnrollmentRepository {
          * 跳过损坏行、从 {@code .bak} 恢复（备份可能早于最近新增）、以及压根没有注册表文件
          * （无法区分「全新安装」与「索引丢失」）。
          *
+         * <p>同 {@link ListResult#authoritative}：**仅 {@code status == OK} 时该判据才有意义**，
+         * {@code status != OK} 时其值未定义（「备份存在但备份自身解析失败」路径原样返回，不置 false）。
+         *
          * <p>用途：显示名孤儿清理等**破坏性**对账必须以此为前提——用非权威集合做差集删除会误删。
          */
         boolean authoritative = true;
@@ -532,12 +629,30 @@ public final class AndroidEnrollmentRepository {
 
         RegistrySnapshot snap = parseRegistryFile(dst);
         // 主文件存在但不可读：若备份可解析则从备份恢复，避免「不可读」退化为空库/丢索引。
+        // ⚠️ 判据**刻意**只含 IO_ERROR，不含 CORRUPTED（范围由 9ea2f2c 定，与本处注释及类 javadoc
+        // 的「缺失/不可读」一致，**不是遗漏**）：本写入器走「tmp 落盘+fsync → dst→bak → tmp→dst」，
+        // 崩溃窗口产生的形态是「主文件缺失/不可读」，头损坏只可能来自**外部**破坏（截断/覆写）；
+        // 从同样可能陈旧、且未必完好的 .bak 覆盖回去，反而可能丢掉比它新的增量。
+        // 若要放宽到 CORRUPTED，须先拍板并同步上面的恢复语义，不得只改这一行。
         if (snap.status == Status.IO_ERROR && bak.exists()) {
             RegistrySnapshot fromBak = parseRegistryFile(bak);
             if (fromBak.status == Status.OK) {
-                FileStoreUtils.renameQuietly(bak, dst);
+                // 恢复返回值必须接：dst 存在（正是本分支成立的前提）时 renameTo 常失败
+                //（Windows 上目标已存在即失败；dst 是不可读目录时 POSIX 亦失败），
+                // 而 `renameQuietly` 只做裸 renameTo、不先删目标 ⇒ 不得无条件谎报「已从备份恢复」。
+                //
+                // ⚠️ 如实申报：本处是**行为变更**，不是「只加注释」。此前无条件使用「已从备份恢复」
+                // 一句文案（无论改名是否真的成功）。语义边界（改动前后逐项确认）：
+                //   * status 码不变：两条路径都返回 Status.OK，条目集都取自备份；
+                //   * authoritative 两条路径一致：都为 false（备份未必反映最新状态）；
+                //   * 变的只有 message ——「已从备份恢复」现在只在实际改名成功时给出，
+                //     否则退化为「已从备份读取」（主文件仍不可读，但索引已从备份读出）。
+                // 与 remove 路径**同口径**：那里同样检查 deleteWithBackup 的返回值并据此改变
+                // 文案/错误码（见 remove 的「模板文件删除失败，已回滚注册表」分支），绝不谎报操作结果。
+                boolean restored = FileStoreUtils.renameQuietly(bak, dst);
                 RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
-                        fromBak.skippedLineCount, "注册表主文件不可读，已从备份恢复");
+                        fromBak.skippedLineCount, restored ? "注册表主文件不可读，已从备份恢复"
+                                : "注册表主文件不可读，已从备份读取");
                 recovered.authoritative = false;   // 同上：备份未必反映最新状态
                 return recovered;
             }
@@ -584,7 +699,7 @@ public final class AndroidEnrollmentRepository {
         return snap;
     }
 
-    /** 静默重命名（用于崩溃恢复）；失败返回 false，由调用方决定后续语义。 */
+    // 静默重命名（崩溃恢复用）已收敛到 FileStoreUtils.renameQuietly（任务 A4c），本类不再自带实现。
 
     /** 解析单行条目；字段非法或损坏返回 null（由调用方跳过隔离）。 */
     @Nullable
