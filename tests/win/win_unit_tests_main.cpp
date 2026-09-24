@@ -2,6 +2,9 @@
 #include <iostream>
 #include <string>
 
+#include "rk_win/RuntimeBootstrap.h"
+#include "rk_win/WinConfig.h"
+
 namespace rk_win_test {
 
 using TestFn = bool (*)();
@@ -39,6 +42,11 @@ bool test_bootstrap_reports_failure_on_bad_cascade();
 bool test_bootstrap_arcface_snapshot_hash_uses_cascade_path();
 bool test_recognition_config_node_names_default_empty();
 bool test_recognition_config_arcface_threshold_in_cosine_range();
+bool test_recognition_config_thresholds_are_distinguishable();
+bool test_bootstrap_arcface_dir_injects_arcface_threshold();
+bool test_bootstrap_lbph_dir_injects_lbph_threshold();
+bool test_event_logger_rotates_keeps_generations_capped();
+bool test_event_logger_rotation_disabled_when_max_bytes_zero();
 bool test_registry_dispatch_returns_200_for_matching_route();
 bool test_registry_returns_405_for_method_mismatch();
 bool test_pipeline_concurrent_reload_no_uaf();
@@ -78,6 +86,12 @@ bool test_config_unknown_key_rejected();
 bool test_config_load_failure_writes_stderr();
 bool test_config_healthy_load_silent_stderr();
 bool test_config_initialize_cleans_stale_rollback_tmp();
+// FACE-ARCWIN-010（S-6）/ FACE-CONFIG-017（S-3）/ FACE-CONFIG-018（S-1）：越界值的「只钳不拒」与
+// 写型路径的 PUT 拒绝。四条都以「配置未被清空 / 启动不被判 rejected」为核心断言（红线判据）。
+bool test_config_lbph_threshold_over_physical_max_clamped();
+bool test_config_log_budget_clamped_to_total_budget();
+bool test_config_write_path_parent_ref_put_rejected();
+bool test_config_write_path_startup_warns_not_rejected();
 bool test_reload_endpoint_bumps_generation();
 bool test_openapi_endpoint_returns_spec_json();
 bool test_face_db_plaintext_vuln_documented();
@@ -91,6 +105,84 @@ bool test_face_db_encrypted_roundtrip();
 
 // 接通两个 runner：自定义 bool 测试（runAll）+ GoogleTest 测试（RUN_ALL_TESTS）。
 // 任一失败均返回非零退出码，使 CTest 失败；全过返回 0。
+
+// ═══ INT8 开关的消费（本用例的**定义**刻意放在本文件）═══
+// 本文件是 win_unit_tests 的**唯一注册处**（下方 `main()` 里的 TestCase 表）与自定义 bool runner
+// （`runAll`）。其余自定义用例的**定义**都分散在 tests/win/test_*.cpp，本文件只在表头列其前向声明；
+// 本用例是**唯一例外**：没有前向声明，定义（见下方函数）与注册同在本文件。
+//
+// 判别点：`ModelConfig::int8Enabled` 此前**只被序列化**（WinConfig/WinJsonConfig 读写两侧都有键，
+//   全仓无任何消费点）⇒ 置 true 与置 false 的 `BootstrapResult` **完全一致**。消费点落地后，
+//   置 true 必须产生两处可观测差异：(1) 多一条 id=="int8_recognition" 的 disabled 快照；
+//   (2) warning 文本提及该键未生效。
+// ⚠️ **对照断言不可省**：若只断言 true 侧有产物，实现退化成「无条件加快照 + 无条件加告警」也照样绿。
+//   故此处同时断言 false 侧**没有**这两样东西——默认路径零行为变化正是本次改动的硬要求。
+// 不需要任何模型 / 级联文件：cascade 取不存在路径 ⇒ 识别器在 loadCascade 处失败（fail-open，
+//   只写 warning），本用例只看 int8 相关产物，不断言 result.ok。
+bool test_bootstrap_consumes_int8_enabled_flag() {
+    const auto buildWith = [](bool int8On) {
+        rk_win::AppConfig cfg;
+        cfg.model.recognition = "lbph";  // 避开对 arcface ONNX 权重的依赖（本机通常不在仓）
+        cfg.model.int8Enabled = int8On;
+        cfg.recognition.cascadePath = "nonexistent/cascade_for_int8_flag_test.xml";
+        cfg.recognition.databasePath = ".";
+        cfg.dnn.enable = false;  // 不构造/初始化 DNN ⇒ 无需 DNN 模型文件
+        return rk_win::RuntimeBootstrap::build(cfg);  // C++17 保证复制消除，BootstrapResult 未必可拷贝
+    };
+
+    const auto hasInt8Snapshot = [](const rk_win::BootstrapResult& r) {
+        for (const auto& m : r.models) {
+            if (m.id == "int8_recognition") {
+                // status 只允许落在既有取值（disabled），不得新增枚举值——下游
+                // JsonEndpointHandlers 的 loaded/failed/missing 计数与 web 的模型状态 Tab 都按既有取值分流。
+                return m.status == "disabled" && !m.isInUse;
+            }
+        }
+        return false;
+    };
+    const auto mentionsInt8 = [](const rk_win::BootstrapResult& r) {
+        return r.warning.find("int8Enabled") != std::string::npos;
+    };
+
+    const auto off = buildWith(false);
+    if (hasInt8Snapshot(off)) {
+        std::cerr << "[test_bootstrap_consumes_int8_enabled_flag] int8Enabled=false 却出现 int8_recognition 快照"
+                     "（应零行为变化）" << std::endl;
+        return false;
+    }
+    if (mentionsInt8(off)) {
+        std::cerr << "[test_bootstrap_consumes_int8_enabled_flag] int8Enabled=false 却在 warning 中提及 int8Enabled"
+                  << std::endl;
+        return false;
+    }
+
+    const auto on = buildWith(true);
+    if (!hasInt8Snapshot(on)) {
+        std::cerr << "[test_bootstrap_consumes_int8_enabled_flag] int8Enabled=true 未产生 disabled 的 "
+                     "int8_recognition 快照——该键可能仍是「只序列化不消费」" << std::endl;
+        return false;
+    }
+    if (!mentionsInt8(on)) {
+        std::cerr << "[test_bootstrap_consumes_int8_enabled_flag] int8Enabled=true 未在 warning 中提示该键未生效"
+                  << std::endl;
+        return false;
+    }
+
+    // 既有快照不得因本开关增减（消费是**追加**，不是替换）。
+    for (const char* id : {"cascade_frontalface", "dnn_face_detector"}) {
+        bool inOn = false;
+        bool inOff = false;
+        for (const auto& m : on.models) if (m.id == id) inOn = true;
+        for (const auto& m : off.models) if (m.id == id) inOff = true;
+        if (!inOn || !inOff) {
+            std::cerr << "[test_bootstrap_consumes_int8_enabled_flag] 既有快照 " << id
+                      << " 缺失（on=" << inOn << " off=" << inOff << "）" << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
 int main(int argc, char** argv) {
     using namespace rk_win_test;
     const TestCase cases[] = {
@@ -103,6 +195,17 @@ int main(int argc, char** argv) {
         {"test_bootstrap_arcface_snapshot_hash_uses_cascade_path", test_bootstrap_arcface_snapshot_hash_uses_cascade_path},
         {"test_recognition_config_node_names_default_empty", test_recognition_config_node_names_default_empty},
         {"test_recognition_config_arcface_threshold_in_cosine_range", test_recognition_config_arcface_threshold_in_cosine_range},
+        {"test_recognition_config_thresholds_are_distinguishable", test_recognition_config_thresholds_are_distinguishable},
+        // INT8 开关消费（用例定义在本文件内，见 main 上方）——原状「只序列化不消费」的回归钉住。
+        // 注册名带 `test_` 前缀：与本表**本区域**（bootstrap_* / recognition_config_* / event_logger_*
+        // 那一段）其余各条及函数名一致——原名是那段里唯一漏前缀的一条。
+        // ⚠️ 勿据此以为全表统一带前缀：靠后的 pipeline_* / config_* / face_db_* 等大量条目沿用
+        //    无前缀的短名，本表为「混合」形态，仅保证与相邻条目一致。
+        {"test_bootstrap_consumes_int8_enabled_flag", test_bootstrap_consumes_int8_enabled_flag},
+        {"test_bootstrap_arcface_dir_injects_arcface_threshold", test_bootstrap_arcface_dir_injects_arcface_threshold},
+        {"test_bootstrap_lbph_dir_injects_lbph_threshold", test_bootstrap_lbph_dir_injects_lbph_threshold},
+        {"test_event_logger_rotates_keeps_generations_capped", test_event_logger_rotates_keeps_generations_capped},
+        {"test_event_logger_rotation_disabled_when_max_bytes_zero", test_event_logger_rotation_disabled_when_max_bytes_zero},
         {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
         {"pipeline_switch_camera_switches_source", test_pipeline_switch_camera_switches_source},
         {"pipeline_switch_camera_failure_keeps_old", test_pipeline_switch_camera_failure_keeps_old},
@@ -140,6 +243,10 @@ int main(int argc, char** argv) {
         {"config_load_failure_writes_stderr", test_config_load_failure_writes_stderr},
         {"config_healthy_load_silent_stderr", test_config_healthy_load_silent_stderr},
         {"config_initialize_cleans_stale_rollback_tmp", test_config_initialize_cleans_stale_rollback_tmp},
+        {"config_lbph_threshold_over_physical_max_clamped", test_config_lbph_threshold_over_physical_max_clamped},
+        {"config_log_budget_clamped_to_total_budget", test_config_log_budget_clamped_to_total_budget},
+        {"config_write_path_parent_ref_put_rejected", test_config_write_path_parent_ref_put_rejected},
+        {"config_write_path_startup_warns_not_rejected", test_config_write_path_startup_warns_not_rejected},
         {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
         {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
         {"face_db_plaintext_vuln_documented", test_face_db_plaintext_vuln_documented},

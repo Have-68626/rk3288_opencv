@@ -93,6 +93,57 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         result.ok = true;
     }
 
+    // --- INT8 开关的消费 ---
+    // 背景：`cfg.model.int8Enabled`（WinConfig.h 的 ModelConfig）此前**只被序列化**——INI / JSON 两侧
+    //   读得出、写得进，但全仓无任何消费点（既不影响识别器装配，也不影响 DNN 配置）。
+    // 本段把它接成**可观测的消费点**。
+    // ⚠️ **如实口径，勿高估本段作用**：Windows 运行时**目前没有可用的 INT8 推理路径**——
+    //   `ArcFaceWinRecognizer::initialize` 把 `embedderCfg_.backend` 定死为 `OpenCvDnn`（见该文件），
+    //   而本仓 INT8 产物是 ncnn 的 `.param`/`.bin`，只能由 ncnn 后端加载；`DnnSsdFaceDetector` 亦无
+    //   INT8 入口。因此这里能做的只有两件**可观测**的事：
+    //     (1) 记一条 `status="disabled"` 的模型快照 —— **恒可观测**（`/api/v1/models` 的
+    //         activeModels，且计入 summary.totalConfigured）。
+    //     (2) 追加 `result.warning`。⚠️ **其可见性是有条件的、勿高估**：`FramePipeline::initialize`
+    //         仅在 `!bootstrap.ok`（识别器装配失败）时才把该 warning 落到 `render_.status` 与
+    //         `degraded_.warning`（见 FramePipeline.cpp 的 `if (!bootstrap.ok)` 与
+    //         updateDegradedState）；识别器装配**成功**时这条文本不会上线。故真正承担「可观测」
+    //         职责的是上面那条快照，warning 只在其可见的前提下补充说明。
+    //   这**不是**「已启用 INT8 推理」，也不伪造 loaded / missing。沿用既有 status 取值 `disabled`
+    //   （与「DNN 被禁用时也记 disabled 快照」同一惯例）——**不新增枚举值**，避免下游
+    //   （JsonEndpointHandlers 的 loaded/failed/missing 计数、web 的模型状态 Tab）收到未知取值。
+    // ⚠️ 也不把它升级为启动期硬错误：本系统是 fail-open（识别器初始化失败都只写 warning、不阻断，
+    //   见上方注释），一个「不支持的能力开关」更不该阻断服务启动。
+    // ⚠️ 真正打通 INT8 需要改识别器后端选择与 FramePipeline（不在本文件范围），并需要新增
+    //   「INT8 模型路径」配置面——现状 `recognition.arcFaceModelPath` 只有一个路径字段，
+    //   无法同时表达 FP32 与 INT8 两套权重。
+    // ⚠️ 默认 `int8Enabled == false` ⇒ 本段整体不执行：不新增快照、不新增告警、`models.size()` 不变
+    //   ⇒ 默认路径**零行为变化**（`/api/v1/models` 的 totalConfigured 与 warning 文案均不变）。
+    if (cfg.model.int8Enabled) {
+        ModelSnapshot m;
+        m.id = "int8_recognition";
+        m.displayName = "INT8 Recognition Model (requested)";
+        m.taskType = "recognize";
+        // configuredPath 如实指向被请求 INT8 化的识别模型路径（即 recognition.arcFaceModelPath），
+        // **不**凭空拼一条 `models/*_int8_ncnn/...` 路径——本键在配置里并不存在。
+        m.configuredPath = cfg.recognition.arcFaceModelPath.string();
+        m.resolvedPath = "";
+        m.backend = "ncnn_int8";
+        // hash 留空（不设）而非 "(unavailable)"：该模型**从未被加载/解析**，占位符会让人误读为
+        // 「文件缺失」（那是 `modelSha256OrUnavailable` 的语义）。消费方 JsonEndpointHandlers 对空
+        // hash 是「不输出该字段」，无副作用。
+        m.status = "disabled";
+        m.isInUse = false;
+        m.lastError =
+            "model.int8Enabled=true 但 Windows 运行时不支持 INT8 推理：识别器固定走 OpenCV DNN（FP32），"
+            "INT8 的 .param/.bin 只能由 ncnn 后端加载；本次已按 FP32 继续运行";
+        result.models.push_back(std::move(m));
+
+        if (!result.warning.empty()) result.warning += "; ";
+        result.warning +=
+            "model.int8Enabled=true 未生效：Windows 运行时不支持 INT8 推理（识别器固定 OpenCV DNN / FP32），"
+            "已按 FP32 继续；详见 /api/v1/models 的 int8_recognition 快照";
+    }
+
     // --- 构造 DNN 检测器 ---
     result.detector = std::make_unique<DnnSsdFaceDetector>();
     if (cfg.dnn.enable) {

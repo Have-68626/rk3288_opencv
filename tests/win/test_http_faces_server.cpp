@@ -1,5 +1,6 @@
 #include "rk_win/HttpFacesServerPath.h"
 #include "rk_win/HttpFacesServer.h"
+#include "rk_win/JsonLite.h"  // reload 响应体按顶层键解析（断言 data.ok 存在性，见 HttpFacesRuntimeStatus ④）
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -145,6 +146,7 @@ TEST(StaticFileToctouIntegration, OpensRelativeToPinnedRootWithoutReparsePoints)
 // 依赖（Linux 下不显式链接 pthread），故非该目标时全部 GTEST_SKIP。
 #if defined(_WIN32) && !defined(RK_SKIP_OPENCV)
 #include "rk_win/FramePipeline.h"
+#include "rk_win/JsonEndpointHandlers.h"  // FACE-ARCWIN-003：直调 health / reload handler
 #include "rk_win/WinJsonConfig.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -505,8 +507,10 @@ TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
 }
 
 // 匿名白名单：health / acceleration 在启用认证后仍无需 token。
-// 唯一以 store=nullptr 请求 health 的用例，故在此钉死 configStatus:"unknown"（ctx.settings 为
-// 空 ⇒ 状态未知，不得回落 "ok"）。
+// 唯一经**真实 HTTP 请求**且 store=nullptr 请求 health 的用例，故在此钉死 configStatus:"unknown"
+// （ctx.settings 为空 ⇒ 状态未知，不得回落 "ok"）。
+// 注：HttpFacesRuntimeStatus 组的用例也传 settings=nullptr，但它们**直调 handler**（不经 socket），
+// 与本用例的「真实服务端 + 匿名白名单」路径不重叠，故上句的「唯一」限定为 HTTP 路径。
 TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
     {
         const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
@@ -1263,6 +1267,201 @@ TEST(StaticFileToctou, ReadFileWithinRootMissingFileReturnsFalse) {
     std::string out;
     EXPECT_FALSE(rk_win::readFileWithinRoot(root, std::filesystem::path(L"no-such.txt"), out));
 }
+
+// ── FACE-ARCWIN-003：运行时**装配**状态的可观测性（health / reload）────────────────
+// 背景：装配失败信号此前被三层各吞一口（RuntimeBootstrap 降为 warning → FramePipeline::initialize
+// 只写 render_.status 且恒 return true → main 不检查返回值）；对外可见的只剩「模型快照的
+// status=failed」（Web 设置页的「模型状态」区读的是它，模型列表端点也只暴露 status/计数，不暴露
+// warning），而 **warning 文本本身无任何读取通道**。
+// ⚠️ 如实口径（本次订正；原注释称「承载 warning 的 render_.status **写而不读**（三处 tryGetRenderState
+//    调用点都只取帧）⇒ 告警从不上线」，**不实**）：全仓 `tryGetRenderState` 共 **4** 处调用点——
+//    其中 3 处确实只取帧（JsonEndpointHandlers 的 handlePreviewJpg、StreamSession 的帧提供器、
+//    AbcTestRunner 的轮询），但第 4 处**读它**：win_camera_face_recognition_main.cpp 的 WM_TIMER
+//    渲染分支里 `if (!rs.status.empty())` 把该文本（节流 250 ms）写进窗口标题 ⇒ 装配告警在
+//    **相机 UI 应用**里确实上线。真正「从不上线」的只是 **HTTP / Web 通道**——那正是本组用例新增的
+//    发布面（health 的 status/reasonCode/warning/degradedSince/availableFeatures 与 reload 的
+//    ok/warning），二者并列、不替代（详见 FramePipeline.h 对 RenderState::status 的同因订正）。
+// 本组用例还**钉住红线**：degraded 不得映射为任何非 2xx。
+// 本组用例直调 handler（不经真实 socket），故判别与网络环境无关。
+
+namespace {
+
+// 构造一个「装配失败」的 FramePipeline：cascadePath 指向**必然不存在**的文件，并显式选 LBPH 分支
+// （`model.recognition != "arcface"`）。该分支的失败路径已核实：FaceRecognizer::initialize →
+// detector_.loadCascade(不存在的路径) 返回 false ⇒ recognizerOk=false ⇒ BootstrapResult::ok=false。
+// 选 LBPH 而非 ArcFace 是为了不引入「节点名/识别模型文件」等额外前置条件，令失败判定确定。
+// 用 reloadRuntime 而非 initialize 注入：reloadRuntime 不建线程、不开相机、不写日志文件，
+// 且同样会建立 runtime_ 快照（⟺ runtimeReady() 为真），语义等价而副作用面最小。
+bool makeDegradedPipeline(rk_win::FramePipeline& pipe, std::filesystem::path& cascadePathOut) {
+    const auto base = std::filesystem::temp_directory_path() / L"rk3288_opencv_win_runtime_status_tests";
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+    std::filesystem::create_directories(base, ec);
+    if (ec) return false;
+    const auto cascade = base / L"no-such-cascade.xml";
+    if (std::filesystem::exists(cascade)) return false;  // 前置：该路径必须不存在，否则判据失效
+
+    rk_win::AppConfig cfg;
+    cfg.model.recognition = "lbph";  // 固定走已验证失败路径的分支（见上方注释）
+    cfg.recognition.cascadePath = cascade;
+    cfg.dnn.enable = false;          // DNN 与判据无关，关掉以免引入额外告警文本；这**同时**是本用例
+                                     // availableFeatures 为空的原因（见 ① 的前置断言注释），勿误读成
+                                     // 「识别器失败 ⇒ availableFeatures 必空」
+    pipe.reloadRuntime(cfg);
+    cascadePathOut = cascade;
+    return true;
+}
+
+rk_win::HttpFacesServer::HttpRequest makeGetHealthReq() {
+    rk_win::HttpFacesServer::HttpRequest req;
+    req.method = "GET";
+    req.path = "/api/v1/health";
+    req.httpVersion = "HTTP/1.1";
+    return req;
+}
+
+}  // namespace
+
+// ① 降级态发布：装配失败时 health 必须报 status:"degraded" + reasonCode + warning + degradedSince。
+// 判别力：把新增字段块删掉（回到修复前）⇒ 本用例红。
+TEST(HttpFacesRuntimeStatus, HealthReportsDegradedWithReasonCode) {
+    rk_win::FramePipeline pipe;
+    std::filesystem::path cascade;
+    ASSERT_TRUE(makeDegradedPipeline(pipe, cascade));
+    const auto deg = pipe.degraded();
+    ASSERT_TRUE(deg.active) << "前置：cascade 指向不存在的文件，识别器装配必须失败";
+    ASSERT_EQ(deg.reasonCode, "runtime_init_failed");
+    ASSERT_EQ(deg.availableFeatures.size(), static_cast<std::size_t>(0))
+        << "前置：本用例的 cfg.dnn.enable=false ⇒ dnn_face_detector 快照非 loaded，cascade 快照因装配"
+           "失败亦非 loaded ⇒ availableFeatures 为空";
+    // ⚠️ 如实口径（本次订正）：availableFeatures 取自 `activeModels_` 里 `status=="loaded"` 的 id
+    //   （FramePipeline::updateDegradedState），**不是**「识别器失败的必然推论」。生产降级启动时
+    //   `cfg.dnn.enable` 默认为 **true** ⇒ 完全可能是 ["dnn_face_detector"]。本用例之所以为空，
+    //   是 makeDegradedPipeline 显式把 dnn.enable 关掉所致 ⇒ 勿把「识别器失败 ⇒ availableFeatures
+    //   必空」当作一般规律（这正是旧注释的失真处）。
+
+    rk_win::EndpointContext ctx;
+    ctx.pipe = &pipe;
+    ctx.settings = nullptr;  // 配置侧状态未知；用于验证两字段并存而非互相覆盖
+    ctx.port = 8080;
+    const auto resp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), ctx);
+    // 红线：degraded **不得**改变 HTTP 语义（仍是 200，仍匿名可读）。
+    ASSERT_EQ(resp.status, 200) << resp.body;
+    EXPECT_NE(resp.body.find("\"status\":\"degraded\""), std::string::npos) << resp.body;
+    EXPECT_NE(resp.body.find("\"reasonCode\":\"runtime_init_failed\""), std::string::npos) << resp.body;
+    EXPECT_NE(resp.body.find("\"warning\":"), std::string::npos) << resp.body;
+    EXPECT_NE(resp.body.find("\"degradedSince\":"), std::string::npos) << resp.body;
+    EXPECT_NE(resp.body.find("\"availableFeatures\":[]"), std::string::npos) << resp.body;
+}
+
+// ② 两个量并存：configStatus（**配置装载**）与 status（**运行时装配**）是不同量，不得合并/互相覆盖。
+// 本用例构造「配置完全合法（configStatus=ok）+ 运行时装配失败（status=degraded）」这一组合
+// —— 这正是只看 configStatus 会静默漏报的场景。判别力：把 status 实现成 configStatus 的副本
+// （或反之覆盖）⇒ 两者不可能同时取到 ok 与 degraded ⇒ 本用例红。
+TEST(HttpFacesRuntimeStatus, HealthKeepsConfigStatusAlongsideRuntimeStatus) {
+    rk_win::FramePipeline pipe;
+    std::filesystem::path cascade;
+    ASSERT_TRUE(makeDegradedPipeline(pipe, cascade));
+    auto store = makeAuthConfigStore(L"health_runtime_status_coexist");
+
+    rk_win::EndpointContext ctx;
+    ctx.pipe = &pipe;
+    ctx.settings = store.get();
+    ctx.port = 8080;
+    const auto resp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), ctx);
+    ASSERT_EQ(resp.status, 200) << resp.body;
+    EXPECT_NE(resp.body.find("\"configStatus\":\"ok\""), std::string::npos) << resp.body;
+    EXPECT_NE(resp.body.find("\"status\":\"degraded\""), std::string::npos) << resp.body;
+}
+
+// ③ 未装配（starting）既不是降级也不是正常：未装配的 pipe 与未挂载的 pipe 都必须回落 starting，
+// 且按需字段不得出现（避免把「未知」当「降级」）。同时覆盖 ctx.pipe==nullptr 的判空兜底
+// （空指针解引用会砸掉整个服务）。
+TEST(HttpFacesRuntimeStatus, HealthReportsStartingWhenNotAssembled) {
+    rk_win::FramePipeline pipe;  // 从未 initialize / reloadRuntime
+    ASSERT_FALSE(pipe.runtimeReady());
+
+    rk_win::EndpointContext ctx;
+    ctx.pipe = &pipe;
+    ctx.settings = nullptr;
+    ctx.port = 8080;
+    const auto resp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), ctx);
+    ASSERT_EQ(resp.status, 200) << resp.body;
+    EXPECT_NE(resp.body.find("\"status\":\"starting\""), std::string::npos) << resp.body;
+    // 恒出现字段仍在（未装配 ≠ 缺字段）。
+    EXPECT_NE(resp.body.find("\"availableFeatures\":[]"), std::string::npos) << resp.body;
+    EXPECT_EQ(resp.body.find("\"reasonCode\""), std::string::npos) << resp.body;
+    EXPECT_EQ(resp.body.find("\"degradedSince\""), std::string::npos) << resp.body;
+
+    // pipeline 未挂载（测试 / 降级挂载路径）：同样 starting，且不得崩。
+    rk_win::EndpointContext nullCtx;
+    nullCtx.pipe = nullptr;
+    nullCtx.port = 0;
+    const auto nullResp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), nullCtx);
+    EXPECT_EQ(nullResp.status, 200) << nullResp.body;
+    EXPECT_NE(nullResp.body.find("\"status\":\"starting\""), std::string::npos) << nullResp.body;
+}
+
+// ④ 重载响应回归钉住：**新增** ok/warning 两键，而 status 仍恒为 "reloaded"。
+// status 的恒值属既有对外契约（既有消费者按字面值判断），把它改成受成败影响是破坏性变更，
+// 本用例即为该变更的防线：把 status 改成 "ok"/"failed" 之类 ⇒ 本用例红。
+TEST(HttpFacesRuntimeStatus, ReloadResponseKeepsReloadedStatusAndAddsOutcome) {
+    rk_win::FramePipeline pipe;
+    std::filesystem::path cascade;
+    ASSERT_TRUE(makeDegradedPipeline(pipe, cascade));
+    auto store = makeAuthConfigStore(L"reload_response_shape");
+
+    rk_win::HttpFacesServer::HttpRequest req;
+    req.method = "POST";
+    req.path = "/api/v1/models/reload";
+    req.httpVersion = "HTTP/1.1";
+    // 该 id 由 RuntimeBootstrap 恒写入 activeModels_ ⇒ 恒通过 reload 端点的存在性门槛。
+    req.body = "{\"id\":\"cascade_frontalface\"}";
+
+    rk_win::EndpointContext ctx;
+    ctx.pipe = &pipe;
+    ctx.settings = store.get();  // reload 端点要求 settings 非空（否则 503）
+    ctx.port = 8080;
+    const auto resp = rk_win::handlers::handleReloadModel(req, ctx);
+    ASSERT_EQ(resp.status, 200) << resp.body;
+
+    // status 取值域不得被改动；generation 仍随响应返回。
+    EXPECT_NE(resp.body.find("\"status\":\"reloaded\""), std::string::npos) << resp.body;
+    EXPECT_NE(resp.body.find("\"generation\":"), std::string::npos) << resp.body;
+
+    // 新增键 ok（位于 `data` 内，与 Envelope 根部恒为 true 的 ok **语义不同**）须**恒出现**，且其值
+    // 必须与**重载后** pipe 的真实降级态一致。
+    //
+    // ⚠️ 如实口径（本次订正）：原注释称「ok 恒出现…断言…又不依赖环境」，两句都**失实**：
+    //   (a) `ok` 的**存在性从未被断言**：原断言只比较取值，一个完全不输出该键的实现也能通过
+    //       （彼时 bodySaysNotOk 恒 false，只要重载后未降级即恒真）。
+    //   (b) 原断言在本机**退化为恒真**：reloadRuntime 用的是 settings 存储里的配置，其 cascadePath
+    //       默认是 `resolvePathFromExeDir("assets/lbpcascade_frontalface.xml")`（= **测试可执行文件所在
+    //       目录**下的 assets/，而 win_local_service 的 POST_BUILD 会把该 XML 拷到构建输出目录）⇒
+    //       本机该文件**存在**，重载后恒 `degAfter.active==false`，恒走「未降级」那一侧；CI 只构建
+    //       `win_unit_tests` 等测试 target、**不**构建 win_local_service ⇒ 该 assets 不存在，走另一侧。
+    //       即同一用例在两环境下命中的分支**不同**，判别力也不同。
+    //   故下方补一条**存在性断言**（解析响应体、要求顶层 `data.ok` 存在且为布尔）——它与降级与否
+    //   无关，是两环境下都成立的那一半；取值一致性一条保留（它只在降级环境下具备判别力）。
+    rk_win::JsonValue reloadDoc;
+    std::string reloadParseErr;
+    ASSERT_TRUE(rk_win::parseJson(resp.body, reloadDoc, reloadParseErr))
+        << "reload 响应体不是良构 JSON: " << reloadParseErr << " body=" << resp.body;
+    ASSERT_TRUE(reloadDoc.isObject()) << resp.body;
+    const rk_win::JsonValue* reloadData = reloadDoc.find("data");
+    ASSERT_NE(reloadData, nullptr) << "reload 响应缺 data 层（Envelope 形状被改？）: " << resp.body;
+    ASSERT_TRUE(reloadData->isObject()) << resp.body;
+    const rk_win::JsonValue* dataOk = reloadData->find("ok");
+    ASSERT_NE(dataOk, nullptr)
+        << "reload 的 data 必须**恒含** ok 键（与是否降级无关）: " << resp.body;
+    ASSERT_TRUE(dataOk->isBool()) << resp.body;
+
+    const auto degAfter = pipe.degraded();
+    EXPECT_EQ(!dataOk->b, degAfter.active) << resp.body;
+    EXPECT_EQ(resp.body.find("\"warning\"") != std::string::npos,
+              degAfter.active && !degAfter.warning.empty())
+        << resp.body;
+}
 #else
 TEST(ClientThreadPool, ReclaimsFinishedThreads) {
     GTEST_SKIP() << "std::thread 用例仅在 win_unit_tests (Windows + OpenCV) 下运行";
@@ -1455,5 +1654,19 @@ TEST(StaticFileToctou, ReadFileWithinRootRejectsInsideSymlink) {
 }
 TEST(StaticFileToctou, ReadFileWithinRootMissingFileReturnsFalse) {
     GTEST_SKIP() << "TOCTOU 用例需要 Windows symlink API，仅在 win_unit_tests 下运行";
+}
+// FACE-ARCWIN-003 运行时装配状态用例：依赖 FramePipeline（std::thread / OpenCV 识别器装配），
+// 仅在 win_unit_tests（Windows + OpenCV）下运行。
+TEST(HttpFacesRuntimeStatus, HealthReportsDegradedWithReasonCode) {
+    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
+}
+TEST(HttpFacesRuntimeStatus, HealthKeepsConfigStatusAlongsideRuntimeStatus) {
+    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
+}
+TEST(HttpFacesRuntimeStatus, HealthReportsStartingWhenNotAssembled) {
+    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
+}
+TEST(HttpFacesRuntimeStatus, ReloadResponseKeepsReloadedStatusAndAddsOutcome) {
+    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
 }
 #endif

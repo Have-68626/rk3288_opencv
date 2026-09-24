@@ -87,6 +87,27 @@ if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
                 $<TARGET_FILE_DIR:win_local_service>/config/windows_camera_face_recognition.ini
         COMMENT "Copy default ini (migration source) for Windows local service"
     )
+
+    # models/ 为 gitignore 的二进制目录（`models/*` 仅跟踪 .gitkeep 与 android/ 下的文本清单），
+    # 开发机上可能不存在 ⇒ 必须先判存在再拷，否则 copy_directory 会让构建失败（同 CMakeLists.txt
+    # 里 yolo_face_int8.param 的守卫风格）。
+    # ⚠️ 已知后果（如实登记，本批不改）：`if(EXISTS ...)` 是**配置期**（configure 时）求值 ⇒ 若 configure
+    #    时刻 models/ 不存在，本 POST_BUILD 步骤**永不会被注册**；此后即使跑量化脚本生成了 models/，
+    #    再构建也**不会**拷贝——必须先**重新 configure**（重新生成 CMake 缓存）才会注册该步骤。
+    #    这是沿用 CMakeLists.txt:260 同一个 `if(EXISTS ...)` 配置期守卫的取舍：改用构建期判据需要把
+    #    逻辑挪进脚本或生成器表达式，收益不抵复杂度，故两处保持一致。
+    # ⚠️ 收益边界（如实）：本项**不会**让默认 ArcFace 权重变可用——`models/` 内并没有
+    #    `arcface_w600k_r50.onnx`（默认路径在 WinJsonConfig.cpp 指向它）；DNN 默认路径则在
+    #    `<exeDir>/storage/models/`，也不受影响。本项只把 ncnn 权重 / 校准图 / 清单搬到 exe 同级，
+    #    便利开发机上直接跑；部署机走 install()、本就不含这些目录。
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
+        add_custom_command(TARGET win_local_service POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/models
+                    $<TARGET_FILE_DIR:win_local_service>/models
+            COMMENT "Copy models dir (best-effort) for Windows local service"
+        )
+    endif()
 endif()
 
 if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
@@ -274,6 +295,7 @@ add_executable(win_unit_tests
     "tests/win/test_lbph_embedder.cpp"
     "tests/win/test_http_faces_server.cpp"
     "tests/win/test_runtime_bootstrap.cpp"
+    "tests/win/test_event_logger.cpp"
     "tests/win/test_endpoint_registry.cpp"
     "tests/win/test_frame_pipeline_reload.cpp"
     "tests/win/test_win_json_config.cpp"
@@ -305,6 +327,9 @@ add_executable(win_unit_tests
     "src/cpp/src/NativeLog.cpp"
     "src/win/src/DnnSsdFaceDetector.cpp"
     "src/win/src/StructuredLogger.cpp"
+    # test_event_logger.cpp 要真正链接 EventLogger 的实现（轮转逻辑在 .cpp 内）。此前 win_unit_tests
+    # 只编了 StructuredLogger.cpp —— 缺这一行会 LNK2019（EventLogger 的符号未解析）。
+    "src/win/src/EventLogger.cpp"
 )
 target_include_directories(win_unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
