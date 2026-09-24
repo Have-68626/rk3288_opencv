@@ -47,6 +47,28 @@ bool test_bootstrap_arcface_dir_injects_arcface_threshold();
 bool test_bootstrap_lbph_dir_injects_lbph_threshold();
 bool test_event_logger_rotates_keeps_generations_capped();
 bool test_event_logger_rotation_disabled_when_max_bytes_zero();
+bool test_event_logger_prunes_shrunk_generations();
+// 日志轮转三件套（tests/win/test_log_rotation.cpp）：A=代数收缩原语、B=StructuredLogger、C=RenderMetricsLogger。
+bool test_prune_shrunk_generations_removes_excess();
+bool test_prune_shrunk_generations_spares_current();
+bool test_prune_shrunk_generations_spares_foreign_suffixes();
+bool test_prune_shrunk_generations_noop_when_disabled();
+bool test_prune_shrunk_generations_noop_on_missing_dir();
+bool test_prune_shrunk_generations_count_is_exact();
+bool test_prune_shrunk_generations_huge_suffix_no_throw();
+bool test_structured_logger_rotates_and_caps_generations();
+bool test_structured_logger_no_rotation_when_max_bytes_zero();
+bool test_structured_logger_write_handle_follows_current();
+bool test_structured_logger_open_rolls_oversized_cold_start();
+bool test_structured_logger_open_is_idempotent();
+bool test_structured_logger_header_preserved_across_open_rotation();
+bool test_structured_logger_header_preserved_across_append_rotation();
+bool test_structured_logger_open_prunes_shrunk_generations();
+bool test_structured_logger_rename_failure_does_not_reset_header();
+bool test_render_metrics_logger_rotates_and_caps_generations();
+bool test_render_metrics_logger_no_rotation_when_max_bytes_zero();
+bool test_render_metrics_logger_open_default_arguments();
+bool test_render_metrics_logger_open_rolls_oversized_cold_start();
 bool test_registry_dispatch_returns_200_for_matching_route();
 bool test_registry_returns_405_for_method_mismatch();
 bool test_pipeline_concurrent_reload_no_uaf();
@@ -206,6 +228,28 @@ int main(int argc, char** argv) {
         {"test_bootstrap_lbph_dir_injects_lbph_threshold", test_bootstrap_lbph_dir_injects_lbph_threshold},
         {"test_event_logger_rotates_keeps_generations_capped", test_event_logger_rotates_keeps_generations_capped},
         {"test_event_logger_rotation_disabled_when_max_bytes_zero", test_event_logger_rotation_disabled_when_max_bytes_zero},
+        {"test_event_logger_prunes_shrunk_generations", test_event_logger_prunes_shrunk_generations},
+        // 日志轮转三件套（用例定义在 tests/win/test_log_rotation.cpp）——A/B/C 三组。
+        {"test_prune_shrunk_generations_removes_excess", test_prune_shrunk_generations_removes_excess},
+        {"test_prune_shrunk_generations_spares_current", test_prune_shrunk_generations_spares_current},
+        {"test_prune_shrunk_generations_spares_foreign_suffixes", test_prune_shrunk_generations_spares_foreign_suffixes},
+        {"test_prune_shrunk_generations_noop_when_disabled", test_prune_shrunk_generations_noop_when_disabled},
+        {"test_prune_shrunk_generations_noop_on_missing_dir", test_prune_shrunk_generations_noop_on_missing_dir},
+        {"test_prune_shrunk_generations_count_is_exact", test_prune_shrunk_generations_count_is_exact},
+        {"test_prune_shrunk_generations_huge_suffix_no_throw", test_prune_shrunk_generations_huge_suffix_no_throw},
+        {"test_structured_logger_rotates_and_caps_generations", test_structured_logger_rotates_and_caps_generations},
+        {"test_structured_logger_no_rotation_when_max_bytes_zero", test_structured_logger_no_rotation_when_max_bytes_zero},
+        {"test_structured_logger_write_handle_follows_current", test_structured_logger_write_handle_follows_current},
+        {"test_structured_logger_open_rolls_oversized_cold_start", test_structured_logger_open_rolls_oversized_cold_start},
+        {"test_structured_logger_open_is_idempotent", test_structured_logger_open_is_idempotent},
+        {"test_structured_logger_header_preserved_across_open_rotation", test_structured_logger_header_preserved_across_open_rotation},
+        {"test_structured_logger_header_preserved_across_append_rotation", test_structured_logger_header_preserved_across_append_rotation},
+        {"test_structured_logger_open_prunes_shrunk_generations", test_structured_logger_open_prunes_shrunk_generations},
+        {"test_structured_logger_rename_failure_does_not_reset_header", test_structured_logger_rename_failure_does_not_reset_header},
+        {"test_render_metrics_logger_rotates_and_caps_generations", test_render_metrics_logger_rotates_and_caps_generations},
+        {"test_render_metrics_logger_no_rotation_when_max_bytes_zero", test_render_metrics_logger_no_rotation_when_max_bytes_zero},
+        {"test_render_metrics_logger_open_default_arguments", test_render_metrics_logger_open_default_arguments},
+        {"test_render_metrics_logger_open_rolls_oversized_cold_start", test_render_metrics_logger_open_rolls_oversized_cold_start},
         {"pipeline_concurrent_reload_no_uaf", test_pipeline_concurrent_reload_no_uaf},
         {"pipeline_switch_camera_switches_source", test_pipeline_switch_camera_switches_source},
         {"pipeline_switch_camera_failure_keeps_old", test_pipeline_switch_camera_failure_keeps_old},

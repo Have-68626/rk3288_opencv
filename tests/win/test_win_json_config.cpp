@@ -1451,11 +1451,16 @@ bool test_config_lbph_threshold_over_physical_max_clamped() {
 // ─────────────────────────────────────────────────────────────────────────────
 // FACE-CONFIG-017（S-3）：log 段的 maxFileBytes × maxRollFiles 超总预算时**就地钳制并告警**。
 //
-// 口径（本批由「×2 份文件集」订正为「×3 份」）：落盘总量 = maxFileBytes × (maxRollFiles + 1)，
-// 而落盘面为 **3 份**文件集 —— recognition.csv 与 recognition.jsonl（StructuredLogger），外加
-// **event_log.jsonl**（EventLogger **复用同一对上限、同一目录**）⇒ 实占磁盘为上式 ×3，且三份**合计**
-// 受 kLogBudgetBytes = 512 MiB 总预算约束（单份均分额 kLogPerSetBudgetBytes = kLogBudgetBytes / 3
-// = 178956970 B）。schema 允许 1 GiB × 1001 ⇒ 乘以 3 份后最坏约 3 TiB ⇒ 可通过配置造成磁盘耗尽。
+// 口径（本批由「×2 份文件集」订正为「×3 份」，再由「×3」订正为「×4」）：落盘总量 =
+// maxFileBytes × (maxRollFiles + 1)，而落盘面为**最多 4 份**文件集 —— recognition.csv 与
+// recognition.jsonl（StructuredLogger）、**event_log.jsonl**（EventLogger **复用同一对上限、同一目录**，
+// 三份由 win_local_service 写），以及 **render_metrics.jsonl**（RenderMetricsLogger，**仅旧版 UI 目标**
+// win_camera_face_recognition 写）⇒ 实占磁盘为上式 ×4，且四份**合计**受 kLogBudgetBytes = 512 MiB
+// 总预算约束（单份均分额 kLogPerSetBudgetBytes = kLogBudgetBytes / 4 = 134217728 B = 128 MiB）。
+// ⚠️ 除数取 4 而非 3 的推导见 WinConfig.h 的 kLogFileSetCount：两个可执行体写入的份数不同
+// （服务 3 份、旧版 UI 4 份），而 maxFileBytes / maxRollFiles 是**同一份 config.json 的两个键**、
+// 被两者共用 ⇒ 预算要成立就必须按**写得多**的那个分配。
+// schema 允许 1 GiB × 1001 ⇒ 乘以 4 份后最坏约 4 TiB ⇒ 可通过配置造成磁盘耗尽。
 // 判别点：删掉 normalizeLogBudgetKeys（或钳制函数退化为恒等）⇒ store.current() 仍是 1 GiB / 1000
 // ⇒ **值断言先行变红**（预算断言在其后，因 `return false` 短路而**不会被观测到**——两句是一起被该
 // 变异违反的，但红灯只有一条）；把钳制写成「拒绝」⇒ rejected 断言先红（那正是要避免的红线形态）。
@@ -1469,8 +1474,8 @@ bool test_config_log_budget_clamped_to_total_budget() {
     // （1 GiB 时下界撞 schema 的最小值 1）。
     if (rk_win::clampLogMaxFileBytes(kOneGiB) != rk_win::kLogMaxFileBytesCap) return false;
     if (rk_win::clampLogMaxRollFiles(kOneGiB, 1000) != 1) return false;
-    // 10 MiB：均分额 / 10 MiB = 178956970 / 10485760 = 17（无符号除法即下取整）⇒ 上界 = 17 − 1 = 16。
-    if (rk_win::clampLogMaxRollFiles(kTenMiB, 1000) != 16) return false;
+    // 10 MiB：均分额 / 10 MiB = 134217728 / 10485760 = 12（无符号除法即下取整）⇒ 上界 = 12 − 1 = 11。
+    if (rk_win::clampLogMaxRollFiles(kTenMiB, 1000) != 11) return false;
     // 只压上界、不抬下界（下界属既有 schema 契约，放宽会改变「既有非法配置被拒」的语义）：
     if (rk_win::clampLogMaxFileBytes(0) != 0) return false;
     if (rk_win::clampLogMaxRollFiles(kTenMiB, 0) != 0) return false;
@@ -1509,8 +1514,8 @@ bool test_config_log_budget_clamped_to_total_budget() {
     if (cfg.log.maxFileBytes != rk_win::kLogMaxFileBytesCap) return false;
     if (cfg.log.maxRollFiles != 1) return false;
     // ★ 单份均分额判据（口径与钳制函数一致：maxFileBytes × (maxRollFiles + 1) ≤ **单份均分额**）。
-    //   注意**不要**与 kLogBudgetBytes 比较——那是三份**合计**的总预算，拿单份乘积去比虽然仍会通过，
-    //   但会放过「单份超均分额、三份合计恰好未超」的实现漂移（口径失准）。
+    //   注意**不要**与 kLogBudgetBytes 比较——那是四份**合计**的总预算，拿单份乘积去比虽然仍会通过，
+    //   但会放过「单份超均分额、四份合计恰好未超」的实现漂移（口径失准）。
     if (cfg.log.maxFileBytes * (static_cast<std::uint64_t>(cfg.log.maxRollFiles) + 1) >
         rk_win::kLogPerSetBudgetBytes) {
         return false;
