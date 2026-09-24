@@ -1100,7 +1100,7 @@ cmake --build build_ci --target core_unit_tests
 ctest --test-dir build_ci --output-on-failure
 ```
 
-Expected: All tests pass. CI 6 个 job 不变。
+Expected: All tests pass. CI 当时为 6 个 job（现为 7 个：`changes` / `repo-hygiene` / `unit-tests` / `docs-audit` / `web` / `android` / `windows`，见 `.github/workflows/ci.yml`）。
 
 - [ ] **Step 8: 提交**
 

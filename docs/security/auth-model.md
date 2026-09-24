@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-08-13
+as_of=2026-09-23
 -->
 
 # HTTP 认证授权模型（S-SEC-B09-001）
@@ -17,9 +17,11 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
 当前**全匿名**可达：
 
 - `EndpointRegistry::dispatch`（`src/win/src/EndpointRegistry.cpp:9-24`）无鉴权；
-- 注册点 `registerAllHttpApi`（`src/win/src/JsonEndpointHandlers.cpp:405-436`）
-  中的写操作（PUT settings、POST actions）与流式端点（SSE/MJPEG，经
-  `HttpFacesServer.cpp:605-611` StreamSessionRunner 旁路）均匿名可达；
+- 注册点 `registerAllHttpApi`（`src/win/src/JsonEndpointHandlers.cpp`）中的写操作
+  （PUT settings、POST actions）与流式端点（SSE/MJPEG，经
+  `HttpFacesServer.cpp:758-759` StreamSessionRunner 旁路）均匿名可达；
+  （该引用只到符号级、**不写行号**：`JsonEndpointHandlers.cpp` 的行数随本批 485→538 的改动
+  持续漂移，写行号等于制造下一处失真；同一取舍见 `docs/designs/model-acquisition-import.md` §7。）
 - 服务仅 bind `127.0.0.1`，但本机任意进程/用户仍可调用（包括浏览器访问已打开的
   前端页面后调用管理 API、恶意本机进程扫描、以及 DNS-rebinding 类绕过）。
 
