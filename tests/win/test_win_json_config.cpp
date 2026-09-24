@@ -402,6 +402,77 @@ bool test_config_masked_echo_preserves_real_value() {
     return store.current().poster.enable;
 }
 
+// 清空 postUrl 的**端到端**完备性（「经 UI 清空」这一修复的后端承重路径，此前**零覆盖**）。
+//
+// 为什么必须有这条：前端「把 "***" 删空并保存 = 显式清空」能成立，**前提是后端接受并持久化空串**。
+//   空串在这条链上要连过四关，任一关被改坏都会让「清空」静默失效甚至更糟：
+//     ① updateFromJsonBody 的 stripMaskedSentinels **只剔精确 "***"、不剔 ""**（若哪天连空串也剔，
+//        语义就变成"不修改" ⇒ 清空永久不生效，且界面仍报保存成功）；
+//     ② schema 的 poster.postUrl 串分支**无 minLength / pattern**（JsonSchemaValidator 也未实现
+//        minLength）⇒ "" 通过校验；
+//     ③ **空明文加解密往返**：encryptSensitive 分支对空串加密 ⇒ base64Encode(空缓冲) 显式早退返回
+//        空 ciphertext ⇒ 解密侧只守 nonce/tag、不守 ciphertext ⇒ 还原为空明文。
+//        ⚠️ 这一步在 MSVC/BCrypt 上搭了「pbInput 与 pbOutput **同为 NULL** ⇒ 按零长度认证加密处理」
+//        这一**特例**的便车（空 vector 的 data() 为 nullptr）。若该特例不成立，落盘 tag 会是全零 ⇒
+//        重启解密失败 ⇒ 整份 config 被隔离（FACE-CONFIG-001）⇒ **清空被静默撤销**并回落默认 URL。
+//        故本用例是这条特例的**唯一**实测判据。
+//     ④ 装载侧对 postUrl 用 `find("postUrl")` 的**存在性**判据（不是 getString 的缺失回退）⇒ 键存在
+//        且为空串时**保留空串**，不会被 defaultAppConfig 的默认 URL 顶回。
+//   ③ 最危险且全仓此前没有任何用例触达：默认 postUrl 非空（WinConfig.h 的默认值），既有的 roundtrip /
+//   masked-echo 用例都不写空 postUrl，`tests/` 也从不直接测 aes256gcm*。
+// 判别点：① 若 strip 改成也剔空串 / ③ 若给加密加空输入早退 / ④ 若装载侧改成"空串视为缺失"，
+//   下方对应断言即变红；把 PUT 改成不落盘同样红（重载实例会看到默认 URL）。
+bool test_config_empty_post_url_round_trips_and_survives_reload() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    // 该 env 会在装载时**覆盖** postUrl（WinJsonConfig 的冗余 env 覆盖块），必须清掉否则本用例假红。
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("empty_posturl");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    const std::string realUrl = "https://real.example/api/faces";
+    const auto resSet = store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + realUrl + "\"}}");
+    if (!resSet.ok) return false;
+    if (store.current().poster.postUrl != realUrl) return false;
+
+    // ① + ③：PUT 显式清空（这正是 UI 从「删空 "***"」发出的形状——哨兵在前端已被折算掉，补丁里就是空串）。
+    // 同时改一个**可判别**的同段字段：若落盘文件被损坏到无法装载、或以默认值启动，throttleMs 会是默认
+    // 100 而非 1234 ⇒ 下面那条断言即可区分「读到了同一份文件」与「整体回落默认值」。
+    const auto resClear = store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"\",\"throttleMs\":1234}}");
+    if (!resClear.ok) return false;
+    if (!store.current().poster.postUrl.empty()) {
+        std::cerr << "[empty_posturl] PUT 空串后 current().poster.postUrl 非空（长度 "
+                  << store.current().poster.postUrl.size() << "）" << std::endl;
+        return false;
+    }
+    if (!std::filesystem::exists(cfgPath)) return false;
+
+    // ② + ④：**新实例**读同一份落盘 config.json ⇒ 完整覆盖「空明文加密 → base64Encode(空) → 解密还原」
+    // 与「键存在且为空串 ⇒ 保留空串」。
+    rk_win::WinJsonConfigStore reloaded;
+    std::string warn2;
+    reloaded.initialize(warn2);
+    if (!reloaded.current().poster.postUrl.empty()) {
+        std::cerr << "[empty_posturl] 重载后 postUrl 非空（长度 "
+                  << reloaded.current().poster.postUrl.size()
+                  << "）——空明文往返失败，或空串被当成缺失而回落默认值/旧值" << std::endl;
+        return false;
+    }
+    if (reloaded.current().poster.throttleMs != 1234) {
+        std::cerr << "[empty_posturl] 重载后 throttleMs=" << reloaded.current().poster.throttleMs
+                  << "（期望 1234）——落盘文件未生效或被拒后以默认值启动" << std::endl;
+        return false;
+    }
+    return true;
+}
+
 // FACE-ARCWIN-006/007 迁移不变式：既有 config.json 缺 identifyThresholdArcFace 时必须被接受并取默认 0.45。
 //
 // 为什么必须有这条：identifyThresholdArcFace 已**收束进 schema.required**（三处同步）。既有部署的
