@@ -296,6 +296,7 @@ add_executable(win_unit_tests
     "tests/win/test_http_faces_server.cpp"
     "tests/win/test_runtime_bootstrap.cpp"
     "tests/win/test_event_logger.cpp"
+    "tests/win/test_log_rotation.cpp"
     "tests/win/test_endpoint_registry.cpp"
     "tests/win/test_frame_pipeline_reload.cpp"
     "tests/win/test_win_json_config.cpp"
@@ -330,6 +331,12 @@ add_executable(win_unit_tests
     # test_event_logger.cpp 要真正链接 EventLogger 的实现（轮转逻辑在 .cpp 内）。此前 win_unit_tests
     # 只编了 StructuredLogger.cpp —— 缺这一行会 LNK2019（EventLogger 的符号未解析）。
     "src/win/src/EventLogger.cpp"
+    # test_log_rotation.cpp 的 C 组要真正链接 RenderMetricsLogger 的实现（轮转逻辑在 .cpp 内）。
+    # 缺这一行会 LNK2019（RenderMetricsLogger::open / append 的符号未解析）。
+    # ⚠️ 该 .cpp 另需 psapi（GetProcessMemoryInfo —— 本 target 已链接）与 **dxgi**
+    #    （CreateDXGIFactory1，用于 gpuMemoryBytesBestEffort）——dxgi 已加入下方 target_link_libraries，
+    #    详见该处的实测更正说明。
+    "src/win/src/RenderMetricsLogger.cpp"
 )
 target_include_directories(win_unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
@@ -349,6 +356,13 @@ target_link_libraries(win_unit_tests
     bcrypt
     crypt32
     ws2_32
+    # RenderMetricsLogger.cpp 的 gpuMemoryBytesBestEffort 调 CreateDXGIFactory1（见该 .cpp 的
+    # 该函数）；psapi 侧（GetProcessMemoryInfo）由既有链接面提供。缺 dxgi 会 LNK2019 + LNK1120。
+    # ⚠️ 实测更正：曾据「Release 下 /OPT:REF 会丢弃未被引用的 gpuMemoryBytesBestEffort COMDAT」
+    #   断言此处**无需** dxgi —— **该断言经真实构建证伪**（Release + VS2022 下确实报
+    #   `无法解析的外部符号 CreateDXGIFactory1`）。该函数是非 inline 的外部符号，不构成本可被
+    #   /OPT:REF 剥离的 COMDAT，故无论 Release / Debug 都必须显式链接。
+    dxgi
 )
 add_test(NAME win_unit_tests COMMAND win_unit_tests)
 # 并发死锁保护：win_unit_tests 多线程用例死锁会无限挂起 ctest（B06-014），设 120s 超时

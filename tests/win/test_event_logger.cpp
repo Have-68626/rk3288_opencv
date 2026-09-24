@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -144,6 +145,43 @@ bool test_event_logger_rotation_disabled_when_max_bytes_zero() {
                   << " 字节，期望 " << (singleLine * 20) << "（不轮转路径不得丢记录/不得截断）"
                   << std::endl;
         return false;
+    }
+    return true;
+}
+
+// FACE-LOG-001 的**代数收缩清理**面：maxRollFiles 由大调小时，open() 必须清掉索引大于新上限的既有
+// 档位（`.6` … 这类历史档位否则会被轮转循环永久遗漏、继续占盘，使「maxFileBytes × (maxRollFiles + 1)」
+// 的预算记账在收缩之后不成立）。本用例复用本文件的 TempLogDir / pathExists / sizeOf 三个匿名命名空间
+// 辅助（不重复定义；刻意沿用 pathExists 之名以避开 ADL 把 std::filesystem::exists 拉进重载集的 C2668）。
+// 判别点（每条都能单独打红）：
+//   1) 删掉 EventLogger::open 里对 pruneShrunkGenerations 的调用 ⇒ `.3`/`.4`/`.5` 永久滞留 ⇒「未删」断言红；
+//   2) 把本原语的 `gen <= maxRollFiles continue` 边界放宽（误删 <= 上限的档位）⇒ `.1`/`.2` 被误删 ⇒ 红。
+// maxBytes 取极大、且不预置当前文件 ⇒ rollIfNeededLocked 不触发轮转，本用例只观察收缩、不掺杂轮转。
+bool test_event_logger_prunes_shrunk_generations() {
+    TempLogDir tmp("prune_generations");
+    const std::filesystem::path dir = tmp.path();
+    for (int i = 1; i <= 5; ++i) {
+        std::ofstream f(dir / ("event_log.jsonl." + std::to_string(i)), std::ios::out | std::ios::trunc);
+        f << "g" << i;  // 预置既有档位；直接写文件、不经日志器
+    }
+
+    rk_win::EventLogger log;
+    if (!log.open(dir, 10ULL * 1024ULL * 1024ULL, 2)) return false;  // maxBytes 极大 ⇒ 只观察代数收缩
+
+    for (int i = 1; i <= 2; ++i) {
+        if (!pathExists(dir / ("event_log.jsonl." + std::to_string(i)))) {
+            std::cerr << "[event_logger_prune] 档位 event_log.jsonl." << i
+                      << " 被误删（N <= maxRollFiles=2 必须保留）" << std::endl;
+            return false;
+        }
+    }
+    for (int i = 3; i <= 5; ++i) {
+        if (pathExists(dir / ("event_log.jsonl." + std::to_string(i)))) {
+            std::cerr << "[event_logger_prune] 档位 event_log.jsonl." << i
+                      << " 未删（N > maxRollFiles=2 必须清掉）——代数收缩清理未在 open 生效"
+                      << std::endl;
+            return false;
+        }
     }
     return true;
 }
