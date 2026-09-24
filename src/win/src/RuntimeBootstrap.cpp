@@ -80,8 +80,15 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
     }
 
     // 识别器初始化失败 => ok=false 并写入用户可见 warning。
-    // ⚠️ 如实口径：这只是**启动期可见告警，并非硬阻断**——调用方 FramePipeline::initialize
-    //    仅把该 warning 落到 render_.status，其 main() 也不检查返回值，服务仍照常启动；是否改为
+    // ⚠️ 如实口径：这只是**启动期可见告警，并非硬阻断**——调用方 `FramePipeline::initialize` 对
+    //    `!bootstrap.ok` 做三件事，**三者都不阻断流程**：
+    //      ① 写 `render_.status`（既有显示路径）；
+    //      ② 一等化为 `FramePipeline::degraded_`，经 `GET /api/v1/health` 的
+    //         `status` / `reasonCode` / `warning` / `degradedSince` / `availableFeatures` 只读发布；
+    //      ③ 落一条 `model_init_failed` 事件到 EventLogger —— ⚠️ 该条**只有 `win_local_service` 可达**：
+    //         相机 UI 应用在 `initialize` 时 `events_` 仍为 nullptr（其 `setEventLogger` 晚于
+    //         `initialize`），详见 FramePipeline.cpp 内的登记。
+    //    `initialize` 仍恒返回 true，两个 `main` 也仍不检查其返回值 ⇒ 服务仍照常启动。是否改为
     //    硬中止（fail-closed）属产品决策，不在本层处理。此处仍构造 DNN，供调用方决定是否降级。
     if (!recognizerOk) {
         result.ok = false;
