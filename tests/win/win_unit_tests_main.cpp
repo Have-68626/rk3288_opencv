@@ -87,6 +87,7 @@ bool test_config_default_serialization_passes_schema();
 bool test_config_each_single_field_put_passes_schema();
 bool test_config_roundtrip_and_schema_alignment();
 bool test_config_masked_echo_preserves_real_value();
+bool test_config_empty_post_url_round_trips_and_survives_reload();
 bool test_config_missing_arcface_threshold_key_migrates();
 bool test_config_arcface_threshold_out_of_range_rejected();
 bool test_config_rejected_load_quarantines_and_degrades();
@@ -266,6 +267,7 @@ int main(int argc, char** argv) {
         {"config_each_single_field_put_passes_schema", test_config_each_single_field_put_passes_schema},
         {"config_roundtrip_and_schema_alignment", test_config_roundtrip_and_schema_alignment},
         {"config_masked_echo_preserves_real_value", test_config_masked_echo_preserves_real_value},
+        {"config_empty_post_url_round_trips_and_survives_reload", test_config_empty_post_url_round_trips_and_survives_reload},
         {"config_missing_arcface_threshold_key_migrates", test_config_missing_arcface_threshold_key_migrates},
         {"config_arcface_threshold_out_of_range_rejected", test_config_arcface_threshold_out_of_range_rejected},
         {"config_rejected_load_quarantines_and_degrades", test_config_rejected_load_quarantines_and_degrades},

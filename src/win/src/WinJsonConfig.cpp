@@ -462,6 +462,14 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
             std::vector<std::uint8_t> plainBin(plain.begin(), plain.end());
             AesGcmCiphertext ct;
             std::string e;
+            // ⚠️ **空明文**（= "经 UI 清空 postUrl" 落盘后的形态）依赖一个 MSVC/BCrypt 特例：
+            //   空 vector 的 data() 为 nullptr，而 aes256gcmEncrypt 把它作为 pbInput 传入；CNG 的
+            //   「pbInput 与 pbOutput **同为 NULL** ⇒ 按零长度认证加密处理、tag 经 pPaddingInfo 返回」
+            //   特例使加密成立（否则会落进 size-query 分支、tag 保持全零 ⇒ 重启解密失败 ⇒ 整份 config
+            //   被隔离 ⇒ **清空被静默撤销**）。该依赖**不是**代码显式追求的，故由
+            //   tests/win 的 test_config_empty_post_url_round_trips_and_survives_reload 实测钉住
+            //   （它是这条路径的**唯一**判据）；若该用例在别的 CRT/BCrypt 版本上变红，请先修这里
+            //   （改为传一个非空哑指针），不要改测试。
             if (!aes256gcmEncrypt(*keyOpt, plainBin, ct, e, "poster.postUrl")) {
                 errOut = e;
                 return JsonValue{};
@@ -750,7 +758,15 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
                     outErr = "postUrl 解密失败: " + e;
                     return false;
                 }
-                cfg.poster.postUrl.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
+                // ⚠️ 空明文（"经 UI 清空 postUrl" 落盘后就是这个形态）时 plain 为空 vector，其 data()
+                //   可能是 nullptr，而标准要求 assign(const char*, n) 的指针非空（n=0 亦然）⇒ 显式判空，
+                //   不依赖实现的宽容（这条路径由 tests/win 的
+                //   test_config_empty_post_url_round_trips_and_survives_reload 钉住）。
+                if (plain.empty()) {
+                    cfg.poster.postUrl.clear();
+                } else {
+                    cfg.poster.postUrl.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
+                }
             }
         }
 
