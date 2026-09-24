@@ -23,13 +23,15 @@ import FlipSwitch from '../components/FlipSwitch'
 
 import { rotateCryptoKey } from '../api/actions'
 import { getModels, reloadModel } from '../api/models'
-import type { ActiveModelInfo, ModelsResponse } from '../api/types'
+import type { ActiveModelInfo, ModelsResponse, ServerSettingsDoc } from '../api/types'
 import { getErrorMessage } from '../api/error'
 import { ApiError } from '../api/http'
 import { useAppStore } from '../state/AppStore'
-// ⚠️ 不再直接 import diffPatch：归一化 + diff 已收进 buildSettingsSubmission（纯函数，可单测）；本文件里
-//   对 diffPatch 的提及只剩注释。若将来又需要直接调用它，请连同判别用例一起加回。
-import { buildServerFormModelFromDoc, buildSettingsSubmission, isSettingsDocComplete, type ServerFormModel } from '../utils/serverFormModel'
+// ⚠️ 不直接 import diffPatch / buildSettingsSubmission：归一化 + diff + 提交流程已收进
+//   serverFormModel.ts —— buildSettingsSubmission 是其内的纯逻辑，提交编排见 makeSettingsSubmitHandler；
+//   本文件只 import makeSettingsSubmitHandler 接线，对 diffPatch 的提及只剩注释。若将来又需要直接调用
+//   diffPatch，请连同判别用例一起加回。
+import { buildServerFormModelFromDoc, isSettingsDocComplete, makeSettingsSubmitHandler, type ServerFormModel } from '../utils/serverFormModel'
 
 // ⚠️ 覆盖边界（FACE-ARCWIN-005 / S-5）——改本文件前必读。
 //
@@ -40,8 +42,8 @@ import { buildServerFormModelFromDoc, buildSettingsSubmission, isSettingsDocComp
 //   camera / recognition / inference / dnn / model / http / poster / log / ui / display / acceleration
 // ⚠️ 「模型里有这个字段」≠「UI 能编辑它」：真正决定可编辑性的，是本文件下方 Collapse 里有没有
 //   对应的 <Form.Item name={[段, 键]}>。当前建模出的**每一个**字段都有对应控件；下面这条提示
-//   是给将来留的——若只加建模不加控件，字段不会丢值（提交时原值原样带回，见 onFinish 里
-//   getFieldsValue(true) 的说明），但用户在 UI 上改不到它。
+//   是给将来留的——若只加建模不加控件，字段不会丢值（提交时原值原样带回，见 submitSettings 的 getValues
+//   说明），但用户在 UI 上改不到它。
 //   新增字段的落地清单：① types.ts（契约）→ ② serverFormModel.ts（建模 + 兜底默认值）
 //   → ③ 本文件的 Collapse 控件（值域照下方"值域"一段：运行时 schema 是事实源，加两份文档镜像共三处）。
 //
@@ -103,6 +105,55 @@ export function ServerSettingsTab() {
   const [modelsStatus, setModelsStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle')
   const [modelsError, setModelsError] = useState('')
   const [reloadingId, setReloadingId] = useState<string | null>(null)
+
+  // 提交处理器：**流程本体在 serverFormModel.ts**（依赖注入），本组件只提供副作用（各 effect 绑定到哪个
+  //   antd 调用 / AppStore 方法）。
+  // ⚠️ 如实口径：被覆盖的是**流程编排**（四条分支）；**本组件这一层适配**（onFinish 挂接、
+  //   `getFieldsValue(true)` 的选取、各 effect 的绑定）**仍只有一条文本形态守卫**（测试组 5），
+  //   **没有**行为级覆盖——组件在 node 环境不可渲染（vitest 无 jsdom，导入它会连带拉进整棵 antd）。
+  //   不要说成"组件接线已覆盖"。
+  // 每次渲染重建（廉价）：`getBaseline` 是 getter ⇒ 永远读到最新的 baseline，不存在闭包过期。
+  const submitSettings = makeSettingsSubmitHandler(() => serverBaseline, {
+    getValues: () => serverForm.getFieldsValue(true) as ServerFormModel,
+    apply: (patch) => updateServerSettings(patch as Partial<ServerSettingsDoc>),
+    notifyNoChange: () => { message.info('没有检测到变更') },
+    notifyInvalid: (reason) => { message.error(reason) },
+    // 前置条件提示用 **warning（黄）** 而非 error（红）：原内联实现在 `!serverBaseline` 分支用的就是
+    // `message.warning`。搬流程时冻结接口一度只给了 notifyError ⇒ 会把严重度从 warning 降级为 error，
+    // 该回归由视图侧逐行核对被删流程时抓出并修正 —— 故保留一个独立的 warning 通道，不要并进 notifyError。
+    notifyWarning: (text) => { message.warning(text) },
+    // **返回本次调用的收尾句柄**（`message.loading(..., 0)` 的返回值）。刻意**不**存进渲染期共享变量：
+    //   那样同一次渲染内的两次提交会互相覆盖句柄，把先者的常驻 toast（duration=0）永久留在屏上
+    //   ——那正是"失败时 loading 卡屏"缺陷的复发形态（对抗性审计与独立复核各自命中）。
+    notifyLoadingStart: () => message.loading('正在应用设置并重启引擎...', 0),
+    notifySuccess: (text) => { message.success(text) },
+    notifyError: (text) => { message.error(text) },
+    commitBaseline: (normalized) => { setServerBaseline(normalized) },
+    describeError: (e) => {
+      // 400 的 details 是逐字段原因（路径校验失败时即在此），只显示 message 用户无从定位
+      const details = e instanceof ApiError ? e.details : undefined
+      const base = getErrorMessage(e) || '保存失败'
+      return details && details.length > 0 ? `${base}：${details.join('；')}` : base
+    },
+  })
+
+  // —— getValues 为什么取整份 store（getFieldsValue(true)），而不是 onFinish 回调的 values 参数 ——
+  //   rc-field-form 的 validateFields() 只收集**已挂载**的字段（getFieldEntities(true)），而下方 Collapse 的
+  //   未展开面板是**惰性挂载**的 ⇒ 从未展开过的面板里的字段根本不在回调参数里。
+  //   历史反例（旧内联流程取回调参数时）：poster 面板从未展开 ⇒ values.poster 是 undefined ⇒ 随后那句
+  //   values.poster.postUrl.trim() 抛 TypeError；该异常发生在 async onFinish 体内 ⇒ 只会变成 onFinish 返回的
+  //   **rejected promise**，而 rc-field-form 的 submit 只把 onFinish 包在**同步** try/catch 里（接不到异步
+  //   拒绝）⇒ 症状是"点保存毫无反应"（只有控制台 unhandled rejection）。改读整份 store 后症状消失：store
+  //   由上方同步 effect 的 setFieldsValue(整份 model) 播种 ⇒ 未展开面板的字段值也在 store 里（仍是文档原值）。
+  //   ⚠️ 顺带更正一处旧措辞（原称"回调参数缺段 ⇒ 提交时会被当成用户清空/未填写 ⇒ 整段丢失或被兜底默认值
+  //   覆盖"）——**不成立**：流程本体（serverFormModel.ts 的 makeSettingsSubmitHandler）里的 normalized
+  //   **不注入任何兜底默认值**，而 diffPatch 对 `undefined` **直接跳过**（见 diffPatch.ts 的
+  //   `if (d !== undefined)`）⇒ 某段若真的缺失，后果只是**该段不提交**，既不会被清空、也不会被默认值覆盖。
+  //   ⇒ 面板惰性渲染只影响可编辑性，不影响提交的正确性；"未展开面板不丢字段"的真正承重者是
+  //   「整份 store 已被播种」+「diffPatch 只提交变化项（undefined 跳过）」这一对前提
+  //   （由 serverFormModel.test.ts 的"未展开面板"一组钉住）。
+  // 归一化（哨兵/全 `*` 折回 baseline、删空 = 显式清空）+ 最小 patch + 提交与提示的**编排**都在
+  //   makeSettingsSubmitHandler 内；本文件不再直接调用 buildSettingsSubmission，只经上方 effects 提供副作用。
 
   useEffect(() => {
     setModelsStatus('loading')
@@ -179,56 +230,7 @@ export function ServerSettingsTab() {
           form={serverForm}
           layout="vertical"
           disabled={!formReady}
-          onFinish={async () => {
-            if (!serverBaseline) {
-              message.warning('尚未加载 baseline，请先拉取一次后端设置')
-              return
-            }
-
-            // ⚠️ 必须取整份 store（getFieldsValue(true)），**不能**用 onFinish 回调的 values 参数：
-            //   rc-field-form 的 validateFields() 只收集**已挂载**的字段（getFieldEntities(true)），
-            //   而下面 Collapse 的未展开面板是惰性挂载的 ⇒ 从未展开过的面板里的字段根本不在回调参数里。
-            //   旧代码取回调参数，于是 poster 面板从未展开时 `values.poster` 是 `undefined`，随后那句
-            //   `values.poster.postUrl.trim()` 抛 TypeError；该异常发生在 `async onFinish` 体内 ⇒ 只会
-            //   变成 onFinish 返回的 **rejected promise**，而 rc-field-form 的 submit 只把 onFinish 包在
-            //   **同步** try/catch 里（拿它去接异步拒绝是接不到的）⇒ 用户看到的症状是"**点保存毫无反应**"
-            //   （既无成功也无失败提示，只有控制台的 unhandled rejection）。getFieldsValue(true) 读的是
-            //   **整份 store**，而 store 由上方同步 effect 的 setFieldsValue(整份 model) 播种 ⇒ 未展开
-            //   面板的字段值也在 store 里（仍是文档原值），症状消失。
-            //   ⚠️ 顺带更正旧措辞（原称"回调参数缺段 ⇒ 提交时会被当成用户清空/未填写 ⇒ 整段丢失或被兜底
-            //   默认值覆盖"）——**不成立**，别照它理解 diffPatch：下方 normalized **不注入任何兜底默认值**，
-            //   而 diffPatch 对 `undefined` **直接跳过**（见 diffPatch.ts 的 `if (d !== undefined)`）⇒ 某段
-            //   若真的缺失，后果只是**该段不提交**，既不会被清空、也不会被默认值覆盖。
-            //   ⇒ 面板惰性渲染只影响可编辑性，不影响提交的正确性；"未展开面板不丢字段"的真正承重者是
-            //   「整份 store 已被播种」+「diffPatch 只提交变化项（undefined 跳过）」这一对前提
-            //   （由 serverFormModel.test.ts 的"未展开面板"一组钉住）。
-            const values = serverForm.getFieldsValue(true) as ServerFormModel
-
-            // 归一化 + 最小 patch 由**纯函数** buildSettingsSubmission 承担（serverFormModel.ts）——
-            // 抽出去是为了让"这一行接线"本身能被 node 单测执行，而不是让每个测试各自重写一遍接线。
-            // 语义：脱敏字段初值 = 哨兵/全 `*` ⇒ 折回 baseline（不提交）；删空 ⇒ 提交显式清空；
-            //   改写 ⇒ 提交新 URL。完整成因、代价与事故面推导见 serverFormModel.ts 的字段登记与函数 doc。
-            // ⚠️ 旧实现是 `postUrlMasked && trim()==='' ? serverBaseline.poster.postUrl : trim()`：因 baseline
-            //   与本模型**同源**（同为哨兵文档）而**恒等于取 ''** ⇒ 清空被折叠回 baseline ⇒ diffPatch 判未
-            //   变更 ⇒ 清空不可达。本次修复已替换之。
-            const { normalized, patch } = buildSettingsSubmission(serverBaseline, values)
-            if (!patch) {
-              message.info('没有检测到变更')
-              return
-            }
-            try {
-              const hide = message.loading('正在应用设置并重启引擎...', 0)
-              await updateServerSettings(patch)
-              hide()
-              message.success('保存成功')
-              setServerBaseline(normalized) // 作为新的 baseline
-            } catch (e: unknown) {
-              // 400 的 details 是逐字段原因（路径校验失败时即在此），只显示 message 用户无从定位
-              const details = e instanceof ApiError ? e.details : undefined
-              const base = getErrorMessage(e) || '保存失败'
-              message.error(details && details.length > 0 ? `${base}：${details.join('；')}` : base)
-            }
-          }}
+          onFinish={submitSettings}
         >
           <Collapse
             defaultActiveKey={['http', 'ui']}

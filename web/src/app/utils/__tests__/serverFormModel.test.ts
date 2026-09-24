@@ -9,19 +9,41 @@
 //      即"改了什么就只提交什么"，未被编辑的段不会被整体回写；
 //   3) 脱敏：poster.postUrl 的 "***" 哨兵**原样留在模型里**（使「没动」与「清空」在 diffPatch 眼里
 //      不同 ⇒ 清空可达）+ postUrlMasked=true；normalizePostUrlField 的语义与**不变量**（哨兵、
-//      以及"全 `*`"的误删残留，都永不作为待提交的值送出）；buildSettingsSubmission 覆盖组件
-//      onFinish 的**真实接线**（此前那一行接线零自动覆盖，见该 describe 的说明）。
+//      以及"全 `*`"的误删残留，都永不作为待提交的值送出）；buildSettingsSubmission 与
+//      makeSettingsSubmitHandler 覆盖**提交流程本体**的行为。
+//      ⚠️ 如实口径：**组件适配层**（onFinish 挂接 / getFieldsValue(true) 的选取 / effect 绑定）
+//      **仍无行为级覆盖**，只有组 5 那条文本形态守卫——不要读成"组件接线已覆盖"。
 //      后端另有 stripMaskedSentinels 兜底，但前端**不**把"哨兵不回写"托付给那一层
 //      （该层对**非 UI 客户端**仍是唯一防线）。
 //   4) 未展开面板：整份 store 被播种后，未展开面板的字段与 baseline 同值 ⇒ diffPatch 判未变更。
 //
 // 环境：node（无 jsdom）。本文件只 import 纯模块（serverFormModel / diffPatch），
 //   不经 antd —— 这正是把模型映射从 ServerSettingsTab.tsx 拆出来的原因之一。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+// 组 5 的接线形态守卫要**读生产源码**，故需 Node 的 fs/path/url。
+// ⚠️ `tsconfig.app.json` 的 `types` 仅 `["vite/client"]` ⇒ `tsc -b`（`pnpm build` 的第一步）**不加载 node 类型**，
+//   这几个模块在 build 期会报 TS2307；而 vitest 运行时它们是可用的。本仓对同一问题的既定处置见
+//   `src/__tests__/App.routes.test.tsx` 对 `node:module` 的写法（`@ts-expect-error` + 说明），此处沿用。
+//   每个 import 各带一条指令：若将来 tsconfig 补上 node 类型，这些指令会因"未使用"而**自己报错**
+//   ⇒ 那时应删掉它们（自证式钉住，避免抑制长期残留而无人清理）。
+// @ts-expect-error node:fs 在 vitest 运行时可用；build 期类型检查不加载 node 类型
+import { readFileSync } from 'node:fs'
+// @ts-expect-error 同上（node:path 仅测试期需要）
+import { dirname, resolve } from 'node:path'
+// @ts-expect-error 同上（node:url 仅测试期需要）
+import { fileURLToPath } from 'node:url'
 
 import type { ServerSettingsDoc } from '../../api/types'
 import { diffPatch } from '../diffPatch'
 import { buildServerFormModelFromDoc, buildSettingsSubmission, isSettingsDocComplete, normalizePostUrlField, SETTINGS_SECTIONS } from '../serverFormModel'
+// 本批新增导出（脱敏 POST URL 行为收紧）；与上一行同源，分两行是为了不打乱既有导入的排版。
+import {
+  describeSettingsSaveOutcome,
+  isMaskedPlaceholder,
+  isValidMaskedPostUrl,
+  makeSettingsSubmitHandler,
+  type ServerFormModel,
+} from '../serverFormModel'
 
 // 完整文档夹具：字段集必须与 web/src/app/api/types.ts 的 ServerSettingsDoc 一致。
 // 为什么手写而不是从别处派生：本文件的用途就是"以手写的期望值独立复述契约"，派生会自证。
@@ -171,18 +193,23 @@ describe('normalizePostUrlField：语义与**不变量**', () => {
     expect(normalizePostUrlField('  http://a/b  ', '***')).toBe('http://a/b')
   })
 
-  it('undefined / null → 空串（不抛：实现用 String(v ?? \'\')，不直接对非字符串调 trim）', () => {
-    expect(normalizePostUrlField(undefined, '***')).toBe('')
-    expect(normalizePostUrlField(null, '***')).toBe('')
+  it('★ undefined / null → **返回 baseline**（按「未改动」处理，**不**当作清空）', () => {
+    // 判别点：把实现改回 `String(value ?? '').trim()` 那一形态 ⇒ 这两条变红（得到 '' ⇒ 语义变成"清空"）。
+    // 为什么必须如此：字段值为空是 store 异常 / 面板未播种的信号，把它当成"用户清空了 URL"会**静默毁掉
+    //   真实 URL**（GET 恒脱敏 ⇒ 拿不回）。失败安全方向 = 不动它。
+    expect(normalizePostUrlField(undefined, '***')).toBe('***')
+    expect(normalizePostUrlField(null, '***')).toBe('***')
+    expect(normalizePostUrlField(undefined, 'http://real')).toBe('http://real')
+    expect(normalizePostUrlField(null, 'http://real')).toBe('http://real')
   })
 })
 
-describe('buildSettingsSubmission：组件 onFinish 的**真实接线**（不只纯函数组合）', () => {
-  // ⚠️ 本组的存在理由（对抗性审计 + 独立复核**各自**命中同一缺口）：此前的"端到端"用例各自
-  //   **重实现**了一遍组件里的归一化接线 ⇒ 只证明"纯函数 + diffPatch 的组合正确"，
-  //   证明不了**组件把它接上了**——组件（ServerSettingsTab 的 onFinish）在 node 环境不可渲染
-  //   （vitest 无 jsdom）。改为直接调用生产的 buildSettingsSubmission 后，接线本身
-  //   （含"归一化与 diff 必须共用同一个 baseline"这条脆弱点）进入覆盖。
+describe('buildSettingsSubmission：归一化 + diff 的组合（提交流程内的一步）', () => {
+  // ⚠️ 本组的历史与**如实口径**（勿读成"组件接线已覆盖"）：本组原称"组件 onFinish 的真实接线"——
+  //   **该措辞在流程被搬进 makeSettingsSubmitHandler 之后已不成立**（组件不再直接调 buildSettingsSubmission，
+  //   改由工厂内部调）。现在本组覆盖的是「归一化 + diffPatch 的组合」这一步本身。
+  //   而**组件适配层**（onFinish 挂接 / getFieldsValue(true) 的选取 / effect 绑定）**仍无行为级覆盖**
+  //   ——组件在 node 环境不可渲染（vitest 无 jsdom），只有下方组 5 的文本形态守卫。
   const maskedModel = () => {
     const doc = fullDoc()
     doc.poster.postUrl = '***'
@@ -300,5 +327,320 @@ describe('isSettingsDocComplete：缺段文档必须被挡住', () => {
 
   it('undefined → false', () => {
     expect(isSettingsDocComplete(undefined)).toBe(false)
+  })
+})
+
+// ===========================================================================
+// 本批新增：脱敏 POST URL 的**行为收紧**
+//   （占位符识别 / URL 形状判据 / 保存结果文案 / 提交处理器工厂的行为级覆盖 / 接线形态守卫）
+//
+// 事故面（本批判据要挡的东西）：poster.postUrl 的**字段初值是脱敏占位符 "***"**（见
+//   buildServerFormModelFromDoc）。用户手误（把 "***" 敲成 "*x" / "xx"）若被当作合法值提交：
+//   后端 stripMaskedSentinels 只剔**精确** "***"（不剔 "*x"），而 schema 的串分支**无 pattern**
+//   ⇒ 落盘生效、**静默覆盖真实 URL**；更糟的是 GET 恒脱敏 ⇒ 用户**再也拿不回**被覆盖的 URL。
+//   ⇒ 对「脱敏分支」（baseline 自身是占位符）而言，非空且非占位符的值**必须**是形如 `<scheme>://`
+//   的合法 URL，否则拒绝提交。该收紧**只作用于脱敏分支**，非脱敏路径行为与修复前一致。
+// ===========================================================================
+
+describe('isMaskedPlaceholder：全 `*` 占位符识别（trim 后判据）', () => {
+  it('全 `*`（含首尾空白）⇒ true', () => {
+    expect(isMaskedPlaceholder('***'), '"***" 应为占位符').toBe(true)
+    expect(isMaskedPlaceholder('*'), '"*" 应为占位符').toBe(true)
+    expect(isMaskedPlaceholder('**'), '"**" 应为占位符').toBe(true)
+    expect(isMaskedPlaceholder('****'), '"****" 应为占位符').toBe(true)
+    expect(isMaskedPlaceholder(' *** '), '" *** " trim 后全 `*`，应为占位符').toBe(true)
+  })
+
+  it('空串 / 非全 `*` / 真 URL / nullish ⇒ false', () => {
+    expect(isMaskedPlaceholder(''), '空串应为 false').toBe(false)
+    expect(isMaskedPlaceholder('**x'), '"**x" 含非 `*` 字符，应为 false').toBe(false)
+    expect(isMaskedPlaceholder('x'), '"x" 应为 false').toBe(false)
+    expect(isMaskedPlaceholder('http://a'), '真 URL 应为 false').toBe(false)
+    expect(isMaskedPlaceholder(undefined), 'undefined 应为 false').toBe(false)
+    expect(isMaskedPlaceholder(null), 'null 应为 false').toBe(false)
+  })
+})
+
+describe('isValidMaskedPostUrl：占位符/空 ⇒ 合法；否则须匹配 `<scheme>://`', () => {
+  it('空串 / 纯空白 / 占位符 ⇒ true（分别代表"清空"与"未改动"，都不该报校验错）', () => {
+    expect(isValidMaskedPostUrl(''), '空串 ⇒ 合法（= 显式清空）').toBe(true)
+    expect(isValidMaskedPostUrl('   '), '纯空白 ⇒ 合法').toBe(true)
+    expect(isValidMaskedPostUrl('***'), '占位符 ⇒ 合法（未改动）').toBe(true)
+  })
+
+  it('合法 scheme URL ⇒ true（首尾空白经 trim 后判定）', () => {
+    expect(isValidMaskedPostUrl('http://a/b')).toBe(true)
+    expect(isValidMaskedPostUrl('https://a')).toBe(true)
+    expect(isValidMaskedPostUrl('rtmp://h/x')).toBe(true)
+    expect(isValidMaskedPostUrl('  http://a/b  '), 'trim 后合法').toBe(true)
+  })
+
+  it('★ 非 URL 垃圾串 ⇒ false（本批"行为收紧"的落点）', () => {
+    expect(isValidMaskedPostUrl('xx'), '"xx" 非 URL').toBe(false)
+    expect(isValidMaskedPostUrl('*x'), '"*x" 是误删占位符的残串、非 URL').toBe(false)
+    expect(isValidMaskedPostUrl('example.com/api'), '缺 scheme').toBe(false)
+    expect(isValidMaskedPostUrl('://a'), '缺 scheme 名').toBe(false)
+    // ⚠️ `://` 之后必须**有非空白内容**：`http://`（空 host）是垃圾串，必须拒（否则会落盘覆盖真实 URL）。
+    expect(isValidMaskedPostUrl('http://'), '"http://" 空 host ⇒ 非法').toBe(false)
+    expect(isValidMaskedPostUrl('http://   '), '"http://   " trim 后仍空 host ⇒ 非法').toBe(false)
+  })
+
+  it('undefined ⇒ true（按实现语义：String(undefined ?? "") 得空串 ⇒ 合法）', () => {
+    // ⚠️ 本条的期望值来自**接口语义推断**而非运行期实测（写用例时实现尚未落地）：按 String(v ?? '')
+    //   推得空串 ⇒ 合法。若实现以别的方式处理 undefined，本条会变红并揭示语义分歧（届时以实现为准）。
+    expect(isValidMaskedPostUrl(undefined)).toBe(true)
+  })
+})
+
+describe('describeSettingsSaveOutcome：保存结果文案', () => {
+  it('清空 postUrl ⇒ 明示后端停止推送', () => {
+    expect(describeSettingsSaveOutcome({ poster: { postUrl: '' } })).toBe(
+      '保存成功：POST URL 已清空（后端已停止推送）',
+    )
+  })
+
+  it('改写 postUrl ⇒ 已更新', () => {
+    expect(describeSettingsSaveOutcome({ poster: { postUrl: 'http://x' } })).toBe('保存成功：POST URL 已更新')
+  })
+
+  it('与 postUrl 无关 / 形态非法 ⇒ null，且不抛', () => {
+    const cases: [string, unknown][] = [
+      ['仅改 poster.enable', { poster: { enable: true } }],
+      ['空 patch', {}],
+      ['undefined', undefined],
+      ['字符串 patch', 'str'],
+      ['poster 为 null', { poster: null }],
+    ]
+    for (const [label, value] of cases) {
+      expect(() => describeSettingsSaveOutcome(value), `${label} 不应抛`).not.toThrow()
+      expect(describeSettingsSaveOutcome(value), `${label} 应为 null`).toBeNull()
+    }
+  })
+})
+
+// ---- 提交处理器工厂的公共夹具 ----------------------------------------------
+
+// maskedFormModel = 字段初值为脱敏占位符 "***" 的模型（生产脱敏路径）；realFormModel = 普通真值模型。
+function maskedFormModel(): ServerFormModel {
+  const doc = fullDoc()
+  doc.poster.postUrl = '***'
+  return buildServerFormModelFromDoc(doc).model
+}
+function realFormModel(): ServerFormModel {
+  return buildServerFormModelFromDoc(fullDoc()).model
+}
+// 只改 poster.postUrl，其余字段保持不变（避免误触其他段的 diff）。
+function setPostUrl(model: ServerFormModel, postUrl: string): ServerFormModel {
+  return { ...model, poster: { ...model.poster, postUrl } }
+}
+
+// effects 替身：全部以 vi.fn 记录"调了几次 / 收到什么"。apply 默认成功，可按用例覆盖为抛异常。
+// ⚠️ 说明：本组只断言"工厂调了哪个副作用、收到什么"，不重实现工厂内部逻辑——这正是把流程抽成
+//   可注入副作用的工厂（而非直接调 antd message）的目的：流程本身在 node 环境可执行、可断言。
+function makeSubmitEffects(opts: {
+  values: ServerFormModel
+  apply?: (patch: unknown) => Promise<void>
+  // 可选：覆盖某个通知回调（用于"成功路径的后续回调抛错"这类边角）
+  notifySuccess?: () => void
+}) {
+  // 收尾句柄替身：接口约定是「notifyLoadingStart **返回**本次的收尾句柄」（不是 start/end 两个回调）——
+  //   那样收尾句柄必须寄存在某处共享变量里，同一次渲染内的两次提交会互相覆盖（本轮修掉的"卡屏"复发形态）。
+  const finish = vi.fn()
+  return {
+    getValues: vi.fn(() => opts.values),
+    apply: vi.fn(opts.apply ?? (async () => {})),
+    notifyNoChange: vi.fn(),
+    notifyInvalid: vi.fn(),
+    // 前置条件提示（黄色 warning）——与"失败"（notifyError）区分：baseline 未加载属提示而非错误。
+    notifyWarning: vi.fn(),
+    notifyLoadingStart: vi.fn(() => finish),
+    notifySuccess: vi.fn(opts.notifySuccess),
+    notifyError: vi.fn(),
+    commitBaseline: vi.fn(),
+    describeError: vi.fn((e: unknown) => `描述:${String(e)}`),
+    /** 本次调用拿到的收尾句柄（spy），用于断言"收尾恰好一次"。 */
+    finish,
+  }
+}
+
+describe('makeSettingsSubmitHandler：提交流程的行为级覆盖（本批核心闭合项）', () => {
+  it('1) baseline 为 null ⇒ notifyWarning（**逐字**文案）；不进入提交（apply / notifyLoadingStart 均未调用）', async () => {
+    // 这条分支是**前置条件提示**（warning），不是失败（error）——原实现用的就是 message.warning。
+    const effects = makeSubmitEffects({ values: setPostUrl(maskedFormModel(), 'http://a/b') })
+    const handler = makeSettingsSubmitHandler(() => null, effects)
+    await handler()
+    expect(effects.notifyWarning, 'baseline 缺失应给逐字提示').toHaveBeenCalledWith(
+      '尚未加载 baseline，请先拉取一次后端设置',
+    )
+    expect(effects.notifyError, '这是提示而非失败，不得用 error 严重度').not.toHaveBeenCalled()
+    expect(effects.notifyInvalid, '不得报字段校验错').not.toHaveBeenCalled()
+    expect(effects.apply, 'baseline 缺失时不得提交').not.toHaveBeenCalled()
+    expect(effects.notifyLoadingStart, 'baseline 缺失时不应起 loading').not.toHaveBeenCalled()
+  })
+
+  it('2) 脱敏 baseline + 值仍是哨兵 "***" ⇒ 判无变更、不提交', async () => {
+    const baseline = maskedFormModel()
+    const effects = makeSubmitEffects({ values: setPostUrl(baseline, '***') })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.notifyNoChange, '值未改动应提示无变更').toHaveBeenCalledTimes(1)
+    expect(effects.apply, '未改动不得提交').not.toHaveBeenCalled()
+    expect(effects.notifyInvalid, '哨兵是合法占位符，不得报校验错').not.toHaveBeenCalled()
+  })
+
+  it('3) ★ 脱敏 baseline + 值清空（""）⇒ 提交 { poster: { postUrl: "" } }；成功文案 = 清空；commitBaseline 收到归一化整份模型', async () => {
+    const baseline = maskedFormModel()
+    const effects = makeSubmitEffects({ values: setPostUrl(baseline, '') })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.apply, '清空应恰好发一次提交').toHaveBeenCalledTimes(1)
+    expect(effects.apply.mock.calls[0][0], 'patch 恰为清空 postUrl').toEqual({ poster: { postUrl: '' } })
+    expect(effects.notifySuccess, '成功文案应明示已清空（且保留「保存成功」以免多字段保存时误判其余编辑未落盘）').toHaveBeenCalledWith('保存成功：POST URL 已清空（后端已停止推送）')
+    expect(effects.commitBaseline, '成功后应更新 baseline').toHaveBeenCalledTimes(1)
+    const committed = effects.commitBaseline.mock.calls[0][0] as ServerFormModel
+    expect(committed.poster.postUrl, '新 baseline 的 postUrl 归一后为 ""').toBe('')
+    // 判别点：若工厂误把 patch 而非"整份归一化模型"交给 commitBaseline，committed.camera 会是 undefined ⇒ 本行红。
+    expect(committed.camera, 'commitBaseline 收到的是整份模型（而非 patch）').toBeDefined()
+    expect(effects.notifyNoChange, '清空是变更，不应提示无变更').not.toHaveBeenCalled()
+  })
+
+  it('4) 脱敏 baseline + 值改写为合法 URL ⇒ 提交该 URL；成功文案 = 已更新', async () => {
+    const baseline = maskedFormModel()
+    const url = 'http://10.0.0.5:9000/hook'
+    const effects = makeSubmitEffects({ values: setPostUrl(baseline, url) })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.apply).toHaveBeenCalledTimes(1)
+    expect(effects.apply.mock.calls[0][0], 'patch 恰为新 URL').toEqual({ poster: { postUrl: url } })
+    expect(effects.notifySuccess).toHaveBeenCalledWith('保存成功：POST URL 已更新')
+    expect(effects.notifyInvalid, '合法 URL 不应被拦').not.toHaveBeenCalled()
+  })
+
+  it('5) ★ 脱敏 baseline + 值 "xx"（非 URL 垃圾串）⇒ notifyInvalid，且不提交（行为收紧的闭合点）', async () => {
+    const baseline = maskedFormModel()
+    const effects = makeSubmitEffects({ values: setPostUrl(baseline, 'xx') })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.notifyInvalid, '脱敏分支下垃圾串应被拒').toHaveBeenCalledTimes(1)
+    expect(effects.apply, '非法值不得提交（否则静默覆盖真实 URL）').not.toHaveBeenCalled()
+    expect(effects.commitBaseline, '被拒的提交不得更新 baseline').not.toHaveBeenCalled()
+  })
+
+  it('6) 非脱敏 baseline（持真值）+ 同一条 "xx" ⇒ 不被拦（行为收紧仅作用于脱敏分支，如实登记）', async () => {
+    const baseline = realFormModel()
+    const effects = makeSubmitEffects({ values: setPostUrl(baseline, 'xx') })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.notifyInvalid, '非脱敏分支不做 URL 形状校验（修复前既有行为）').not.toHaveBeenCalled()
+    expect(effects.apply, '非脱敏分支照常提交').toHaveBeenCalledTimes(1)
+    expect(effects.apply.mock.calls[0][0]).toEqual({ poster: { postUrl: 'xx' } })
+  })
+
+  it('7) 占位符误删（值 "*" / "**"）⇒ 既非校验失败、也判无变更 ⇒ notifyNoChange、不提交', async () => {
+    const baseline = maskedFormModel()
+    for (const typed of ['*', '**']) {
+      const effects = makeSubmitEffects({ values: setPostUrl(baseline, typed) })
+      await makeSettingsSubmitHandler(() => baseline, effects)()
+      expect(effects.notifyInvalid, `值 ${typed} 是占位符残留，不得报校验错`).not.toHaveBeenCalled()
+      expect(effects.notifyNoChange, `值 ${typed} 应判无变更`).toHaveBeenCalledTimes(1)
+      expect(effects.apply, `值 ${typed} 不得提交`).not.toHaveBeenCalled()
+    }
+  })
+
+  it('8) ★ apply 抛异常 ⇒ notifyError 且**收尾句柄**仍被调用（回归钉住既有缺陷：catch 路径漏收尾 loading）', async () => {
+    // 回归钉住的对象是**既有组件实现**：其 catch 分支只 message.error、**没有** hide()，
+    //   而 message.loading(..., 0) 是"永不自动关闭"的 ⇒ 保存失败后 loading 蒙层**永久卡屏**。
+    //   本用例钉住"异常路径也必须收尾 loading"，防止该缺陷在重构中被原样带过来。
+    const baseline = maskedFormModel()
+    const boom = new Error('boom')
+    const effects = makeSubmitEffects({
+      values: setPostUrl(baseline, 'http://a'),
+      apply: async () => {
+        throw boom
+      },
+    })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.notifyError, 'apply 失败必须报错').toHaveBeenCalled()
+    expect(effects.describeError, '错误文案应经 describeError 生成').toHaveBeenCalled()
+    expect(effects.finish, '异常路径也必须收尾 loading（否则 loading 永久卡屏）').toHaveBeenCalledTimes(1)
+  })
+
+  it('9) loading 起止成对：成功与异常路径都是「start 一次 + 收尾一次」', async () => {
+    const baseline = maskedFormModel()
+    const ok = makeSubmitEffects({ values: setPostUrl(baseline, 'http://a') })
+    await makeSettingsSubmitHandler(() => baseline, ok)()
+    expect(ok.notifyLoadingStart, '成功路径起 loading 一次').toHaveBeenCalledTimes(1)
+    expect(ok.finish, '成功路径收 loading 一次').toHaveBeenCalledTimes(1)
+
+    const bad = makeSubmitEffects({
+      values: setPostUrl(baseline, 'http://a'),
+      apply: async () => {
+        throw new Error('x')
+      },
+    })
+    await makeSettingsSubmitHandler(() => baseline, bad)()
+    expect(bad.notifyLoadingStart, '异常路径起 loading 一次').toHaveBeenCalledTimes(1)
+    expect(bad.finish, '异常路径收 loading 一次').toHaveBeenCalledTimes(1)
+  })
+
+  it('9b) ★ 成功路径的后续回调抛错（notifySuccess 抛）⇒ 收尾仍**恰好一次**（随调用局部的一次性守卫）', async () => {
+    // 对抗性审计指出的边角：若收尾只在"成功分支"里直接调，而成功分支的后半段（notifySuccess /
+    //   commitBaseline）抛错，就会落进 catch **再收尾一次**（双调）。实现用随调用局部的一次性守卫消除之。
+    const baseline = maskedFormModel()
+    const effects = makeSubmitEffects({
+      values: setPostUrl(baseline, 'http://a'),
+      notifySuccess: () => {
+        throw new Error('toast 抛了')
+      },
+    })
+    await makeSettingsSubmitHandler(() => baseline, effects)()
+    expect(effects.finish, '收尾必须恰好一次（不得因成功分支后半段抛错而双调）').toHaveBeenCalledTimes(1)
+    expect(effects.commitBaseline, 'notifySuccess 抛错后，commitBaseline 不应被执行（顺序如此）').not.toHaveBeenCalled()
+    expect(effects.notifyError, '该抛错落进 catch ⇒ 报错（防御性行为）').toHaveBeenCalledTimes(1)
+  })
+
+  it('10) 成功路径不调 notifyError；异常路径不调 notifySuccess 与 commitBaseline', async () => {
+    const baseline = maskedFormModel()
+    const ok = makeSubmitEffects({ values: setPostUrl(baseline, 'http://a') })
+    await makeSettingsSubmitHandler(() => baseline, ok)()
+    expect(ok.notifyError, '成功路径不得报错').not.toHaveBeenCalled()
+
+    const bad = makeSubmitEffects({
+      values: setPostUrl(baseline, 'http://a'),
+      apply: async () => {
+        throw new Error('x')
+      },
+    })
+    await makeSettingsSubmitHandler(() => baseline, bad)()
+    expect(bad.notifySuccess, '异常路径不得报成功').not.toHaveBeenCalled()
+    expect(bad.commitBaseline, '异常路径不得更新 baseline').not.toHaveBeenCalled()
+  })
+})
+
+// ---- 接线形态守卫 -----------------------------------------------------------
+
+// 读**生产源码**（node 环境直接读文件，不经 Vite 的 import 变换）；路径由本测试文件位置推出：
+//   web/src/app/utils/__tests__ → ../../pages/ServerSettingsTab.tsx。
+const testFileDir = dirname(fileURLToPath(import.meta.url))
+const serverSettingsTabSource = readFileSync(resolve(testFileDir, '../../pages/ServerSettingsTab.tsx'), 'utf8')
+
+// 去掉 `/* */` 块注释与 `//` 行注释后的源码。说明：正则是朴素实现（例如字符串里的 `//`，如 'http://'
+//   斜杠之后的部分也会被吞掉）；但本守卫只搜两个不与字符串混同的调用记号
+//   （`makeSettingsSubmitHandler(` / `buildSettingsSubmission(`），朴素剥离足够。剥离的目的是避免
+//   "注释里提到某记号"造成假阳性/假阴性。
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+}
+
+describe('接线形态守卫（⚠️ 文本判据，非行为覆盖）', () => {
+  // ⚠️ 局限如实登记：本组是**形态/文本判据** —— 只看去注释后的源码里是否出现某个调用记号。
+  //   · 挡不住**等价改写**：把工厂调用包进一个别名函数、或挪到别的模块再 re-export，记号仍在别处，本守卫仍绿；
+  //   · 挡不住**条件恒假**：工厂被调用了，但其结果从不进入 onFinish（例如赋给一个未使用的变量）时，本守卫仍绿。
+  //   ⇒ 它只是上方 makeSettingsSubmitHandler 行为用例之外的**补充**，**不得**被声称等价于行为覆盖。
+  it('正向：组件源码（去注释后）含 makeSettingsSubmitHandler( 调用', () => {
+    expect(stripComments(serverSettingsTabSource), '组件应由工厂接线提交处理器').toContain(
+      'makeSettingsSubmitHandler(',
+    )
+  })
+
+  it('负向：组件源码（去注释后）不再内联 buildSettingsSubmission(（归一化 + diff 的接线已搬进工厂）', () => {
+    expect(stripComments(serverSettingsTabSource), '组件不应再直接调用 buildSettingsSubmission').not.toContain(
+      'buildSettingsSubmission(',
+    )
   })
 })
