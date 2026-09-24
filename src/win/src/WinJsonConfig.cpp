@@ -35,6 +35,47 @@ constexpr const char* kMaskedSentinel = "***";
 
 constexpr std::uintmax_t kMaxConfigFileBytes = 10 * 1024 * 1024;      // 10MB max config file
 
+// ── FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警回传通道 ──
+// 为什么用 thread_local 而不是出参：本批允许改动的文件**不含** src/win/include/rk_win/WinJsonConfig.h，
+//   而 parseAndValidateSettingsDoc 的签名（jsonText, cfgOut, outErr）正是在那里声明的 ⇒ 无法新增出参，
+//   也不能把告警塞进 outErr（它是**失败**原因，调用方按「非空且返回 false」解读；成功路径上非空 outErr
+//   会与 `if (!parseAndValidateSettingsDoc(...))` 的判读习惯冲突）。
+//   三个调用点（initialize / updateFromJsonBody / reloadFromDisk，另有 reloadFromDisk 的 .bak 复验）
+//   **全部**位于本文件，且都是「同一线程内调用 → 立即读取」⇒ 线程局部变量既无跨线程竞争，
+//   也不会跨调用串味；每次 parseAndValidateSettingsDoc 入口清空，语义等价于出参。
+// 通道去向上限（如实登记）：只有 initialize 把它并入 warnOut（⇒ health 的 configWarning +
+//   configStatus=degraded，即用户可见的那条通道；该告警**跨启动持续**，见合并处的登记）。PUT 路径
+//   无可用的对外通道——HTTP 层只在**错误**响应里带 details（JsonEndpointHandlers 的 errJson），改它
+//   超出本批允许改动的文件范围 ⇒ PUT 的规范化告警在对外响应里不可见。
+//   「钳制结果本身可见」只是**部分**成立，分字段说明见 updateFromJsonBody 末尾的 takeNormalizeWarnings
+//   处（log 段钳后值经 GET 可见；identifyThreshold 的 `> 64` 在 PUT 上是 schema **400 拒绝**，
+//   钳制分支不可达）。原注释在此一概而论，已订正。
+thread_local std::string g_normalizeWarnings;
+
+void addNormalizeWarning(std::string msg) {
+    if (msg.empty()) return;
+    if (g_normalizeWarnings.empty()) {
+        g_normalizeWarnings = std::move(msg);
+    } else {
+        g_normalizeWarnings += "; " + msg;
+    }
+}
+
+// 读出即清空（消费一次）：调用方拿到本次 parseAndValidateSettingsDoc 的全部规范化告警。
+std::string takeNormalizeWarnings() {
+    std::string out = std::move(g_normalizeWarnings);
+    g_normalizeWarnings.clear();
+    return out;
+}
+
+// ── FACE-CONFIG-017：log 段 schema 上界的**镜像常量**（只用于「越界值不可送入整数转换」的护栏）──
+// 为什么需要：规范化发生在 schema 校验**之前**，此时 doc 里的数值未经任何约束；对负数或超范围的
+//   JSON number 做 static_cast 是未定义行为。故只对「明确落在 schema 合法区间内」的值做就地修正，
+//   区间外的值一律**不动**，交回既有 schema 判据（保持「既有非法值仍被拒」的语义不被放宽）。
+// ⚠️ 若 JsonSchemaValidator.cpp 的 log 段上界改了，这两个镜像必须同步（否则本闸门会漏纳或误纳）。
+constexpr double kLogSchemaMaxFileBytes = 1073741824.0;  // = schema 的 maxFileBytes.maximum（1 GiB）
+constexpr double kLogSchemaMaxRollFiles = 1000.0;        // = schema 的 maxRollFiles.maximum
+
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
     err.clear();
     out.clear();
@@ -345,7 +386,13 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         r.o["arcFaceInputName"] = JsonValue::makeString(cfg.recognition.arcFaceInputName);
         r.o["arcFaceOutputName"] = JsonValue::makeString(cfg.recognition.arcFaceOutputName);
         r.o["minFaceSizePx"] = JsonValue::makeNumber(cfg.recognition.minFaceSizePx);
-        r.o["identifyThreshold"] = JsonValue::makeNumber(cfg.recognition.identifyThreshold);
+        // LBPH 阈值序列化点（FACE-ARCWIN-010）：**出口也钳**，理由与 inference.intervalMs 处一致——
+        //   序列化产物要过 `serializedDocIsWritable` 闸门（落盘前置条件），若 cfg 里带着越界值被写出，
+        //   该闸门会失败 ⇒ 走上「不落盘 / 回退 .bak」臂；钳制使落盘产物**恒**满足运行时 schema。
+        //   钳是幂等的 ⇒ 对已合法值零影响（健康装载的默认 55.0 原样通过，roundtrip 逐字符相等不变量保持）。
+        //   注：本行必须保持「该键**唯一一次**赋值字面量」——config-contract.test.js 的识别段切片
+        //   按下标该形态的字面量计数（重复出现会因「字面量数 ≠ 去重键数」判红），故钳制就地内联。
+        r.o["identifyThreshold"] = JsonValue::makeNumber(clampIdentifyThreshold(cfg.recognition.identifyThreshold));
         // ArcFace 专用阈值（余弦相似度语义，FACE-ARCWIN-006/007）。与 LBPH 的 identifyThreshold 量纲不同，
         // 必须独立成键；后者保持 LBPH 语义不动（迁移安全）。
         r.o["identifyThresholdArcFace"] = JsonValue::makeNumber(cfg.recognition.identifyThresholdArcFace);
@@ -440,8 +487,13 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
     {
         JsonValue l = JsonValue::makeObject();
         l.o["logDir"] = JsonValue::makeString(cfg.log.logDir.string());
-        l.o["maxFileBytes"] = JsonValue::makeNumber(static_cast<double>(cfg.log.maxFileBytes));
-        l.o["maxRollFiles"] = JsonValue::makeNumber(cfg.log.maxRollFiles);
+        // FACE-CONFIG-017：序列化点同样按总预算的**单份均分额**钳制（同 identifyThreshold 的「出口也钳」
+        //   理由——落盘前置闸门 serializedDocIsWritable 要求产物能过运行时 schema，且磁盘占用由这两个值
+        //   的乘积（**再乘文件集份数** kLogFileSetCount：csv / jsonl / event_log.jsonl）决定，故序列化
+        //   产物必须是**已钳**的）。先钳 maxFileBytes，再用钳后值反推 maxRollFiles 上界。
+        const std::uint64_t logMaxFileBytes = clampLogMaxFileBytes(cfg.log.maxFileBytes);
+        l.o["maxFileBytes"] = JsonValue::makeNumber(static_cast<double>(logMaxFileBytes));
+        l.o["maxRollFiles"] = JsonValue::makeNumber(clampLogMaxRollFiles(logMaxFileBytes, cfg.log.maxRollFiles));
         root.o["log"] = std::move(l);
     }
 
@@ -521,15 +573,21 @@ static bool getString(const JsonValue& o, const char* k, std::string& out) {
     return true;
 }
 
-// 键级规范化（FACE-ARCWIN-006/007 迁移过渡）。定义见本文件 parseAndValidateSettingsDoc 之后。
+// 键级规范化（FACE-ARCWIN-006/007 迁移过渡 + FACE-ARCWIN-010 阈值钳制 / FACE-CONFIG-017 预算钳制 /
+// FACE-CONFIG-018 路径告警）。定义见本文件 parseAndValidateSettingsDoc 之后。
 // 前置声明置于此，仅为保持定义靠近其唯一调用点之外的既有函数布局（定义体含 doc.find 字面量，
 // 放在本处会前移既有静态切片测试的识别段起点）。
 static void normalizeRecognitionKeys(JsonValue& doc);
+static void normalizeLogBudgetKeys(JsonValue& doc);
+static void warnUnsafeConfigPaths(JsonValue& doc);
 
 bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, std::string& outErr) const {
     outErr.clear();
     JsonValue doc;
     std::string perr;
+    // 规范化告警通道：本函数是唯一的生产者，每次进入先清空 ⇒ 调用方读到的必是**本次**调用的告警
+    //   （不会串味到上一次解析）。解析失败等提前 return 同样已清空。
+    (void)takeNormalizeWarnings();
     if (!parseJson(jsonText, doc, perr)) {
         outErr = "JSON 解析失败: " + perr;
         return false;
@@ -538,6 +596,11 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     // 否则既有缺 identifyThresholdArcFace 的 config.json 会被拒，进而降级为默认值运行（历史行为更糟：
     // 穿透 INI 分支覆盖用户配置；FACE-CONFIG-001 已改为先隔离坏文件再以默认值启动）。
     normalizeRecognitionKeys(doc);
+    // FACE-CONFIG-017：log 段写放大总预算 —— 必须在 schema 校验**前**就地钳制，理由见其定义处。
+    normalizeLogBudgetKeys(doc);
+    // FACE-CONFIG-018：6 个路径字段的强化校验 —— 本处**只告警**（见其定义处的红线说明）；
+    //   真正的「拒绝」只发生在 PUT 路径（updateFromJsonBody 对 patch 内显式携带的写型字段）。
+    warnUnsafeConfigPaths(doc);
     std::string schemaErr;
     if (!JsonSchemaValidator::validate(JsonSchemaValidator::buildSettingsDocSchema(), doc, &schemaErr)) {
         outErr = "Schema 校验失败: " + schemaErr;
@@ -595,6 +658,11 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*r, "arcFaceInputName", s)) cfg.recognition.arcFaceInputName = s;
         if (getString(*r, "arcFaceOutputName", s)) cfg.recognition.arcFaceOutputName = s;
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
+        // LBPH 阈值（FACE-ARCWIN-010）**只此一处读取**；此点**不重复钳制**的理由：本函数入口的
+        // normalizeRecognitionKeys 已在 schema 校验前把该键钳进 [1, 64]，schema 又保证它必须存在且
+        // 落在同区间 ⇒ 这里读到的必是已钳值（重复钳制是死代码，与「极简」相悖）。
+        // 上面三项路径字段的读取同理不在此处判定（路径校验在 warnUnsafeConfigPaths 内对同一个 doc 做，
+        // 判据与 PUT 路径完全同源）。
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
         // ArcFace 专用阈值（余弦相似度）。键缺失时保留默认 0.45。
         if (getNumber(*r, "identifyThresholdArcFace", v)) cfg.recognition.identifyThresholdArcFace = v;
@@ -698,6 +766,11 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         std::string s;
         double v = 0;
         if (getString(*l, "logDir", s)) cfg.log.logDir = resolvePathFromExeDir(s);
+        // FACE-CONFIG-017 的两个读取点：同 identifyThreshold 的处置理由——normalizeLogBudgetKeys 已在
+        //   schema 校验前按总预算的**单份均分额**就地钳制，schema 又保证两者必须存在且落在各自区间内
+        //   ⇒ 这里读到的是已钳值，其乘积**必满足**单份均分额（≤ 总预算）（在此再钳一次是死代码）。
+        //   注：static_cast<std::uint64_t>(v) 的安全性由 schema 的 [1024, 1 GiB] 保证（非有限值 / 负数 /
+        //   超范围值到不了这里）。
         if (getNumber(*l, "maxFileBytes", v)) cfg.log.maxFileBytes = static_cast<std::uint64_t>(v);
         if (getNumber(*l, "maxRollFiles", v)) cfg.log.maxRollFiles = static_cast<int>(v);
     }
@@ -743,8 +816,11 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     // Apply environment variable overrides if present
     //
     // ⚠️ FACE-CONFIG-015（已知不对称，本轮**不修**，取方案 (b)：如实登记不修）：
-    //   下面这些 RK_WCFR_* 覆盖（本块 4 个 + 上文 dnn/poster 块内 3 处冗余覆盖的 env 读取行：
-    //   622 / 625 / 689）会被**写回磁盘**。原因：本函数把 env 值**无条件覆盖进 cfg**，而序列化侧
+    //   下面这些 RK_WCFR_* 覆盖（本块 4 个 + 上文 dnn / poster 块内 3 处冗余覆盖的 env 读取：
+    //   getEnvW(L"RK_WCFR_DNN_MODEL") / (L"RK_WCFR_DNN_CONFIG") / (L"RK_WCFR_POST_URL")）会被**写回磁盘**。
+    //   ⚠️ 此处**刻意不写行号**：本文件行号随每次编辑漂移（上一版写的 622/625/689 即已失准）⇒ 只按
+    //   函数/字面量定位，避免留下会腐烂的引用。
+    //   原因：本函数把 env 值**无条件覆盖进 cfg**，而序列化侧
     //   （toSettingsDocObject / buildSettingsJson）只看到覆盖后的 cfg、**无法回退到用户原值** ⇒ 一旦发生
     //   「热重载回滚写回」（reloadFromDisk）或 PUT（updateFromJsonBody），两者都经 parseAndValidateSettingsDoc
     //   → 序列化落盘，env 值就被**烤进 config.json**；此后**不带**该 env 启动时行为随之改变、用户原本的值被静默替换。
@@ -782,25 +858,133 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     return true;
 }
 
-// FACE-ARCWIN-006/007 迁移过渡：键级规范化——**只补本批新收束进 required 的那一个键**。
+// FACE-ARCWIN-006/007 迁移过渡 + FACE-ARCWIN-010 阈值钳制：recognition 段的键级规范化。
+// 本函数只做两件事：(1) 补 identifyThresholdArcFace 缺键；(2) 把 identifyThreshold 钳进 [1, 64]。
 //
-// 为什么需要：identifyThresholdArcFace 已进入 schema.required（见 JsonSchemaValidator.cpp），而既有部署的
-// config.json 没有该键（它随本批才进入序列化）。若不先补齐，老配置会在启动校验被拒 ⇒ 降级为默认值运行。
-// 历史行为（修复前）：initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支、以 INI/默认值
-// **覆盖写 config.json**（仅留一条 warn），用户配置即被丢弃。
+// (1) 为什么需要补缺键：identifyThresholdArcFace 已进入 schema.required（见 JsonSchemaValidator.cpp），
+// 而既有部署的 config.json 没有该键（它随本批才进入序列化）。若不先补齐，老配置会在启动校验被拒
+// ⇒ 降级为默认值运行。历史行为（修复前）：initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支、
+// 以 INI/默认值**覆盖写 config.json**（仅留一条 warn），用户配置即被丢弃。
 // 现行为（FACE-CONFIG-001）：校验被拒时先把坏配置改名另存再以默认值启动，不再覆盖销毁；但缺键的既有
 // 配置仍会降级运行，故仍须在此补齐，使其走「加载成功」路径。
 //
-// 为什么**只补这一个键**（刻意不推广到 recognition 段其余键）：其余 8 个键的接受/拒绝语义属历史契约，
-// 本批不应改动。若一并补默认，「删除 cascadePath 等必填键」会从「校验失败 ⇒ 回滚 .bak」静默变成
-// 「以默认值接受」——属未声明的行为放宽。补入值与解析侧「键缺失保留结构体默认」同源，故本规范化
-// 不改变任何**已被接受**配置的解析结果，只让新增的 required 校验能通过。
+// (2) 为什么必须钳 identifyThreshold（FACE-ARCWIN-010）：本批把 schema 的该键上界从 100000 收紧到
+// 64（卡方距离的物理上界）。若不在此**先**就地把越界值钳到上界，任何既有 config.json 里 > 64 的值会
+// 从「合法」突变为「不合法」⇒ 启动校验失败 ⇒ 隔离 + 默认值运行（用户配置被弃用，即红线）。
+// 钳制 ↔ schema 收紧必须**同批**且钳制**在前**。下界同取 1.0（与三方 schema 的 minimum 同值），
+// 使 clamp 输出恒落在 schema 合法区间内 —— 详细取舍见 WinConfig.cpp 的 clampIdentifyThreshold。
+//
+// 边界（刻意的最小改动）：除上述两项外，不推广到 recognition 段其余键——其余 7 个键的接受/拒绝语义
+// 属历史契约，本批不改。若一并补默认，「删除 cascadePath 等必填键」会从「校验失败 ⇒ 回滚 .bak」静默
+// 变成「以默认值接受」——属未声明的行为放宽。补入值与解析侧「键缺失保留结构体默认」同源，故本规范化
+// 不改变任何**已被接受**配置的解析结果，只让新增的 required / 收紧的 maximum 校验能通过。
 static void normalizeRecognitionKeys(JsonValue& doc) {
     JsonValue* rec = doc.find("recognition");
     if (!rec || !rec->isObject()) return;
     if (!rec->find("identifyThresholdArcFace")) {
         rec->o["identifyThresholdArcFace"] =
             JsonValue::makeNumber(defaultAppConfig().recognition.identifyThresholdArcFace);
+    }
+    // 只处理「超过物理上界」的值 ⇒ **不**放宽下界的既有拒绝语义（< 1 的值照旧被 schema 拒，与改动前
+    //   一致；只有 > 64 这一侧从「被接受」改判为「钳到 64 并告警」，属不让任何既有配置失效的**收紧**方向）。
+    if (JsonValue* thr = rec->find("identifyThreshold"); thr && thr->isNumber() && thr->n > kIdentifyThresholdMax) {
+        const double raw = thr->n;
+        thr->n = clampIdentifyThreshold(raw);
+        addNormalizeWarning("recognition.identifyThreshold=" + std::to_string(raw) +
+                            " 超过 LBPH 卡方距离的物理上界 " + std::to_string(kIdentifyThresholdMax) +
+                            "（超过该值时「距离 <= 阈值」恒真、阈值形同虚设），已就地钳为 " +
+                            std::to_string(thr->n));
+    }
+}
+
+// FACE-CONFIG-017（S-3）：log 段写放大总预算——**只钳不拒**，且必须在 schema 校验**前**完成。
+// 为什么在 schema 前：落盘面 = **3 份**文件集（recognition.csv、recognition.jsonl 与 **event_log.jsonl**
+//   —— 后者复用同一对 cfg.log 上限与同一 logDir，本批起随配置接线）各占
+//   maxFileBytes × (maxRollFiles + 1) 字节；而 schema 本身允许单份 1 GiB × 1001（三份最坏约 3 TiB）
+//   ⇒ 只靠 schema 拦不住磁盘耗尽。此处把两者钳进 512 MiB 总预算的**均分额**
+//   （kLogPerSetBudgetBytes = 512 MiB / 3 = 178956970 字节）内，schema 校验随后照常执行
+//   （**不动** schema 的 log 段上下界——收紧会让既有合法配置突然失效，即红线；故本项只做运行时
+//   钳制，schema 仍允许大值 ⇒ 「配置声明值 ≠ 生效值」是本项刻意保留的残留，见报告）。
+// 为什么在此**不做**「钳后仍不合法」的兜底：钳制只往下压，从不抬升下界；区间外的值（负数 / 0 /
+//   超 schema 上界 / 非有限值）一律不动，交回既有 schema 判据 ⇒ 「既有非法值仍被拒」的语义不变。
+static void normalizeLogBudgetKeys(JsonValue& doc) {
+    JsonValue* lg = doc.find("log");
+    if (!lg || !lg->isObject()) return;
+
+    JsonValue* mfb = lg->find("maxFileBytes");
+    // 只对「均分额内单文件上限 < 值 ≤ schema 上界」这一段做就地修正：落在该区间外时**不做**整数转换
+    //   （对负数 / 非有限值 / 超 u64 范围的 double 做 static_cast 是未定义行为），一律交回 schema 判据。
+    const bool mfbFixable = mfb && mfb->isNumber() && mfb->n > static_cast<double>(kLogMaxFileBytesCap) &&
+                            mfb->n <= kLogSchemaMaxFileBytes;
+    if (mfbFixable) {
+        const std::uint64_t raw = static_cast<std::uint64_t>(mfb->n);
+        const std::uint64_t clamped = clampLogMaxFileBytes(raw);
+        if (clamped != raw) {
+            mfb->n = static_cast<double>(clamped);
+            addNormalizeWarning("log.maxFileBytes=" + std::to_string(raw) + " 超出日志写放大总预算（总预算 " +
+                                std::to_string(kLogBudgetBytes) + " 字节由 " + std::to_string(kLogFileSetCount) +
+                                " 份文件集（recognition.csv / recognition.jsonl / event_log.jsonl）均分 ⇒ 单份上界 " +
+                                std::to_string(kLogPerSetBudgetBytes) +
+                                " 字节 = maxFileBytes × (maxRollFiles + 1)），已就地钳为 " +
+                                std::to_string(clamped));
+        }
+    }
+
+    JsonValue* mrf = lg->find("maxRollFiles");
+    if (!mrf || !mrf->isNumber() || mrf->n < 1.0 || mrf->n > kLogSchemaMaxRollFiles) return;  // 区间外交回 schema
+    // 用**钳后**的 maxFileBytes 反推上界（与 clampLogMaxRollFiles 的约定一致；用原值会算出偏小的上界）。
+    //   maxFileBytes 缺失 / 非数 / 越出可安全转换的区间时，取「均分额内单文件上限」作为保守输入——
+    //   这样转换必安全，且这些形态本就会被 schema 的 required / 上下界拒掉（本闸门不改其判定）。
+    const double mfbSafe = (mfb && mfb->isNumber() && mfb->n >= 0.0 && mfb->n <= kLogSchemaMaxFileBytes)
+                               ? mfb->n
+                               : static_cast<double>(kLogMaxFileBytesCap);
+    const std::uint64_t mfbForBudget = clampLogMaxFileBytes(static_cast<std::uint64_t>(mfbSafe));
+    const int raw = static_cast<int>(mrf->n);  // 已确认落在 [1, 1000] ⇒ 转换安全
+    const int clamped = clampLogMaxRollFiles(mfbForBudget, raw);
+    if (clamped != raw) {
+        mrf->n = clamped;
+        addNormalizeWarning("log.maxRollFiles=" + std::to_string(raw) + " 超出日志写放大总预算（总预算 " +
+                            std::to_string(kLogBudgetBytes) + " 字节由 " + std::to_string(kLogFileSetCount) +
+                            " 份文件集均分 ⇒ 单份上界 " + std::to_string(kLogPerSetBudgetBytes) +
+                            " 字节 = maxFileBytes × (maxRollFiles + 1)），已就地钳为 " +
+                            std::to_string(clamped));
+    }
+}
+
+// FACE-CONFIG-018（S-1）：6 个路径字段的强化校验——**本处只告警**。
+// ⚠️ 红线（最高优先）：本函数在**启动期**（initialize 与热重载都经 parseAndValidateSettingsDoc）运行，
+//   此处**绝不**能返回 false —— 启动校验失败 ⇒ 隔离 + 默认值运行 ⇒ 用户配置被弃用。
+//   故所有路径违规在此一律降级为告警（并入 warnOut ⇒ health 的 configWarning + configStatus=degraded），
+//   真正的「拒绝」只发生在 PUT 路径（updateFromJsonBody 对 patch 内**显式携带**的写型字段）。
+// 为什么对读型字段也只告警、不拒绝（分阶段登记）：读型字段的误伤面与写型相同（绝对路径是官方用法），
+//   而它们的风险（读到别处文件）远低于写型（create_directories + 覆写/滚动删除）；本批只做「可见化」，
+//   把写型先落到 PUT 拒绝。后续若要收紧，应连同可写根白名单一起做（AppConfig 目前没有该字段）。
+static void warnUnsafeConfigPaths(JsonValue& doc) {
+    // 写型字段排在前：其风险含「写入/创建目录/滚动删除」，是本次加固的重点。
+    struct PathField {
+        const char* section;
+        const char* key;
+        bool writeType;
+    };
+    static const PathField kFields[] = {
+        {"recognition", "databasePath", true},   // FaceDatabase::save：create_directories(parent) + 原子替换覆写目标
+        {"log", "logDir", true},                 // StructuredLogger/EventLogger：create_directories + 写固定名文件 + 滚动 rename/remove
+        {"recognition", "cascadePath", false},   // 只读
+        {"recognition", "arcFaceModelPath", false},
+        {"dnn", "modelPath", false},
+        {"dnn", "configPath", false},
+    };
+    for (const PathField& f : kFields) {
+        const JsonValue* sec = doc.find(f.section);
+        if (!sec || !sec->isObject()) continue;
+        const JsonValue* v = sec->find(f.key);
+        if (!v || !v->isString()) continue;
+        std::string why;
+        // 路径按 JSON 里的**原样字符串**构造（与解析侧 resolvePathFromExeDir 的入参同源）：
+        //   `..` 在相对与绝对两种形态下都存在于该字符串中，判别不受是否已拼接 exeDir 影响。
+        if (!checkConfigPath(std::filesystem::path(v->s), PathPolicy::Warn, why)) {
+            addNormalizeWarning(std::string(f.writeType ? "写型" : "读型") + "路径字段 " + f.section + "." + f.key + "：" + why);
+        }
     }
 }
 
@@ -899,6 +1083,14 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
         if (readFileAll(configPath_, txt, err)) {
             AppConfig cfg;
             if (parseAndValidateSettingsDoc(txt, cfg, err)) {
+                // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警**就地取走**：
+                // 本处是它们**唯一用户可见**的出口——并入 warnOut ⇒ initWarning_ ⇒ /api/v1/health 的
+                // configWarning + configStatus=degraded（零新增通道）。健康装载（默认值全部在界内、
+                // 路径无 `..` 段）时该串为空 ⇒ 「正常启动零告警 / stderr 零输出」语义与既有用例
+                // （test_config_healthy_load_not_quarantined / _silent_stderr）保持不变。
+                // 必须在 parseAndValidateSettingsDoc 返回后**立刻**取走：本函数后续还会经 buildSettingsJson
+                // 等路径，但都不会再触发规范化。
+                const std::string normWarn = takeNormalizeWarnings();
                 // 级联路径迁移：命中旧部署路径（tests/data/...）且该旧文件已不存在时改指新路径，并尝试持久化。
                 // ④ 修复：这次写盘此前被 (void) 吞掉，且成功分支无条件 initWarning_.clear()，结果「迁移只改了内存、
                 //   未落到磁盘」却对外报 configStatus=ok（静默）。现把失败并入 warnOut/initWarning_，使其在 health
@@ -920,6 +1112,19 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                             migrateWarn = "级联路径迁移未持久化（写入 config.json 失败）: " + writeErr;
                         }
                     }
+                }
+
+                // 规范化告警并入 warnOut（顺序：迁移告警在前、规范化告警在后）。二者语义同级——
+                // 都表示「本次启动**成功但降级**」，故合并进同一条 configWarning 文本。
+                // ⚠️ **跨启动持续、且无自愈路径**（如实登记，本批不改行为）：本成功分支**只读不写**——
+                //   它不把 cfg（含被钳后的值）回写 config.json，磁盘上的越界原值 / 含 `..` 的路径**原封
+                //   不动** ⇒ 同一份「功能完全正常」的配置在**每次启动都复现同一条**告警：重启不收敛，
+                //   只有一次 PUT 或手工编辑磁盘值才会消失。health 的 configStatus 也随之**长期**停在
+                //   degraded（成因清单见 docs/windows-web-spa/openapi.yaml，该文档需补充本条，见报告）。
+                //   与之对照：上方级联路径迁移分支在**写盘失败**时告警，那条告警带自愈路径（下次启动
+                //   重试写盘），两者的「持续性」不同类。
+                if (!normWarn.empty()) {
+                    migrateWarn = migrateWarn.empty() ? normWarn : (migrateWarn + "; " + normWarn);
                 }
 
                 const std::string pretty = buildSettingsJson(cfg, false, true);
@@ -1081,6 +1286,34 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     // 否则 GET 脱敏输出被原样回写时，真实密文会被字面量 "***" 覆盖并重加密销毁。
     stripMaskedSentinels(patch);
 
+    // FACE-CONFIG-018（S-1）：写型路径字段的**真正强制**只在此处——PUT 是唯一能安全拒绝的路径
+    //   （启动期拒绝会触发 INI 回落清空用户配置，见 WinConfig.h 的「只钳不拒」承重理由）。
+    // 为什么只查 patch 里**显式携带**的字段（而非合并后的 baseDoc）：否则既有 config.json 里已存在
+    //   `..` 的用户会「任何 PUT 都被 400」——哪怕只改摄像头宽度——被锁死在无法保存任何设置的状态
+    //   （不是数据丢失，但同样是拒绝服务）。只查 patch ⇒ 拒绝面恰好等于「用户本次真的写了这个值」。
+    // 为什么只覆盖两个**写型**字段：读型字段（cascadePath 等）本批只做启动期告警（分阶段强度）。
+    // 判据与启动期**完全相同**（checkConfigPath 的 `..` 段判定）——两者的唯一差别是处置（拒 vs 告警）。
+    // ⚠️ 绝对路径**不**在此被拒（官方用法，见 checkConfigPath 的逃生口说明）。
+    {
+        struct WriteTypePath {
+            const char* section;
+            const char* key;
+        };
+        static const WriteTypePath kWriteTypePaths[] = {{"recognition", "databasePath"}, {"log", "logDir"}};
+        for (const WriteTypePath& wt : kWriteTypePaths) {
+            const JsonValue* sec = patch.find(wt.section);
+            if (!sec || !sec->isObject()) continue;
+            const JsonValue* v = sec->find(wt.key);
+            if (!v || !v->isString()) continue;  // 非字符串由 schema 校验负责（保持既有错误文案不变）
+            std::string why;
+            if (!checkConfigPath(std::filesystem::path(v->s), PathPolicy::Strict, why)) {
+                r.message = "settings 未应用：写型路径字段不合法";
+                r.details = {std::string(wt.section) + "." + wt.key + "：" + why};
+                return r;  // r.httpStatus/r.code 已在函数入口初始化为 400 / invalid_request
+            }
+        }
+    }
+
     deepMergeObject(baseDoc, patch);
 
     // 校验 schema
@@ -1117,6 +1350,23 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         r.details.push_back(err);
         return r;
     }
+    // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警：**本路径无对外可见通道**
+    //   （HTTP 层只在**错误**响应里带 details，见 JsonEndpointHandlers 的 errJson；改它超出本批允许
+    //   改动的文件范围）⇒ 此处只**取走**，避免它残留到下一次读取被误当成那一次的告警。
+    //   「钳制结果本身可见（GET settings 返回钳后的生效值）」这句话**只对 log 段成立**，勿推广
+    //   （分字段说明，逐条核实过；原注释一概而论，已订正）——判据用**函数名**而非行号，避免漂移：
+    //   · log.maxFileBytes / log.maxRollFiles：PUT 路径的 schema 对 log 段上下界照旧宽松（1 GiB /
+    //     1000）⇒ 原值通过本函数内那句 `JsonSchemaValidator::validate(...)`（在 deepMergeObject 之后、
+    //     parseAndValidateSettingsDoc 之前），钳制发生在随后那句
+    //     `parseAndValidateSettingsDoc(mergedText, newCfg, err)` 内 ⇒ 提交的 cfg_ 是**钳后**值，
+    //     GET settings 可见；但**本次 PUT 的响应**不含告警文本（通道缺口如上，告警被 (void) 丢弃）。
+    //   · recognition.identifyThreshold：PUT 上**不是「钳」而是「拒」**——那句 schema 校验发生在
+    //     parseAndValidateSettingsDoc **之前**，且该键的 maximum 已收紧到 64 ⇒ `> 64` 的 PUT 在 schema
+    //     处就被 **400 拒绝**，normalizeRecognitionKeys 里的钳制分支
+    //     （判据 `> kIdentifyThresholdMax` 才触发）在 PUT 路径**不可达**；该钳制只在启动 / 热重载
+    //     的 JSON 与 INI 读入路径生效（启动期钳制**在前**是刻意的，见其定义处）。
+    //   详见 g_normalizeWarnings 处的通道去向上限登记。
+    (void)takeNormalizeWarnings();
 
     // 落盘：敏感字段强制加密存储
     const std::string prettyEnc = buildSettingsJson(newCfg, false, true);
@@ -1415,6 +1665,18 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
             }
         }
         return false;  // ★ 不应用：不 cfg_ = cfg、不 generation+1、outApplied 保持 false
+    }
+
+    // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警（热重载路径）。
+    // ⚠️ 如实登记：热重载**没有**用户可见通道——outErr 是唯一被调用方接走的字符串，而两个生产调用点
+    //   （win_local_service_main / win_camera_face_recognition_main）都只读 outApplied、忽略 err，
+    //   HTTP 层也没有「重载告警」出口（改那些文件超出本批允许范围）。此处并入 outErr 只为让
+    //   测试 / 日志能看到「本次热重载发生了钳制或路径告警」；**用户可见通道仍只有 initialize 的
+    //   warnOut ⇒ health 的 configWarning**。语义代价（已知）：成功路径上 outErr 可能非空
+    //   （outApplied 仍为 true），故读取方**不得**用「outErr 非空」判定失败——既有调用点已如此。
+    const std::string normWarn = takeNormalizeWarnings();
+    if (!normWarn.empty()) {
+        outErr = outErr.empty() ? normWarn : (outErr + "; " + normWarn);
     }
 
     cfg.configPath = configPath_;

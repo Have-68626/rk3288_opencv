@@ -14,6 +14,18 @@ namespace rk_win {
 
 bool ArcFaceWinRecognizer::initialize(const std::string& cascadePath, const std::filesystem::path& dbPath,
                                        const std::string& arcFaceModelPath, int minFaceSizePx, double identifyThreshold) {
+    // ── 阈值注入前置（FACE-ARCWIN-008）──
+    // 右值全部是**函数形参**，不依赖任何先前语句 ⇒ 本行上移是纯顺序调整，不改变任何取值语义。
+    // 目的：让**失败出口也可观测到注入值**。此前该赋值位于 cascade / embedder 两个失败出口之后，
+    //   一旦 ArcFace 初始化失败（例如生产权重 models/arcface_w600k_r50.onnx 不存在 ⇒ 稳定停在
+    //   embedder 失败出口），threshold() 只能读到成员默认值，于是「正确装配」「把 LBPH 阈值传到第 5
+    //   实参」「用默认值」三种情形的读数完全相同 ⇒ 装配级断言不具任何判别力。
+    // ⚠️ 刻意**只上移这一行**：`dbPath_` / `minFaceSizePx_` 若一并上移会改变行为——本系统是 fail-open
+    //   （`FramePipeline` 在 !bootstrap.ok 时仍把这个初始化失败的识别器装进快照并交给
+    //   `FrameProcessor`），初始化失败时 dbPath_ 非空会让 `FrameProcessor` 的 saveDb() 从「返回 false」
+    //   变成**真的写盘**，minFaceSizePx_ 也会从默认值变成配置值。二者保持原位（见下方赋值处）。
+    identifyThreshold_ = identifyThreshold;
+
     if (!detector_.loadCascade(cascadePath)) return false;
 
     embedderCfg_.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
@@ -69,9 +81,10 @@ bool ArcFaceWinRecognizer::initialize(const std::string& cascadePath, const std:
         return false;
     }
 
+    // 仅这两个成员在此赋值：`identifyThreshold_` 已在函数最前赋值（FACE-ARCWIN-008，让失败出口
+    // 也可观测到注入值）。把这两行一并上移会变更 fail-open 路径的行为，故**刻意留在成功出口之后**。
     dbPath_ = dbPath;
     minFaceSizePx_ = minFaceSizePx;
-    identifyThreshold_ = identifyThreshold;
 
     // ── 初始化自检（fail loud，FACE-ARCWIN-001 的防静默关键）──
     // 理由：嵌入器加载期**不校验节点名**（`ArcFaceEmbedder::initialize` 只 load 网络），节点名错 /

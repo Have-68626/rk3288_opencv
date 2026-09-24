@@ -35,6 +35,12 @@ std::shared_ptr<RuntimeSnapshot> FramePipeline::runtimeSnapshot() const {
     return runtime_;
 }
 
+// 运行时是否已装配（见头文件注释）：判据是 runtime_ 快照是否已建立，而非 running_。
+bool FramePipeline::runtimeReady() const {
+    std::lock_guard<std::mutex> lock(runtimeMu_);
+    return runtime_ != nullptr;
+}
+
 void applyFlip(cv::Mat& bgr, bool flipX, bool flipY) {
     if (bgr.empty()) return;
     if (!flipX && !flipY) return;
@@ -77,9 +83,33 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         runtime_ = std::move(snap);
     }
 
+    // 装配失败的处理：**完整保留**原有的 render_.status 写入（不删、不改 —— 既有显示路径靠它），
+    // 在其之后**追加**两件事：
+    //  ① 一等化为 degraded_（供 /api/v1/health 只读发布；本批前该告警从不上线）；
+    //  ② 落一条 model_init_failed 事件到 EventLogger（落盘可见性）。
+    // ⚠️ 两件新增都不改阻断语义：本函数下方仍恒 return true，调用方（两个 main）也仍不检查返回值。
     if (!bootstrap.ok) {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.warning;
+    }
+    updateDegradedState(bootstrap.ok, bootstrap.warning);
+    {
+        // 事件落盘：events_ 由 eventsMu_ 保护，EventLogger::append 自身另取自己的 mu_，
+        // 不回调 FramePipeline ⇒ 无锁环。必须在 renderMu_ 临界区**之外**（避免锁嵌套）。
+        // ⚠️ 落盘可见性**只对本地服务成立**（如实登记，本批不改行为）：本 append 以 events_ 非空为前提，
+        //   而在相机 UI 应用里 `setEventLogger` 于 **WM_CREATE**（win_camera_face_recognition_main.cpp:854）
+        //   才执行，晚于 wWinMain 的 `app.pipe.initialize(app.cfg)`（同文件 :1227，且在 CreateWindowExW
+        //   :1238 **之前**）⇒ 该应用 initialize 时 events_ == nullptr，本 append 是**空操作**
+        //   （model_init_failed 不落盘）。要修需调整该应用的初始化顺序（把 setEventLogger 提到
+        //   initialize 之前），该文件不在本批文件清单内。
+        //   ⚠️ 但**不可**把这条推广到下方 reloadRuntime 侧的同类 append：相机 UI 应用在 WM_CREATE 里
+        //   （setEventLogger **之后**，同文件 :856）启动同一个 HttpFacesServer，其
+        //   `POST /api/v1/models/reload` 端点会调 `pipe->reloadRuntime(...)`
+        //   （JsonEndpointHandlers.cpp:184）⇒ 该应用下**那一处** append 是**可达**的（http.enable 默认
+        //   true）。结论：initialize 的 model_init_failed 只在 win_local_service 落盘；reloadRuntime 的
+        //   两个调用方（win_local_service_main.cpp:189 与上述 HTTP 端点）都能落盘。两处不可一概而论。
+        std::lock_guard<std::mutex> lock(eventsMu_);
+        if (events_ && !bootstrap.ok) events_->append("model_init_failed", bootstrap.warning);
     }
 
     // Manifest check（保留——这是运行时自检，不归 bootstrap 管）
@@ -370,6 +400,27 @@ void FramePipeline::setFlip(bool flipX, bool flipY) {
 }
 
 void FramePipeline::setEventLogger(EventLogger* logger) {
+    // ⚠️ 如实口径：本函数在上一批之前是**事实上的 no-op** —— FramePipeline 内的 events_ 只被写入、
+    // 从未被读取，因为 FramePipeline 内当时**不存在**任何 events_->append(...) 调用点。本批新增的
+    // model_init_failed 事件（initialize / reloadRuntime）是 FramePipeline 侧**首个**真实消费者，
+    // 也就是说：设置事件日志器的接线自本批起才真正生效。不要据旧注释以为它早已有消费者。
+    // ⚠️ 原注释在此断言「全仓核实：append 调用点仅在 AbcTestRunner / HttpFacesPoster 各自的同名成员上」
+    //   ——该「全仓核实」句**不实**，已在本次修复中订正（结论不变：这句话只对 **FramePipeline 内部**
+    //   成立；上面那段「此前无读取方」的结论仍然正确）。事实是：调用方传进来的**同一个** EventLogger
+    //   对象在别处另有多处写入点 ——
+    //   · win_local_service_main.cpp：7 处 `events.append(...)`（:59 / :64 / :66 / :68 / :127 / :129 / :213），
+    //     对象由 :132 的 `pipe.setEventLogger(&events)` 传入；
+    //   · win_camera_face_recognition_main.cpp：6 处 `g_app->events.append(...)`（:690 / :711 / :715 /
+    //     :718 / :742 / :762），对象由 :854 的 `g_app->pipe.setEventLogger(&g_app->events)` 传入
+    //     （注意同文件 :1118 的 `g_app->metrics.append(...)` 的类型是 **RenderMetricsLogger**
+    //     ——AppState 成员 `RenderMetricsLogger metrics`（win_camera_face_recognition_main.cpp 的
+    //     `#include "rk_win/RenderMetricsLogger.h"` 与 `struct AppState` 处），落盘文件是
+    //     `render_metrics.jsonl`（见 RenderMetricsLogger.cpp 的 open）——**不是**本函数的 EventLogger
+    //     对象。⚠️ 旧注释此处写「属 StructuredLogger」，**类型说错了**，本次订正；「:1118 不是同一个
+    //     EventLogger 对象」这一**排除结论不变**，只是理由从「属 StructuredLogger」改为「属
+    //     RenderMetricsLogger」。误判成因：RenderMetricsLogger.cpp 会 include StructuredLogger.h
+    //     （借其转义辅助），据 include 关系**反推**类型正是这次出错的路径）；
+    //   · 另有 AbcTestRunner / HttpFacesPoster 各自持有的同名成员（旧注释唯一说对的部分）。
     std::lock_guard<std::mutex> lock(eventsMu_);
     events_ = logger;
 }
@@ -453,6 +504,44 @@ void FramePipeline::checkModelManifestsLocked() const {
     }
 }
 
+// 降级状态一等化（FACE-ARCWIN-003 可观测性部分）：把 RuntimeBootstrap 的装配结果转成
+// degraded_，供 /api/v1/health 只读发布。纯记账，不改任何阻断语义（initialize 仍恒返回 true）。
+// 锁序：degradedMu_ → modelsMu_（调用方不得持 renderMu_ / modelsMu_ 进入，见头文件声明）。
+void FramePipeline::updateDegradedState(bool bootstrapOk, const std::string& bootstrapWarning) {
+    std::lock_guard<std::mutex> lock(degradedMu_);
+
+    // availableFeatures 两种状态下都刷新：正常态即「可用能力清单」，降级态即「幸存的模型」。
+    // 取值必须来自 activeModels_ —— initialize/reloadRuntime 在调用本函数前已把
+    // BootstrapResult::models **移入** activeModels_，此时读 bootstrap.models 只会拿到空 vector。
+    std::vector<std::string> loaded;
+    {
+        std::lock_guard<std::mutex> modelsLock(modelsMu_);
+        for (const auto& m : activeModels_) {
+            if (m.status == "loaded") loaded.push_back(m.id);
+        }
+    }
+    degraded_.availableFeatures = std::move(loaded);
+
+    if (bootstrapOk) {
+        // 装配成功 ⇒ 清除降级。degradedSinceIso 一并清空，使其在**下次**降级时重新计时；
+        // 若残留上一轮时间，会把「本轮已降级多久」报成跨轮累计，误导排查。
+        degraded_.active = false;
+        degraded_.reasonCode.clear();
+        degraded_.warning.clear();
+        degraded_.degradedSinceIso.clear();
+        return;
+    }
+
+    const bool firstEntry = !degraded_.active;
+    degraded_.active = true;
+    // 契约码固定为 runtime_init_failed：RuntimeBootstrap 只回传「识别器初始化失败」这一事实，
+    // 不区分 cascade 文件 / 识别模型（含节点名）/ database 路径，故不臆造 missing_model 等更细的码。
+    degraded_.reasonCode = "runtime_init_failed";
+    degraded_.warning = bootstrapWarning;
+    // degradedSince 语义是「**首次**进入降级」：连续多次失败不刷新，使监控能算持续时长。
+    if (firstEntry) degraded_.degradedSinceIso = nowIso8601Local();
+}
+
 void FramePipeline::reloadRuntime(const AppConfig& cfg) {
     cfg_ = cfg;
     auto bootstrap = RuntimeBootstrap::build(cfg);
@@ -476,6 +565,18 @@ void FramePipeline::reloadRuntime(const AppConfig& cfg) {
     {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = bootstrap.ok ? "模型运行时已重载" : bootstrap.warning;
+    }
+    // 与 initialize 同形：装配失败 ⇒ 一等化降级，成功 ⇒ 清除降级；失败另落 model_init_failed 事件。
+    // 注意本处**不改变**「重载必改变代次」的既有契约——下方 fetch_add 仍无条件执行（重载失败
+    // 也会递增代次，该行为与本次改动无关，仅在此如实说明，勿据代次递增推断装配成功）。
+    // ⚠️ 与 initialize 侧那处 append 的**关键差别**（勿照抄那边的不可达结论）：本函数的调用方是
+    //   win_local_service_main.cpp:189 与 HTTP 端点 `POST /api/v1/models/reload`
+    //   （JsonEndpointHandlers.cpp:184），两者执行时 `setEventLogger` 都已完成 ⇒ 本 append **可达**
+    //   （含相机 UI 应用——它在 WM_CREATE 里 setEventLogger 之后才启动该 HTTP 服务）。
+    updateDegradedState(bootstrap.ok, bootstrap.warning);
+    {
+        std::lock_guard<std::mutex> lock(eventsMu_);
+        if (events_ && !bootstrap.ok) events_->append("model_init_failed", bootstrap.warning);
     }
     // 重载完成，代次 +1：成功重载必然改变代次（B06-020 治理项，禁止"伪成功"——
     // reload 端点据此向调用方证明重载确实发生，而非仅返回占位状态）。

@@ -1358,3 +1358,256 @@ bool test_config_initialize_cleans_stale_rollback_tmp() {
     if (store2.configRejectedOnLoad()) return false;
     return true;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FACE-ARCWIN-010（S-6）：identifyThreshold 超过 LBPH 卡方距离的物理上界 64 时，
+// **就地钳为 64 并告警**，绝不因「schema 上界从 100000 收紧到 64」把既有配置判为非法。
+//
+// 为什么这是本批最关键的一条：schema 收紧与钳制必须**同批**且钳制**在前**。若只有 schema 收紧而没有
+// 钳制（或有人日后删掉钳制），任何既有 config.json 里 > 64 的值会在启动校验被拒 ⇒
+// WinJsonConfigStore::initialize 走「隔离坏配置 + 以默认值落盘」⇒ 用户配置被弃用（用户明确列为红线）。
+// 本用例即该红线的可执行判据：
+//   · 删掉 normalizeRecognitionKeys 里的钳制（只留 schema 的 max=64）⇒ 启动被判 rejected ⇒ 下面
+//     「非 rejected / 无隔离产物 / 阈值 = 64 / enrollSamples 仍为 37」四条同时变红；
+//   · 把 schema 的 max 改回 100000 ⇒ 阈值会保持 99999（≠ 64）⇒ 值断言变红；
+//   · 把钳制上界常数改成别的值 ⇒ 值断言（阈值 != 64）必红，但**红的先后取决于改大还是改小**：
+//     改**大**（如 100）⇒ 钳后值落到运行时 schema 的 [1, 64] 之外 ⇒ 启动被判 rejected ⇒
+//       「非 rejected / 无隔离产物」两条**先行**变红，值断言因 `return false` 短路**根本执行不到**；
+//     改**小**（如 32）⇒ 钳后值仍在 [1, 64] 内、装载成功 ⇒ 直接停在值断言（读到 32 != 64）。
+//     ⚠️ 不可笼统写成「与 64.5 断言同时变红」：上界改常数**不改变**运行时 schema 的 `maximum: 64`
+//     （在 JsonSchemaValidator.cpp），且本用例前段一旦 `return false`，后段断言一律不执行。
+bool test_config_lbph_threshold_over_physical_max_clamped() {
+    // 纯函数边界（与三方 schema 的 1/64 同值）：clamp 输出**恒**落在 schema 合法区间内，
+    // 这正是「钳完仍不合法 ⇒ 启动被拒」死角被消灭的判据。
+    if (rk_win::clampIdentifyThreshold(-5.0) != 1.0) return false;
+    if (rk_win::clampIdentifyThreshold(0.0) != 1.0) return false;
+    if (rk_win::clampIdentifyThreshold(1.0) != 1.0) return false;
+    if (rk_win::clampIdentifyThreshold(55.0) != 55.0) return false;  // 默认值必须原样通过（健康装载零告警）
+    if (rk_win::clampIdentifyThreshold(64.0) != 64.0) return false;
+    if (rk_win::clampIdentifyThreshold(99999.0) != 64.0) return false;
+
+    const auto dir = makeTempDir("lbph_threshold_clamp");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // 1) 落地一份默认（合法）配置作为「既有配置」基底。
+    {
+        rk_win::WinJsonConfigStore seed;
+        std::string w;
+        seed.initialize(w);
+    }
+    // 2) 改成「越界阈值 + 一个非默认可判别标记」，模拟既有用户的 config.json。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["identifyThreshold"] = rk_win::JsonValue::makeNumber(99999.0);
+    rec->o["enrollSamples"] = rk_win::JsonValue::makeNumber(37);  // 「配置未被清空」的可判别标记
+    if (!writeAllText(cfgPath, rk_win::toJsonString(doc, true))) return false;
+
+    // 3) 启动装载：必须**成功**（非 rejected、无隔离产物），阈值被钳为 64，用户其余字段完好。
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (store.configRejectedOnLoad()) return false;  // ★ 红线：绝不能被判为「无法装载」
+    if (!store.initQuarantineFileName().empty()) return false;
+    if (!listCorruptConfigs(dir).empty()) return false;  // 不得产生隔离证据（= 配置未被弃用）
+    if (store.current().recognition.identifyThreshold != 64.0) return false;
+    if (store.current().recognition.enrollSamples != 37) return false;  // 未被默认值静默替换
+    // 告警必须可见——health 的 configWarning + configStatus=degraded 正是由 warnOut/initWarning_ 驱动。
+    if (warn.empty()) return false;
+    if (store.initWarning() != warn) return false;
+    if (warn.find("identifyThreshold") == std::string::npos) return false;
+    if (!std::filesystem::exists(cfgPath)) return false;  // initialize 成功分支不重写 config.json
+
+    // 4) 三方一致性：运行时 schema 的该键上界确实已收到 64（config.schema.json / openapi.yaml 由
+    //    tests/scripts/config-contract.test.js 对拍）。64.5 必须被拒、边界 64 必须被接受。
+    {
+        const std::string json = store.currentRedactedJsonPretty();
+        rk_win::JsonValue d;
+        std::string e;
+        if (!rk_win::parseJson(json, d, e) || !d.isObject()) return false;
+        rk_win::JsonValue* r2 = d.find("recognition");
+        if (!r2 || !r2->isObject()) return false;
+        r2->o["identifyThreshold"] = rk_win::JsonValue::makeNumber(64.5);
+        std::string serr;
+        if (rk_win::JsonSchemaValidator::validate(
+                rk_win::JsonSchemaValidator::buildSettingsDocSchema(), d, &serr)) {
+            return false;  // 64.5 被接受 ⇒ schema 上界未收收到 64
+        }
+        r2->o["identifyThreshold"] = rk_win::JsonValue::makeNumber(64.0);
+        serr.clear();
+        if (!rk_win::JsonSchemaValidator::validate(
+                rk_win::JsonSchemaValidator::buildSettingsDocSchema(), d, &serr)) {
+            return false;  // 边界值 64 必须合法（它正是钳制的落点）
+        }
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FACE-CONFIG-017（S-3）：log 段的 maxFileBytes × maxRollFiles 超总预算时**就地钳制并告警**。
+//
+// 口径（本批由「×2 份文件集」订正为「×3 份」）：落盘总量 = maxFileBytes × (maxRollFiles + 1)，
+// 而落盘面为 **3 份**文件集 —— recognition.csv 与 recognition.jsonl（StructuredLogger），外加
+// **event_log.jsonl**（EventLogger **复用同一对上限、同一目录**）⇒ 实占磁盘为上式 ×3，且三份**合计**
+// 受 kLogBudgetBytes = 512 MiB 总预算约束（单份均分额 kLogPerSetBudgetBytes = kLogBudgetBytes / 3
+// = 178956970 B）。schema 允许 1 GiB × 1001 ⇒ 乘以 3 份后最坏约 3 TiB ⇒ 可通过配置造成磁盘耗尽。
+// 判别点：删掉 normalizeLogBudgetKeys（或钳制函数退化为恒等）⇒ store.current() 仍是 1 GiB / 1000
+// ⇒ **值断言先行变红**（预算断言在其后，因 `return false` 短路而**不会被观测到**——两句是一起被该
+// 变异违反的，但红灯只有一条）；把钳制写成「拒绝」⇒ rejected 断言先红（那正是要避免的红线形态）。
+bool test_config_log_budget_clamped_to_total_budget() {
+    constexpr std::uint64_t kTenMiB = 10ULL * 1024ULL * 1024ULL;
+    constexpr std::uint64_t kOneGiB = 1024ULL * 1024ULL * 1024ULL;
+    // 默认值必须**原样通过**（健康装载零告警的前提）。
+    if (rk_win::clampLogMaxFileBytes(kTenMiB) != kTenMiB) return false;
+    if (rk_win::clampLogMaxRollFiles(kTenMiB, 5) != 5) return false;
+    // 越界值被压到**单份均分额**内：单文件上界 = 均分额 / 2；轮转档数按均分额反推
+    // （1 GiB 时下界撞 schema 的最小值 1）。
+    if (rk_win::clampLogMaxFileBytes(kOneGiB) != rk_win::kLogMaxFileBytesCap) return false;
+    if (rk_win::clampLogMaxRollFiles(kOneGiB, 1000) != 1) return false;
+    // 10 MiB：均分额 / 10 MiB = 178956970 / 10485760 = 17（无符号除法即下取整）⇒ 上界 = 17 − 1 = 16。
+    if (rk_win::clampLogMaxRollFiles(kTenMiB, 1000) != 16) return false;
+    // 只压上界、不抬下界（下界属既有 schema 契约，放宽会改变「既有非法配置被拒」的语义）：
+    if (rk_win::clampLogMaxFileBytes(0) != 0) return false;
+    if (rk_win::clampLogMaxRollFiles(kTenMiB, 0) != 0) return false;
+
+    const auto dir = makeTempDir("log_budget_clamp");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    {
+        rk_win::WinJsonConfigStore seed;
+        std::string w;
+        seed.initialize(w);
+    }
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* lg = doc.find("log");
+    if (!lg || !lg->isObject()) return false;
+    // schema **恰好允许**的最大组合 ⇒ 只能靠运行时钳制收敛（schema 上下界按本批约束不动）。
+    lg->o["maxFileBytes"] = rk_win::JsonValue::makeNumber(static_cast<double>(kOneGiB));
+    lg->o["maxRollFiles"] = rk_win::JsonValue::makeNumber(1000);
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["enrollSamples"] = rk_win::JsonValue::makeNumber(37);  // 「配置未被清空」的可判别标记
+    if (!writeAllText(cfgPath, rk_win::toJsonString(doc, true))) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    if (store.configRejectedOnLoad()) return false;  // ★ 只钳不拒：绝不因预算超限判配置不可装载
+    if (!listCorruptConfigs(dir).empty()) return false;
+    const rk_win::AppConfig cfg = store.current();
+    if (cfg.log.maxFileBytes != rk_win::kLogMaxFileBytesCap) return false;
+    if (cfg.log.maxRollFiles != 1) return false;
+    // ★ 单份均分额判据（口径与钳制函数一致：maxFileBytes × (maxRollFiles + 1) ≤ **单份均分额**）。
+    //   注意**不要**与 kLogBudgetBytes 比较——那是三份**合计**的总预算，拿单份乘积去比虽然仍会通过，
+    //   但会放过「单份超均分额、三份合计恰好未超」的实现漂移（口径失准）。
+    if (cfg.log.maxFileBytes * (static_cast<std::uint64_t>(cfg.log.maxRollFiles) + 1) >
+        rk_win::kLogPerSetBudgetBytes) {
+        return false;
+    }
+    if (cfg.recognition.enrollSamples != 37) return false;  // 配置未被默认值替换
+    if (warn.empty()) return false;
+    if (warn.find("maxFileBytes") == std::string::npos) return false;
+    if (warn.find("maxRollFiles") == std::string::npos) return false;
+    if (!std::filesystem::exists(cfgPath)) return false;
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FACE-CONFIG-018（S-1）之一：**写型**路径字段含 `..` 段时，PUT 必须真正**拒绝**（400）。
+//
+// 为什么只在 PUT 拒绝：启动期拒绝会触发 INI 回落清空用户配置（红线），故启动期只告警（见下一用例）。
+// 为什么只查 patch 显式携带的字段：否则既有 config.json 里已存在 `..` 的用户会「任何 PUT 都被 400」，
+// 被锁死在无法保存任何设置的状态。
+// 为什么绝对路径**不**被拒：官方用法（`D:\ProgramData\NCNN\...`）且默认配置本身即绝对路径 ⇒
+// 一刀切会误伤既有合法部署（见 checkConfigPath 的逃生口说明）。
+// 判别点：删掉 updateFromJsonBody 里的写型检查块 ⇒ (1)(2) 两条的 res.ok 变为 true ⇒ 红；
+//   把检查推广到读型字段 ⇒ (3) 的 cascadePath 用例变红；把绝对路径也判为违规 ⇒ (4) 变红。
+bool test_config_write_path_parent_ref_put_rejected() {
+    const auto dir = makeTempDir("write_path_put_reject");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    const rk_win::AppConfig before = store.current();
+    const std::uint64_t gen0 = store.generation();
+
+    // (1) 写型字段 log.logDir 含 `..` 段 ⇒ 400，且内存/磁盘配置**都**不受影响。
+    const auto r1 = store.updateFromJsonBody("{\"log\":{\"logDir\":\"..\\\\escaped_logs\"}}");
+    if (r1.ok) return false;
+    if (r1.httpStatus != 400) return false;
+    if (store.generation() != gen0) return false;                       // 未提交 ⇒ 代数不变
+    if (store.current().log.logDir != before.log.logDir) return false;  // 配置未被改动（更未清空）
+    if (r1.details.empty()) return false;                               // 失败原因须可见
+
+    // (2) 写型字段 recognition.databasePath 含 `..` 段（正斜杠形态）⇒ 同样被拒。
+    if (store.updateFromJsonBody("{\"recognition\":{\"databasePath\":\"a/../b/db.yml\"}}").ok) return false;
+
+    // (3) 读型字段（cascadePath）本批**只告警、不拒绝**（分阶段强度）⇒ 必须 200。
+    const auto r2 = store.updateFromJsonBody(
+        "{\"recognition\":{\"cascadePath\":\"../assets/lbpcascade_frontalface.xml\"}}");
+    if (!r2.ok) return false;
+
+    // (4) 绝对路径是官方用法 ⇒ 写型字段上**不得**被拒。
+    if (!store.updateFromJsonBody("{\"log\":{\"logDir\":\"D:\\\\ProgramData\\\\rk_wfcr_logs\"}}").ok) {
+        return false;
+    }
+    return store.current().log.logDir == std::filesystem::path(L"D:\\ProgramData\\rk_wfcr_logs");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FACE-CONFIG-018（S-1）之二：**启动期**（initialize）遇到含 `..` 段的路径字段时**只告警**，
+// 绝不判为「无法装载」——这是「不踩红线」在该项上的可执行判据。
+//
+// 判别点：若有人把 warnUnsafeConfigPaths 的输出改成 return false（或让路径检查参与 schema 拒绝）⇒
+//   「非 rejected / 无隔离产物 / enrollSamples 仍为 37」三条同时变红；
+//   若删掉路径检查 ⇒ warn 为空、且找不到 logDir / 写型 关键词 ⇒ 红。
+bool test_config_write_path_startup_warns_not_rejected() {
+    const auto dir = makeTempDir("write_path_startup_warn");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    {
+        rk_win::WinJsonConfigStore seed;
+        std::string w;
+        seed.initialize(w);
+    }
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* lg = doc.find("log");
+    if (!lg || !lg->isObject()) return false;
+    lg->o["logDir"] = rk_win::JsonValue::makeString("..\\escaped_logs");  // 写型字段 + 含 `..` 段
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["enrollSamples"] = rk_win::JsonValue::makeNumber(37);  // 「配置未被清空」的可判别标记
+    if (!writeAllText(cfgPath, rk_win::toJsonString(doc, true))) return false;
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    if (store.configRejectedOnLoad()) return false;  // ★ 红线：启动期路径违规只能是告警
+    if (!store.initQuarantineFileName().empty()) return false;
+    if (!listCorruptConfigs(dir).empty()) return false;
+    if (warn.empty()) return false;
+    if (warn.find("logDir") == std::string::npos) return false;
+    if (warn.find("写型") == std::string::npos) return false;  // 写/读型的区分必须体现在告警里
+    if (store.current().recognition.enrollSamples != 37) return false;
+    if (!std::filesystem::exists(cfgPath)) return false;
+    return true;
+}

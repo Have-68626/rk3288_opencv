@@ -51,6 +51,12 @@ private:
     FaceDatabase db_;
     std::filesystem::path dbPath_;
     int minFaceSizePx_ = 60;
+    // 成员默认：`initialize()` 一旦被调用即被覆盖（且该赋值已前置到函数最前，失败出口也能观测到注入
+    // 值，见 ArcFaceWinRecognizer.cpp 的 FACE-ARCWIN-008 注释）⇒ 本默认值**实际只决定「构造后不调用
+    // initialize()」这一不可达路径的读数**。**保留而非删除**：删掉会让未初始化的 double 成为 UB，比
+    // 现状更危险。
+    // ⚠️ 配置侧真源是 `WinConfig.h` 的 `RecognitionConfig::identifyThresholdArcFace`（同为 0.45）——
+    //    两处数值相同、且此处不可观测，改其中一处不会提示另一处（FACE-ARCWIN-013 登记的事实）。
     double identifyThreshold_ = 0.45;  // 余弦相似度阈值（小于此值拒绝）
 };
 
