@@ -46,6 +46,10 @@ import java.util.List;
  *       过期帧被放行）；</li>
  *   <li>误删提交（{@code sink.onYuv420888Frame}）⇒ 正对照
  *       {@code frameCommittedWhenEpochStillCurrentAtSubmitPoint} RED。</li>
+ *   <li>删掉 {@code analyze} 开头**入口整段**校验（含 {@code image.close()} 早退）⇒
+ *       {@code frameNotCommittedIfEpochAlreadyStaleAtEntry} 的 {@code rotCalls == 0} 变 1 ⇒ RED。
+ *       <b>注意</b>：入口校验此前是行为用例的死角 —— 删掉它时上面两条用例**仍全绿**
+ *       （二者的入口代次恒为当前 ⇒ 走到提交前复检照样丢弃；全程不推进 ⇒ 两条都通过）。</li>
  * </ul>
  */
 public class CameraXFrameEpochRecheckBehaviorTest {
@@ -315,5 +319,57 @@ public class CameraXFrameEpochRecheckBehaviorTest {
         assertEquals("代次仍当前，帧应正常提交", 1, sink.calls);
         assertTrue("提交成功应上报推送", obs.pushed);
         assertTrue("帧仍须经 finally 关闭释放", image.closeCalls >= 1);
+    }
+
+    /**
+     * **FACE-CAM-007 判别性用例**：入口即过期（{@code capturedEpoch} 在进入 {@code analyze} 前
+     * 已经失效）必须在**入口整段丢弃** —— 不取旋转、不取尺寸/平面、不提交、不统计。
+     *
+     * <p>与 {@link #frameNotCommittedIfEpochStaleAtSubmitPoint} 互补：后者覆盖「入口当时有效、
+     * 提交前失效」，本用例覆盖 {@code analyze} 开头的入口分支
+     * （{@code if (!startGate.isCurrent(capturedEpoch))}）。
+     * 该分支此前**从未被任何行为用例以「入口即 stale」这一输入构造过**：既有的两条用例入口代次
+     * 都是当前代次，故删掉入口整段校验后它们**仍全绿**（帧会走到提交前复检照样被丢弃，或全程不推进
+     * 压根无需入口校验），入口分支遂成死角。
+     *
+     * <p><b>打红方式（改坏哪一处即红）</b>：
+     * <ul>
+     *   <li>删掉 {@code analyze} 开头的入口校验整段 ⇒ 帧继续进入帧处理、走到
+     *       {@code computeRotationDegrees()} ⇒ {@code rotCalls} 变 1 ⇒ 红。
+     *       注意此时 {@code sink.calls} 仍为 0（提交前复检会兜住），故**不能**只断言它；</li>
+     *   <li>把入口分支的 {@code image.close()} 早退改成「只 return 不 close」（该早退在 try 之外，
+     *       不走 finally）⇒ 最后一条断言红；</li>
+     *   <li>入口校验极性反转 {@code if (isCurrent(...))} ⇒ 过期帧不再被入口拦下、继续走到
+     *       {@code computeRotationDegrees()} ⇒ {@code rotCalls} 变 1 ⇒ 红。</li>
+     * </ul>
+     *
+     * <p><b>为何用 {@code rotCalls} 而不是反射读私有 {@code statsFrames}</b>：{@code rotCalls} 是
+     * **行为性**观测量（注入的 {@link RotationDegreesProvider} 被调用次数），不新增对私有字段的
+     * 白盒耦合，判别力等价于「有没有进到帧处理」。
+     */
+    @Test
+    public void frameNotCommittedIfEpochAlreadyStaleAtEntry() throws Exception {
+        FakeObserver obs = new FakeObserver();
+        FakeSink sink = new FakeSink();
+        final int[] rotCalls = {0};
+        // ★ 判别器：入口早退路径绝不触达 computeRotationDegrees()；删掉入口校验即被调用一次。
+        RotationDegreesProvider provider = () -> {
+            rotCalls[0]++;
+            return 0;
+        };
+        CameraXCaptureController c = newController(sink, obs, provider);
+        skipResolutionLog(c);
+
+        long staleEpoch = gateOf(c).enter();   // 代次 1
+        gateOf(c).advance();                   // 代次 2 ⇒ staleEpoch 在入口即已失效
+        FakeImageProxy image = buildOneFrame(123L);
+
+        invokeAnalyze(c, image, staleEpoch);
+
+        assertEquals("入口即过期 ⇒ 帧不得推送", 0, sink.calls);
+        assertFalse("入口丢弃不得上报推送", obs.pushed);
+        assertFalse("入口丢弃不得上报错误", obs.hasError());
+        assertEquals("入口即丢弃 ⇒ 不得进入帧处理（不取旋转）", 0, rotCalls[0]);
+        assertTrue("帧仍须经 finally 或入口早退关闭释放", image.closeCalls >= 1);
     }
 }

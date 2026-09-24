@@ -4,9 +4,10 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
- * MainActivity.JsonText 顶层键取值回归测试（审计 #4）。
+ * MainActivity.JsonText 顶层键取值回归测试（审计 #4）+ 能力行组合层判别测试（T3 缺口 2）。
  *
  * <p>历史实现用整串 {@code indexOf} 取首个 {@code "key"}，若 native 在
  * {@code accelerators.<cap>.*} 内先输出同名键（如 {@code effective}/{@code reason}），
@@ -14,6 +15,15 @@ import static org.junit.Assert.assertNull;
  *
  * <p>直接访问静态嵌套类 {@link MainActivity.JsonText} 不会初始化 MainActivity，
  * 因此不触发其 {@code System.loadLibrary}，可在纯 JVM 运行。
+ *
+ * <p>覆盖范围（两批）：
+ * <ol>
+ *   <li>底层 —— {@code extractRawValue}/{@code extractObject}/{@code capObject} 的顶层键取值纪律
+ *       （审计 #4 / §2.5-G）；</li>
+ *   <li>组合层与上层（T3 缺口 2 补齐）—— {@code jsonGetCapBool} 的「缺失→null ≠ false」三态，
+ *       以及 {@code capLine} 的「未知({@code ?}) vs 未生效({@code N})」渲染。第二批此前**完全零覆盖**：
+ *       把「缺失→null」改成「→false」不会有任何一条用例变红，而后果是全量 UI 语义塌陷。</li>
+ * </ol>
  */
 public class MainActivityJsonTextTest {
 
@@ -181,5 +191,104 @@ public class MainActivityJsonTextTest {
         assertNull(MainActivity.JsonText.capObject(json, "ncnn"));
         assertNull(MainActivity.JsonText.capObject(json, "opencl"));
         assertNull(MainActivity.JsonText.capObject(null, "mpp"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 组合层与上层：capLine 取值链（T3 缺口 2 —— 此前「组合层与上层全部零覆盖」）
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // 缺口原文：把 jsonGetCapBool 的「缺失→null」改成「缺失→false」，**一条测试都不会红**。
+    // 后果不是局部失灵，而是全量 UI 语义塌陷：能力状态区对每个加速器恒显
+    // compiled=N installed=N（capLine 全程以 x != null 判定「是否有 native 值」），
+    // 「未知(?)／加载中」与「未生效(N)」的区分彻底消失。
+    //
+    // 下列方法此前是 MainActivity 的 private static 成员，纯 JVM 单测触不到它们
+    // （触到外层类即 System.loadLibrary）；本次已下沉进 JsonText，故可直接驱动。
+    // 每条用例要打红哪一处改动，写在该条的 javadoc 里。
+
+    /**
+     * 「缺失」必须与「存在且 false」可区分（{@code null} vs {@code Boolean.FALSE}）。
+     *
+     * <p><b>判别点</b>：把 {@code JsonText.jsonGetCapBool} 的 {@code return null} 改成
+     * {@code return false} ⇒ 第一条断言（assertNull）红。这正是 T3 缺口 2 指出的、
+     * 此前无任何用例能拦住的那一处改动。
+     */
+    @Test
+    public void capBoolDistinguishesMissingFromFalse() {
+        assertNull("缺失必须是 null，不得退化为 false —— 否则 UI 的「未知(?)」语义塌陷",
+                MainActivity.JsonText.jsonGetCapBool("{\"ok\":true}", "mpp", "compiled"));
+        assertEquals("值存在且为 false ⇒ 必须返回 Boolean.FALSE（与「缺失」区分）",
+                Boolean.FALSE,
+                MainActivity.JsonText.jsonGetCapBool("{\"mpp\":{\"compiled\":false}}", "mpp", "compiled"));
+    }
+
+    /**
+     * 派生值未知（传 {@code null}）⇒ compiled/installed 渲染 {@code ?}，绝不臆断为 N；
+     * 派生值已知 ⇒ 渲染具体 Y。
+     *
+     * <p><b>两段输入都是为覆盖分支而构造的，不是「生产调用形态」</b>（如实标注）：
+     * 生产调用点只有 {@code MainActivity.buildRuntimeCapabilityText} 一处（内含 5 条能力行
+     * ncnn / MPP / libyuv / OpenCL / Qualcomm，派生实参各不相同），
+     * 且其中**没有一条**与本用例的两组形态相同：
+     * <ul>
+     *   <li>第一段 {@code (false, null, null, null, "unsupported_platform", "")} 在生产中不存在
+     *       —— 最接近的 MPP 调用是
+     *       {@code ("mpp", "MPP", reqMpp, null, false, null, "missing_dependency", 路径)}：
+     *       installed 派生值是 {@code Boolean.FALSE}（非 null）、reason 是 {@code missing_dependency}、
+     *       evidence 是编码文件路径。{@code "unsupported_platform"} 在生产里根本不出现；</li>
+     *   <li>第二段全 {@code Boolean.TRUE} 同样不是生产形态 —— ncnn 调用的 {@code compiledDerived}
+     *       **恒为 null**（生产是 {@code (null, modelLoading ? null : Boolean.valueOf(modelImported),
+     *       ncnnEffective, …)}）；生产里唯一传非 null {@code compiledDerived} 的是 libyuv，
+     *       而它传的是编译期常量 {@code false}，且 {@code effectiveDerived} 仍为 null。</li>
+     * </ul>
+     * 保留这两段的理由是它们各自驱动一个真实分支（{@code ?} 与具体 Y），断言对 {@code capLine}
+     * 的格式串逐字成立、具有判别力；但**不得**据此推断生产形态已被覆盖。
+     *
+     * <p><b>判别点</b>：
+     * <ul>
+     *   <li>把 capLine 的 {@code (installedDerived != null ? yn(installedDerived) : "?")} 改成恒走
+     *       具体值 ⇒ 第一段 {@code installed=?} 红（{@code ?} 分支沦为死代码）；</li>
+     *   <li>反转 {@code yn} 的极性 ⇒ 第一段 {@code req=N} 红；</li>
+     *   <li>把派生分支恒返回 {@code "?"} ⇒ 第二段 {@code compiled=Y} / {@code eff=Y} 红。</li>
+     * </ul>
+     */
+    @Test
+    public void capLineRendersQuestionMarkForUnknownFields() {
+        // 构造：无 cap 对象（capObject 恒 null）+ 全部派生值传 null，用来覆盖「未知 ⇒ ?」分支。
+        String unknown = MainActivity.JsonText.capLine("{\"ok\":true}", "mpp", "MPP",
+                false, null, null, null, "unsupported_platform", "");
+        assertTrue("派生值未知 ⇒ installed 必须渲染 '?'，不得臆断为 N",
+                unknown.contains("installed=?"));
+        assertTrue("派生值未知 ⇒ compiled 必须渲染 '?'", unknown.contains("compiled=?"));
+        assertTrue("requested 取调用方布尔值 ⇒ N", unknown.contains("req=N"));
+        assertTrue("effectiveDerived=null ⇒ eff 必须为 N（未知不等于生效）", unknown.contains("eff=N"));
+
+        // 构造：三个派生值全部给出真值，用来覆盖「已知 ⇒ 具体 Y」分支（生产中无此调用形态）。
+        String derived = MainActivity.JsonText.capLine("{\"ok\":true}", "ncnn", "ncnn",
+                true, Boolean.TRUE, Boolean.TRUE, Boolean.TRUE, "ok", "");
+        assertTrue("派生值已知 ⇒ compiled 为具体 Y", derived.contains("compiled=Y"));
+        assertTrue("派生值已知 ⇒ installed 为具体 Y", derived.contains("installed=Y"));
+        assertTrue("requested=true ⇒ req=Y", derived.contains("req=Y"));
+        assertTrue("effectiveDerived=true ⇒ eff=Y", derived.contains("eff=Y"));
+    }
+
+    /**
+     * native 明确给出的 cap 字段优先于调用方派生值；值存在且为 false ⇒ {@code N}（而非 {@code ?}）。
+     *
+     * <p><b>判别点</b>：{@code jsonGetCapBool} 忽略 JSON 恒返回 null ⇒ compiled/installed 退到
+     * 派生真值变成 Y ⇒ 红；{@code capLine} 把「派生优先于 JSON」写反 ⇒ 红；反转 {@code yn} ⇒ 红。
+     */
+    @Test
+    public void capLineRendersNWhenJsonSaysFalse() {
+        String json = "{\"mpp\":{\"compiled\":false,\"installed\":false,\"requested\":false,"
+                + "\"effective\":false,\"reason\":\"missing_dependency\"}}";
+        // 派生值一律与 JSON 相反，用来证明「JSON 优先」。
+        String line = MainActivity.JsonText.capLine(json, "mpp", "MPP",
+                true, Boolean.TRUE, Boolean.TRUE, Boolean.TRUE, "ok", "ignored");
+        assertTrue("JSON 值存在且 false ⇒ N（区别于 ?）", line.contains("compiled=N"));
+        assertTrue("JSON 值存在且 false ⇒ N", line.contains("installed=N"));
+        assertTrue("native requested=false 优先于调用方 true", line.contains("req=N"));
+        assertTrue("native effective=false 优先于派生 true", line.contains("eff=N"));
+        assertTrue("native reason 优先于派生 reason", line.contains("reason=missing_dependency"));
     }
 }

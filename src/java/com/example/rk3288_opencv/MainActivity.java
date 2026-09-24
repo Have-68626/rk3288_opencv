@@ -256,6 +256,19 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private int enrollmentGeneration = 0;
     /** 最近一次采样被拒原因（仅在喂入样本时更新）；不含任何模板/向量内容。 */
     private volatile String lastEnrollmentRejectReason = "";
+    /**
+     * N1 可见性：本次采集期间的注册表损坏提示（空串 = 无）。
+     *
+     * <p>判重门在注册表存在**被跳过的损坏行**时对每一帧返回
+     * {@link EnrollmentSession.Reason#REPO_UNAVAILABLE} ⇒ 采集恒停在 0/8，且经 UI 的 `add` 自愈被切断。
+     * 此前该损坏信息对用户**全链路不可见**（进度区只反复显示「无法校验现有模板」，不含原因与出路），
+     * 故在 {@link #startEnrollment} 的准备阶段落定本提示、由 {@link #buildEnrollmentProgressText}
+     * 贴在进度区。文案只含「判重门会拒收本次采集」这一事实与处置办法，**不含任何模板/向量内容**。
+     * 处置办法分两档（与 {@link #showPersonManagementDialog} 同结论，避免同一情形下两处文案互斥）：
+     * 人员列表里**有**可删条目时「删除任一位人员以重写注册表」；**一条都没有**时只能清除应用数据或
+     * 手工修复注册表文件。
+     */
+    private volatile String enrollmentRegistryWarning = "";
 
     // Delegate helpers (preliminary split P1.7)
     private CameraFragment cameraFragment;
@@ -887,141 +900,92 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     /**
-     * 生成单条能力状态行。优先采用 JSON 中 {@code accelerators.<cap>.*}（或顶层 cap 对象）字段；
-     * 缺失时用调用方派生的保守值。effective 只在 native 明确置 true（或主推后端派生为 true）时为 Y，
-     * 杜绝“compiled 即 effective”的误报。{@code installedDerived} 允许传 {@code null} 表示「未知」
-     * （如模型状态仍在加载），此时 installed 渲染为 {@code ?}，绝不臆断为未安装。
+     * 生成单条能力状态行（薄包装，调用点零改动）。
+     *
+     * <p>实现见 {@link JsonText#capLine}：判别逻辑集中在静态嵌套类内，以便纯 JVM 单测直接覆盖
+     * 「未知({@code ?}) vs 未生效({@code N})」的区分——本方法所在的外层类一旦被触到即执行
+     * {@code System.loadLibrary("native-lib")}，单测无法调用它。
      */
-    private String capLine(String json, String cap, String label, boolean requested,
-                           Boolean compiledDerived, Boolean installedDerived,
-                           Boolean effectiveDerived, String reasonDerived, String evidenceDerived) {
-        Boolean compiledJson = jsonGetCapBool(json, cap, "compiled");
-        Boolean installedJson = jsonGetCapBool(json, cap, "installed");
-        Boolean requestedJson = jsonGetCapBool(json, cap, "requested");
-        Boolean effectiveJson = jsonGetCapBool(json, cap, "effective");
-        String reasonJson = jsonGetCapString(json, cap, "reason", null);
-        String evidenceJson = jsonGetCapString(json, cap, "evidence", null);
-
-        boolean req = (requestedJson != null) ? requestedJson : requested;
-        String compiled = (compiledJson != null) ? yn(compiledJson)
-                : (compiledDerived != null ? yn(compiledDerived) : "?");
-        String installed = (installedJson != null) ? yn(installedJson)
-                : (installedDerived != null ? yn(installedDerived) : "?");
-        boolean eff;
-        if (effectiveJson != null) {
-            eff = effectiveJson;
-        } else {
-            eff = (effectiveDerived != null) && effectiveDerived;
-        }
-        String reason = (reasonJson != null) ? reasonJson : reasonDerived;
-        String evidence = (evidenceJson != null) ? evidenceJson : evidenceDerived;
-        return label + " compiled=" + compiled + " installed=" + installed
-                + " req=" + yn(req) + " eff=" + yn(eff)
-                + " reason=" + reason + " ev=" + sanitizeStatusDetail(evidence);
+    private static String capLine(String json, String cap, String label, boolean requested,
+                                  Boolean compiledDerived, Boolean installedDerived,
+                                  Boolean effectiveDerived, String reasonDerived, String evidenceDerived) {
+        return JsonText.capLine(json, cap, label, requested, compiledDerived, installedDerived,
+                effectiveDerived, reasonDerived, evidenceDerived);
     }
 
-    private static String yn(boolean v) {
-        return v ? "Y" : "N";
-    }
-
-    /** 单行化并截断 evidence，避免长文本（含换行）撑爆状态区。 */
-    private static String sanitizeStatusDetail(String s) {
-        if (s == null) return "";
-        String flat = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
-        return flat.length() > 96 ? flat.substring(0, 96) + "…" : flat;
-    }
-
-    /** 判断 flat JSON 中是否存在某顶层键。 */
+    /** 判断 flat JSON 中是否存在某顶层键。实现见 {@link JsonText#hasJsonKey}。 */
     private static boolean hasJsonKey(String json, String key) {
-        return jsonExtractRawValue(json, key) != null;
+        return JsonText.hasJsonKey(json, key);
     }
 
     // ---------- 轻量 JSON 读取（仅用于解析 getRuntimeStatus 的扁平小对象） ----------
+    // 实现已全部下沉到 {@link JsonText}（纯 JVM 可测）；此处只保留同名薄包装，调用点零改动。
 
-    /** 读取字符串字段；缺失或非法返回 def。非字符串 token 按字面返回。 */
+    /** 读取字符串字段；缺失或非法返回 def。非字符串 token 按字面返回。实现见 {@link JsonText#jsonGetString}。 */
     private static String jsonGetString(String json, String key, String def) {
-        String raw = jsonExtractRawValue(json, key);
-        if (raw == null) return def;
-        if (raw.length() >= 2 && raw.charAt(0) == '"' && raw.charAt(raw.length() - 1) == '"') {
-            return jsonUnescape(raw.substring(1, raw.length() - 1));
-        }
-        return raw;
+        return JsonText.jsonGetString(json, key, def);
     }
 
+    /** 实现见 {@link JsonText#jsonGetBool}。 */
     private static boolean jsonGetBool(String json, String key, boolean def) {
-        String raw = jsonExtractRawValue(json, key);
-        if (raw == null) return def;
-        if (raw.startsWith("true")) return true;
-        if (raw.startsWith("false")) return false;
-        return def;
+        return JsonText.jsonGetBool(json, key, def);
     }
 
+    /** 实现见 {@link JsonText#jsonGetLong}。 */
     private static long jsonGetLong(String json, String key, long def) {
-        String raw = jsonExtractRawValue(json, key);
-        if (raw == null) return def;
-        try {
-            return Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
-            return def;
-        }
+        return JsonText.jsonGetLong(json, key, def);
     }
 
+    /** 实现见 {@link JsonText#jsonGetDouble}。 */
     private static double jsonGetDouble(String json, String key, double def) {
-        String raw = jsonExtractRawValue(json, key);
-        if (raw == null) return def;
-        try {
-            return Double.parseDouble(raw.trim());
-        } catch (NumberFormatException e) {
-            return def;
-        }
+        return JsonText.jsonGetDouble(json, key, def);
     }
 
-    /** 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）字符串；缺失返回 def。 */
+    /** 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）字符串；缺失返回 def。实现见 {@link JsonText#jsonGetCapString}。 */
     private static String jsonGetCapString(String json, String cap, String key, String def) {
-        String sub = capObject(json, cap);
-        return sub == null ? def : jsonGetString(sub, key, def);
-    }
-
-    /** 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）布尔；缺失返回 null（区别于 false）。 */
-    private static Boolean jsonGetCapBool(String json, String cap, String key) {
-        String sub = capObject(json, cap);
-        if (sub == null || jsonExtractRawValue(sub, key) == null) return null;
-        return jsonGetBool(sub, key, false);
-    }
-
-    /** 定位 cap 对应对象：优先 accelerators 下的同名对象，回退顶层同名对象。实现见 {@link JsonText#capObject}。 */
-    private static String capObject(String json, String cap) {
-        return JsonText.capObject(json, cap);
+        return JsonText.jsonGetCapString(json, cap, key, def);
     }
 
     /**
-     * 提取 "key": 后的原始值 token（字符串含引号）；<b>仅匹配顶层对象键</b>，缺失返回 null。
+     * 纯文本 JSON 取值工具 + 加速能力状态行的取值/渲染链：不依赖 Activity 实例与 Android API，
+     * 抽成静态嵌套类以便纯 JVM 单测直接覆盖（引用静态嵌套类**不构成对外层类的主动使用**，
+     * 故不会触发 {@code MainActivity} 的静态初始化 / native 加载 —— JLS 12.4.1）。
      *
-     * <p>限定顶层是为了避免误取 {@code accelerators.<cap>.*} 内的同名键（如 effective/reason）：
-     * 嵌套取值必须先 {@link JsonText#extractObject}（{@link #capObject}）缩小到子对象体，
-     * 再对子对象体调用本方法——此时子对象体的键仍处于其自身顶层。
-     */
-    private static String jsonExtractRawValue(String json, String key) {
-        return JsonText.extractRawValue(json, key);
-    }
-
-    /**
-     * 纯文本 JSON 取值工具：不依赖 Activity 实例与 Android API，抽成静态嵌套类以便
-     * JVM 单测直接覆盖（访问嵌套类不会触发 MainActivity 的静态初始化 / native 加载）。
+     * <p>⚠️ <b>不变量（必须遵守，不得放宽）</b>：本类必须与 Android 平台及外层
+     * {@link MainActivity} **完全解耦**。
+     * <ul>
+     *   <li><b>不得引用任何 MainActivity 成员</b>（字段 / 方法 / 嵌套类型）——那会让本类的
+     *       {@code <clinit>} 牵连 {@code MainActivity.<clinit>}，后者含
+     *       {@code System.loadLibrary("native-lib")}，纯 JVM 单测当场 {@code UnsatisfiedLinkError}；</li>
+     *   <li><b>不得引用 {@code NativeFaceBridge} / {@code AppLog}</b> —— 前者自带
+     *       {@code System.loadLibrary}，后者依赖 {@code android.util.Log}，在纯 JVM 下同样不可用。</li>
+     * </ul>
+     * 违反本条的后果是**本类全部用例一起失效**（而非某一条），且失败形式为
+     * {@code UnsatisfiedLinkError} / {@code RuntimeException} 而非断言失败，易被误读成环境问题。
+     * 同理，{@code buildRuntimeCapabilityText} 必须留在外层：它要调 {@code NativeFaceBridge}
+     * 与 {@code modelManager()}，天生无法在纯 JVM 下运行。
      *
-     * <p>⚠️ **边界如实说明**：{@link #extractRawValue}/{@link #extractObject} 是**通用**扫描；
-     * 而 {@link #capObject} 内嵌了「{@code accelerators.<cap>}」这一**加速能力矩阵的业务结构**，
-     * 严格说超出了「纯工具」的职责（子代理 4 审计 P5 指出）。之所以仍放在此处，是因为本类是
-     * `MainActivity` 的私有嵌套类、仅为状态区渲染与可测性服务，并非对外通用 API；
-     * 且该分支在现行生产数据上恒为 null（见 {@link #capObject}）。若将来它被复用或长大，
-     * 应迁到独立的能力矩阵领域类。
+     * <p>⚠️ <b>边界如实说明</b>：{@link #extractRawValue}/{@link #extractObject} 是**通用**扫描；
+     * 其余成员内嵌的是**加速能力矩阵的业务语义** —— {@link #capObject} 的
+     * 「{@code accelerators.<cap>}」结构、{@link #jsonGetCapBool} 的「缺失→null ≠ false」三态、
+     * {@link #capLine} 的「compiled ≠ effective」渲染规则（子代理 4 审计 P5 指出职责越界）。
+     * 之所以仍放在此处，是因为本类仅为状态区渲染与可测性服务、并非对外通用 API；
+     * 且 {@code accelerators} 分支在现行生产数据上恒为 null（见 {@link #capObject}）。
+     * 若将来它被复用或长大，应迁到独立的能力矩阵领域类。
      */
     static final class JsonText {
 
         private JsonText() {
         }
 
-        /** 提取 {@code "key":} 后的原始值 token（字符串含引号，保留转义）；仅匹配顶层键。 */
+        /**
+         * 提取 {@code "key":} 后的原始值 token（字符串含引号，保留转义）；<b>仅匹配顶层键</b>，
+         * 缺失返回 null。
+         *
+         * <p>限定顶层是为了避免误取 {@code accelerators.<cap>.*} 内的同名键（如 effective/reason）：
+         * 嵌套取值必须先 {@link #extractObject}（{@link #capObject}）缩小到子对象体，
+         * 再对子对象体调用本方法——此时子对象体的键仍处于其自身顶层。
+         */
         static String extractRawValue(String json, String key) {
             if (json == null || key == null) return null;
             String needle = "\"" + key + "\"";
@@ -1183,29 +1147,155 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             return -1;
         }
-    }
 
-    /** 解转义（与 native jsonEscape 对齐，仅处理常用控制字符）。 */
-    private static String jsonUnescape(String s) {
-        if (s.indexOf('\\') < 0) return s;
-        StringBuilder out = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c != '\\' || i + 1 >= s.length()) {
-                out.append(c);
-                continue;
+        // ═══════════════════════════════════════════════════════════════════════
+        // 取值层：扁平字段 getter、cap 嵌套 getter 与能力行渲染（自 MainActivity 下沉）
+        // ═══════════════════════════════════════════════════════════════════════
+        //
+        // 下沉动机（T3 缺口 2）：这些方法此前是 MainActivity 的 private static 成员，纯 JVM 单测
+        // **无法**调用它们（触到外层类即 System.loadLibrary），于是取值链的「组合层与上层」
+        // 全部零覆盖 —— 把 jsonGetCapBool 的「缺失→null」改成「→false」一条测试都不会红，
+        // 后果却是全量 UI 语义塌陷（见 jsonGetCapBool/capLine 各自的说明）。
+        // 各方法体与下沉前**逐字相同**，只是调用点由 jsonExtractRawValue 改为本类内
+        // 已有的 extractRawValue。
+
+        /** 解转义（与 native jsonEscape 对齐，仅处理常用控制字符）。 */
+        static String jsonUnescape(String s) {
+            if (s.indexOf('\\') < 0) return s;
+            StringBuilder out = new StringBuilder(s.length());
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c != '\\' || i + 1 >= s.length()) {
+                    out.append(c);
+                    continue;
+                }
+                char n = s.charAt(++i);
+                switch (n) {
+                    case 'n': out.append('\n'); break;
+                    case 'r': out.append('\r'); break;
+                    case 't': out.append('\t'); break;
+                    case '"': out.append('"'); break;
+                    case '\\': out.append('\\'); break;
+                    default: out.append(n); break;
+                }
             }
-            char n = s.charAt(++i);
-            switch (n) {
-                case 'n': out.append('\n'); break;
-                case 'r': out.append('\r'); break;
-                case 't': out.append('\t'); break;
-                case '"': out.append('"'); break;
-                case '\\': out.append('\\'); break;
-                default: out.append(n); break;
+            return out.toString();
+        }
+
+        /** 判断 flat JSON 中是否存在某顶层键。 */
+        static boolean hasJsonKey(String json, String key) {
+            return extractRawValue(json, key) != null;
+        }
+
+        /** 读取字符串字段；缺失或非法返回 def。非字符串 token 按字面返回。 */
+        static String jsonGetString(String json, String key, String def) {
+            String raw = extractRawValue(json, key);
+            if (raw == null) return def;
+            if (raw.length() >= 2 && raw.charAt(0) == '"' && raw.charAt(raw.length() - 1) == '"') {
+                return jsonUnescape(raw.substring(1, raw.length() - 1));
+            }
+            return raw;
+        }
+
+        static boolean jsonGetBool(String json, String key, boolean def) {
+            String raw = extractRawValue(json, key);
+            if (raw == null) return def;
+            if (raw.startsWith("true")) return true;
+            if (raw.startsWith("false")) return false;
+            return def;
+        }
+
+        static long jsonGetLong(String json, String key, long def) {
+            String raw = extractRawValue(json, key);
+            if (raw == null) return def;
+            try {
+                return Long.parseLong(raw.trim());
+            } catch (NumberFormatException e) {
+                return def;
             }
         }
-        return out.toString();
+
+        static double jsonGetDouble(String json, String key, double def) {
+            String raw = extractRawValue(json, key);
+            if (raw == null) return def;
+            try {
+                return Double.parseDouble(raw.trim());
+            } catch (NumberFormatException e) {
+                return def;
+            }
+        }
+
+        /** 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）字符串；缺失返回 def。 */
+        static String jsonGetCapString(String json, String cap, String key, String def) {
+            String sub = capObject(json, cap);
+            return sub == null ? def : jsonGetString(sub, key, def);
+        }
+
+        /**
+         * 读取 accelerators.<cap>.<key>（或顶层 <cap>.<key>）布尔；缺失返回 null（区别于 false）。
+         *
+         * <p>⚠️ 「缺失 → {@code null}」是与 {@code false} **并列**的第三态，不是可省略的细节：
+         * {@link #capLine} 一律以 {@code x != null} 判定「native 是否暴露了该字段」——
+         * {@code null} ⇒ 渲染 {@code ?}（未知／加载中），{@code false} ⇒ 渲染 {@code N}（未生效）。
+         * 若把缺失退化为 {@code false}，两种语义即合并，能力状态区会对每个加速器恒显
+         * {@code compiled=N installed=N}，「未知(?)」的表达能力彻底塌陷。
+         * 该不变量由 {@code MainActivityJsonTextTest.capBoolDistinguishesMissingFromFalse} 钉住。
+         */
+        static Boolean jsonGetCapBool(String json, String cap, String key) {
+            String sub = capObject(json, cap);
+            if (sub == null || extractRawValue(sub, key) == null) return null;
+            return jsonGetBool(sub, key, false);
+        }
+
+        static String yn(boolean v) {
+            return v ? "Y" : "N";
+        }
+
+        /** 单行化并截断 evidence，避免长文本（含换行）撑爆状态区。 */
+        static String sanitizeStatusDetail(String s) {
+            if (s == null) return "";
+            String flat = s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+            return flat.length() > 96 ? flat.substring(0, 96) + "…" : flat;
+        }
+
+        /**
+         * 生成单条能力状态行。优先采用 JSON 中 {@code accelerators.<cap>.*}（或顶层 cap 对象）字段；
+         * 缺失时用调用方派生的保守值。effective 只在 native 明确置 true（或主推后端派生为 true）时为 Y，
+         * 杜绝“compiled 即 effective”的误报。{@code installedDerived} 允许传 {@code null} 表示「未知」
+         * （如模型状态仍在加载），此时 installed 渲染为 {@code ?}，绝不臆断为未安装。
+         *
+         * <p>⚠️ <b>判别力前提</b>：「未知({@code ?})」与「未生效({@code N})」的区分**完全**依赖
+         * {@link #jsonGetCapBool} 的「缺失→null」与 {@link #yn} 的极性。把前者改成缺失→false，
+         * 或把后者反过来，都会让全部能力行恒显具体值／极性颠倒 —— 而这两种改法在
+         * {@code MainActivityJsonTextTest} 的三条组合层用例出现之前**一条测试都不会红**。
+         */
+        static String capLine(String json, String cap, String label, boolean requested,
+                              Boolean compiledDerived, Boolean installedDerived,
+                              Boolean effectiveDerived, String reasonDerived, String evidenceDerived) {
+            Boolean compiledJson = jsonGetCapBool(json, cap, "compiled");
+            Boolean installedJson = jsonGetCapBool(json, cap, "installed");
+            Boolean requestedJson = jsonGetCapBool(json, cap, "requested");
+            Boolean effectiveJson = jsonGetCapBool(json, cap, "effective");
+            String reasonJson = jsonGetCapString(json, cap, "reason", null);
+            String evidenceJson = jsonGetCapString(json, cap, "evidence", null);
+
+            boolean req = (requestedJson != null) ? requestedJson : requested;
+            String compiled = (compiledJson != null) ? yn(compiledJson)
+                    : (compiledDerived != null ? yn(compiledDerived) : "?");
+            String installed = (installedJson != null) ? yn(installedJson)
+                    : (installedDerived != null ? yn(installedDerived) : "?");
+            boolean eff;
+            if (effectiveJson != null) {
+                eff = effectiveJson;
+            } else {
+                eff = (effectiveDerived != null) && effectiveDerived;
+            }
+            String reason = (reasonJson != null) ? reasonJson : reasonDerived;
+            String evidence = (evidenceJson != null) ? evidenceJson : evidenceDerived;
+            return label + " compiled=" + compiled + " installed=" + installed
+                    + " req=" + yn(req) + " eff=" + yn(eff)
+                    + " reason=" + reason + " ev=" + sanitizeStatusDetail(evidence);
+        }
     }
 
     private MonitoringCoordinator.Decision applyMonitoringEffects(@NonNull MonitoringCoordinator.Decision d) {
@@ -4115,21 +4205,49 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         new Thread(() -> {
             String error = null;
             EnrollmentSession prepared = null;
+            String warning = "";
             try {
                 if (!repo.isEnrollmentEnabled()) {
                     error = repo.unsupportedReason();
-                } else if (repo.get(personId).isOk()) {
-                    error = "该人员已注册，请先删除或更换标识";
                 } else {
-                    prepared = new EnrollmentSession(personId, EnrollmentSession.fromRepository(repo));
-                    if (!prepared.start()) {
-                        error = "无法开始采集会话";
+                    AndroidEnrollmentRepository.Result existing = repo.get(personId);
+                    if (existing.isOk()) {
+                        error = "该人员已注册，请先删除或更换标识";
+                    } else if (existing.status != AndroidEnrollmentRepository.Status.NOT_FOUND) {
+                        // 注册表本身不可读时 get() 返回的是**该错误码**（CORRUPTED/IO_ERROR…），
+                        // 不是 NOT_FOUND。此前一律按「已注册」报错，那是对用户说的**假话**
+                        // （库里没有任何条目，用户按提示去删也删不到），故按状态码如实区分。
+                        error = "本地人员注册表不可读（" + existing.status + "），无法判重："
+                                + existing.message;
+                    } else {
+                        prepared = new EnrollmentSession(personId, EnrollmentSession.fromRepository(repo));
+                        if (!prepared.start()) {
+                            error = "无法开始采集会话";
+                        } else {
+                            // N1 可见性：注册表存在被跳过的损坏行时，判重门会对每一帧返回
+                            // REPO_UNAVAILABLE ⇒ 本次采集必然停在 0/8。提前把**原因与出路**写进
+                            // 进度区，否则用户只能看到一个不含处置办法的「无法校验现有模板」。
+                            // 判据与判重门同源（isEnumerationComplete），故文案不会与门背离。
+                            AndroidEnrollmentRepository.ListResult pre = repo.list();
+                            if (!pre.isEnumerationComplete()) {
+                                // 兜底半句（「若没有任何可删条目…」）与 showPersonManagementDialog 的
+                                // 「entries 为空且 skipped>0 ⇒ 当前界面无法修复」保持同一结论，
+                                // 避免同一情形下两处文案互斥。
+                                warning = pre.skippedLineCount > 0
+                                        ? "⚠ 本地注册表有 " + pre.skippedLineCount + " 行损坏已被跳过，"
+                                        + "判重无法覆盖全部在册者，本次采集会被拒绝。"
+                                        + "请先用「人员列表 / 删除」删除任一位人员以重写注册表（清除损坏行），再重新注册；"
+                                        + "若人员列表中没有任何可删除的条目，则需清除应用数据或手工修复注册表文件。"
+                                        : "⚠ 本地人员注册表不可读（" + pre.status + "），本次采集会被拒绝。";
+                            }
+                        }
                     }
                 }
             } catch (Throwable t) {
                 error = "采集会话准备失败";
             }
             final String err = error;
+            final String warn = warning;
             final EnrollmentSession session = prepared;
             runOnUiThread(() -> {
                 // 代次门：准备期间对话框被关闭/取消则丢弃结果，不复活已关闭的会话。
@@ -4149,6 +4267,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 // 导致取消/失败都留下孤儿键；改为延迟落盘后该问题从根上消失。
                 pendingEnrollmentDisplayName = displayName;
                 lastEnrollmentRejectReason = "";
+                enrollmentRegistryWarning = warn;
                 enrollmentSession = session;
                 enrollmentInProgress = true;
                 // #1 打通注册闭环：接通 native 逐帧特征源（开启失败不阻断会话，仅提示等待）。
@@ -4209,6 +4328,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 + "，右 " + st.rightCount + "/" + EnrollmentSession.QUOTA_RIGHT + "）";
         if (!lastEnrollmentRejectReason.isEmpty()) {
             text += "\n最近拒绝：" + lastEnrollmentRejectReason;
+        }
+        // N1 可见性：注册表损坏提示贴在拒绝原因之后，保证「为什么一直 0/8」与「怎么恢复」同屏可见。
+        if (!enrollmentRegistryWarning.isEmpty()) {
+            text += "\n" + enrollmentRegistryWarning;
         }
         return text;
     }
@@ -4541,10 +4664,24 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     return;
                 }
                 final List<AndroidEnrollmentRepository.Entry> entries = list.entries;
+                final int skipped = list.skippedLineCount;
+                // N1 可见性：status==OK 但存在**被跳过的损坏行**时，损坏信息此前对用户全链路不可见
+                //（skippedLineCount 无人读取；list.message 只在 !list.isOk() 时展示）。这里如实告知，
+                // 并说明界面内的自愈途径 —— 有可删条目时 remove 会经 persistRegistry 重写注册表、
+                // 顺带清除坏行（判重门已切断 add 自愈，见 EnrollmentSession.REPO_UNAVAILABLE 的登记）；
+                // 一条可删条目都没有时界面**无**出路，由下方 isEmpty 支如实上报（清除应用数据 /
+                // 手工修复注册表），该兜底结论已同步到 startEnrollment 的进度区文案。
                 // 任务 B 决策：历史明文显示名默认保留、不自动删除，在此处（人员管理入口）提示并提供清除。
                 promptClearLegacyDisplayNamesIfAny();
                 if (entries.isEmpty()) {
-                    Toast.makeText(this, "暂无已注册人员", Toast.LENGTH_SHORT).show();
+                    if (skipped > 0) {
+                        // 死角如实上报：删除入口需要至少一条可删条目，此处一条都没有 ⇒ UI 无出路。
+                        Toast.makeText(this, "注册表有 " + skipped + " 行损坏已被跳过，且没有可删除的人员条目；"
+                                + "当前界面无法修复（需清除应用数据或手工修复注册表文件），修复前无法注册新人员",
+                                Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(this, "暂无已注册人员", Toast.LENGTH_SHORT).show();
+                    }
                     return;
                 }
                 String[] items = new String[entries.size()];
@@ -4554,11 +4691,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     items[i] = (name.equals(e.userId) ? e.userId : (name + "（" + e.userId + "）"))
                             + "  模板 " + e.ciphertextSize + "B";
                 }
-                new AlertDialog.Builder(this)
+                AlertDialog.Builder builder = new AlertDialog.Builder(this)
                         .setTitle("人员列表（点击删除，需二次确认）")
                         .setItems(items, (d, which) -> confirmDeletePerson(entries.get(which)))
-                        .setNegativeButton("关闭", null)
-                        .show();
+                        .setNegativeButton("关闭", null);
+                if (skipped > 0) {
+                    builder.setMessage("⚠ 注册表有 " + skipped + " 行损坏已被跳过：这些人的模板若仍在磁盘，"
+                            + "判重覆盖不到他们，因此新的注册会被拒绝。删除下方任意一位人员会重写注册表"
+                            + "并顺带清除损坏行 —— 这是当前唯一的自愈途径。");
+                }
+                builder.show();
             });
         }, "FacePersonList").start();
     }
