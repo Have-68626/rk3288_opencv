@@ -77,8 +77,10 @@ jobs:
         # workflow 的 uses 若含可移动引用（tag/branch/短 SHA）返回非零退出码阻断
         run: node scripts/check-workflow-pins.js
       - name: Run scripts contract tests (all tests/scripts/*.test.js)
-        # 目录级接入：glob 覆盖全部 tests/scripts/*.test.js（含 jni-sync-audit，
-        # 现有 8 个文件共 29 个用例），新增治理测试无需逐个修改 CI（Q4-8）。
+        # 目录级接入：glob 覆盖全部 tests/scripts/*.test.js（含 jni-sync-audit），
+        # 新增治理测试无需逐个修改 CI（Q4-8）。此处**刻意不写死文件数/用例数**：原注释写
+        # 「现有 8 个文件共 29 个用例」，那只是引入时的快照，此后每次新增测试都会让它失真
+        # （写死计数=自造陈旧源）；需要确切数字时现场数，不要写进注释。
         run: node --test tests/scripts/*.test.js
       - name: Install pytest (quantize pairing tests)
         # ubuntu 24.04 系统 Python 为 PEP 668 externally-managed，需 --break-system-packages；
@@ -486,12 +488,12 @@ jobs:
             echo '后者需真机运行期验证。'
             echo ''
             echo '**如何区分环境与代码**：环境未就绪（NDK 缺失 / apt 或 pkg-config 不可用 / OpenCV 头缺失）'
-            echo '已改为打 ::notice::、在 Step Summary 明示「本次未执行 ⇒ 盲区仍打开」并以成功结束、不触发本告警。'
+            echo '已改为按严重度打 ::notice::（瞬时抖动）或 ::warning::（布局级/配置级）、在 Step Summary 明示「本次未执行 ⇒ 盲区仍打开」并以成功结束、不触发本告警。'
             echo '因此【出现本告警 ⇒ 删掉环境噪声后大概率是真实代码/配置问题】，请定位并修复。'
             echo ''
             echo '本告警**不阻断** job（有意取舍：先观察一轮全绿再考虑转正为门禁）。'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning title=native-lib-compile-failed::native-lib.cpp failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases downgraded to ::notice::); see job summary."
+          echo "::warning title=native-lib-compile-failed::native-lib.cpp failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases are reported as ::notice::/::warning:: and never reach this step); see job summary."
 
       # [FACE-CI-003] 给上一步（check_native_lib_compile）写出的 skipped / skipped_reason 输出加【下游消费者】
       # ——此前该输出无任何 step 读取，「连续 N 次跳过」无法被统计，跳过只剩一句 ::notice::/::warning::
