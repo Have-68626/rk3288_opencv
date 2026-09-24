@@ -122,7 +122,9 @@ struct GallerySlot {
     std::shared_ptr<const FaceSearchLinearIndex> snapshot;
 };
 
-// 进程内单例状态。所有读写都在 mutex 下进行；注册会话模板仅驻内存，取走/取消即清零。
+// 进程内单例状态。除 captureSlot 这一「初始化后不再替换」的 shared_ptr 槽位（可无锁读取其
+// 引用，见该字段注；回调线程刻意不持本锁）外，其余字段的读写都在 mutex 下进行；
+// 注册会话模板仅驻内存，取走/取消即清零。
 struct FaceBridgeState {
     std::mutex mutex;
     rk_core::FaceRuntimeProfile profile;
@@ -237,7 +239,17 @@ std::string readString(JNIEnv* env, jstring s) {
     return out;
 }
 
-// 清零并释放向量，降低模板在内存中的驻留时间。
+// 就地清零向量的**全部元素**、再清空长度，降低模板在内存中的驻留时间。
+// ⚠️ 准确语义（勿读成「清零并释放」）：v.clear() 只把 size 置 0，**不释放容量**，
+//    capacity 与堆块原样保留（元素已由上面的 fill 全置 0，故保留的堆块内无明文）。
+//    容量**刻意保留**（不 shrink）——真实理由是这个加速手段的**收益近零**，而非「普遍会抖动」：
+//    · 逐条目循环里的守卫（replaceGallery 等，上限 1000 条）——**成功路径上被逐条清零的容器都已
+//      被 std::move 搬走**（如 entry.embedding 移入 entries、entries 移入 reset；主流行实现下
+//      被搬走的 vector 为空，故 clear 与 shrink_to_fit 在空容器上**都是空操作**）；
+//    · 错误/异常路径（early-return / 异常展开）——此处容器确有内容，加 shrink_to_fit 才会真的
+//      释放堆块，但那是**一次性收尾**的低频路径，换不来可观收益，却让「每次 secureClear 都可能
+//      deallocate」成为默认语义。
+//    若某调用方确需归还内存，请在调用后自行调用 shrink_to_fit。
 void secureClear(std::vector<float>& v) {
     std::fill(v.begin(), v.end(), 0.0f);
     v.clear();
@@ -362,14 +374,21 @@ jstring bridge_loadProfile(JNIEnv* env, jclass /* clazz */,
  * 激活实时管线：把 (manifest, baseDir, abi, galleryDir) 绑定到 Engine 的
  * RealtimeFacePipeline，使 Android 端从「仅预览 missing_model」切换到真实检测/识别。
  *
- * 两条路径（详见任务修复需求）：
+ * 两条路径：
  * - Engine 已创建：先让候选管线 reload，**成功才** setRealtimePipeline(新管线)；
  *   失败不替换，旧管线与 Engine 的 realtimeGallery_ 原样保留（#2 修复）。
  * - Engine 未创建：把参数暂存 FaceBridgeState（pendingActivation），待 jni/engine.cpp
  *   创建 Engine 后调用 applyPendingFaceRuntimeActivation() 补一次激活。
  *
  * 返回 JSON 仅含状态元数据（pending/effective/reason/generation），不含模板/向量。
- * reload 失败时返回 ok=false + reason/evidence，供 Java 侧回滚激活指针并保留旧配置。
+ * reload 失败时返回 ok=false + reason/evidence。⚠️ 这**不是**「供 Java 侧回滚激活指针」：
+ * Java 侧 FaceModelManager.activate 在 ok=false 时**不写任何指针**（激活指针的唯一写点
+ * persistActive 只在激活成功后才落定），故旧配置天然保留、**无需回滚**；「运行态回滚」由
+ * bestEffortReactivate 在**若干持久化失败路径**上承担（不限于 persistActive 一处：导入路径的
+ * writeCommitWitness 写入失败、导入路径与切换路径的 persistActive 写入失败——共 3 个调用点，
+ * 见 FaceModelManager），与本次 reload 失败**无关**。JNI 暴露面也没有任何 profile 复位接口。
+ * 与之配套：本函数失败分支自行还原 native 侧的 s.profile/s.profileValidated（该还原在生产流程下的
+ * 可见性见下方快照处的注记）。
  */
 jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifestJson,
                               jstring baseDir, jstring currentAbi, jstring galleryDir) {
@@ -397,8 +416,24 @@ jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifest
 
         auto& s = state();
         std::shared_ptr<GallerySlot> slot;
+        // 失败还原用：先取「进入本次调用前」的 profile 快照。本临界区在 reload 之前就写入了
+        // s.profile/s.profileValidated，若不以快照回退，一次**失败**的激活会留下「已校验并
+        // 暂存了新 profile」的假象——getRuntimeStatus 会报出一个并未生效的 profileId/
+        // embeddingDim（而 effective 仍为 false，两者互相打架）。还原见下方 !reload.ok 分支。
+        // ⚠️ 只涉及 s.profile / s.profileValidated：pendingActivation* 四件套是**有意保留**的。
+        // ⚠️⚠️ **还原在 Android 生产 Java 流程下是 no-op**（如实登记，勿把它读成生产可见的回滚）：
+        //    FaceModelManager 的两条生产路径（importZip ⑥ 与 activate）都在调 nativeActivateRuntime
+        //    **之前**先调 nativeValidateProfile（= 本文件的 bridge_loadProfile），而它已把
+        //    s.profile/s.profileValidated 写成**同一个 manifest** ⇒ 此处快照 prevProfile 与本次新
+        //    profile **逐字段相等**，还原等于把新值写回自己。
+        //    只有**绕过 loadProfile 直接调 activateRuntime** 的调用方（直接的 JNI 调用方、测试）
+        //    才可见差异——对它们本还原仍然正确，故保留而非删除。
+        rk_core::FaceRuntimeProfile prevProfile;
+        bool prevValidated = false;
         {
             std::lock_guard<std::mutex> lock(s.mutex);
+            prevProfile = s.profile;
+            prevValidated = s.profileValidated;
             s.profile = profile;
             // 校验暂存位；是否真正生效仍以 reload.ok（下文的 effective）为准。
             s.profileValidated = true;
@@ -431,18 +466,40 @@ jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifest
             }
             // reload 失败：不替换旧管线、不消费 pending（保留参数以便重试）；
             // effective 仍由旧快照决定，不会留下「已生效」假象。
+            // （s.profile / s.profileValidated 的还原不在此处，而在下方 !reload.ok 返回分支。）
         } else {
             pending = true;  // 不在此创建 Engine：由 nativeInit 负责，创建后补激活
         }
 
         if (pending) {
             // pending 属正常时序（Engine 尚未创建），effective 恒 false。
+            // ⚠️ 本路径**不还原** s.profile/s.profileValidated（如实登记，本批只登记不改行为）：
+            //    冷启动顺序下（Java 先 loadProfile 再 activateRuntime、此时 Engine 尚未创建）s.profile
+            //    已是**尚未生效**的新 profile 而 profileValidated=true ⇒ getRuntimeStatus 会报出该
+            //    profileId/embeddingDim，与 effective=false 不一致。
+            //    为何本批不修：pending 是**正常时序**而非失败，与失败分支的「还原」语义不同——此处
+            //    还原会把上一 profile 写回，反而让 getRuntimeStatus 与「待补激活」队列更矛盾；彻底修需要
+            //    给「已暂存但未生效」一个明确状态语义（改契约，超出本批注释改动面）。
             rklog::logInfo(TAG, __func__, "realtime activation pending");
             return toJString(env, okJson(
                 "\"pending\":true,\"effective\":false,\"reason\":\"pending\",\"generation\":0"));
         }
         if (!reload.ok) {
-            // 激活失败：ok=false + reason/evidence；Java 侧据此回滚指针并保留旧配置。
+            // 激活失败：ok=false + reason/evidence。Java 侧据「ok=false」**保留原配置且不写激活
+            // 指针**——指针从未被写过，所以这里没有「回滚」动作可做（详见函数头注释）。
+            // 下面还原的是 **native 侧**刚写入的 s.profile / s.profileValidated，与 Java 指针无关：
+            // 二者必须与「未生效」这一结论一致，否则 getRuntimeStatus 的 profileValidated/
+            // profileId/embeddingDim 会描述一个并未生效的 profile。pendingActivation* 四件套
+            // **不还原**（有意保留以便重试）。
+            // ⚠️ 生产 Android 流程下 prevProfile 与本次 profile 逐字段相等（因 activateRuntime 之前
+            //    必先经 loadProfile 写入同一个 manifest，见上方快照注记）⇒ 本次还原在生产下是
+            //    **no-op**，只在「绕过 loadProfile 直连 activateRuntime」的调用方处可见差异。
+            {
+                // 与本次赋值同锁；getRuntimeStatus 亦持该锁，故还原无撕裂读窗口。
+                std::lock_guard<std::mutex> lock(s.mutex);
+                s.profile = std::move(prevProfile);
+                s.profileValidated = prevValidated;
+            }
             rklog::logWarn(TAG, __func__, "realtime activation failed reason=" + reload.reason);
             return toJString(env,
                 std::string("{\"ok\":false,\"pending\":false,\"effective\":false,\"reason\":\"") +
@@ -668,6 +725,19 @@ jbyteArray bridge_takeEnrollmentTemplate(JNIEnv* env, jclass /* clazz */) {
                 return nullptr;
             }
 
+            // 红线：serializeFaceTemplate 抛异常（FaceTemplate.cpp 内的 reserve/push_back 分配失败）
+            // 时，异常展开会**跳过**下方对 enrollActive / enrollPersonId / enrollEmbedding 的复位，
+            // 后果有二：① 明文模板继续驻留在 s.enrollEmbedding（安全红线）；② Java 侧收到 nullptr
+            // 视为失败，而 native 侧 getRuntimeStatus / getEnrollmentStatus 仍报 ENROLLING（会话其实
+            // 还活着）——两语言对同一次取走得出相反结论。故把「复位 + 清零」注册为作用域守卫：
+            // 正常与异常路径都执行（幂等）。位置在该早退（两条件合一）之后——「未激活」时不擦，
+            // 语义不含混。声明在 lock_guard 之后 ⇒ 守卫析构（擦除）时仍持锁。
+            auto sessionResetGuard = makeScopeClearGuard([&s] {
+                s.enrollActive = false;
+                s.enrollPersonId.clear();
+                secureClear(s.enrollEmbedding);
+            });
+
             FaceTemplate t;
             // t.embedding 是 s.enrollEmbedding 的拷贝，离开作用域（含异常展开）必须清零。
             auto templateGuard = makeScopeClearGuard([&t] { secureClear(t.embedding); });
@@ -677,6 +747,7 @@ jbyteArray bridge_takeEnrollmentTemplate(JNIEnv* env, jclass /* clazz */) {
             bytes = serializeFaceTemplate(t);
 
             // 一次性语义：取走即清空会话与内存中的模板。
+            // （与上方 sessionResetGuard 同语义，此处显式写出更直观；重复执行幂等、无害。）
             s.enrollActive = false;
             s.enrollPersonId.clear();
             secureClear(s.enrollEmbedding);
@@ -1008,6 +1079,13 @@ void applyPendingFaceRuntimeActivation() {
     const rk_core::RealtimeReloadResult r = pipe->reload(manifest, base, abi, gallery);
     if (!r.ok) {
         // 待激活补做失败：显式记录契约 reason（模型缺失等），由 getRuntimeStatus 暴露。
+        // ⚠️ 本路径**既不还原 s.profile/s.profileValidated、也不清 pendingActivation**（如实登记，
+        //    本批只登记不改行为）：冷启动顺序下（loadProfile 已把同一个 profile 写入 s）s.profile
+        //    恒为**未生效**的新 profile 而 profileValidated=true ⇒ getRuntimeStatus 会报出该
+        //    profileId/embeddingDim（effective 仍为 false）。pendingActivation 保留则是**有意**的：
+        //    Engine 重建/重试时可再补做（见上方取值处的注释）。
+        //    为何本批不修：清 pending 会永久丢掉这次激活请求；而还原需要另存一份「激活前 profile」
+        //    快照（新状态位），且与 bridge_activateRuntime 的快照语义需一并重新设计，超出本批注释面。
         rklog::logWarn(TAG, __func__, "pending activation failed reason=" + r.reason);
         return;
     }
