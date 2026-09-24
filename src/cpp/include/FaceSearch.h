@@ -77,6 +77,12 @@ struct FaceSearchHit {
 
 struct FaceSearchOptions {
     float tieEpsilon = 1e-6f;
+    // ⚠️ 前置条件（当且仅当本项为 true 时生效）：**库条目与查询向量都必须已 L2 归一化**。
+    // 为 true 时 cosineSimilarity 直接返回原始点积（省去两次开方），因此它等于余弦**仅当**
+    // 两端都是单位向量。若喂入未归一化的向量，分数会随模长被放大/缩小 ⇒ **排序不再是余弦序**；
+    // 极端情形下两个非单位模板可与查询**打平**，胜负退化为插入序（已实测发生过一次，
+    // 见 test_engine.cpp 的 TwoToneEmbedder 用例）。
+    // 生产侧由 ArcFace 输出单位嵌入保证；自定义嵌入器 / 测试夹具必须自行归一化。
     bool assumeL2Normalized = true;
 };
 

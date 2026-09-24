@@ -8,7 +8,13 @@
  * 水平实际变换 = input_mirrored_x XOR target_mirrored_x：
  * - input_mirrored_x：输入源是否已镜像（相机元数据，如前置传感器输出）；
  * - target_mirrored_x：目标显示是否镜像（用户偏好，按 cameraId 持久化）。
- * generation 仅在相机或变换配置变化时递增，不能由检测结果改变。
+ *
+ * ⚠️ generation 的实际状况（如实标注，勿读成「已接线的配置代次」）：**生产代码既不写也不读它**。
+ * Engine::preprocessFrame 构造 FrameTransformConfig 时只赋 input_mirrored_x / target_mirrored_x /
+ * flip_y（rotation_degrees 用默认 0），**从不触碰 cfg.generation ⇒ 生产恒 0**；全仓对该字段的
+ * 唯一触碰在单测 tests/cpp/test_frame_transform.cpp（赋一个非 0 值，验证 configUnchanged 排除它）。
+ * Engine 层的等价计数器是 Engine::flipGeneration_（在 setFlip / setInputMirroredX 内递增、
+ * 经 getFlipGeneration 读出），二者**无任何关联**。
  */
 #pragma once
 
@@ -22,7 +28,9 @@ struct FrameTransformConfig {
     bool input_mirrored_x = false; // 输入源物理已镜像
     bool target_mirrored_x = false;// 目标显示是否镜像（用户偏好）
     bool flip_y = false;           // 目标垂直翻转（用户偏好）
-    uint64_t generation = 0;       // 仅配置变化递增，不由检测改变
+    uint64_t generation = 0;       // ⚠️ 生产恒 0（Engine::preprocessFrame 构造时**不填充**本字段）；
+                                   // 语义原为「仅配置变化递增，不由检测改变」，但**无生产写入方**。
+                                   // Engine 层的等价计数器是 Engine::flipGeneration_，二者无关联。
 };
 
 class FrameTransform {
@@ -31,6 +39,8 @@ public:
     static bool effectiveFlipX(const FrameTransformConfig& c);
 
     // 配置是否完全相同（用于判定 generation 是否应变更；generation 本身不计入）
+    // ⚠️ 但请勿据此推断存在 generation 消费方：生产侧无人填充、也无人读取该字段（见文件头 ⚠️），
+    // 本函数在生产路径上无调用方，仅单测直接调用。
     static bool configUnchanged(const FrameTransformConfig& a, const FrameTransformConfig& b);
 
     // 应用完整变换（先旋转后翻转）。输入 frame 不被修改；无实际变换时返回输入引用（零拷贝）。

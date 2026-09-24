@@ -54,9 +54,16 @@ std::vector<TrackView> TrackCoordinator::update(
     // 性能调度跳过检测：不计缺失、不新建/匹配（任务5：保持现状）
     // ⚠️ 本早退位于 TTL 清理**之后是有意的，不是笔误**：TTL 是「长期无帧的最终保护」，即便本帧
     //    跳过检测也应照常回收；若把本早退上移到 TTL 之前，TTL 就会在节流期间失效。
-    //    该顺序**当前无可达路径**：detThrottleMode_ 只被 store / 日志 / getter 触碰
-    //    （Engine.cpp:507/542/544/558），**未接线**去跳过检测 ⇒ 生产侧恒传 detectionRan=true
-    //    （Engine.cpp 的 trackFaces 处有同口径说明），仅测试可构造 false。
+    //    该顺序**已被用例双向钉住，不是「仅靠注释自觉」**：tests/cpp/test_track_coordinator.cpp 的
+    //    TtlStillCullsTracksAsFallback 与 TtlBoundaryIsEnforced 均在 detectionRan=false 且超
+    //    ttlMs 时断言轨迹被清理——把本早退上移到 TTL 之前即令二者翻红。
+    //    真正**无覆盖**的是另一半：「生产侧恒传 detectionRan=true」。`detThrottleMode_` 的**全部**
+    //    触碰点共三类，没有一类参与「本帧是否跳过检测」：① **store**——Engine::updateInferenceThrottle
+    //    与 Engine::updateDetectionThrottle 各写一次；② **日志取值**——updateDetectionThrottle 内为拼
+    //    `formatSelfCheckLine` 做的一次 load；③ **getter 的 load**——Engine::getDetectionThrottleMode。
+    //    （原注释只举了 ①③ 两类，漏了 ② 这类日志取值，本批补齐。）故 `detThrottleMode_` **未接线**
+    //    去跳过检测（Engine::trackFaces 处有同口径说明）⇒ **本早退分支在生产不可达**——不可达的是
+    //    这条分支，而不是上面那个顺序；false 仅测试可构造。
     if (!detectionRan) {
         return views();
     }

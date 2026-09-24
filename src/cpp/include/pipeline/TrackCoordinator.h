@@ -59,8 +59,12 @@ public:
     // 纯函数：输入检测结果 + 时间戳 + 本次是否实际执行检测，输出跟踪视图
     // 任务5：确认与消失规则——实际检测(detectionRan=true)下，
     //   未确认轨迹（连续命中 < stableFrames）下一次实际检测缺失即删；
-    //   已确认轨迹连续缺失 ≥2 次删除；命中帧递增确认计数。
+    //   已确认轨迹连续缺失 ≥2 次删除；命中帧递增确认计数并**使缺失计数清零**
+    //   （InternalTrack::missedActual = 0——已确认轨迹的「连续缺失」是连续语义，命中即断链）。
     //   调度跳过检测(detectionRan=false)：不计缺失、不新建/匹配，保持现状。
+    //   ⚠️ 注意：TTL 清理在本分支之前无条件执行，故跳过检测时 TTL 仍照常生效（由两条 TTL
+    //   用例钉住，见 TrackCoordinator.cpp 中的顺序说明）；而本分支在生产**不可达**——调用方
+    //   Engine::trackFaces 恒传 detectionRan=true（detThrottleMode_ 未接线去跳过检测）。
     // 输出：返回值（views()）仅包含已确认轨迹（连续实际检测命中 ≥ stableFrames），
     //   未确认轨迹不对外输出（避免首帧误检立即显示）；内部仍保留以累计确认/删除计数。
     // 匹配：优先 IoU（matchIouThreshold），不足时允许中心距离+尺寸比回退。

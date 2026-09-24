@@ -384,7 +384,7 @@ static int runFaceInferCli(int argc, char** argv) {
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
                      "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive N] "
                      "[--face-select score_area|score|area|first] "
-                     "[--fake-detect 1|0] [--fake-embedding 1|0]"
+                     "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"
                   << std::endl;
         return 2;
     }
@@ -472,6 +472,20 @@ static int runFaceInferCli(int argc, char** argv) {
 
         else if (k == "--fake-detect") nextBool(a.req.fakeDetect);
         else if (k == "--fake-embedding") nextBool(a.req.fakeEmbedding);
+
+        // `--int8 1|0`：FaceInferRequest::int8Enabled 的**生产者**（原全仓无任何调用点置真）。
+        // 语义：开启后，检测/嵌入的**回落分支**（上游实例注入失败时才可达）会先试 ncnn INT8 条目
+        // （`yolo_face_int8` / `arcface_int8` → `mobilefacenet_int8`），失败再回落 FP32。
+        // 前置：模型文件须真实存在——注册表按 `models/*_int8_ncnn/*.param` 是否存在**条件注册**。
+        // 缺文件时本开关**无功能副作用**（回落 FP32），但日志行数并非「只多一行」（原措辞失真，
+        // 详见 FaceInferencePipeline.h 的 int8Enabled 字段注释）：检测支会无条件打 1 行 warn
+        // （条目缺失时 `createDetector` 静默返回 nullptr，warn 仍执行）；嵌入支**0 行**
+        // （`createEmbedder(eId)` 未传 err，条目缺失时静默返回 nullptr 后循环跳过）。
+        // 条目已注册但 load/embed 失败时：检测支 1 行、嵌入支每支一行（共 2 行）。
+        // `int8Enabled` 无 I/O 或 JSON 序列化面。
+        // 与 `--fake-embedding` 同形（`1|true|yes|on` 为真，见 isFlagTrue），不是裸开关。
+        // 默认 false ⇒ 不传该参数时与历史行为逐位一致。
+        else if (k == "--int8") nextBool(a.req.int8Enabled);
     }
 
     const auto o = runFaceInferOnce(a.req);
@@ -587,8 +601,13 @@ static std::vector<std::string> listImagesInDir(const std::filesystem::path& dir
     return out;
 }
 
-// NOTE: 与 D3D11Renderer.cpp:percentileFromSorted 功能重复。
-// main.cpp 需要独立实现（不依赖 Windows 渲染器），修改时请保持逻辑一致。
+// NOTE: 与 D3D11Renderer.cpp:percentileFromSorted **用途相同、算法不同**（原注释写「修改时请保持
+// 逻辑一致」，会把人引向「两者应算出同一数值」——不成立，已订正）：
+//   · 本函数 = **nearest-rank**（排序后取 ceil(q*n)-1，含端点），与
+//     RealtimeFacePipeline.cpp 的 percentile95 同族，是本仓 CLI/基准口径的真源；
+//   · D3D11Renderer 版 = **线性插值**（idx=(n-1)*q，在 i0/i1 间按 frac 插值），且 p<=0/>=1 分别
+//     返回 front/back。两者在 n 与 q 相同的情况下给出**不同数值**，不得互相替换或「对齐」。
+// main.cpp 需要独立实现（不依赖 Windows 渲染器）；若要统一，必须同时确认两侧用例与报告口径。
 static double percentileNearestRank(std::vector<double> v, double q) {
     if (v.empty()) return 0.0;
     if (q <= 0.0) q = 0.0;
@@ -840,7 +859,7 @@ static int runFaceBaselineCli(int argc, char** argv) {
                      "[--arc-backend opencv] [--arc-model <path>] [--arc-config <path>] [--arc-framework <name>] [--arc-output-name <name>] [--arc-input-name <name>] [--arc-w 112] [--arc-h 112] "
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
                      "[--gallery-dir <dir>] [--topk N] [--face-select score_area|score|area|first] "
-                     "[--fake-detect 1|0] [--fake-embedding 1|0]"
+                     "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"
                   << std::endl;
         return 2;
     }
@@ -917,6 +936,16 @@ static int runFaceBaselineCli(int argc, char** argv) {
 
         else if (k == "--fake-detect") nextBool(a.req.fakeDetect);
         else if (k == "--fake-embedding") nextBool(a.req.fakeEmbedding);
+        // `--int8 1|0`：只**解析并写入** FaceInferRequest::int8Enabled（与 `--face-infer` 的
+        // 同名参数写法一致，但**不是**同一条有效通路，见下）。
+        // ⚠️ 本子命令（`--face-baseline`）**不消费**该字段：基准路径自建 det / emb（见下方
+        //    CreateOpenCvDnnYoloFaceDetector / ArcFaceEmbedder 的直用），**不调用
+        //    runFaceInferOnce**、也就**不经过** FaceInferStages 的 INT8 回落分支 ⇒ 在基准里该开关
+        //    **零效果：不发生 INT8 尝试、0 行 warn**，读数本就是 FP32。
+        //    （原注释「该开关只贡献一行 warn，读数照常回落 FP32」失真——那行 warn 属 `--face-infer`
+        //    的检测回落段，本路径根本走不到，已订正。）真正消费该字段的是 `--face-infer`。
+        // bench 读数不会因本开关失真——原因正是「本路径从不读它」，而非「读了但回落」。
+        else if (k == "--int8") nextBool(a.req.int8Enabled);
     }
 
     const long long tsMs = nowEpochMillis();

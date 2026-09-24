@@ -6,6 +6,7 @@ using namespace rk_core;
 #include "FaceInferStages.h"
 #include "FaceTemplate.h"
 #include "ModelRegistry.h"
+#include "adapters/ArcFaceAdapter.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -74,6 +75,42 @@ struct FakeDetector final : public FaceDetector {
         return {};
     }
     const char* name() const override { return "FakeDetector"; }
+};
+
+// —— INT8 回落链的生产/消费可达性 + ArcFace 分支节点名注入 ——
+// 背景：`FaceInferRequest::int8Enabled` 此前**全仓无任何调用点置真**（该链恒不可达）。生产者落地后
+// （`rk3288_cli --int8 1|0`，见 src/cpp/main.cpp），本用例在流水线层面钉住两件事：
+//   (a) 该开关确实是链条的**开关**：置 true 才会去 `createEmbedder("arcface_int8")`；
+//   (b) `arcface_int8` 分支拿到的是**注入后的 `in0`/`out0`** 而不是 `ArcFaceEmbedderConfig` 的
+//       默认 `data`/`output`（本仓两个 INT8 ncnn 模型的真实节点名；默认名走 ncnn 必在
+//       `ex.input()` 处按返回码失败 ⇒ 该支被跳过、优先级反转；只多一行 warn，不改变返回值）。
+// 判别力来源：捕获发生在**替身适配器的 load() 内**，而非断言实现细节。
+//   · 若注入回退成默认 ⇒ 读到 `data`/`output`，断言 (b) 红；
+//   · 若注入被挪到 load() 之后（契约违反） ⇒ 同样读到默认值，断言 (b) 红；
+//   · 若 `int8Enabled` 不再被消费 ⇒ 替身 load() 永不被调用，`g_int8LoadCalls == 0`，断言 (a) 红。
+// 不依赖任何真实模型：「开」侧路径（`.param`）不存在 ⇒ 基类 `ArcFaceAdapter::load` 经
+// `ArcFaceEmbedder::initialize` 的 ncnn 分支失败并**返回 false**，两种构建下都不是异常 / 崩溃 ——
+// 未启用 ncnn（`RK_HAVE_NCNN=0`）时由 `ArcFaceEmbedder::initialize` 的 Ncnn 分支直接以
+// 「当前构建未启用 ncnn」返回 false；启用 ncnn 时先过 `validateNcnnParamFile`（打不开文件即返回
+// false），都到不了 `ex.input()`。
+// 本用例只读注入进去的节点名。（对照侧 `.onnx` 走 OpenCvDnn：`readNet` 的 cv::Exception 已被
+// `ArcFaceEmbedder::initOpenCvDnn` 捕获 ⇒ 同样只是返回 false。）
+static std::mutex g_int8Mu;
+static int g_int8LoadCalls = 0;
+static std::string g_int8InputName;
+static std::string g_int8OutputName;
+
+struct NodeNameCapturingArcFaceAdapter final : public ArcFaceAdapter {
+    bool load(const std::string& modelPath, std::string& err) override {
+        {
+            // `inputNodeName()` 返回的是内部引用，必须**拷成值**后带出对象生命周期（A2 审计 M2）。
+            std::lock_guard<std::mutex> lk(g_int8Mu);
+            g_int8LoadCalls++;
+            g_int8InputName = inputNodeName();
+            g_int8OutputName = outputNodeName();
+        }
+        return ArcFaceAdapter::load(modelPath, err);
+    }
 };
 
 }  // namespace
@@ -256,6 +293,69 @@ bool test_face_infer_done_hit() {
     if (out.stage != "done") return false;
     if (!contains(out.json, "\"TopK\":{")) return false;
     if (!contains(out.json, "\"id\":\"p1\"")) return false;
+    return true;
+}
+
+// §INT8 链：`int8Enabled` 的消费可达性 + `arcface_int8` 分支的节点名注入（详见文件上方替身类注释）。
+bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names() {
+    const auto dir = makeTempDir("int8_chain");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    // ⚠️ 必须先让内建条目注册完，再用替身**覆盖** `arcface_int8`：`ensureBuiltinRegistered()` 是一次性的，
+    //    若顺序反过来，首次进入 computeEmbedding 时内建注册会把替身覆盖掉（本机存在
+    //    `models/arcface_int8_ncnn/arcface_int8.param` 时尤其如此）⇒ 用例随机失效。
+    ModelRegistry::ensureBuiltinRegistered();
+    ModelRegistry::instance().registerEmbedder(
+        "arcface_int8",
+        []() -> std::unique_ptr<Embedder> { return std::make_unique<NodeNameCapturingArcFaceAdapter>(); },
+        ModelEntry{"arcface_int8", "Capturing ArcFace INT8", "recognize", "INT8 链替身（测试用）", "high_speed", 2});
+    // 注：本覆盖在**进程内持续**（注册表无「恢复内建条目」的公开入口）。后续用例都不走 INT8 路径
+    //     （INT8 分支只在 `int8Enabled == true` 且上游注入失败时才可达），故无交叉影响。
+
+    const auto makeReq = [&](bool int8) {
+        FaceInferRequest req;
+        req.imagePath = imgPath.string();
+        req.fakeDetect = true;      // 走假检测：本用例只关心嵌入段，避免依赖检测模型
+        req.fakeEmbedding = false;  // 关键：必须走真实嵌入路径，否则 computeEmbedding 在开头直接返回
+        req.int8Enabled = int8;
+        req.arcBackend = "opencv";
+        // 「开」侧路径取 **`.param`**（而非 `.onnx`）：INT8 回落段只在**本次 load 会选到 ncnn 后端**
+        // 时才注入节点名（判据 = 扩展名 `.param`/`.bin` → ncnn，其余 → OpenCvDnn；闸门见
+        // src/cpp/src/FaceInferStages.cpp 的 `arcModelIsNcnn`，理由是该处的 `setNodeNames` 会
+        // **同时**改写 opencv 侧节点名，对 `.onnx` 强制 "in0" 会把 opencv 侧默认的「空串 = 自动推断」
+        // 改坏）。故用 `.onnx` 作「开」侧路径时本用例的注入断言**不再成立**；改用 `.param` 后既踩到
+        // 闸门内的真实生产路径，也与 `rk3288_cli --int8 1` 的文档前置条件（ncnn 模型）一致。
+        // 路径不存在 ⇒ 上游 ArcFaceEmbedder 注入失败（ctx.embedder 被赋 nullptr）⇒ 才可达 INT8 回落段。
+        // 两侧取不同路径，避免命中 FaceInferencePipeline 的静态嵌入器缓存。
+        req.arcModelPath = (dir / (int8 ? "int8_chain_on.param" : "int8_chain_off.onnx")).string();
+        return req;
+    };
+
+    {
+        std::lock_guard<std::mutex> lk(g_int8Mu);
+        g_int8LoadCalls = 0;
+        g_int8InputName.clear();
+        g_int8OutputName.clear();
+    }
+
+    // 对照（int8Enabled=false）：不得触碰 INT8 条目 —— 没有这一半，下面的断言即使实现退化成
+    // 「永远尝试 INT8」也照样绿，断言将失去判别力。
+    const auto offOut = runFaceInferOnce(makeReq(false));
+    {
+        std::lock_guard<std::mutex> lk(g_int8Mu);
+        if (g_int8LoadCalls != 0) return false;
+    }
+    // 无真实嵌入模型 ⇒ 应停在 arc_init（不强制具体 stage：构建未启 ncnn / OpenCV 版本差异都不影响本断言）。
+    if (offOut.ok) return false;
+
+    // 实验（int8Enabled=true）：INT8 条目必须被加载，且节点名必须是注入后的 in0/out0。
+    runFaceInferOnce(makeReq(true));
+    {
+        std::lock_guard<std::mutex> lk(g_int8Mu);
+        if (g_int8LoadCalls == 0) return false;
+        if (g_int8InputName != "in0") return false;
+        if (g_int8OutputName != "out0") return false;
+    }
     return true;
 }
 
