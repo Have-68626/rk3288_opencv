@@ -80,12 +80,14 @@ struct HttpPosterConfig {
 struct LogConfig {
     std::filesystem::path logDir;
     // FACE-CONFIG-017：单份日志文件上限与轮转档数共同决定**单份文件集**的落盘量
-    //   （= maxFileBytes × (maxRollFiles + 1)）；而本批的落盘面是 **3 份**文件集 —— recognition.csv、
-    //   recognition.jsonl（StructuredLogger）与 event_log.jsonl（EventLogger **复用同一对上限、同一
-    //   目录**，接线点见两个 main 的 events.open(...)）⇒ 实占磁盘 = 上式 × 3。
+    //   （= maxFileBytes × (maxRollFiles + 1)）；而落盘面**最多**为 4 份文件集 —— recognition.csv、
+    //   recognition.jsonl（StructuredLogger）、event_log.jsonl（EventLogger **复用同一对上限、同一
+    //   目录**，接线点见两个 main 的 events.open(...)）与 render_metrics.jsonl（RenderMetricsLogger，
+    //   **仅**旧版 UI 目标 win_camera_face_recognition 持有）⇒ 最坏实占磁盘 = 上式 × 4
+    //   （win_local_service 只写前 3 份；份数取 4 的推导见 kLogFileSetCount）。
     //   两者在解析/序列化两侧均经 clampLogMaxFileBytes / clampLogMaxRollFiles **只钳不拒**地压进
-    //   总预算 512 MiB 的**均分额**（= kLogPerSetBudgetBytes ≈ 170.67 MiB；默认 10 MiB × 6 = 60 MiB
-    //   每份，仅占均分额 35.2% ⇒ 健康装载零告警）。
+    //   总预算 512 MiB 的**均分额**（= kLogPerSetBudgetBytes = 512 MiB / 4 = 134217728 字节 = 128 MiB；
+    //   默认 10 MiB × 6 = 60 MiB 每份，仅占均分额 46.9% ⇒ 健康装载零告警）。
     std::uint64_t maxFileBytes = 10ULL * 1024ULL * 1024ULL;
     int maxRollFiles = 5;
 };
@@ -201,28 +203,49 @@ inline constexpr double kIdentifyThresholdMax = 64.0;
 double clampIdentifyThreshold(double v);
 
 // FACE-CONFIG-017（S-3）：log 段写放大总预算。
-// 落盘面 = **3 份**文件集，各写 maxFileBytes × (maxRollFiles + 1) 字节：recognition.csv 与
-//   recognition.jsonl（StructuredLogger），以及 event_log.jsonl（EventLogger —— 本批把它从硬编码
-//   10 MiB / 5 改为随 cfg.log.maxFileBytes / maxRollFiles 接线，见两个 main 的 events.open(...)；
-//   三份共用同一 logDir、同一对上限）⇒ 最坏实占磁盘 = 单份上界 × 3。
-// 预算取 512 MiB **总预算**（kLogBudgetBytes），三份均分 ⇒ 单份均分额 kLogPerSetBudgetBytes =
-//   512 MiB / 3 = 178956970 字节（整数除法，余数 2 字节），最坏实占磁盘 = 3 × 178956970 =
-//   536870910 字节 ≈ 512 MiB。改动前的上界（1 GiB × 1001 × 3 份）最坏约 3 TiB ⇒ 可通过配置造成磁盘耗尽。
+// 落盘面**最多** 4 份文件集，各写 maxFileBytes × (maxRollFiles + 1) 字节：recognition.csv 与
+//   recognition.jsonl（StructuredLogger）、event_log.jsonl（EventLogger —— 本批把它从硬编码
+//   10 MiB / 5 改为随 cfg.log.maxFileBytes / maxRollFiles 接线，见两个 main 的 events.open(...)），
+//   以及 render_metrics.jsonl（RenderMetricsLogger —— 本批为它接上轮转并传入同一对 cfg.log 上限，
+//   **仅**旧版 UI 目标 win_camera_face_recognition 持有该日志器）；四份共用同一 logDir、同一对上限）
+//   ⇒ 最坏实占磁盘 = 单份上界 × 4。
+// 份数为何取 4（**取最大值上界**，勿退回按单一可执行体计数）：两个可执行体写入的文件集数不同 ——
+//   win_local_service 写 recognition.csv + recognition.jsonl + event_log.jsonl = 3 份；
+//   win_camera_face_recognition（旧版 UI，默认 OFF，经 -DRK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI=ON
+//   构建）在前 3 份之外**再加** render_metrics.jsonl：它持有 RenderMetricsLogger 成员并调
+//   metrics.open(cfg.log.logDir, cfg.log.maxFileBytes, cfg.log.maxRollFiles) = 4 份。
+//   而 cfg.log.maxFileBytes / maxRollFiles 是**同一份 config.json 的两个键**、被两个可执行体共用
+//   ⇒ 预算要成立，就必须按**写日志最多**的那个进程（4 份）分配：预算只能取「最大值上界」，
+//   取小会让旧版 UI 目标的最坏磁盘占用超出 512 MiB。保守方向安全 —— 按 4 分只会让实际占用更小。
+// 预算取 512 MiB **总预算**（kLogBudgetBytes），四份均分 ⇒ 单份均分额 kLogPerSetBudgetBytes =
+//   512 MiB / 4 = 134217728 字节（整除，余数 0），最坏实占磁盘 = 4 × 134217728 = 536870912 字节 =
+//   512 MiB。改动前（无总预算钳制、schema 允许单份 1 GiB × 1001）最坏实占磁盘约 4 TiB
+//   ⇒ 可通过配置造成磁盘耗尽。
 // 总预算取 512 MiB 的理由：
-//   · 与默认配置相容——默认每份 10 MiB × (5 + 1) = 60 MiB，仅占均分额 178956970 的 35.2%
+//   · 与默认配置相容——默认每份 10 MiB × (5 + 1) = 60 MiB，仅占均分额 134217728 的 46.9%
 //     ⇒ 既有默认部署**零告警**（「健康装载必须零告警」是硬约束，见 initialize 的 warnOut 语义）；
-//   · 有明确上界且可解释——最坏实占磁盘 = 512 MiB（三份**合计**），相对改动前的最坏约 3 TiB；
-//   · 单份预留 2.84× 余量，正常调大轮转档位的用户不会被误钳。
+//   · 有明确上界且可解释——最坏实占磁盘 = 512 MiB（四份**合计**），相对改动前的最坏约 4 TiB；
+//   · 单份预留 2.13× 余量，正常调大轮转档位的用户不会被误钳。
 // maxFileBytes 的上界取**均分额的一半**：maxRollFiles 的 schema 下界是 1，即单份日志至少要占
 //   maxFileBytes × 2；若只钳 maxRollFiles，maxFileBytes 取 schema 允许的 1 GiB 时乘积下界已是
 //   2 GiB > 均分额 ⇒ 均分额无法成立。故必须同时给 maxFileBytes 留出「×2 后仍不超均分额」的空间。
 // **只压上界、不抬下界**：下界（1024 / 1）属既有 schema 契约，放宽会改变「既有非法配置被拒」的语义。
-// ⚠️ 份数一旦变化（新增第 4 份日志 / 退回 2 份），**必须**同步改下文两个常量 —— 「预算口径漏算
-//   第 3 份」正是本项要修的原始缺陷形态（漏的是 EventLogger 复用的那一份）。
+// ⚠️ 份数一旦变化（新增第 5 份日志 / 退回 3 份），**必须**同步改下文两个常量 —— 「预算口径漏算
+//   一份」正是本项要修的原始缺陷形态（历史上漏的是 EventLogger 复用的那一份）。
 inline constexpr std::uint64_t kLogBudgetBytes = 512ULL * 1024ULL * 1024ULL;
-// 落盘面的文件集份数：recognition.csv + recognition.jsonl + event_log.jsonl。
-inline constexpr std::uint64_t kLogFileSetCount = 3;
-// 单份文件集的均分额 = 总预算 / 份数 = 536870912 / 3 = 178956970（整数除法，恒 ≤ 总预算）。
+// 落盘面**最多**的文件集份数（按写日志最多的可执行体计）：recognition.csv + recognition.jsonl +
+//   event_log.jsonl（两个可执行体都写）+ render_metrics.jsonl（**仅**旧版 UI 目标写）。
+// ⚠️ **本次由 3 改为 4，属行为变更（程度轻，须知情）**：`render_metrics.jsonl` 在本次之前**完全没有
+//   轮转**（故当时按 3 份记账并不「漏算」，而是那份日志压根不受本预算约束）。给它接上 `cfg.log`
+//   的同名键之后它才成为受约束的第 4 份 ⇒ 除数必须 +1，否则「≤ 512 MiB」这条记账不成立。
+//   代价是**生效上限收紧**（相对除数 3 时）：`kLogMaxFileBytesCap` 由 89478485 降为 67108864
+//   （85.33 → 64 MiB）；默认 `maxFileBytes = 10 MiB` 下 `maxRollFiles` 的上界由 16 降为 11。
+//   默认部署（10 MiB / 5）远在两位之下 ⇒ **零行为变化、零告警**；只有 `maxFileBytes > 64 MiB`
+//   或 `maxRollFiles > 11` 的**既有配置**会在启动装载时被**只钳不拒**地收敛并产生一条告警
+//   （`configStatus` 随之翻为 `degraded`）。运维侧的交待见 `docs/guides/windows-service/
+//   deploy_and_rollback.md` 的「升级注意」。
+inline constexpr std::uint64_t kLogFileSetCount = 4;
+// 单份文件集的均分额 = 总预算 / 份数 = 536870912 / 4 = 134217728（整除，恒 ≤ 总预算）。
 inline constexpr std::uint64_t kLogPerSetBudgetBytes = kLogBudgetBytes / kLogFileSetCount;
 inline constexpr std::uint64_t kLogMaxFileBytesCap = kLogPerSetBudgetBytes / 2;
 std::uint64_t clampLogMaxFileBytes(std::uint64_t v);

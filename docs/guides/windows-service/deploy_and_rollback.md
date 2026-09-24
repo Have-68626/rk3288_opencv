@@ -67,17 +67,39 @@ as_of=2026-09-23
   迁移成功后残留的 `storage/win_face_db.yml.pre-encrypt` 是**完整明文库副本**（有意保留的回滚点），
   须由运维人工删除。规格见 `docs/security/face-db-encryption.md` §2–§3。
 - `storage/win_logs/` —— 结构化识别日志目录（`log.logDir` 默认值，见 `WinJsonConfig.cpp` 的 `defaultAppConfig()`）。
-  该目录下**实际只有三份文件集**，另有各自的滚动档位（`<文件名>.1` … `<文件名>.N`，最新在 `.1`）：
+  该目录下**最多 4 份文件集**，另有各自的滚动档位（`<文件名>.1` … `<文件名>.N`，最新在 `.1`）：
   - `recognition.csv` / `recognition.jsonl`（`StructuredLogger`）——**含明文 `person_id`**（PII），
     且**不经过**任何脱敏函数（写入链只有 `escapeJson` / `escapeCsv`，仅转义、不掩码）；
   - `event_log.jsonl`（`EventLogger`）——本批起与前者共用同一 `log.maxFileBytes` / `log.maxRollFiles`。
+  - `render_metrics.jsonl`（`RenderMetricsLogger`）——**仅**旧版 UI 目标 `win_camera_face_recognition`
+    写（该目标默认 OFF，走下方「回滚到旧版 Win32 UI」时才构建）；本批起给它接上轮转、并传入同一对
+    `log.maxFileBytes` / `log.maxRollFiles`。故一个部署里实际出现的份数取决于跑哪个可执行体：
+    `win_local_service` 写前 3 份，旧版 UI 写 4 份。
   ⚠️ **更正旧说法**（原文：本目录「两个日志链共用」——`rklog::` 常规日志 + 结构化识别日志）：
   **本目录没有 `rklog::` 日志**。`src/win/` **根本未接入 rklog**（全仓 `src/win/` 对 `rklog` 只命中
   `WinJsonConfig.cpp` 里那句「本服务未接入 rklog」的注释，无任何 `rklog::logXxx` 调用），而 rklog 的
   文件落盘需先调 `rklog::setLogDirs`（`src/cpp/src/NativeLog.cpp`），其调用方只有 Android JNI
   （`src/cpp/jni/config.cpp`）与两个测试 ⇒ **Windows 服务下不产生任何 rklog 文件**。
   连带地，落盘面的记账口径（`WinConfig.h` 的 `kLogFileSetCount`、`WinJsonConfig.cpp` 的钳制告警文案）
-  是**三份文件集**、已如实含 `event_log.jsonl`，**不含** rklog，无需再加一份。
+  按**写日志最多**的可执行体取 **4 份**文件集（旧版 UI：上述三份 + `render_metrics.jsonl`；**不含**
+  rklog）——**不**按 `win_local_service` 的 3 份计：`log.maxFileBytes` / `log.maxRollFiles` 是同一份
+  `config.json` 的两个键、被两个可执行体共用，预算只能取最大值上界，取小会让旧版 UI 目标的最坏
+  磁盘占用超出上限。
+  写放大总预算（`WinConfig.h`）：`log.maxFileBytes × (log.maxRollFiles + 1) × 4 ≤ 512 MiB`
+  （`kLogBudgetBytes`；单份均分额 `kLogPerSetBudgetBytes = 512 MiB / 4 = 134217728 字节`，单文件上限
+  `kLogMaxFileBytesCap = 67108864 字节`）。越界的 `maxFileBytes` / `maxRollFiles` 由
+  `clampLogMaxFileBytes` / `clampLogMaxRollFiles` **只钳不拒**地就地修正并发一条规范化告警 ——
+  **绝不**因预算超限拒绝装载（拒绝会触发 INI 回落、清空用户全部配置）。默认值
+  `maxFileBytes = 10 MiB` / `maxRollFiles = 5`（单份 60 MiB）远在上限之下 ⇒ 默认部署零行为变化、
+  零告警。
+  ⚠️ **升级注意（本批为预算除数由 3 改 4 而收紧，两条区间都要看）**——命中者会在**启动装载**时被
+  钳到生效值并产生一条规范化告警，且 `GET /api/v1/health` 的 `configStatus` 由 `ok` 翻为
+  **`degraded`**（监控可感知；`configWarning` 里带原文）。磁盘原值**不被改写**，故该告警**每次启动
+  复现**，收敛只有一次成功的 `PUT /api/v1/settings` 或手工改 `config.json`：
+  · `log.maxFileBytes > 67108864`（64 MiB）⇒ 钳到 `67108864`；
+  · `log.maxRollFiles > 11`（在默认 `maxFileBytes = 10 MiB` 下）⇒ 钳到 `11`——**保留代数会比旧版本
+    少**（除数 3 时的同口径上界是 16）。`maxFileBytes` 越大该上界越小（`= ⌊134217728 /
+    maxFileBytes⌋ − 1`），取到上限 64 MiB 时退化为 1。
 - `storage/models/` —— 默认 DNN 模型路径（`storage/models/opencv_face_detector_uint8.pb` 与
   `.pbtxt`；缺失时 DNN 检测不可用）。
 

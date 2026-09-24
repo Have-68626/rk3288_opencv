@@ -489,8 +489,9 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         l.o["logDir"] = JsonValue::makeString(cfg.log.logDir.string());
         // FACE-CONFIG-017：序列化点同样按总预算的**单份均分额**钳制（同 identifyThreshold 的「出口也钳」
         //   理由——落盘前置闸门 serializedDocIsWritable 要求产物能过运行时 schema，且磁盘占用由这两个值
-        //   的乘积（**再乘文件集份数** kLogFileSetCount：csv / jsonl / event_log.jsonl）决定，故序列化
-        //   产物必须是**已钳**的）。先钳 maxFileBytes，再用钳后值反推 maxRollFiles 上界。
+        //   的乘积（**再乘文件集份数** kLogFileSetCount：recognition.csv / recognition.jsonl /
+        //   event_log.jsonl / render_metrics.jsonl —— 末者**仅**旧版 UI 目标 win_camera_face_recognition 写）
+        //   决定，故序列化产物必须是**已钳**的）。先钳 maxFileBytes，再用钳后值反推 maxRollFiles 上界。
         const std::uint64_t logMaxFileBytes = clampLogMaxFileBytes(cfg.log.maxFileBytes);
         l.o["maxFileBytes"] = JsonValue::makeNumber(static_cast<double>(logMaxFileBytes));
         l.o["maxRollFiles"] = JsonValue::makeNumber(clampLogMaxRollFiles(logMaxFileBytes, cfg.log.maxRollFiles));
@@ -898,11 +899,11 @@ static void normalizeRecognitionKeys(JsonValue& doc) {
 }
 
 // FACE-CONFIG-017（S-3）：log 段写放大总预算——**只钳不拒**，且必须在 schema 校验**前**完成。
-// 为什么在 schema 前：落盘面 = **3 份**文件集（recognition.csv、recognition.jsonl 与 **event_log.jsonl**
-//   —— 后者复用同一对 cfg.log 上限与同一 logDir，本批起随配置接线）各占
-//   maxFileBytes × (maxRollFiles + 1) 字节；而 schema 本身允许单份 1 GiB × 1001（三份最坏约 3 TiB）
-//   ⇒ 只靠 schema 拦不住磁盘耗尽。此处把两者钳进 512 MiB 总预算的**均分额**
-//   （kLogPerSetBudgetBytes = 512 MiB / 3 = 178956970 字节）内，schema 校验随后照常执行
+// 为什么在 schema 前：落盘面**最多 4 份**文件集（recognition.csv、recognition.jsonl、**event_log.jsonl**
+//   —— 后者复用同一对 cfg.log 上限与同一 logDir，本批起随配置接线 —— 与 render_metrics.jsonl
+//   —— **仅**旧版 UI 目标写）各占 maxFileBytes × (maxRollFiles + 1) 字节；而 schema 本身允许单份
+//   1 GiB × 1001（四份最坏约 4 TiB）⇒ 只靠 schema 拦不住磁盘耗尽。此处把两者钳进 512 MiB 总预算的
+//   **均分额**（kLogPerSetBudgetBytes = 512 MiB / 4 = 134217728 字节）内，schema 校验随后照常执行
 //   （**不动** schema 的 log 段上下界——收紧会让既有合法配置突然失效，即红线；故本项只做运行时
 //   钳制，schema 仍允许大值 ⇒ 「配置声明值 ≠ 生效值」是本项刻意保留的残留，见报告）。
 // 为什么在此**不做**「钳后仍不合法」的兜底：钳制只往下压，从不抬升下界；区间外的值（负数 / 0 /
@@ -923,7 +924,8 @@ static void normalizeLogBudgetKeys(JsonValue& doc) {
             mfb->n = static_cast<double>(clamped);
             addNormalizeWarning("log.maxFileBytes=" + std::to_string(raw) + " 超出日志写放大总预算（总预算 " +
                                 std::to_string(kLogBudgetBytes) + " 字节由 " + std::to_string(kLogFileSetCount) +
-                                " 份文件集（recognition.csv / recognition.jsonl / event_log.jsonl）均分 ⇒ 单份上界 " +
+                                " 份文件集（recognition.csv / recognition.jsonl / event_log.jsonl，以及"
+                                "旧版 UI 目标的 render_metrics.jsonl）均分 ⇒ 单份上界 " +
                                 std::to_string(kLogPerSetBudgetBytes) +
                                 " 字节 = maxFileBytes × (maxRollFiles + 1)），已就地钳为 " +
                                 std::to_string(clamped));

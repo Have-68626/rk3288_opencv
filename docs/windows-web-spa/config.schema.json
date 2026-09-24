@@ -147,13 +147,13 @@
           "type": "number",
           "minimum": 1024,
           "maximum": 1073741824,
-          "description": "单日志文件最大字节数的声明值。运行期会按三份文件集（recognition.csv、recognition.jsonl、event_log.jsonl）合计 512 MiB 的总预算静默下调（单份均分额约 170.67 MiB，故本键生效上界约 85.33 MiB）；GET 返回的是钳后生效值，可能小于此声明值。⚠️ 下调的可见性**按调用路径分三种，勿一概而论**（原 description 只写「只告警、不拒绝」，仅对启动装载成立）：① 启动装载（initialize 读 config.json）——只告警、不拒绝，configStatus 转 degraded 且告警文本经 configWarning 暴露，磁盘原值不改（故告警每次启动复现，重启不自愈）；② 热重载（reloadFromDisk，config.json 被外部修改触发）——同样只告警、不拒绝，但告警只并入内部 outErr（生产调用方忽略）⇒ 用户不可见、**不**产生 degraded，且该路径**不写盘**；③ PUT /api/v1/settings——**不产生告警、也不产生 degraded**，但提交会把**钳后的生效值**（如 maxRollFiles=1000 在默认 maxFileBytes 下变为 16）**静默写回** config.json，即「静默收敛到生效值」。三种路径下 maximum 都保持契约值不变。"
+          "description": "单日志文件最大字节数的声明值。运行期会按四份文件集（recognition.csv、recognition.jsonl、event_log.jsonl，以及旧版 UI 目标 win_camera_face_recognition 另写的 render_metrics.jsonl）合计 512 MiB 的总预算静默下调（单份均分额 = 512 MiB / 4 = 128 MiB，故本键生效上界 = 64 MiB）；GET 返回的是钳后生效值，可能小于此声明值。⚠️ 除数取 4 而非 3：maxFileBytes/maxRollFiles 是同一份 config.json 的两个键、被两个可执行体共用，而两者写入的文件集数不同（win_local_service 3 份、win_camera_face_recognition 4 份）⇒ 预算要成立就必须按写得多者分配。⚠️ 下调的可见性**按调用路径分三种，勿一概而论**（原 description 只写「只告警、不拒绝」，仅对启动装载成立）：① 启动装载（initialize 读 config.json）——只告警、不拒绝，configStatus 转 degraded 且告警文本经 configWarning 暴露，磁盘原值不改（故告警每次启动复现，重启不自愈）；② 热重载（reloadFromDisk，config.json 被外部修改触发）——同样只告警、不拒绝，但告警只并入内部 outErr（生产调用方忽略）⇒ 用户不可见、**不**产生 degraded，且该路径**不写盘**；③ PUT /api/v1/settings——**不产生告警、也不产生 degraded**，但提交会把**钳后的生效值**（如 maxRollFiles=1000 在默认 maxFileBytes 下变为 11）**静默写回** config.json，即「静默收敛到生效值」。三种路径下 maximum 都保持契约值不变。"
         },
         "maxRollFiles": {
           "type": "number",
           "minimum": 1,
           "maximum": 1000,
-          "description": "滚动保留日志文件数的声明值。运行期会按同一总预算静默下调：上界 = 单份均分额（约 170.67 MiB）/ 钳后的 maxFileBytes − 1（默认 10 MiB 时为 16）；GET 返回的是钳后生效值。⚠️ 下调的可见性同 maxFileBytes，**按路径分三种**：启动装载触发 configStatus=degraded + configWarning（磁盘原值不改）；热重载只并入内部 outErr（用户不可见、不写盘）；PUT /api/v1/settings 则把钳后值**静默写回** config.json（无告警、无 degraded）。"
+          "description": "滚动保留日志文件数的声明值。运行期会按同一总预算静默下调：上界 = 单份均分额（128 MiB）/ 钳后的 maxFileBytes − 1（默认 10 MiB 时为 11）；GET 返回的是钳后生效值。⚠️ 下调的可见性同 maxFileBytes，**按路径分三种**：启动装载触发 configStatus=degraded + configWarning（磁盘原值不改）；热重载只并入内部 outErr（用户不可见、不写盘）；PUT /api/v1/settings 则把钳后值**静默写回** config.json（无告警、无 degraded）。"
         }
       }
     },
