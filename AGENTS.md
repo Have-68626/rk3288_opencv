@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=process
 status=living
-as_of=2026-09-18
+as_of=2026-09-24
 -->
 
 # RK3288 AI Engine — Agent Guide
@@ -253,6 +253,7 @@ JNI 函数按领域拆分到 `src/cpp/jni/`（`camera.cpp` / `engine.cpp` / `pre
 - C++17 标准（`CMAKE_CXX_STANDARD 17`）
 - 算法关键逻辑、JNI 边界、硬件差异处理**必须写中文注释**
 - 其他 AI agent 工作目录（`.trae/specs/`、`.Jules/`、`.codegraph/`）为草稿历史，非权威文档
+- ⚠️ 另有**其他分支的 git 工作树**：`.claude/worktrees/<分支>/`（由 `.gitignore` 的 `.claude/*` 忽略）与 `~/.codex/worktrees/*/` —— 里面是**旧副本**（已跟踪内容停在各自分支的 HEAD，工作区可能另有未跟踪文件）。**是否被检索命中取决于工具**：遵循 ignore 规则的（ripgrep / 本仓 Grep 工具 / `git grep`）**不会**命中；**忽略** ignore 规则的（`grep -r`、`rg -u`、或把该路径显式当搜索目标）**会**命中（2026-09-24 用 `grep -r` 撞到过时副本）⇒ 据「全仓搜索结果」下结论前，先确认命中的是**活树路径**
 
 ## Scripts & tools
 
