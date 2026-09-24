@@ -378,6 +378,8 @@ static long long nowMs() {
 }
 
 // 限频闸门专用钟（单调）：**只**给 noteEmbedError 的窗口用。
+// 本函数提供的就是 `pipeline::LogRateLimiter` 契约第 4 条要求的那个单调钟——限频器本身**不做**时钟
+// 选择、也无法代为校验，时基由调用方（即 Engine 的 noteEmbedError）决定并传给它。
 // ⚠️ 不可改用上面的 nowMs()（system_clock = 墙钟）：NTP / 手动校时**回拨**后 `now - last` 恒为负，
 //    窗口永不满足 ⇒ 同一错误在时刻追平前一条之前**一条都不打**，与「禁止静默」（任务12）相反。
 // TTL（Engine::trackFaces 传给 TrackCoordinator::update 的 nowMs()）仍用墙钟：它要的是可跨帧 /
@@ -885,14 +887,6 @@ void Engine::setRealtimeReason(const std::string& reason) {
     }
 }
 
-namespace {
-// 逐脸 embed / 图库检索失败日志的**时间窗**（毫秒）：窗内最多记录一条，**不分 site、不看文本**。
-// 这正是「日志量有全局上界」的来源——闸门的唯一判据是时间。
-// ⚠️ 不可改回以「文本是否变化」为主判据：逐帧 × 每脸路径上，多张脸可能给出**不同** err 文本
-//（如一张维度不符、一张推理失败），逐帧交替即**每次都记** ⇒ 逐帧×每脸刷屏，**无上界**。
-constexpr long long kEmbedErrLogWindowMs = 5000;
-}  // namespace
-
 // 逐帧 × 每脸路径上的 embed / 图库检索失败：把原本被丢弃的差异化 err 记为**一条**可观测日志，
 // 同时限频——这是「禁止静默」（任务12）与「避免日志风暴」的折中。
 // ⚠️ 与 setRealtimeReason 的「值变化才记」范式**不同**，勿照搬：那条范式对「多个不同值交替出现」
@@ -902,15 +896,11 @@ constexpr long long kEmbedErrLogWindowMs = 5000;
 // 不进 getRuntimeStatus。
 void Engine::noteEmbedError(const char* site, const std::string& err) {
     if (!site || err.empty()) return;  // 空 err 无诊断价值，不记（避免与「无错误」混淆）
-    // 单调钟：墙钟（system_clock）被 NTP / 手动校时回拨后，扣除量恒为负 ⇒ 本闸门长期静默。
-    const long long now = steadyNowMs();
     {
         std::lock_guard<std::mutex> lock(embedErrMu_);
-        // 限频：以**时间窗**为准 ⇒ 日志量有全局上界（每窗最多一条）。
-        // ⚠️ 不可写成 `text 相同 && 窗内` —— 那样在多张脸给出不同 err 文本时每次都会记，
-        //    反而失去上界（本批实测到的原始缺陷）。
-        if (now - lastEmbedErrMs_ < kEmbedErrLogWindowMs) return;
-        lastEmbedErrMs_ = now;
+        // 限频：唯一判据是时间 ⇒ 日志量有全局上界（每窗最多一条）。判据与窗口推进同锁，
+        // 否则两个线程会各自读到未推进的起点而同时放行。理由与反例见 LogRateLimiter.h 的契约。
+        if (!embedErrLimiter_.tryAcquire(steadyNowMs())) return;
     }
     // 锁外记录：不持锁做 I/O。
     rklog::logWarn("Engine", site, "人脸特征路径失败 err=" + err);

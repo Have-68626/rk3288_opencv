@@ -83,6 +83,7 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
         "tests/cpp/test_scrfd_decoder.cpp"
         "tests/cpp/test_realtime_face_pipeline.cpp"
         "tests/cpp/test_checked_arith.cpp"
+        "tests/cpp/test_log_rate_limiter.cpp"
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
         "src/cpp/src/pipeline/FacePostProcessor.cpp"
         "src/cpp/src/pipeline/ScrfdDecoder.cpp"

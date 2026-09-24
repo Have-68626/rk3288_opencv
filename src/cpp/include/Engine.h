@@ -18,6 +18,7 @@
 #include "pipeline/TrackCoordinator.h"
 #include "pipeline/ResultPublisher.h"
 #include "pipeline/PerfReporter.h"
+#include "pipeline/LogRateLimiter.h"  // noteEmbedError 的时间窗限频器（纯逻辑，零 OpenCV 依赖）
 #include "pipeline/RealtimeFacePipeline.h"  // 任务12：实时 SCRFD/ArcFace 管线接入
 #include <array>
 #include <atomic>
@@ -437,13 +438,9 @@ private:
     std::string realtimeReason_;
     mutable std::mutex realtimeReasonMu_;
 
-    // noteEmbedError 的限频状态（受 embedErrMu_ 保护）：**只**记时刻。
-    // 闸门以**时间窗**为唯一判据 ⇒ 日志量有全局上界（每窗最多一条）；err 文本 / site 的变化
-    // **不参与**判据（曾按「文本是否变化」去重为主判据，多张脸给出不同 err 文本时逐帧交替即刷屏，
-    // 已订正）。刻意与 realtimeReason_ 分开——后者是对外 reason 契约通道。
-    // ⚠️ 时基：lastEmbedErrMs_ 取自 steady_clock（单调），墙钟回拨不会让闸门长期静默；
-    //    与 TTL / setRealtimeReason 所用的 system_clock **不是**同一时基，二者不可互相比较。
-    long long lastEmbedErrMs_ = 0;
+    // 逐脸 embed / 图库检索失败日志的时间窗限频器（判据只有时间，见 LogRateLimiter.h 的契约）。
+    // 由 embedErrMu_ 串行化：判据与窗口推进必须在同一临界区内完成。
+    pipeline::LogRateLimiter embedErrLimiter_{pipeline::kEmbedErrorLogWindowMs};
     std::mutex embedErrMu_;
 
     // 图库覆盖快照：replaceGallery 成功后的不可变索引，身份匹配优先于快照自带 gallery。
