@@ -27,8 +27,9 @@ import type { ActiveModelInfo, ModelsResponse } from '../api/types'
 import { getErrorMessage } from '../api/error'
 import { ApiError } from '../api/http'
 import { useAppStore } from '../state/AppStore'
-import { diffPatch } from '../utils/diffPatch'
-import { buildServerFormModelFromDoc, isSettingsDocComplete, type ServerFormModel } from '../utils/serverFormModel'
+// ⚠️ 不再直接 import diffPatch：归一化 + diff 已收进 buildSettingsSubmission（纯函数，可单测）；本文件里
+//   对 diffPatch 的提及只剩注释。若将来又需要直接调用它，请连同判别用例一起加回。
+import { buildServerFormModelFromDoc, buildSettingsSubmission, isSettingsDocComplete, type ServerFormModel } from '../utils/serverFormModel'
 
 // ⚠️ 覆盖边界（FACE-ARCWIN-005 / S-5）——改本文件前必读。
 //
@@ -203,22 +204,14 @@ export function ServerSettingsTab() {
             //   （由 serverFormModel.test.ts 的"未展开面板"一组钉住）。
             const values = serverForm.getFieldsValue(true) as ServerFormModel
 
-            // 若 postUrl 是脱敏字段：空串表示"用户未填写，不变更"。
-            // ⚠️ 本映射在生产上恒等于取 `''`（baseline 同为脱敏文档 ⇒ 同样是空串），**没有**"恢复真值"的
-            //   作用；连带后果是清空 postUrl 会被静默吞掉（归一化回 baseline ⇒ diffPatch 判未变更）。
-            //   详见 serverFormModel.ts 里 postUrl 字段上的"已知限制"登记。
-            const normalized: ServerFormModel = {
-              ...values,
-              poster: {
-                ...values.poster,
-                postUrl:
-                  postUrlMasked && values.poster.postUrl.trim() === ''
-                    ? serverBaseline.poster.postUrl
-                    : values.poster.postUrl.trim(),
-              },
-            }
-
-            const patch = diffPatch(serverBaseline, normalized)
+            // 归一化 + 最小 patch 由**纯函数** buildSettingsSubmission 承担（serverFormModel.ts）——
+            // 抽出去是为了让"这一行接线"本身能被 node 单测执行，而不是让每个测试各自重写一遍接线。
+            // 语义：脱敏字段初值 = 哨兵/全 `*` ⇒ 折回 baseline（不提交）；删空 ⇒ 提交显式清空；
+            //   改写 ⇒ 提交新 URL。完整成因、代价与事故面推导见 serverFormModel.ts 的字段登记与函数 doc。
+            // ⚠️ 旧实现是 `postUrlMasked && trim()==='' ? serverBaseline.poster.postUrl : trim()`：因 baseline
+            //   与本模型**同源**（同为哨兵文档）而**恒等于取 ''** ⇒ 清空被折叠回 baseline ⇒ diffPatch 判未
+            //   变更 ⇒ 清空不可达。本次修复已替换之。
+            const { normalized, patch } = buildSettingsSubmission(serverBaseline, values)
             if (!patch) {
               message.info('没有检测到变更')
               return
@@ -558,22 +551,25 @@ export function ServerSettingsTab() {
                     <Form.Item label="启用" name={['poster', 'enable']} valuePropName="checked">
                       <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
-                    {/* tooltip 两分支的如实口径：
-                        · 脱敏分支（**生产路径恒走这支**：GET/PUT 的响应体都经
-                          currentRedactedJsonPretty）：留空 = 不变更；因 baseline 同为脱敏文档（也是空串），
-                          **经本表单无法把 postUrl 清空**（留空会被静默吞掉），故在提示里如实说明。
-                        · 非脱敏分支只在"响应未脱敏"的假想/测试场景可达；那一支里 baseline 持有真值，
-                          **留空会被当成显式清空提交**，旧提示"可留空表示不变更"与代码相反。 */}
+                    {/* tooltip 两分支的如实口径（本次修复后两分支的**提交语义已统一**为「空 = 清空」）：
+                        · 脱敏分支（**生产路径恒走这支**：GET/PUT 的响应体都经 currentRedactedJsonPretty）：
+                          字段初值 = 哨兵 "***"（不再映射为空串），故「没动它」与「把它删空」在 diffPatch
+                          眼里不同 ⇒ **删空并保存 = 显式清空该 URL**。提示必须把「清空」这条说清，并告知
+                          **保存成功后该框当场就会再次显示 "***"**（PUT 响应本身即脱敏，AppStore 用它刷新
+                          serverSettings.data ⇒ 同步 effect 立即重填；界面因此无法区分「已清空」与「已设置」）；
+                          **不得**承诺代码做不到的事，也不得把时机说轻（原文写「重新拉取配置时」是**低估**）。
+                        · 非脱敏分支只在「响应未脱敏」的假想/测试场景可达；那一支里 baseline 持有真值，
+                          留空同样被提交为空值 ⇒ 与脱敏分支语义一致（旧提示「可留空表示不变更」才是与代码相反的）。 */}
                     <Form.Item
                       label="POST URL"
                       name={['poster', 'postUrl']}
                       tooltip={
                         postUrlMasked
-                          ? '出于安全考虑，后端 GET/PUT 的响应都会把该字段脱敏为 "***"；如需修改，请在此处重新填写完整 URL。留空 = 不变更（当前无法经本表单清空该字段）'
+                          ? '出于安全考虑，后端 GET/PUT 的响应都会把该字段脱敏为 "***"。把 "***" 删空并保存 = 显式清空该 URL（后端随之停止推送）；如需修改，请直接填入完整 URL。注意：保存成功后该框会立即再次显示 "***"（后端总是脱敏），界面无法区分「已清空」与「已设置」。'
                           : '留空会被提交为空值（= 清空该 URL）'
                       }
                     >
-                      <Input placeholder={postUrlMasked ? '（已脱敏）如需修改请填写' : 'http://...'} />
+                      <Input placeholder={postUrlMasked ? '（已清空）保存后将清空该 URL' : 'http://...'} />
                     </Form.Item>
                     <Form.Item label="节流（ms）" name={['poster', 'throttleMs']}>
                       <InputNumber min={0} max={3600000} style={{ width: '100%' }} />

@@ -7,8 +7,12 @@
 //      字段也逐个对拍）——漏一个字段即红；
 //   2) 机制：diffPatch(baseline, 只改了一处的模型) 必须只产出那一处（含嵌套路径），
 //      即"改了什么就只提交什么"，未被编辑的段不会被整体回写；
-//   3) 脱敏：poster.postUrl 的 "***" 哨兵映射为空串 + postUrlMasked=true（哨兵不是真值，前端不把它
-//      当 URL 发回；后端另有 stripMaskedSentinels 兜底，但前端不应把密文安全托付给那一层）；
+//   3) 脱敏：poster.postUrl 的 "***" 哨兵**原样留在模型里**（使「没动」与「清空」在 diffPatch 眼里
+//      不同 ⇒ 清空可达）+ postUrlMasked=true；normalizePostUrlField 的语义与**不变量**（哨兵、
+//      以及"全 `*`"的误删残留，都永不作为待提交的值送出）；buildSettingsSubmission 覆盖组件
+//      onFinish 的**真实接线**（此前那一行接线零自动覆盖，见该 describe 的说明）。
+//      后端另有 stripMaskedSentinels 兜底，但前端**不**把"哨兵不回写"托付给那一层
+//      （该层对**非 UI 客户端**仍是唯一防线）。
 //   4) 未展开面板：整份 store 被播种后，未展开面板的字段与 baseline 同值 ⇒ diffPatch 判未变更。
 //
 // 环境：node（无 jsdom）。本文件只 import 纯模块（serverFormModel / diffPatch），
@@ -17,7 +21,7 @@ import { describe, it, expect } from 'vitest'
 
 import type { ServerSettingsDoc } from '../../api/types'
 import { diffPatch } from '../diffPatch'
-import { buildServerFormModelFromDoc, isSettingsDocComplete, SETTINGS_SECTIONS } from '../serverFormModel'
+import { buildServerFormModelFromDoc, buildSettingsSubmission, isSettingsDocComplete, normalizePostUrlField, SETTINGS_SECTIONS } from '../serverFormModel'
 
 // 完整文档夹具：字段集必须与 web/src/app/api/types.ts 的 ServerSettingsDoc 一致。
 // 为什么手写而不是从别处派生：本文件的用途就是"以手写的期望值独立复述契约"，派生会自证。
@@ -117,22 +121,110 @@ describe('buildServerFormModelFromDoc 完整性（S-5）', () => {
   })
 })
 
-describe('poster.postUrl 脱敏哨兵', () => {
-  it('哨兵 "***" → 空串 + postUrlMasked=true（判别点：哨兵不是真值——若映射成原串，前端就会把一个"非真值"发回后端）', () => {
+describe('poster.postUrl 脱敏哨兵与清空可达性（本次修复的落点）', () => {
+  it('哨兵 "***" **原样留在模型里** + postUrlMasked=true（判别点：若映射成空串，则"用户没动"与"用户清空"同值 ⇒ 清空恒判未变更、不可达）', () => {
     const doc = fullDoc()
     doc.poster.postUrl = '***'
     const { model, postUrlMasked } = buildServerFormModelFromDoc(doc)
     expect(postUrlMasked).toBe(true)
-    expect(model.poster.postUrl).toBe('')
+    expect(model.poster.postUrl).toBe('***')
   })
-  // 注：后端对"哨兵被原样回写"另有一层兜底（WinJsonConfig 的 stripMaskedSentinels 会把 patch 里等于
-  //   "***" 的键剔除，语义 = 不修改）。但该兜底一旦被改动/移除，回写的字面量就会覆盖并重加密真实密文
-  //   ⇒ 前端这一侧仍必须自己把哨兵映射掉，不得依赖后端兜底（两条判据独立）。
 
   it('非哨兵字符串原样保留 + postUrlMasked=false', () => {
     const { model, postUrlMasked } = buildServerFormModelFromDoc(fullDoc())
     expect(postUrlMasked).toBe(false)
     expect(model.poster.postUrl).toBe('http://localhost:8080/api/faces')
+  })
+})
+
+describe('normalizePostUrlField：语义与**不变量**', () => {
+  // ★ 不变量：哨兵（及"全 `*`"的误删残留）**永不**作为"要提交的值"被送出；保证在**前端**成立。
+  //   判别点（**两处独立**，勿混为一谈）：
+  //   · 把函数体改成 `return t` ⇒ 本组第 1 条（`('***','http://real')` 期望真值）与第 2 条（全 `*`）变红；
+  //   · ★ 但下面「用户没动 ⇒ 不提交」那条**仍绿**——baseline 本身就是哨兵、`'***'` 与之相等，
+  //     diffPatch 照样判未变更。首版注释曾声称"两条同时红"，**那是夸大**，已由对抗性审计抓出并订正。
+  it('哨兵 → 返回 baseline（未改动 ⇒ 与 baseline 等值 ⇒ 不提交；哨兵绝不外送）', () => {
+    expect(normalizePostUrlField('***', '***')).toBe('***')
+    // 即便 baseline 已持有真值（例如刚成功保存过一次），手打 "***" 也按"未改动"处理，不外送哨兵。
+    expect(normalizePostUrlField('***', 'http://real')).toBe('http://real')
+  })
+
+  it('★ 部分删除哨兵（"*" / "**"）→ 返回 baseline（本批**新引入事故面**的兜底）', () => {
+    // 为什么必须兜：字段初值是 "***"，用户误删一两个字符就得 "*" / "**"；它们**不等于**哨兵，
+    //   而后端 stripMaskedSentinels 只剔精确 "***"、schema 的串分支无 pattern ⇒ 会被落盘、
+    //   覆盖**真实 URL**；更糟的是 GET 恒脱敏 ⇒ 用户**再也拿不回**。故判据取"不可能是合法 URL"
+    //   （全 `*`）而不是"等于哨兵"。
+    expect(normalizePostUrlField('*', '***')).toBe('***')
+    expect(normalizePostUrlField('**', '***')).toBe('***')
+    expect(normalizePostUrlField('****', '***')).toBe('***')
+    expect(normalizePostUrlField(' * ', '***')).toBe('***') // trim 后仍全 `*`
+    // 非全 `*` 的串不在兜底之列（属**修复前既有**行为，见该函数 doc 的"已知边界"）。
+    expect(normalizePostUrlField('*x', '***')).toBe('*x')
+  })
+
+  it('空串 / 纯空白 → 空串（**显式清空**；脱敏字段初值是哨兵，故空串 ≠ baseline ⇒ 判为变更）', () => {
+    expect(normalizePostUrlField('', '***')).toBe('')
+    expect(normalizePostUrlField('   ', '***')).toBe('')
+  })
+
+  it('普通 URL → trim 后原样返回', () => {
+    expect(normalizePostUrlField('  http://a/b  ', '***')).toBe('http://a/b')
+  })
+
+  it('undefined / null → 空串（不抛：实现用 String(v ?? \'\')，不直接对非字符串调 trim）', () => {
+    expect(normalizePostUrlField(undefined, '***')).toBe('')
+    expect(normalizePostUrlField(null, '***')).toBe('')
+  })
+})
+
+describe('buildSettingsSubmission：组件 onFinish 的**真实接线**（不只纯函数组合）', () => {
+  // ⚠️ 本组的存在理由（对抗性审计 + 独立复核**各自**命中同一缺口）：此前的"端到端"用例各自
+  //   **重实现**了一遍组件里的归一化接线 ⇒ 只证明"纯函数 + diffPatch 的组合正确"，
+  //   证明不了**组件把它接上了**——组件（ServerSettingsTab 的 onFinish）在 node 环境不可渲染
+  //   （vitest 无 jsdom）。改为直接调用生产的 buildSettingsSubmission 后，接线本身
+  //   （含"归一化与 diff 必须共用同一个 baseline"这条脆弱点）进入覆盖。
+  const maskedModel = () => {
+    const doc = fullDoc()
+    doc.poster.postUrl = '***'
+    return buildServerFormModelFromDoc(doc).model
+  }
+  const withPostUrl = (baseline: ReturnType<typeof maskedModel>, typed: string) => ({
+    ...baseline,
+    poster: { ...baseline.poster, postUrl: typed },
+  })
+
+  it('用户没动（值仍是哨兵）→ patch 为 undefined（不发哨兵、不提交）', () => {
+    const baseline = maskedModel()
+    expect(buildSettingsSubmission(baseline, withPostUrl(baseline, '***')).patch).toBeUndefined()
+  })
+
+  it('★ 用户清空 → patch 恰为 { poster: { postUrl: "" } }（修复前这里是 undefined，清空被吞掉）', () => {
+    const baseline = maskedModel()
+    expect(buildSettingsSubmission(baseline, withPostUrl(baseline, '')).patch).toEqual({
+      poster: { postUrl: '' },
+    })
+  })
+
+  it('用户改写 → patch 恰为 { poster: { postUrl: <新 URL> } }，且**不含**哨兵', () => {
+    const baseline = maskedModel()
+    const url = 'http://10.0.0.5:9000/hook'
+    expect(buildSettingsSubmission(baseline, withPostUrl(baseline, url)).patch).toEqual({
+      poster: { postUrl: url },
+    })
+  })
+
+  it('★ 误删哨兵字符 → 判未变更，绝不把 "*" / "**" 提交出去（审计抓出的新事故面）', () => {
+    const baseline = maskedModel()
+    expect(buildSettingsSubmission(baseline, withPostUrl(baseline, '*')).patch).toBeUndefined()
+    expect(buildSettingsSubmission(baseline, withPostUrl(baseline, '**')).patch).toBeUndefined()
+  })
+
+  it('normalized 是"后端应看到的完整模型"：除 postUrl 归一化外逐字段与入参一致', () => {
+    const baseline = maskedModel()
+    const values = withPostUrl(baseline, '  http://x/  ')
+    const { normalized } = buildSettingsSubmission(baseline, values)
+    expect(normalized.poster.postUrl).toBe('http://x/') // trim 生效
+    expect(normalized).toEqual({ ...values, poster: { ...values.poster, postUrl: 'http://x/' } })
   })
 })
 
