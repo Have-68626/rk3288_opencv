@@ -62,8 +62,9 @@ function scanNestedObjects(subLines) {
 }
 
 // 最小缩进式 YAML 提取器：抽取组件级的 required / properties 键、Settings 的 $ref 目标，
-// 组件级 additionalProperties 是否为 false（FACE-TEST-001），以及属性值内**嵌套** type: object
-// 节点及其 additionalProperties 收束（FACE-TEST-001①：postUrl 加密分支等嵌套对象的射程补强）。
+// 组件级 additionalProperties 是否为 false（FACE-TEST-001），属性值内**嵌套** type: object
+// 节点及其 additionalProperties 收束（FACE-TEST-001①：postUrl 加密分支等嵌套对象的射程补强），
+// 以及**属性自身的值域** minimum/maximum（FACE-VALUE-RANGE：三处值域机械对拍）。
 // 不做完整 YAML 语义解析，仅按本文件 Settings 区段（schemas: 之下 4 空格组件缩进）的结构工作。
 function extractSettingsComponents(yamlText) {
   const lines = [];
@@ -80,7 +81,10 @@ function extractSettingsComponents(yamlText) {
   while (i < lines.length && lines[i].indent >= 4) {
     if (lines[i].indent !== 4) { i++; continue; }
     const name = lines[i].text.replace(/:$/, "").trim();
-    const comp = { required: [], props: new Set(), refs: new Set(), addPropsFalse: false, nestedObjects: [] };
+    const comp = {
+      required: [], props: new Set(), refs: new Set(), addPropsFalse: false,
+      nestedObjects: [], bounds: new Map(),
+    };
     i++;
     while (i < lines.length && lines[i].indent >= 6) {
       const l = lines[i];
@@ -109,6 +113,18 @@ function extractSettingsComponents(yamlText) {
           for (const nested of scanNestedObjects(lines.slice(subStart, i))) {
             comp.nestedObjects.push({ owner: key, label: nested.label, hasNoExtra: nested.hasNoExtra });
           }
+          // FACE-VALUE-RANGE：该属性**自身**的值域只取缩进 10 的 minimum/maximum；
+          // 更深缩进属嵌套对象（如 postUrl 的 oneOf/object 分支），不在对拍射程（理由见文末射程说明）。
+          let bMin = null;
+          let bMax = null;
+          for (const sl of lines.slice(subStart, i)) {
+            if (sl.indent !== 10) continue;
+            const mm = /^minimum:\s*(\S+)$/.exec(sl.text);
+            if (mm) bMin = Number(mm[1]);
+            const xm = /^maximum:\s*(\S+)$/.exec(sl.text);
+            if (xm) bMax = Number(xm[1]);
+          }
+          if (bMin !== null || bMax !== null) comp.bounds.set(key, { min: bMin, max: bMax });
         }
       } else if (l.indent === 6 && l.text === "additionalProperties: false") {
         // 仅组件级（缩进 6）的键收束计入；嵌套对象（缩进 ≥ 10，如 postUrl 的加密分支）
@@ -638,6 +654,450 @@ test("additionalProperties：config.schema.json 全部 type: object 节点（含
       `config.schema.json ${n.path} 缺 "additionalProperties": false`
     );
   }
+});
+
+// ---- FACE-VALUE-RANGE：三处值域（minimum/maximum）机械对拍 ----
+//
+// 补的是什么缺口（本批审计）：config.schema.json / openapi.yaml / JsonSchemaValidator.cpp 的
+// **运行时 schema** 是三份**值域拷贝**，但本文件此前只对拍「键集」与「required 集」，
+// **没有任何 min/max 断言**——本批把 `recognition.identifyThreshold` 的 `maximum` 从 `100000`
+// 收到 `64`，**若漏改任一处，不会有任何测试变红**（三路审计独立指出）。本断言闭合该缺口。
+//
+// 射程（三处**同口径**是对拍成立的前提）：
+//   ① 每个**段**的直接数值属性；② 顶层标量 `schemaVersion`；
+//   ③ **不含** poster.postUrl 的加密对象分支——本用例的三个提取器都只抽**属性级**值域
+//      （schema.json 的段直接属性 / openapi 缩进 10 的属性自身值域 / buildSettingsDocSchema 内的
+//      语句），而该分支嵌在 oneOf 里（openapi 缩进 16–18；schema.json 在 `oneOf[1].properties`；
+//      运行时在**另一个函数** `buildEncryptedStringSchema()` 内）⇒ 纳入需同时改三处提取器口径，
+//      不属本用例的射程。它由紧随其后的「补漏」用例单独承担。
+//      ❌ 更正旧说法（原文）：此处曾写「openapi 未声明该处值域 ⇒ 纳入会让 openapi 单边少一键」——
+//      该理由**已不成立**：本批同批给 openapi 的加密分支补上了 `v: minimum/maximum = 1` 与
+//      `alg` 的 enum，三处**都**声明了 `v = [1, 1]`；真正的排除理由只有「提取器口径只到属性级」。
+//      ❌ 同时更正原文后半句「该分支的值域由上方 additionalProperties 的嵌套射程与 C++ 侧行为用例
+//      各自覆盖」——**两半皆不成立**（S4 独立实测）：additionalProperties 系列断言判的是该关键字
+//      **是否出现**，与 minimum/maximum **无关**；`tests/win/test_win_json_config.cpp` 中检索
+//      `buildEncryptedStringSchema` / 加密对象 / AES-256-GCM **0 命中** ⇒ 在补漏用例之前，
+//      `v ∈ [1,1]` 与 `alg` 的取值域在全仓**无任何机械或行为看护**（已知盲区，本批已补 `v` 的一半）。
+// 判据：三处「带界键 → (min, max)」映射**逐键相等**；每处**非空**且含全部锚键
+//   （防「提取器与源码写法脱节 ⇒ 空 == 空」静默通过）。
+//
+// 会在下列改法下变红：任一处改 min/max、任一处删掉某一键的上/下界、三处新增/删除带界键而只改
+//   其中一两处、源码改成提取器不认识的写法（此时 evalNumericExpr/非空断言先行失败示警）。
+
+/** 锚键：分布在各段且量纲各异，抽空/漏抽时最先暴露 */
+const BOUNDS_ANCHOR_KEYS = ["schemaVersion", "camera.width", "http.port", "recognition.identifyThreshold"];
+
+/**
+ * 解析 C++ 源里的数值字面量表达式。本仓既有写法只有「乘积」形态（如 `60 * 60 * 1000`）。
+ * 遇到不认识的写法**报错**而非静默取错值——将来出现新形态时先红再补。
+ * @param {string} expr
+ * @param {string} label 出错信息用的上下文
+ * @returns {number}
+ */
+function evalNumericExpr(expr, label) {
+  const s = String(expr).replace(/\s+/g, "");
+  const m = /^([+-]?\d+(?:\.\d+)?)((?:[*/]\d+(?:\.\d+)?)*)$/.exec(s);
+  assert.ok(
+    m,
+    `${label}: 无法解析的数值表达式「${expr}」—— 本判据只支持 [+-]?字面量 与 * / 乘积；` +
+      `若源码改用了别的写法，请扩展 evalNumericExpr（不要静默取错值）`
+  );
+  let v = Number(m[1]);
+  for (const op of m[2].match(/[*/]\d+(?:\.\d+)?/g) || []) {
+    const n = Number(op.slice(1));
+    v = op[0] === "*" ? v * n : v / n;
+  }
+  return v;
+}
+
+/**
+ * 从 config.schema.json 抽值域：Map<path, {min, max, label}>。
+ * path = `段.键`（顶层标量则为裸键名）；只取段的**直接**数值属性——对象值属性
+ * （如 poster.postUrl 的 oneOf 加密分支）不在射程（理由见本节射程说明）。
+ * @param {object} schema 已 JSON.parse 的 schema 根
+ * @returns {Map<string, {min:number, max:number, label:string}>}
+ */
+function extractSchemaJsonBounds(schema) {
+  const out = new Map();
+  for (const [key, def] of Object.entries(schema.properties || {})) {
+    if (def.type !== "object") {
+      if (def.type === "number" && (def.minimum !== undefined || def.maximum !== undefined)) {
+        out.set(key, { min: def.minimum, max: def.maximum, label: `config.schema.json ${key}` });
+      }
+      continue;
+    }
+    for (const [k, v] of Object.entries(def.properties || {})) {
+      if (v.type !== "number") continue;
+      if (v.minimum === undefined && v.maximum === undefined) continue;
+      out.set(`${key}.${k}`, {
+        min: v.minimum,
+        max: v.maximum,
+        label: `config.schema.json ${key}.${k}`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 从 openapi.yaml 的**契约组件**抽值域：Map<path, {min, max, label}>。
+ * path 用 schema 段名（`COMPONENT_TO_SECTION` 反查），Settings 根组件的属性用裸键名
+ * ⇒ 与 extractSchemaJsonBounds 的口径一致。非契约组件（Envelope 系）不在射程。
+ * @returns {Map<string, {min:number, max:number, label:string}>}
+ */
+function extractOpenapiBounds() {
+  const out = new Map();
+  for (const [compName, comp] of Object.entries(comps)) {
+    if (compName !== "Settings" && !COMPONENT_TO_SECTION.has(compName)) continue;
+    const section = compName === "Settings" ? "" : COMPONENT_TO_SECTION.get(compName);
+    for (const [key, b] of comp.bounds) {
+      const path = section ? `${section}.${key}` : key;
+      out.set(path, { min: b.min, max: b.max, label: `openapi.yaml ${compName}.${key}` });
+    }
+  }
+  return out;
+}
+
+/**
+ * 从 JsonSchemaValidator.cpp 的 `buildSettingsDocSchema()` 抽运行时值域：Map<path, {min,max,label}>。
+ * 同一函数内混用两种写法，都要处理：
+ *   a) 内联：`X.o["<key>"] = objBoolInt(true, MIN, MAX);`（首参 `false` = 无界，跳过）；
+ *   b) 显式块：`t.o["minimum"] = JsonValue::makeNumber(MIN);` + `…maximum…` +
+ *      `X.o["<key>"] = std::move(t);`（向上回扫收集，遇其它语句即停）。
+ * 段名（path 前缀）取自**段注释标记** `    // <section>`（与本文件既有 required 段切片同一手法），
+ * **不能**用变量名——变量名会跨段复用（`dp` 同时是 dnn 与 display），作段标识会串段。
+ * 射程止于 buildSettingsDocSchema：`buildEncryptedStringSchema()` 属加密对象分支，不在射程。
+ * @param {string} text
+ * @returns {Map<string, {min:number, max:number, label:string}>}
+ */
+function extractRuntimeBounds(text) {
+  const lines = text.split(/\r?\n/);
+  const fnStart = lines.findIndex((l) =>
+    l.includes("JsonValue JsonSchemaValidator::buildSettingsDocSchema()")
+  );
+  assert.ok(fnStart >= 0, "未定位 JsonSchemaValidator::buildSettingsDocSchema()");
+  const fnEnd = lines.findIndex(
+    (l, i) => i > fnStart && /^\s*schema\.o\["properties"\]\s*=\s*std::move\(props\);/.test(l)
+  );
+  assert.ok(fnEnd > fnStart, 'buildSettingsDocSchema 末尾未定位 schema.o["properties"] = std::move(props);');
+
+  // 段标记：**恰好 4 空格**缩进的 `// <小写段名>`（可带全角括号说明）。段内注释缩进更深（8 格），
+  // 故不会被误当段标记。
+  const markers = [];
+  for (let i = fnStart + 1; i < fnEnd; i++) {
+    const m = /^    \/\/ ([a-z][a-z0-9]*)(?:[ (（].*)?$/.exec(lines[i]);
+    if (m) markers.push({ idx: i, name: m[1] });
+  }
+  assert.ok(markers.length > 0, "JsonSchemaValidator.cpp 未定位到任何段注释标记（提取射程失效）");
+
+  const regions = [{ name: "", start: fnStart, end: markers[0].idx }];
+  markers.forEach((mk, k) => {
+    regions.push({
+      name: mk.name,
+      start: mk.idx,
+      end: k + 1 < markers.length ? markers[k + 1].idx : fnEnd,
+    });
+  });
+
+  const inlineRe = /^\s*\w+\.o\["([^"]+)"\]\s*=\s*objBoolInt\((true|false),\s*([^,]+),\s*([^)]+)\);/;
+  const moveRe = /^\s*\w+\.o\["([^"]+)"\]\s*=\s*std::move\(/;
+  const minRe = /\bo\["minimum"\]\s*=\s*JsonValue::makeNumber\(([^)]+)\)/;
+  const maxRe = /\bo\["maximum"\]\s*=\s*JsonValue::makeNumber\(([^)]+)\)/;
+
+  const out = new Map();
+  for (const region of regions) {
+    for (let i = region.start; i < region.end; i++) {
+      const line = lines[i];
+      // 段装配行 `props.o["<段>"] = std::move(...)`：只在**非 root** 段跳过；
+      // root 段里唯一的一条正是顶层标量 schemaVersion 的装配行，必须保留。
+      if (region.name && /^\s*props\.o\[/.test(line)) continue;
+
+      const inl = inlineRe.exec(line);
+      if (inl) {
+        const [, key, hasMinMax, minRaw, maxRaw] = inl;
+        if (hasMinMax !== "true") continue; // objBoolInt(false, …) = 无界，与 schema.json 的无界属性对应
+        const path = region.name ? `${region.name}.${key}` : key;
+        out.set(path, {
+          min: evalNumericExpr(minRaw, `${path} 的下界`),
+          max: evalNumericExpr(maxRaw, `${path} 的上界`),
+          label: `JsonSchemaValidator.cpp ${path}`,
+        });
+        continue;
+      }
+
+      const mv = moveRe.exec(line);
+      if (!mv) continue;
+      const key = mv[1];
+      let min = null;
+      let max = null;
+      for (let j = i - 1; j >= region.start; j--) {
+        const prev = lines[j];
+        if (prev.trim() === "" || /^\s*\/\//.test(prev)) continue; // 块内注释很长，须跳过
+        const mm = minRe.exec(prev);
+        const xm = maxRe.exec(prev);
+        if (mm || xm) {
+          if (mm) min = evalNumericExpr(mm[1], `${key} 的下界`);
+          if (xm) max = evalNumericExpr(xm[1], `${key} 的上界`);
+          continue;
+        }
+        break; // 其它语句 ⇒ 该显式块结束（无界）
+      }
+      if (min === null || max === null) continue; // 无界（如 properties / required 的装配行）
+      const path = region.name ? `${region.name}.${key}` : key;
+      out.set(path, { min, max, label: `JsonSchemaValidator.cpp ${path}` });
+    }
+  }
+  return out;
+}
+
+test("值域：config.schema.json ↔ openapi.yaml ↔ JsonSchemaValidator 运行时 schema 逐键对拍 minimum/maximum", () => {
+  const sources = [
+    { label: "③ config.schema.json", map: extractSchemaJsonBounds(schemaRoot) },
+    { label: "④ openapi.yaml", map: extractOpenapiBounds() },
+    { label: "② JsonSchemaValidator.cpp 运行时 schema", map: extractRuntimeBounds(jsonSchemaValidatorText) },
+  ];
+
+  // 防「静默通过」：三处都必须非空且含全部锚键。抽空 ⇒ 直接报错，而不是「空 == 空」通过。
+  for (const { label, map } of sources) {
+    assert.ok(
+      map.size > 0,
+      `${label}: 未抽到任何带界（minimum/maximum）键——提取器与源码写法脱节？`
+    );
+    for (const anchor of BOUNDS_ANCHOR_KEYS) {
+      assert.ok(
+        map.has(anchor),
+        `${label}: 锚键 ${anchor} 未抽到值域（该处漏改或提取失效）；实际键：` +
+          `${[...map.keys()].sort().join(", ")}`
+      );
+    }
+  }
+
+  // 数量相等（三处同射程的直接体现；任一处漏抽/多抽都先在此报出，比逐键 diff 更早定位）
+  const counts = sources.map((s) => s.map.size);
+  assert.deepEqual(
+    counts.slice(1),
+    [counts[0], counts[0]],
+    `三处带界键数量不一致：${sources.map((s, i) => `${s.label}=${counts[i]}`).join("；")}`
+  );
+
+  // 主断言：逐键 min/max 相等（以 config.schema.json 为参照；失败信息逐键列出缺/多/值不同）
+  const reference = sources[0].map;
+  for (const { label, map } of sources.slice(1)) {
+    const missing = [...reference.keys()].filter((k) => !map.has(k)).sort();
+    const extra = [...map.keys()].filter((k) => !reference.has(k)).sort();
+    const mismatched = [...reference.keys()]
+      .filter((k) => map.has(k))
+      .filter((k) => map.get(k).min !== reference.get(k).min || map.get(k).max !== reference.get(k).max)
+      .map(
+        (k) =>
+          `${k}: ${label}=[${map.get(k).min}, ${map.get(k).max}] vs ` +
+          `config.schema.json=[${reference.get(k).min}, ${reference.get(k).max}]`
+      )
+      .sort();
+    assert.deepEqual(
+      { missing, extra, mismatched },
+      { missing: [], extra: [], mismatched: [] },
+      `${label} 的值域与 config.schema.json 不一致；缺键 [${missing.join(", ")}]；` +
+        `多键 [${extra.join(", ")}]；值不同 [${mismatched.join(" | ")}]`
+    );
+  }
+
+  // 本批审计点名的回归护栏：LBPH 识别阈值的上界从 100000 收到 64 ⇒ 三处必须同为 [1, 64]。
+  // 单独再断言一次，使失败信息直指该键（不必从上面的大 diff 里找）。
+  for (const { label, map } of sources) {
+    const b = map.get("recognition.identifyThreshold");
+    assert.deepEqual(
+      { min: b.min, max: b.max },
+      { min: 1, max: 64 },
+      `${label}: recognition.identifyThreshold 应为 [1, 64]（本批把 maximum 从 100000 收到 64，` +
+        `任一处漏改即须在此红）`
+    );
+  }
+});
+
+// ---- FACE-VALUE-RANGE 补漏：poster.postUrl 加密分支的 `v` 三处值域对拍 ----
+//
+// 补的是什么缺口：上方射程③刻意把该分支排除（三处提取器都只抽属性级值域），而它此前**没有任何**
+// 看护——射程说明里的「由 additionalProperties 与 C++ 行为用例各自覆盖」经实测两半皆不成立
+// （详见上方射程说明处的更正）。本用例只补**能三处同口径对拍**的那部分：`v` 的 [1, 1]。
+//
+// 形态差异（正因如此才需要专用提取器，不能复用上方三个）：
+//   · config.schema.json：`poster.postUrl.oneOf[1].properties.v`（JSON，直接取，无解析风险）；
+//   · openapi.yaml：PosterSettings.postUrl 的 oneOf object 分支 `properties:` 下的键（缩进 16/18/20）；
+//   · 运行时 schema：**另一个函数** `JsonSchemaValidator::buildEncryptedStringSchema()` 内的显式块
+//     （`v.o["minimum"] = …` + `props.o["v"] = std::move(v);`；上方 extractRuntimeBounds 的射程
+//     止于 buildSettingsDocSchema，刻意不含它）。
+//
+// 已知的**不对拍**项（如实登记，不假造看护）：`alg` 只在两份**文档**里有取值域（enum: AES-256-GCM），
+//   运行时 schema 的 `buildEncryptedStringSchema()` 对 `alg` **只声明 `type: string`、没有 enum**
+//   ⇒ 三处同口径对拍不成立，本节只对拍两份文档 + 登记该不对称（是否收口由后续任务定，不在本批）。
+
+/** config.schema.json 的 poster.postUrl.oneOf 的 object（加密）分支。 */
+function schemaJsonEncryptedBranch() {
+  const oneOf = schemaRoot.properties?.poster?.properties?.postUrl?.oneOf;
+  assert.ok(Array.isArray(oneOf), "config.schema.json poster.postUrl 缺 oneOf");
+  const branch = oneOf.find((b) => b && b.type === "object" && b.properties);
+  assert.ok(branch, "config.schema.json poster.postUrl 无可用的加密 object 分支（提取失效）");
+  return branch;
+}
+
+/**
+ * 从 openapi.yaml 的 PosterSettings.postUrl 加密分支抽属性表：Map<键, {min,max,enum}>。
+ * 按缩进定位（与 extractSettingsComponents 同手法）：组件 4 / postUrl 8 / oneOf object 分支的
+ * `properties:` 14 / 键 16 / 键下条目 18（enum 项 20）。抽不到就是射程失效 ⇒ 断言报错。
+ * @returns {Map<string, {min:number|null, max:number|null, enum:string[]|null}>}
+ */
+function extractOpenapiEncryptedBranch() {
+  const lines = openapiText.split(/\r?\n/).map((raw) => ({
+    indent: raw.length - raw.trimStart().length,
+    text: raw.trim(),
+  }));
+  const compStart = lines.findIndex((l) => l.indent === 4 && l.text === "PosterSettings:");
+  assert.ok(compStart >= 0, "openapi.yaml 未定位到 PosterSettings 组件");
+  let compEnd = lines.length;
+  for (let i = compStart + 1; i < lines.length; i++) {
+    if (lines[i].text !== "" && lines[i].indent <= 4) {
+      compEnd = i;
+      break;
+    }
+  }
+  const postUrlIdx = lines.findIndex(
+    (l, i) => i > compStart && i < compEnd && l.indent === 8 && l.text === "postUrl:"
+  );
+  assert.ok(postUrlIdx >= 0, "openapi.yaml PosterSettings 缺 postUrl 属性");
+  // 加密分支的 `properties:`（缩进 14）；明文分支 `- type: string` 没有 properties。
+  const propsIdx = lines.findIndex(
+    (l, i) => i > postUrlIdx && i < compEnd && l.indent === 14 && l.text === "properties:"
+  );
+  assert.ok(propsIdx >= 0, "openapi.yaml PosterSettings.postUrl 缺加密分支的 properties（提取射程失效）");
+
+  const out = new Map();
+  for (let i = propsIdx + 1; i < compEnd && lines[i].indent === 16; i++) {
+    const m = /^([^:]+):\s*$/.exec(lines[i].text);
+    if (!m) continue;
+    const info = { min: null, max: null, enum: null };
+    let j = i + 1;
+    while (j < compEnd && lines[j].indent > 16) {
+      const mm = /^minimum:\s*(\S+)$/.exec(lines[j].text);
+      if (mm) info.min = Number(mm[1]);
+      const xm = /^maximum:\s*(\S+)$/.exec(lines[j].text);
+      if (xm) info.max = Number(xm[1]);
+      if (lines[j].text === "enum:") {
+        const items = [];
+        for (let k = j + 1; k < compEnd && lines[k].indent > lines[j].indent; k++) {
+          if (!lines[k].text.startsWith("- ")) break;
+          items.push(lines[k].text.slice(2).trim());
+        }
+        info.enum = items;
+      }
+      j++;
+    }
+    out.set(m[1].trim(), info);
+    i = j - 1;
+  }
+  return out;
+}
+
+/**
+ * 从 JsonSchemaValidator.cpp 的 `buildEncryptedStringSchema()` 抽 `v` 的 [min, max]。
+ * 变量名**不写死**：从装配行 `props.o["v"] = std::move(<obj>);` 反读对象名，再向上回扫该对象的
+ * `o["minimum"/"maximum"]` 赋值（遇其它语句即停）——改名不会误判。
+ * @returns {{min:number, max:number}}
+ */
+function extractRuntimeEncryptedV() {
+  const lines = jsonSchemaValidatorText.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.includes("JsonSchemaValidator::buildEncryptedStringSchema()"));
+  assert.ok(start >= 0, "未定位 JsonSchemaValidator::buildEncryptedStringSchema()");
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\}\s*$/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  assert.ok(end > start, "buildEncryptedStringSchema 的函数体末尾未定位");
+
+  const moveRe = /^\s*props\.o\["v"\]\s*=\s*std::move\((\w+)\);/;
+  const moveIdx = lines.findIndex((l, i) => i > start && i < end && moveRe.test(l));
+  assert.ok(moveIdx > start, 'buildEncryptedStringSchema 未定位 props.o["v"] = std::move(...) 装配行');
+  const objVar = moveRe.exec(lines[moveIdx])[1];
+
+  const boundRe = new RegExp(
+    `^\\s*${objVar}\\.o\\["(minimum|maximum)"\\]\\s*=\\s*JsonValue::makeNumber\\(([^)]+)\\);`
+  );
+  let min = null;
+  let max = null;
+  for (let i = moveIdx - 1; i >= start; i--) {
+    const l = lines[i];
+    const t = l.trim();
+    if (t === "" || t === "{" || t === "}" || t.startsWith("//")) continue; // 块界与注释
+    const m = boundRe.exec(l);
+    if (!m) break; // 其它语句 ⇒ 该显式块结束
+    if (m[1] === "minimum") min = evalNumericExpr(m[2], "buildEncryptedStringSchema 的 v 下界");
+    else max = evalNumericExpr(m[2], "buildEncryptedStringSchema 的 v 上界");
+  }
+  assert.ok(
+    min !== null && max !== null,
+    `buildEncryptedStringSchema 的 v 未抽到完整 [min, max]（提取器与源码写法脱节？实际 min=${min} max=${max}）`
+  );
+  return { min, max };
+}
+
+test("值域：poster.postUrl 加密分支的 v 三处对拍（[1, 1]）；alg 的取值域两处文档一致", () => {
+  const schemaBranch = schemaJsonEncryptedBranch();
+  const schemaV = schemaBranch.properties.v;
+  const schemaAlg = schemaBranch.properties.alg;
+  assert.ok(schemaV && schemaAlg, "config.schema.json 加密分支缺 v / alg");
+
+  const openapiBranch = extractOpenapiEncryptedBranch();
+  assert.ok(
+    openapiBranch.has("v") && openapiBranch.has("alg"),
+    `openapi 加密分支未抽到 v / alg；实际键：${[...openapiBranch.keys()].sort().join(", ")}`
+  );
+  const runtimeV = extractRuntimeEncryptedV();
+
+  const three = [
+    {
+      label: "config.schema.json poster.postUrl.oneOf[1].v",
+      min: schemaV.minimum,
+      max: schemaV.maximum,
+    },
+    {
+      label: "openapi.yaml PosterSettings.postUrl 加密分支 v",
+      min: openapiBranch.get("v").min,
+      max: openapiBranch.get("v").max,
+    },
+    {
+      label: "JsonSchemaValidator buildEncryptedStringSchema 的 v",
+      min: runtimeV.min,
+      max: runtimeV.max,
+    },
+  ];
+  for (const t of three) {
+    assert.deepEqual(
+      { min: t.min, max: t.max },
+      { min: 1, max: 1 },
+      `${t.label}: 应为 [1, 1]（v 是「当前仅此一版」的版本号；任一处漏改或提取失效即须在此红）`
+    );
+  }
+  // 三处必须**同值**（与主用例同一判据；任一处单边改动即在此红）。
+  assert.deepEqual(
+    three.map((t) => [t.min, t.max]),
+    Array(three.length).fill([1, 1]),
+    "poster.postUrl 加密分支 v 的三处值域不一致"
+  );
+
+  // alg：两份**文档**必须给出同一个 enum（运行时 schema 无 enum，故只登记不对称，不在此假造一致）。
+  assert.deepEqual(
+    openapiBranch.get("alg").enum,
+    ["AES-256-GCM"],
+    "openapi.yaml 加密分支 alg 的 enum 应为 [AES-256-GCM]"
+  );
+  assert.deepEqual(
+    schemaAlg.enum,
+    openapiBranch.get("alg").enum,
+    "config.schema.json 与 openapi.yaml 的 alg enum 不一致"
+  );
 });
 
 
