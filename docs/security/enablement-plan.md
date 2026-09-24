@@ -11,6 +11,8 @@ as_of=2026-08-13
 > 规格事实源：`docs/security/auth-model.md`、`docs/security/face-db-encryption.md`
 > （均为冻结规格）；本清单的"当前状态"已对照 `src/win/src/HttpFacesServer.cpp`、
 > `src/win/src/FaceDatabase.cpp` 源码核实（2026-08-11）。
+> ⚠️ 其中「日志敏感字段脱敏」一行的**射程**已于 2026-09-24 复核并订正（原文只写「NativeLog 脱敏纪律」，
+> 未说明它既不含 PII、也不覆盖另外三个直写的日志文件）；**其余各行仍为 2026-08-11 的口径，未重新核实**。
 
 ## 1. 默认开/关清单
 
@@ -19,7 +21,7 @@ as_of=2026-08-13
 | REST API 认证（Bearer token） | **关（默认）** | 是 | token 为空 → `requestAuthorized` 放行（兼容模式）；启用后除匿名白名单外一律 401 |
 | CSRF 防护（写方法） | **开（无条件）** | 否 | `csrfCheckPasses` 对 POST/PUT/DELETE 恒校验；读方法恒放行；认证兼容模式下仍生效（纵深正交） |
 | 人脸特征库加密（AES-256-GCM） | **开（无条件）** | 否 | `save()` 一律写加密容器；`load()` 自动迁移旧明文 YAML（含 `.pre-encrypt` 回滚点）；密钥缺失时 `save` 失败而非明文回退 |
-| 日志敏感字段脱敏 | 开 | 否 | NativeLog 脱敏纪律（S-SEC-B07-001） |
+| 日志敏感字段脱敏（**仅凭据类键值**） | 开 | 否 | `rklog::maskSensitiveData`（S-SEC-B07-001）：按键白名单掩码 `password` / `token` / `secret` / `api_key` / `authorization` / `bearer` 等 KV 的**值**。⚠️ **射程不含 PII**（`person_id` 不在键集内），且**只作用于 `rklog::` 这条链**——`StructuredLogger` 的 `recognition.csv`/`recognition.jsonl` 与 `EventLogger` 的 `event_log.jsonl` 由 ofstream 直写、`maskSensitiveData` 一次都不经过（全仓调用点仅 `NativeLog.cpp` 一处）。故本行**不得**读成「日志里的个人信息已脱敏」，详见 `face-db-encryption.md` §7 的登记 |
 | 日志 URI userinfo 脱敏 | 开 | 否 | `sanitizeUriForLog`（S-SEC-B07-002） |
 | JNI/整数溢出防护（32 位 checked arithmetic） | 开 | 否 | S-SEC-B09-003 |
 | CivetWeb TLS 证书校验 | 不适用 | — | 未编入构建；重新接入前必须 `SSL_VERIFY_PEER` |

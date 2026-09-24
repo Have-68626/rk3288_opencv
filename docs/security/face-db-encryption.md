@@ -102,13 +102,25 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
 
 ### 7.1 事实（已逐行核实）
 
-- `src/win/src/StructuredLogger.cpp:166-167` 把 `f.personId` 以**明文**写进 `faces_json`
-  片段（仅经 `escapeJson` 转义 JSON，**不做掩码**）。同一片段落在两处：
-  - CSV 的 `faces_json` 列（表头见 `:141`，落列见 `:181`）→ `<logDir>/recognition.csv`；
-  - JSONL 的 `faces` 数组（见 `:193`）→ `<logDir>/recognition.jsonl`。
-  - 文件路径由 `StructuredLogger.cpp:81-82` 拼出；`logDir` 默认 = exe 同级 `storage/win_logs`
+- `StructuredLogger::append`（`src/win/src/StructuredLogger.cpp`）把 `f.personId` 以**明文**写进
+  `faces_json` 片段（仅经 `escapeJson` 转义 JSON，**不做掩码**）。同一片段落在两处：
+  - CSV 的 `faces_json` 列（表头在该函数的 `headerWritten_` 分支，落列在其后的 `csv_ <<` 语句）
+    → `<logDir>/recognition.csv`；
+  - JSONL 的 `faces` 数组（同函数的 `jsonl_ <<` 语句）→ `<logDir>/recognition.jsonl`。
+  - 两个文件路径由 `StructuredLogger::open` 拼出；`logDir` 默认 = exe 同级 `storage/win_logs`
     （`src/win/src/WinJsonConfig.cpp` 的 `defaultAppConfig()` 中 `log.logDir` 默认值），
     可由配置项 `log.logDir` 覆盖。
+  ⚠️ 本条与下方「写方」清单中的 `StructuredLogger.cpp` 引用**已由行号锚点改为符号级**：本批给该文件
+    加了轮转逻辑（冷启动轮转、代数收缩清理、`headerWritten_` 复位），行号整体后移，原文「这几处行号
+    已于本批逐条复核、当前准确」的自证因此失真。
+  ⚠️ **本节的其余行号锚点已逐条复核，结论如下**（原文曾笼统写「其余锚点指向的文件本批未改动，
+    仍准确」——**那句是错的**，本批确实改过其中一部分文件，已按下述分类订正）：
+    · **文件本批被改过、但所引行号仍准确**：`src/win/include/rk_win/StructuredLogger.h:31-39`
+      （本批的新增落在其**之后**的私有段，`struct FaceLogEntry` 位置未变，已核）；
+    · **文件本批被改过、但本节只按文件名引用（无行号）**：`src/win/include/rk_win/WinConfig.h`、
+      `src/win/src/WinJsonConfig.cpp`、`tests/win/test_win_json_config.cpp` —— 不受行号漂移影响；
+    · **文件本批未改动、行号仍准确**：`src/win/src/SideEffectSink.cpp:37`、
+      `src/cpp/src/NativeLog.cpp` 的三处、`.gitignore:46-47`。
 - 每条人脸记录含 `x` / `y` / `w` / `h` / `person_id` / `distance` / `confidence`
   （结构见 `src/win/include/rk_win/StructuredLogger.h:31-39`）。其中 `distance` 由
   `src/win/src/SideEffectSink.cpp:37` **恒写 0.0**（不携带任何信息），只有 `confidence` 是真实值。
@@ -122,9 +134,8 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
   改变 `StructuredLogger` 的写入（它根本不经过该函数）。
 - **仓内消费方：零**。全仓检索 `recognition.csv` / `recognition.jsonl` / `faces_json`，命中的
   只有**写方**与**注释/文案**两类，没有任何一处**读取**：
-  - 写方：`StructuredLogger.cpp:81` / `:82`（拼两个路径）、`:141`（CSV 表头）、
-    `:181`（`faces_json` 落列）、`:193`（JSONL 的 `faces` 数组）——**这几处行号已于本批逐条复核、当前准确**
-    （区别于 `WinJsonConfig.cpp` 那类本批大幅改动过的文件）；
+  - 写方：`StructuredLogger::open`（拼两个路径）与 `StructuredLogger::append`（CSV 表头、
+    `faces_json` 落列、JSONL 的 `faces` 数组）——引用已改为**符号级**（理由见上一条的 ⚠️）；
   - 忽略规则：`.gitignore:46-47`；
   - 注释/文案（**均不读写该文件**）：`src/win/include/rk_win/WinConfig.h`（落盘上限说明）、
     `src/win/src/WinJsonConfig.cpp`（日志容量分摊告警文案）、
@@ -162,10 +173,15 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
   **`logDir` 下没有、也不会有 `rklog::` 日志**。`src/win/` **根本未接入 rklog**（全仓 `src/win/` 对
   `rklog` 只命中 `WinJsonConfig.cpp` 里那句「本服务未接入 rklog」的注释，无任何 `rklog::logXxx` 调用），
   而 rklog 的文件落盘需先调 `rklog::setLogDirs`（`src/cpp/src/NativeLog.cpp`），其调用方只有 Android
-  JNI（`src/cpp/jni/config.cpp`）与两个测试 ⇒ Windows 服务下 `logDir` **只承载三份文件集**
+  JNI（`src/cpp/jni/config.cpp`）与两个测试 ⇒ `win_local_service` 下 `logDir` **只承载三份文件集**
   （`recognition.csv` / `recognition.jsonl` / `event_log.jsonl`，另有各自 `.1`…`.N` 滚动档位）。
-  ⇒ 「按敏感数据保护 `logDir`」因此**不**与 §7.1 那条 `rklog::` 掩码链重叠：它是一条**只针对这三份
-  明文结构性日志**的运维约束，也不改变「落盘面 = 3 份」的记账口径（加 rklog 才是 4 份，而它不落盘）。
+  ⚠️ **本批订正**：原文在此写「落盘面 = 3 份」「加 rklog 才是 4 份」——**该记账口径已不成立**。
+  第 4 份是 **`render_metrics.jsonl`**（`RenderMetricsLogger`），由**旧版 UI 目标**
+  `win_camera_face_recognition` 写进**同一个 `logDir`**（该目标同时写上述三份 ⇒ 它落 4 份），
+  与 rklog **无关**（rklog 在 `src/win/` 下仍完全不落盘，这一结论未变）。
+  `WinConfig.h` 的 `kLogFileSetCount` 已相应由 3 改为 **4**（预算按「写得多」的那个可执行体分配）。
+  ⇒ 「按敏感数据保护 `logDir`」仍**不**与 §7.1 那条 `rklog::` 掩码链重叠：它是一条只针对这些
+  **明文结构性日志**的运维约束；本条只订正份数，不改该结论。
 
 ### 7.3 拍板前即已成立的约束
 
@@ -173,5 +189,7 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
   （`person_id`），敏感级别与 `config.key.dpapi`、`FaceDatabase` 密钥文件同级。
 - 部署与运维侧的落地要求见 `docs/guides/windows-service/deploy_and_rollback.md`
   「运行期所需文件清单」。
-- 本节**未改动任何日志写入代码**（`StructuredLogger.cpp` / `NativeLog.cpp` 均未改），
-  也**未实施任何掩码**；掩码策略一旦拍板，须先更新本节再同步实现与测试。
+- 本节**未实施任何掩码**，也未改动任何日志的**写入内容/字段**；掩码策略一旦拍板，须先更新本节再同步
+  实现与测试。（注：`StructuredLogger.cpp` 后续**已因轮转功能**被其他批次改动——冷启动轮转、代数收缩
+  清理、`headerWritten_` 复位——那些改动**不触及**本节讨论的 `person_id` 写入内容与掩码决策；
+  `NativeLog.cpp` 至今未改。）
