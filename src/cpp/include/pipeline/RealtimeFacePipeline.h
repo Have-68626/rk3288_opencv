@@ -121,6 +121,12 @@ struct RealtimeBenchmarkConfig {
  * normalizeReasonCode 归一的文本；未知文本归为 runtime_init_failed）。
  */
 struct RealtimePipelineHooks {
+    // 文件级校验（返回 false 即失败，非 nullptr 约定）。
+    // ⚠️ 本钩子是上面「err 须写契约 reason 码」的**例外**：默认实现
+    // `FaceRuntimeManifest::verifyFiles` 写的是**人类文本**（非法模型路径 / 缺失模型文件 /
+    // Git LFS pointer / SHA-256 不匹配），由 reload 侧的 `reasonFromVerifyError` 按文案归一：
+    // 「缺失模型文件」→ `missing_model`，其余三类 → `unsupported_input`；err 本身已是固定码时
+    // 原样透传，未知文本归 `runtime_init_failed`。故此处不必强求写入 reason 码。
     std::function<bool(const FaceRuntimeProfile&, const std::string& baseDir, std::string& err)>
         verifyFiles;
     std::function<std::shared_ptr<IRealtimeDetector>(const FaceRuntimeProfile&,

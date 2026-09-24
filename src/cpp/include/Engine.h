@@ -124,7 +124,9 @@ public:
 
     /**
      * @brief 推入一帧外部输入（通常由 JNI 线程调用）。
-     * @return true 表示已进入通道；false 表示 Engine 未初始化或未启用外部输入。
+     * @return true 表示已进入通道；false 表示**外部输入未启用**（externalInputEnabled_ == false）。
+     *         ⚠️ 本函数**不检查** initialized_：初始化状态不参与判据（原注释「未初始化或未启用」中
+     *         的「未初始化」与实现不符，已订正）。
      */
     bool pushExternalFrame(ExternalFrame frame);
 
@@ -306,12 +308,19 @@ public:
      * @brief 运行时更新推理节流参数（通常由 JNI/配置线程调用）。
      *
      * 并发/线程安全：
-     * - 该接口只写入原子变量，不触碰 renderFrame/faceTracks 等非线程安全资源；
+     * - 该接口只写入原子变量，不触碰 renderFrame / currentTracks_ 等非线程安全资源
+     *   （原注释写的是 `faceTracks`——该成员已不存在，属重构后未同步的旧名，本批订正）；
      * - Engine 线程在每帧处理时读取原子配置，做到"低锁竞争"的实时生效。
      *
      * 行为约束：
-     * - mode 支持：auto/manual/off（大小写不敏感），非法值会按 off 处理；
-     * - intervalMs 会被钳制到 [kInferenceIntervalMinMs, kInferenceIntervalMaxMs]，避免 UI/调用方误传导致异常行为。
+     * - mode 支持：auto/manual/off（大小写不敏感），非法值会按 off 处理（parseInferenceThrottleMode）；
+     * - intervalMs 会被钳制，但**两个字段的上界不同**（原注释统一写成
+     *   [kInferenceIntervalMinMs, kInferenceIntervalMaxMs] 与实现不符，已订正）：
+     *     · 检测间隔 → clampDetectionIntervalMs ⇒ [kDetectionIntervalMinMs, kDetectionIntervalMaxMs]
+     *     · 识别间隔 → clampRecognitionIntervalMs ⇒ [kRecognitionIntervalMinMs, kRecognitionIntervalMaxMs]
+     *   两处下界同为 80，上界分别是 500 / 2000；故同一 intervalMs 写入后二者可能不同值。
+     *   本接口一次写入**两组**节流参数（检测 + 识别）；单独设置用 updateDetectionThrottle /
+     *   updateRecognitionThrottle。
      */
     void updateInferenceThrottle(const std::string& mode, int intervalMs);
     InferenceThrottleMode getInferenceThrottleMode() const;
@@ -325,6 +334,9 @@ public:
     InferenceThrottleMode getRecognitionThrottleMode() const;
     int getRecognitionIntervalMs() const;
 
+    // ⚠️ 如实标注：maxFrames_ 目前是**只写不读**的字段——Engine 内无任何读取方（run() 的主循环
+    // 不含帧数上限判断），故本 setter 不产生任何效果。CLI 的 --max-frames 经 main.cpp 调用本
+    // 接口，同样不生效。改动前请先确认该事实是否已变。
     void setMaxFrames(int max) { maxFrames_ = max; }
 
     void setOnResultCallback(std::function<void(std::string)> callback);
@@ -351,9 +363,10 @@ protected:
      * 测试把引擎线程钉在此处（此时必已持 identityEmitMu_），再令另一线程调用 applyGalleryUpdate，
      * 断言其**在放行前无法返回**——缺该门时 applyGalleryUpdate 会立即返回（RED）。
      * 注意：本钩子在**持有 identityEmitMu_** 的状态下调用，覆写实现**不得**再取 identityEmitMu_
-     *（std::mutex 非递归，必自死锁）。调用会取 tracksMu_ 的公开 API（applyGalleryUpdate /
-     * setRealtimePipeline / getTrackViews / processFrameOnce）则已被 FACE-PIPE-015 重入检测**拒绝**
-     *（返回 false / 空快照），不会死锁——本条重入用例正据此在同一线程内确定性地回归「拒绝而非挂死」。
+     *（std::mutex 非递归，必自死锁）。调用会取 tracksMu_ 的公开 API（run / applyGalleryUpdate /
+     * setRealtimePipeline / getTrackViews / processFrameOnce —— 即上条列出的同一穷尽集）则已被
+     * FACE-PIPE-015 重入检测**拒绝**（run 直接返回、其余返回 false / 空快照），不会死锁——本条
+     * 重入用例正据此在同一线程内确定性地回归「拒绝而非挂死」。
      */
     virtual void onBeforePublishLocked() {}
 #endif
@@ -393,6 +406,13 @@ private:
                                   std::vector<pipeline::DetectedFace>& faces,
                                   const RealtimePipelineSnapshot& snap);
     void setRealtimeReason(const std::string& reason);
+    // 逐帧 × 每脸路径上的 embed / 图库检索失败：把差异化 err 记成**限频**的可观测日志。
+    // ⚠️ 限频判据**只有时间窗**（与 setRealtimeReason 的「值变化才记」范式**不同**，勿照搬：那条
+    // 范式对「多个不同文本交替出现」没有任何上界）⇒ 日志量有全局上界（每窗最多一条）；
+    //   err 文本 / site 的变化**不参与**判据。窗口用 steady_clock（单调），墙钟回拨不会令其静默。
+    // **刻意不复用** realtimeReason_：那是对外 reason 契约通道，写入逐脸错误会污染其语义。
+    // err 文本**只进日志**，不外传 Java、不进 getRuntimeStatus。
+    void noteEmbedError(const char* site, const std::string& err);
 
     // #1 注册采集：对每个已后处理检测脸对齐→嵌入→算质量指标→逐个回调。
     // 仅在采集模式开启时由 runRealtimeDetect 调用；关闭时零调用。
@@ -416,6 +436,15 @@ private:
     std::atomic<bool> realtimeEnabled_{false};
     std::string realtimeReason_;
     mutable std::mutex realtimeReasonMu_;
+
+    // noteEmbedError 的限频状态（受 embedErrMu_ 保护）：**只**记时刻。
+    // 闸门以**时间窗**为唯一判据 ⇒ 日志量有全局上界（每窗最多一条）；err 文本 / site 的变化
+    // **不参与**判据（曾按「文本是否变化」去重为主判据，多张脸给出不同 err 文本时逐帧交替即刷屏，
+    // 已订正）。刻意与 realtimeReason_ 分开——后者是对外 reason 契约通道。
+    // ⚠️ 时基：lastEmbedErrMs_ 取自 steady_clock（单调），墙钟回拨不会让闸门长期静默；
+    //    与 TTL / setRealtimeReason 所用的 system_clock **不是**同一时基，二者不可互相比较。
+    long long lastEmbedErrMs_ = 0;
+    std::mutex embedErrMu_;
 
     // 图库覆盖快照：replaceGallery 成功后的不可变索引，身份匹配优先于快照自带 gallery。
     // 独立锁，避免与 realtimeMu_ 的注入路径互相阻塞。
@@ -492,11 +521,13 @@ private:
     //     identityEmitMu_ 的公开 API（穷尽集见上），也**不得**在回调内长时间持锁或阻塞等待其它线程
     //     （阻塞等待会把本临界区的持锁时间拉长到不可控）。
     //   · 该约束的**强制执行点**是 FACE-PIPE-015 的重入检测（非仅靠注释自觉）：renderResults 在持门
-    //     临界区内经 RAII `IdentityEmitGateScope`（Engine.cpp:68，于 1422 行实例化）置位进程级
-    //     thread_local `t_insideIdentityEmitGate`（Engine.cpp:62）；上述 5 个公开入口内联调用
-    //     `reenteredFromIdentityEmitGate`（Engine.cpp:81）检测，命中即以固定 reason
+    //     临界区内经 RAII `IdentityEmitGateScope`（定义于 Engine.cpp 匿名 namespace）置位进程级
+    //     thread_local `t_insideIdentityEmitGate`；上述 5 个公开入口内联调用
+    //     `reenteredFromIdentityEmitGate` 检测，命中即以固定 reason
     //     "re-entered from result callback while holding identity emit gate" 记录并**拒绝执行**——
     //     于是同步回入得到的是明确错误，而非 ABBA 死锁。
+    //     ⚠️ 本条目**刻意以符号名而非行号作锚点**：行号在重构中极易漂移失准，本仓已有
+    //     「注释两次因行号漂移而失真」的先例（见 native_face_bridge.cpp 中同类说明）。
     //   · 时间上**有界但非强制上界**：该上行受结果节流，观测量级为每秒 ≤1–1.5 次、单次 0.1–1 ms。
     //     节流参数可变，**不得**据此假定回调耗时不会增长；此处的「有界」纯属观测，不是硬保证。
     mutable std::mutex identityEmitMu_;
@@ -527,12 +558,17 @@ private:
     std::atomic<bool> flipXEnabled_{false};
     std::atomic<bool> flipYEnabled_{false};
     std::atomic<bool> inputMirroredX_{false};
-    // generation：仅变换配置变化时递增（FrameTransform 语义固定，不由检测改变）
+    // generation：仅变换配置变化时递增（FrameTransform 语义固定，不由检测改变）。
+    // ⚠️ 与 FrameTransformConfig::generation **不是同一个东西**：后者生产侧恒 0（preprocessFrame
+    //    构造 cfg 时不填充，也无人读取，见 FrameTransform.h 文件头）；本字段才是真正在用的那个。
     std::atomic<uint64_t> flipGeneration_{0};
 
     // 节流
     std::atomic<InferenceThrottleMode> detThrottleMode_{InferenceThrottleMode::Off};
     std::atomic<int> detIntervalMs_{kDetectionIntervalDefaultMs};
+    // ⚠️ 如实标注（同 maxFrames_ 的处理方式）：lastDetStartMs_ / lastRecStartMs_ 目前是**从未被
+    // 写入也从未被读取**的残留字段——全仓无任何引用（节流的时间推进不靠它们）。保留仅为不改布局，
+    // 不得据此推断存在「上次检测/识别起始时刻」的记账逻辑。
     std::atomic<long long> lastDetStartMs_{0};
     std::atomic<InferenceThrottleMode> recThrottleMode_{InferenceThrottleMode::Off};
     std::atomic<int> recIntervalMs_{kRecognitionIntervalDefaultMs};

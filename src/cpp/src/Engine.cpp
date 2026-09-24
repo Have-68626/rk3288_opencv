@@ -377,6 +377,18 @@ static long long nowMs() {
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+// 限频闸门专用钟（单调）：**只**给 noteEmbedError 的窗口用。
+// ⚠️ 不可改用上面的 nowMs()（system_clock = 墙钟）：NTP / 手动校时**回拨**后 `now - last` 恒为负，
+//    窗口永不满足 ⇒ 同一错误在时刻追平前一条之前**一条都不打**，与「禁止静默」（任务12）相反。
+// TTL（Engine::trackFaces 传给 TrackCoordinator::update 的 nowMs()）仍用墙钟：它要的是可跨帧 /
+// 跨会话比较的绝对时刻，语义与限频窗口不同，**不在本项射程**。
+// ⚠️ 勿把 `setRealtimeReason` 也读成「用钟」：它**根本不看时钟**（判据只是 reason 文本是否变化，
+//    见其实现）——此前提它与 TTL 并列为「用墙钟」是错的，已订正。
+static long long steadyNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // [Qualcomm/MPP Backend Feature Placeholder]
 // 待补充代码接入: Qualcomm SDK inference delegate initialization
 static bool initQualcommDelegate(bool requested) {
@@ -873,6 +885,37 @@ void Engine::setRealtimeReason(const std::string& reason) {
     }
 }
 
+namespace {
+// 逐脸 embed / 图库检索失败日志的**时间窗**（毫秒）：窗内最多记录一条，**不分 site、不看文本**。
+// 这正是「日志量有全局上界」的来源——闸门的唯一判据是时间。
+// ⚠️ 不可改回以「文本是否变化」为主判据：逐帧 × 每脸路径上，多张脸可能给出**不同** err 文本
+//（如一张维度不符、一张推理失败），逐帧交替即**每次都记** ⇒ 逐帧×每脸刷屏，**无上界**。
+constexpr long long kEmbedErrLogWindowMs = 5000;
+}  // namespace
+
+// 逐帧 × 每脸路径上的 embed / 图库检索失败：把原本被丢弃的差异化 err 记为**一条**可观测日志，
+// 同时限频——这是「禁止静默」（任务12）与「避免日志风暴」的折中。
+// ⚠️ 与 setRealtimeReason 的「值变化才记」范式**不同**，勿照搬：那条范式对「多个不同值交替出现」
+// 没有任何上界（每次都是「值变了」）。
+// **刻意不复用 realtimeReason_**：那是对外 reason 契约通道（getRealtimeReason / getRuntimeStatus /
+// native_face_bridge 读取），把逐脸错误写进去会污染其语义。err 文本**只进日志**，不外传 Java、
+// 不进 getRuntimeStatus。
+void Engine::noteEmbedError(const char* site, const std::string& err) {
+    if (!site || err.empty()) return;  // 空 err 无诊断价值，不记（避免与「无错误」混淆）
+    // 单调钟：墙钟（system_clock）被 NTP / 手动校时回拨后，扣除量恒为负 ⇒ 本闸门长期静默。
+    const long long now = steadyNowMs();
+    {
+        std::lock_guard<std::mutex> lock(embedErrMu_);
+        // 限频：以**时间窗**为准 ⇒ 日志量有全局上界（每窗最多一条）。
+        // ⚠️ 不可写成 `text 相同 && 窗内` —— 那样在多张脸给出不同 err 文本时每次都会记，
+        //    反而失去上界（本批实测到的原始缺陷）。
+        if (now - lastEmbedErrMs_ < kEmbedErrLogWindowMs) return;
+        lastEmbedErrMs_ = now;
+    }
+    // 锁外记录：不持锁做 I/O。
+    rklog::logWarn("Engine", site, "人脸特征路径失败 err=" + err);
+}
+
 bool Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
                                 const std::vector<std::string>& keepIds) {
     // FACE-PIPE-015：本 API 会取 tracksMu_（并在其内等待 identityEmitMu_）。若从结果回调（持发射门）
@@ -1058,19 +1101,46 @@ void Engine::captureEnrollmentFaces(const cv::Mat& frame,
             det.keypoints5 = kp;
         }
         const FaceAlignResult ar = alignFaceForArcFace112(frame, det, alignOpt);
-        if (ar.alignedBgr.empty()) continue;
+        if (ar.alignedBgr.empty()) {
+            // 对齐失败早退（逐脸路径**第 5 处**丢弃，此前只有裸 continue ⇒ 静默）。
+            // 无向量可清（对齐阶段不产出特征向量），只补记一条限频日志——与下方 ①②③ 共用同一
+            // noteEmbedError 时间窗（**不新增上界**）。err 必非空，理由见下方 ④。
+            noteEmbedError("captureEnrollmentFaces/align", ar.err);
+            continue;
+        }
 
         std::vector<float> emb;
         std::string eerr;
         if (!snap.embedder->embed(ar.alignedBgr, emb, eerr)) {
-            // 失败也可能已写入部分明文，丢弃前清零（模板红线）。
+            // 失败也可能已写入部分明文，丢弃前清零（模板红线）。**四条口径，六个站点，均不静默**：
+            // ① 本处（embed 失败）与 assignRealtimeIdentities 的 embed 失败支——IRealtimeEmbedder::
+            //    embed 的契约**未承诺**失败时不动 out（生产包装 EmbedderRealtimeAdapter 确实不写，
+            //    但注入式 embedder 可以写），故两处都以「失败即清零 + noteEmbedError」为准，不依赖
+            //    某个具体包装实现；
+            // ② 紧跟其后的「维度不符」支——同样清零，并补记 noteEmbedError（此前该支只有
+            //    std::fill + continue，是逐脸路径上第 4 处**静默**丢弃，本批补齐）；
+            // ③ 识别侧的图库检索失败（assignRealtimeIdentities 的 search 失败支）——无向量可清，
+            //    只记 noteEmbedError；
+            // ④ **两处对齐失败**——本函数与 assignRealtimeIdentities 各自的 `ar.alignedBgr.empty()`
+            //    早退（逐脸路径上第 5、6 处**静默**丢弃，本批补齐）：同样无向量可清（对齐阶段不产出
+            //    特征向量），只记 noteEmbedError，err 文本取自 `FaceAlignResult::err`
+            //    （FaceAlign.cpp：「输入图像为空」/「输出尺寸非法」/「bbox 越界或为空」/
+            //    「bbox 裁剪/resize 失败」——凡返回空 alignedBgr 的出口都设了非空 err，故必记成一条）。
+            // ①②③④ 全部走同一个 noteEmbedError ⇒ **共用同一时间窗限频器**：站点从 4 个增至 6 个
+            // **不新增任何上界**（窗内最多一条，与 site 个数无关）。
             std::fill(emb.begin(), emb.end(), 0.0f);
+            noteEmbedError("captureEnrollmentFaces/embed", eerr);
             continue;
         }
         // 维度不符（如 profile 与 embedder 漂移）时拒绝该脸，避免向 Java 喂入非法样本；
         // 该向量同样可能含部分明文，丢弃前清零。
+        // ⚠️ 此处**不是**静默丢弃：err 文本带实际 / 期望维度，供排障判定「profile 与 embedder 漂移」
+        //    还是「模型输出维度本身不对」。err 文本只含维度数字，不含模板数据，仅落本地日志。
         if (emb.size() != static_cast<std::size_t>(kEmbeddingDim)) {
             std::fill(emb.begin(), emb.end(), 0.0f);
+            noteEmbedError("captureEnrollmentFaces/dim",
+                           "维度不符: 实际 " + std::to_string(emb.size()) + " 期望 " +
+                               std::to_string(static_cast<std::size_t>(kEmbeddingDim)));
             continue;
         }
 
@@ -1289,15 +1359,34 @@ void Engine::assignRealtimeIdentities(const cv::Mat& frame,
             det.keypoints5 = kp;
         }
         const FaceAlignResult ar = alignFaceForArcFace112(frame, det, alignOpt);
-        if (ar.alignedBgr.empty()) continue;
+        if (ar.alignedBgr.empty()) {
+            // 对齐失败早退（逐脸路径**第 6 处**丢弃，此前只有裸 continue ⇒ 静默）。
+            // 与 captureEnrollmentFaces 同口径：无向量可清，只补记一条限频日志，共用同一
+            // noteEmbedError 时间窗（**不新增上界**）。err 必非空——FaceAlign.cpp 中凡返回空
+            // alignedBgr 的出口（输入图像为空 / 输出尺寸非法 / bbox 越界或为空 / 裁剪-resize
+            // 失败）都设了 `r.err`。
+            noteEmbedError("assignRealtimeIdentities/align", ar.err);
+            continue;
+        }
 
         std::vector<float> emb;
         std::string eerr;
-        if (!snap.embedder->embed(ar.alignedBgr, emb, eerr)) continue;
+        if (!snap.embedder->embed(ar.alignedBgr, emb, eerr)) {
+            // 与 captureEnrollmentFaces 同口径：embed 失败时 out 的契约是「未定义」——生产包装
+            // EmbedderRealtimeAdapter 只在成功时移动赋值、失败不写，但**注入式**实现（含宿主
+            // 自定义）可能已写入部分明文；丢弃前清零（模板红线）。std::fill 对空 vector 是
+            // no-op，故生产失败路径（该包装不写 out ⇒ emb 为空）零开销。
+            std::fill(emb.begin(), emb.end(), 0.0f);
+            noteEmbedError("assignRealtimeIdentities/embed", eerr);
+            continue;
+        }
 
         std::string serr;
         const std::vector<FaceSearchHit> hits =
             gallery->searchTopK(emb, 1, FaceSearchOptions{}, serr);
+        // 检索失败（serr 非空）时 hits 为空、身份保持 Unknown——合法结果，但不可静默：
+        // 记一条限频日志（与 embed 失败共用同一限频器，仅进日志、不外传）。
+        noteEmbedError("assignRealtimeIdentities/search", serr);
         if (!hits.empty() && hits[0].score >= snap.profile.identitySimilarity) {
             df.identityId = hits[0].id;
             df.confidence = hits[0].score;
@@ -1313,7 +1402,8 @@ bool Engine::preprocessFrame(const cv::Mat& frame) {
     } else {
         processedFrame_ = frame;
     }
-    // 变换输出新 Mat：避免原地修改与发布缓冲（renderFrame_）共享的 frame 数据，
+    // 变换输出新 Mat：避免原地修改与发布缓冲（`pipeline::ResultPublisher::renderFrame_`，**不是**
+    // Engine 的成员）共享的 frame 数据，
     // 消除渲染线程 copy 相位漂移导致的画面按拍频来回镜像（RK3288 高频翻转回归）。
     // 变换完全由配置决定（不读取检测/轨迹）；水平实际翻转 = input XOR target。
     // 旋转已在 toBgrFromExternalFrame 处理，故此处 rotation_degrees 恒为 0，避免二次旋转。
@@ -1337,7 +1427,10 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool d
     //      processFrameRealtime 的 currentTracks_.clear()（清空**对外视图**；coordinator 内部
     //      轨迹不动，仍受 TTL 约束）。故**不存在**「模型缺失时 detectionRan=false」这条路径。
     // 由此：TrackCoordinator::update 中 `if (!detectionRan) return views();` 的早退分支在生产
-    // 路径上不可达，仅测试可构造。改动调用点前请先确认这三条是否仍成立。
+    // 路径上不可达，仅测试可构造。**该早退与 TTL 清理的相对顺序已被用例双向钉住**：
+    // tests/cpp/test_track_coordinator.cpp 的 TtlStillCullsTracksAsFallback 与 TtlBoundaryIsEnforced
+    // 都在 detectionRan=false 且超 ttlMs 时断言轨迹被清理——把早退上移到 TTL 之前即令二者翻红，
+    // 故顺序不变量不是「仅靠注释自觉」。改动调用点前请先确认这三条是否仍成立。
     // 持 tracksMu_ 覆盖 trackCoordinator_->update 与 currentTracks_ 的更新：update 读写
     // coordinator 内部轨迹，而 applyGalleryUpdate()（JNI 线程）会在同一把锁下换库并精准改身份，
     // 二者必须互斥，否则对 tracks_ 形成数据竞争（第三波审查 #2）。
@@ -1426,13 +1519,19 @@ void Engine::renderResults() {
 #endif
         if (snapshotIdentityVer != identityVersion_.load(std::memory_order_acquire)) {
             clearStableIdentities(outcome.tracks);
-            // FACE-PIPE-017：校验② 只在绘制**之后**才清身份——若不重绘，1407 已画上的认证**绿框**会随
+            // FACE-PIPE-017：校验② 只在绘制**之后**才清身份——若不重绘，上面 drawTracks
+            //（本函数内 `drawTracks(processedFrame_, outcome.tracks)`）已画上的认证**绿框**会随
             // 发布帧发出，而对外视图已变 Unknown，形成同帧「绿框 + AUTH_FAIL Unknown」的自相矛盾。此处
             // 就地重绘，令**发布帧像素**与对外视图在本帧内一致。放门内，是因为校验② 是发布前最后一道
             // 判定：撤销必须在 publish 返回前就不残留旧 VERIFIED，重绘必须与清身份同处这一不可分的窗口。
-            // 必须与绘制路径（1400）同条件：仅人脸帧在 1404 clone 出独立缓冲，重绘才安全；无脸帧
+            // 必须与绘制路径（本函数内 `if (!outcome.tracks.empty()) { processedFrame_ = processedFrame_.clone();
+            // drawTracks(...); }`）同条件：仅人脸帧才 clone 出独立缓冲，重绘才安全；无脸帧
             // （tracks.empty()）的 renderFrame 仍与输入帧别名（浅拷贝），就地绘制会写共享缓冲、与渲染
-            // 线程并发撕裂（见 1401-1403）。故此处**不 clone**——只覆写已 clone 的那块缓冲，保持临界区轻量。
+            // 线程并发撕裂（见该处 clone 的理由注释）。故此处**不 clone**——只覆写已 clone 的那块缓冲，
+            // 保持临界区轻量。
+            // ⚠️ 本段**刻意以符号 / 代码片段而非行号作锚点**：本仓已有「注释因行号漂移而失真」的先例
+            //    （见 native_face_bridge.cpp 中同类说明），且本文件刚因增行让旧锚点（1407/1400/1404 等）
+            //    全部失准，本批一并订正。
             // ⚠️ 不追求像素级还原：drawTracks 对未认证身份用较细线宽（2，认证为 3）且标签更短，故原认证框
             //    的最外 1px 与更长标签的残余可能留下。本重绘消除的是「被读成已认证」的误导，不是把该区域
             //    恢复成绘制前的像素——那需要门内 clone，与上面的轻量约束冲突。

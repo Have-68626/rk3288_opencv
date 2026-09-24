@@ -86,6 +86,43 @@ std::string reasonFromLoadError(const std::string& err) {
     return rk_accel::normalizeReasonCode(err, /*requested=*/true, /*effective=*/false);
 }
 
+// 把 verifyFiles 钩子的 err 归一到契约 reason 码。**不能**直接套 reasonFromLoadError：
+// FaceRuntimeManifest::verifyFiles（src/cpp/src/FaceRuntimeProfile.cpp）写出的四类 err 全是
+// **人类文本**（非法模型路径 / 缺失模型文件 / Git LFS pointer / SHA-256 不匹配），
+// 没有任何一类能命中 normalizeReasonCode 的固定码表，会被**一律**归一成兜底码
+// runtime_init_failed——即把「模型缺失」这类明确语义降级成「运行时初始化失败」，
+// 反而比原先硬编码 missing_model 更难排障。
+//
+// 归一顺序：
+//   1) 先认 verifyFiles 的稳定文案，按语义落到两个不同码：
+//      · "缺失模型文件: <相对路径>"                    → missing_model（文件不在位）
+//      · "非法模型路径（绝对或含 ..）：<相对路径>"      ┐
+//        "模型文件是 Git LFS pointer（未拉取）: <...>"  ├→ unsupported_input
+//        "SHA-256 不匹配: <相对路径>"                   ┘
+//      后三类一律归 unsupported_input 而非 missing_model：它们出错在**调用方提供的
+//      artifacts / manifest 自身**（路径非法、指向指针文件、内容与清单摘要不符），属输入
+//      契约问题；missing_model 保留给「本环境确实缺该文件」这一种。
+//   2) 都不是（自定义钩子按钩子契约直接写固定码，或写未知文本）→ 交 reasonFromLoadError
+//      统一归一：固定码原样透传，未知文本归 runtime_init_failed。
+//
+// ⚠️ 已知脆弱点（如实记录，勿高估）：第 1 步用**中文字面量子串**匹配，FaceRuntimeProfile.cpp
+//    里上述四句文案一旦改字，此处会**静默**退化为 `runtime_init_failed`（不报错、不崩溃、无告警）。
+//    注意退化目标**不是** `unsupported_input`：四个分支的 find 全落空 ⇒ 交由 reasonFromLoadError →
+//    normalizeReasonCode（AccelerationContract.h）把**未知文本**在 requested && effective==false 时
+//    兜底成 `runtime_init_failed`；`unsupported_input` 只由上面「非法路径 / LFS pointer / SHA-256
+//    不匹配」这类**实际命中**的文本给出，改字恰恰让它们**不再**命中。
+//    彻底消除需给 FaceRuntimeManifest::verifyFiles 加一个 reasonCode 出参（须改
+//    FaceRuntimeProfile.h，超出本批改动面），已登记为后续项。
+std::string reasonFromVerifyError(const std::string& err) {
+    if (err.find("缺失模型文件") != std::string::npos) return "missing_model";
+    if (err.find("非法模型路径") != std::string::npos ||
+        err.find("Git LFS pointer") != std::string::npos ||
+        err.find("SHA-256 不匹配") != std::string::npos) {
+        return "unsupported_input";
+    }
+    return reasonFromLoadError(err);
+}
+
 #if !defined(RK_SKIP_OPENCV)
 
 // 桥接 rk_core::Embedder → IRealtimeEmbedder（生产识别句柄）。
@@ -147,10 +184,26 @@ private:
 
 }  // namespace
 
+// 生产默认钩子装配。可用于生产推理的三个钩子（verifyFiles / loadDetector / loadEmbedder）
+// 都依赖真实模型与 ncnn：
+//
+// ⚠️ **CI 覆盖缺口（如实记录，勿误判为代码缺陷）**：本仓 CI 的两个 job **都不编译也不执行**
+//    SCRFD / ArcFace 的真实装配接线，两个 load* 钩子在其中**恒走 `#else` 的 build_disabled
+//    分支**：
+//      · job `unit-tests` 传 `-DRK_SKIP_OPENCV=ON`（见 .github/workflows/ci.yml）⇒ 命中
+//        `!defined(RK_SKIP_OPENCV)` 为假；
+//      · job `windows` 的 CMake configure 只传 OPENCV_ROOT / OPENCV_CONTRIB_ROOT /
+//        BUILD_LIST，**未传 `-DRK_ENABLE_NCNN=ON`**，而该选项默认 OFF（CMakeLists.txt）⇒
+//        `RK_HAVE_NCNN=0` ⇒ 命中 `RK_HAVE_NCNN` 为假。
+//    又因两个 `load*` 钩子只被本函数（默认构造函数）与 native_face_bridge.cpp 的生产装配
+//    引用，**无任何测试调用默认钩子的这两个 lambda**（测试一律注入自定义钩子）。
+//    ⇒ 「manifest → SCRFD/ArcFace 装配」这段真实接线在 CI 内**零覆盖**。
+//    不打算在 CI 里打开 ncnn 来补（需拉 ncnn 且模型二进制不入库，成本高于收益），
+//    此处仅标注盲区，供人工验证与后续评估。
 RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
     RealtimePipelineHooks h;
 
-    // manifest 文件级校验：存在 / 非 Git LFS pointer / SHA-256 匹配。
+    // manifest 文件级校验：路径安全（相对且无 ..）/ 存在 / 非 Git LFS pointer / SHA-256 匹配。
     h.verifyFiles = [](const FaceRuntimeProfile& profile, const std::string& baseDir,
                        std::string& err) {
         return FaceRuntimeManifest::verifyFiles(profile, baseDir, err);
@@ -196,7 +249,9 @@ RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
         }
         return std::make_shared<ScrfdRealtimeAdapter>(std::move(det));
 #else
-        err = "build_disabled";  // 未编译 ncnn / SKIP_OPENCV 构建
+        // 未编译 ncnn / SKIP_OPENCV 构建。⚠️ CI 的两个 job 恒命中此分支（见本函数头注释
+        // 的「CI 覆盖缺口」）⇒ SCRFD 的真实装配接线在 CI 内**零覆盖**。
+        err = "build_disabled";
         return nullptr;
 #endif
     };
@@ -219,6 +274,8 @@ RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
         }
         return std::make_shared<EmbedderRealtimeAdapter>(std::move(emb));
 #else
+        // 未编译 ncnn / SKIP_OPENCV 构建。⚠️ 与上面 SCRFD 同因：CI 的两个 job 恒命中此分支
+        // （见本函数头注释的「CI 覆盖缺口」）⇒ ArcFace 的真实装配接线在 CI 内**零覆盖**。
         err = "build_disabled";
         return nullptr;
 #endif
@@ -368,7 +425,12 @@ RealtimeReloadResult RealtimeFacePipeline::reload(const std::string& manifestJso
         return failResult("unsupported_input", "manifest 解析失败: " + err, generation());
     }
     if (hooks.verifyFiles && !hooks.verifyFiles(profile, baseDir, err)) {
-        return failResult("missing_model", "模型文件校验失败: " + err, generation());
+        // reason 按 err 语义分类（见 reasonFromVerifyError），不再一律硬编码 missing_model：
+        // verifyFiles 的四类失败语义不同（文件缺失 vs 路径非法 / LFS 指针 / 摘要不符），
+        // 全报 missing_model 会让排障者朝「去补模型文件」这一错误方向查。
+        // 注：err 文本本身一直随 evidence 透传到调用方（未丢弃），这里修的只是 reason 码。
+        const std::string reason = reasonFromVerifyError(err);
+        return failResult(reason, "模型文件校验失败: " + err, generation());
     }
     return buildAndPublishLocked(profile, baseDir, currentAbi, galleryDir, hooks, bench);
 }
@@ -397,7 +459,16 @@ RealtimeReloadResult RealtimeFacePipeline::buildAndPublishLocked(
         gallery = hooks.loadGallery(profile, galleryDir, err);
         // 图库是识别增强，非必需：nullptr + 空 err 视为合法空图库。
         if (!gallery && !err.empty()) {
-            return failResult("missing_model", "图库加载失败: " + err, generation());
+            // 与上面 detector/embedder 分支同口径：reason 由 err 归一得出，不再硬编码
+            // missing_model（FACE-PIPE-010 ②）。
+            // ⚠️ 现状**生产不可达**（如实记录，勿高估其价值）：本仓 loadGallery 的赋值点
+            //    都不写 err —— 默认钩子见本文件 makeDefaultRealtimePipelineHooks（err.clear()
+            //    后返回 nullptr），Android 生产钩子见 native_face_bridge.cpp 的
+            //    makeActivatedHooks（err.clear() 后返回内存图库快照）。
+            //    故本分支目前只在「自定义 loadGallery 主动写 err」时才触发，属**防御性一致性**
+            //    改动，不是活跃缺陷；将来若有钩子开始写 err，reason 才不会退化成硬编码值。
+            const std::string reason = reasonFromLoadError(err);
+            return failResult(reason, "图库加载失败: " + err, generation());
         }
     }
 
@@ -440,6 +511,11 @@ RealtimeReloadResult RealtimeFacePipeline::buildAndPublishLocked(
     // generation()=N+1 而 snapshot()->generation=N（代次领先于快照，自相矛盾）。
     // 先发布后自增，则读侧至多看到「快照已前进而 generation() 暂滞后一步」，
     // 绝不会读到不存在的代次。reloadMu_ 串行化所有发布，load+1 无写入竞争。
+    //
+    // ⚠️ 本顺序**当前无判别性用例**：把下面两行（atomic_store 与 generation_.store）
+    //    颠倒过来，不会使任何现有用例变红——断言只读取「某时刻的快照与代次」，而上述错序
+    //    只制造一个**窗口期**内的可观测差异，非并发采样几乎撞不上。要确定性判别需在读侧加
+    //    测试接缝（如可注入的发布间隙钩子），成本未评估，故本批只保留注释、不加测试。
     candidate->effective = true;
     candidate->reason = "ok";
     candidate->benchmarkP95Ms = p95;

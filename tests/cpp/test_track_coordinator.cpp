@@ -2,6 +2,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -97,6 +101,22 @@ TEST(TrackCoordinator, ConfirmedTrackRemovedAfterTwoMisses) {
     ASSERT_EQ(tc.update({face(10, 20, 100, 150)}, 1200, true).size(), 1u);
     ASSERT_EQ(tc.update({}, 1300, true).size(), 1u);   // miss 1：保留
     EXPECT_TRUE(tc.update({}, 1400, true).empty());     // miss 2：删除
+}
+
+// 任务5：missedActual 命中即清零——miss 1 → hit（清零）→ miss 1 ⇒ 仍在。
+// 既有三条「缺失」用例**都**是「先连续 miss 或先跳跃」，没有一条走「miss → hit → miss」，
+// 故 TrackCoordinator::update 命中分支里的 `t.missedActual = 0;` 此前无直测。
+// 判别点：删掉该行（命中不清零）⇒ 末帧的缺失计数累计为 2，已确认轨迹被删，末条断言（仍应 1 条）翻红。
+TEST(TrackCoordinator, HitResetsMissedActualCounter) {
+    pipeline::TrackCoordinator tc;
+    EXPECT_TRUE(tc.update({face(10, 20, 100, 150)}, 1000, true).empty());
+    EXPECT_TRUE(tc.update({face(10, 20, 100, 150)}, 1100, true).empty());
+    ASSERT_EQ(tc.update({face(10, 20, 100, 150)}, 1200, true).size(), 1u);  // 第 3 次命中：已确认
+    ASSERT_EQ(tc.update({}, 1300, true).size(), 1u);                        // miss 1：missedActual=1
+    ASSERT_EQ(tc.update({face(10, 20, 100, 150)}, 1400, true).size(), 1u);  // hit：必须清零
+    // 时间戳仍须落在 ttlMs=1200 内（1500-1400=100），否则 TTL 兜底会把轨迹清掉、掩盖真实原因
+    EXPECT_EQ(tc.update({}, 1500, true).size(), 1u)
+            << "命中未清零 missedActual：本帧被当成「连续缺失 2 次」而删除了已确认轨迹";
 }
 
 // 任务5：调度跳过检测不计缺失，确认轨迹持续保留
@@ -267,8 +287,9 @@ TEST(TrackCoordinator, DisplacementBeyondFallbackRatioNeverConfirms) {
 }
 
 // ── 任务 C2：阈值提升为 TrackConfig 字段后的边界用例 ──────────────────────────
-// 此前三个阈值是 TrackCoordinator.cpp 匿名 namespace 里的编译期常量，**完全不可注入**，
-// 边界行为无法在测试里控制。现可注入，故补齐「尺寸比上下界」「TTL 边界」与「可注入性」三组。
+// 此前这些阈值（centerMaxRatio / sizeRatioMin / sizeRatioMax / ttlMs）在 TrackCoordinator.cpp 里
+// 是**编译期常量、完全不可注入**，边界行为无法在测试里控制。现可注入，故补齐
+// 「尺寸比上下界」「TTL 边界」与「可注入性」三组。
 
 /**
  * 尺寸比上下界（sizeRatioMin/Max=0.5/2.0）。
@@ -340,3 +361,273 @@ TEST(TrackCoordinator, TtlBoundaryIsEnforced) {
     // 超过 TTL 1ms：兜底清理
     EXPECT_TRUE(tc.update({}, 1501, false).empty()) << "超过 TTL 应兜底清理已确认轨迹";
 }
+
+// ── 结构式守卫（读源码文本）：引擎入口的跨文件不变量 ────────────────────────────
+//
+// ⚠️ **为什么放在本文件而不是 test_engine.cpp**：读源码文本需要 `RK_TEST_SOURCE_ROOT`，该宏**只对
+//    `core_unit_tests` 定义**（cmake/core.cmake），而 test_engine.cpp 编进 `core_gtest_tests`
+//    （不定义该宏）。本文件（test_track_coordinator.cpp）正是 core_unit_tests 的源之一。
+//    范式与 test_event_manager.cpp 的「生产头文件不得依赖 gtest」守卫一致：**先剥离注释**再匹配，
+//    故源码中讨论这些符号的说明性注释不会造成误报。
+//
+// ⚠️ **判别力的边界（如实登记，勿读成强保证）**：本段挡的是「**直接删掉**守卫/改写调用点」这类
+//    本仓历史上真实发生过的改动；对「换个写法绕过」（改函数名、把守卫挪进辅助函数、用宏包一层）
+//    无效——那类绕过需要编译期/运行期机制才能拦。本段与仓内既有结构测试（test_checked_arith.cpp、
+//    test_event_manager.cpp）同一量级，**不**主张更强。
+#ifdef RK_TEST_SOURCE_ROOT
+namespace {
+
+// 读取源码根下相对路径文件；失败（或路径写错）返回空串——调用方**必须**显式断言非空，
+// 否则「扫描集合为空」会静默地让所有断言都通过（空 == 空）。
+std::string readRepoFile(const std::string& rel) {
+    std::ifstream in(std::string(RK_TEST_SOURCE_ROOT) + "/" + rel, std::ios::binary);
+    std::ostringstream oss;
+    oss << in.rdbuf();
+    return oss.str();
+}
+
+// 剥离 `//` 行注释与 `/* */` 块注释（块注释状态**跨行**保留），与 test_event_manager.cpp 同口径。
+std::string stripComments(const std::string& src) {
+    std::string out;
+    out.reserve(src.size());
+    bool inBlock = false;
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        if (inBlock) {
+            if (src[i] == '*' && i + 1 < src.size() && src[i + 1] == '/') {
+                inBlock = false;
+                ++i;
+            }
+            continue;
+        }
+        if (src[i] == '/' && i + 1 < src.size()) {
+            if (src[i + 1] == '/') {  // 行注释：跳到行尾（保留换行，供按行判据使用）
+                while (i < src.size() && src[i] != '\n') ++i;
+                out.push_back('\n');
+                continue;
+            }
+            if (src[i + 1] == '*') {
+                inBlock = true;
+                ++i;
+                continue;
+            }
+        }
+        out.push_back(src[i]);
+    }
+    return out;
+}
+
+// 去掉全部空白：使断言对格式漂移免疫（`if ( guard ( ... ) )` 与 `if(guard(...))` 等价）。
+std::string squeeze(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (!std::isspace(static_cast<unsigned char>(c))) out.push_back(c);
+    }
+    return out;
+}
+
+// 取 `open`（指向 '(' 之后一个字符处）开始、与深度 1 匹配的实参文本；返回该 ')' 的下一个下标。
+// 深度感知是为容忍实参里出现括号（如 boxOf(...)）时不被第一个 ')' 截断。
+std::size_t argListEnd(const std::string& s, std::size_t open) {
+    int depth = 1;
+    std::size_t i = open;
+    for (; i < s.size() && depth > 0; ++i) {
+        if (s[i] == '(') ++depth;
+        else if (s[i] == ')') --depth;
+    }
+    return i;  // 指向匹配 ')' 之后
+}
+
+// 取 `open`（指向 '{'）所属**块**的收尾 `}` 之后一个下标；未配对到收尾时返回 std::string::npos。
+// 用途：把结构式断言的切片限制在**单个函数体**内，避免「切片/窗口越界读到下一个函数的定义」——
+// 那会让「删掉本函数的守卫」被邻函数的守卫掩盖而**假通过**（FACE-PIPE-015 用例曾如此）。
+// ⚠️ 已知脆弱面（如实登记）：这是**纯字符计数**，源码里的字面量 '{' / '}'（字符串或字符常量）会
+//    使其失准——多计 ⇒ 收尾被判在更远处（切片变大，最坏退回旧行为）；少计 ⇒ 切片**早截**（可能造成
+//    假红，即目标文本被截断在切片之外）。Engine.cpp 现行文本已实测均衡（全文件花括号净深度 0，且
+//    本文件两处调用点的切片终点都正落在各自函数收尾 `}` 上）。
+std::size_t matchBrace(const std::string& s, std::size_t open) {
+    int depth = 0;
+    for (std::size_t i = open; i < s.size(); ++i) {
+        if (s[i] == '{') {
+            ++depth;
+        } else if (s[i] == '}') {
+            --depth;
+            if (depth == 0) return i + 1;  // 指向匹配 '}' 之后
+        }
+    }
+    return std::string::npos;  // 未配对（计数失准或源码被截断）
+}
+
+}  // namespace
+
+// FACE-PIPE-015：引擎的 5 个「会取 tracksMu_ 的公开入口」必须在**函数体首部**调用
+// reenteredFromIdentityEmitGate，否则免死锁契约退化为注释——该函数是 thread_local 标记
+// `t_insideIdentityEmitGate` 的唯一读取点，任一入口缺失它，该入口在结果回调（已持
+// identityEmitMu_）内同步重入时就不再被拒绝，与撤销路径构成 ABBA 死锁
+//（见 Engine.h 的 identityEmitMu_ 条目；穷尽集为 run / setRealtimePipeline / applyGalleryUpdate /
+//  getTrackViews / processFrameOnce）。
+//
+// 判别点：删掉上述任一函数体首部的那行 `if (reenteredFromIdentityEmitGate(__func__)) ...`
+//        ⇒ 本用例翻红（该入口的**函数体首部窗口**内不再出现该符号）。
+// ⚠️ 窗口是「从函数体 `{` 起、最多 400 字符，且**不越过本函数体**」——后者按 `matchBrace` 取函数体
+//    边界实现。**这一边界是必需的**：5 个入口里有几个函数体极短（getTrackViews 的函数体只有百余
+//    字符），固定 400 字符窗口会越界读到**下一个函数**（如 processFrameOnce）的守卫 ⇒ 删掉本入口的
+//    守卫仍假通过。修正后 5 个入口**一视同仁**：窗口内出现的守卫必然来自本函数体，故删掉任一个都必红。
+//    窗口上限仍为 400 是**有意放宽**：容忍「守卫之前插入一条普通语句」的格式变化，但不允许守卫被挪到
+//    函数中后段（那正是本契约失效的形态）。
+// ⚠️ 脆弱面（如实登记）：① 400 字符是**经验上限**——若某入口在守卫之前插入超过 400 字符的普通语句，
+//    会假红；② `matchBrace` 是纯字符计数，函数体内若出现字面量 '{'/'}'（字符串/字符常量）会导致
+//    切片失准：多计 ⇒ 窗口退回固定的 400 字符（仍可能越界），少计 ⇒ 假红（守卫被截断在窗口外）。
+// ⚠️ `run()` **只**在此处有覆盖，没有行为用例：守卫缺失时它会与已持 identityEmitMu_ 的钩子
+//    自锁挂死，失败形态不可诊断（挂死也是红，但排查成本高），故刻意不写——详见 test_engine.cpp
+//    中 FACE-PIPE-015 用例的头注释。
+TEST(EngineStructuralGuard, AllTracksMuEntryPointsCallEmitGateReentryGuard) {
+    const std::string raw = readRepoFile("src/cpp/src/Engine.cpp");
+    ASSERT_FALSE(raw.empty()) << "无法读取 src/cpp/src/Engine.cpp（RK_TEST_SOURCE_ROOT="
+                              << RK_TEST_SOURCE_ROOT << "）";
+    const std::string body = squeeze(stripComments(raw));
+    ASSERT_GT(body.size(), 10000u) << "Engine.cpp 文本异常短，疑似路径写错";
+
+    const char* const kEntries[] = {
+        "Engine::run(", "Engine::setRealtimePipeline(", "Engine::applyGalleryUpdate(",
+        "Engine::getTrackViews(", "Engine::processFrameOnce("};
+    ASSERT_EQ(sizeof(kEntries) / sizeof(kEntries[0]), 5u)
+            << "入口穷尽集为 5 个（见 Engine.h 的 identityEmitMu_ 条目）；集合变了须同步本用例";
+
+    for (const char* entry : kEntries) {
+        const std::size_t at = body.find(entry);
+        ASSERT_NE(at, std::string::npos) << "Engine.cpp 中找不到入口定义: " << entry;
+        // 这 5 个入口的形参表内均无 `{`（含模板实参 <> 与引用 &），故首个 `{` 即函数体起始。
+        const std::size_t brace = body.find('{', at);
+        ASSERT_NE(brace, std::string::npos) << "找不到函数体起始: " << entry;
+        // 首部窗口（去空白后守卫调用本身约 40 字符）：上限 400 只为容忍「守卫之前插入一条普通
+        // 语句」的格式变化；**实际下界由本函数体的收尾 `}` 决定**（未配对到收尾时 limit 取文件末，
+        // 但 window 仍被 400 上限截住 ⇒ 退回旧的「固定 400 字符窗口」行为）。
+        constexpr std::size_t kPrologueChars = 400;
+        const std::size_t bodyEnd = matchBrace(body, brace);
+        const std::size_t limit = (bodyEnd == std::string::npos) ? body.size() : bodyEnd;
+        const std::size_t window = std::min(kPrologueChars, limit - brace);
+        EXPECT_NE(body.substr(brace, window).find("reenteredFromIdentityEmitGate("),
+                  std::string::npos)
+                << entry << " 的函数体首部（窗口不越过函数体边界）未见 reenteredFromIdentityEmitGate"
+                   " 调用：该入口的 FACE-PIPE-015 重入拒绝已失效（删掉那行即触发本失败）";
+    }
+}
+
+// FACE-TRACK-002：`trackFaces` 的 `detectionRan` 实参白名单。
+//
+// 为什么需要：生产侧该参数**恒为 true**——唯一来源是 runRealtimeDetect 的成功出口（含 boxes 为空的
+// **实际空检测**），兼容路径显式传 true；模型/管线不可用时根本不调用 trackFaces。由此
+// TrackCoordinator 的 `if (!detectionRan) return views();` 早退分支在生产路径上**不可达**，
+// 「实际空检测 → 连续缺失 2 次删框」的消失语义才成立。
+//
+// 白名单**只放两种形态**（其余一律视为可疑）：
+//   · 字面 `true`            —— 兼容路径显式声明「本次确实执行了检测」；
+//   · 标识符 `detectionRan`  —— 实时路径把 runRealtimeDetect 的判定原样透传。
+// 不写死调用点**数目**（新增合法调用点不应造成假红），但要求至少扫到 1 处，
+// 使「扫描为空 == 全部合规」这种空转不可能通过。
+//
+// 判别点：把任一调用点的第 2 实参换成别的表达式（例如把 `detThrottleMode_` 的判定接进来）
+//        ⇒ 本用例翻红。行为侧对应覆盖见 test_engine.cpp 的
+//        DetectionThrottleModeDoesNotSuppressRealDetection。
+// ⚠️ 脆弱面（如实登记，勿当作强保证）：跳过**定义体**靠的是**硬编码前缀** `"voidEngine::"`
+//    （去空白后的 `void Engine::trackFaces(`）。一旦 `trackFaces` 的返回类型改成
+//    非 `void`（如 `bool`/`auto`）或改用别的限定写法（如 `Engine::trackFaces` 前加 inline/宏），
+//    该前缀不再匹配 ⇒ **定义体被当作调用点**：其第 2 实参是形参声明（如 `booldetectionRan`），
+//    于是 `EXPECT_TRUE(... == "true" || == "detectionRan")` **假红**。
+//    「调用点确为 2 处」这一结论**不受影响**：它由源码实测（3 处 `trackFaces(` − 1 处定义）得出，
+//    与运行期的前缀判别无关；受影响的只是本用例「是否误把定义当调用点」。
+TEST(EngineStructuralGuard, TrackFacesDetectionRanArgumentStaysTriviallyTrue) {
+    const std::string raw = readRepoFile("src/cpp/src/Engine.cpp");
+    ASSERT_FALSE(raw.empty()) << "无法读取 src/cpp/src/Engine.cpp";
+    const std::string body = squeeze(stripComments(raw));
+
+    const char* const kCall = "trackFaces(";
+    // ⚠️ 与返回类型强耦合（见上方脆弱面登记）：返回类型一变，这里就认不出定义体。
+    const std::size_t kDefPrefixLen = std::strlen("voidEngine::");  // 定义形如 `voidEngine::trackFaces(`
+    int callSites = 0;
+    std::size_t pos = 0;
+    while ((pos = body.find(kCall, pos)) != std::string::npos) {
+        const std::size_t open = pos + std::strlen(kCall);
+        const std::size_t end = argListEnd(body, open);
+        if (pos >= kDefPrefixLen &&
+            body.compare(pos - kDefPrefixLen, kDefPrefixLen, "voidEngine::") == 0) {
+            pos = end;  // 定义体本身，只检查调用点
+            continue;
+        }
+        const std::string args = body.substr(open, end - 1 - open);  // end-1 指向匹配的 ')'
+        // 按深度 0 的 ',' 切分实参
+        std::vector<std::string> parts;
+        std::size_t segStart = 0;
+        int depth = 0;
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            if (args[i] == '(') ++depth;
+            else if (args[i] == ')') --depth;
+            else if (args[i] == ',' && depth == 0) {
+                parts.push_back(args.substr(segStart, i - segStart));
+                segStart = i + 1;
+            }
+        }
+        parts.push_back(args.substr(segStart));
+        ASSERT_GE(parts.size(), 2u) << "trackFaces 调用点实参不足 2 个: " << args;
+        const std::string& detectionRanArg = parts[1];
+        EXPECT_TRUE(detectionRanArg == "true" || detectionRanArg == "detectionRan")
+                << "trackFaces 第 2 实参只允许字面 true 或标识符 detectionRan，实得: "
+                << detectionRanArg
+                << "（把节流判定接到此处会让「跳过检测」在生产可达，改变旧框消失语义）";
+        ++callSites;
+        pos = end;
+    }
+    EXPECT_GE(callSites, 1) << "未在 Engine.cpp 中扫到任何 trackFaces 调用点（符号改名或路径变化？）";
+}
+
+// FACE-TRACK-002：检测节流模式**不得**接入检测执行路径。
+//
+// 上面那条「恒传 true」不变量还有一半前提未被任何断言覆盖：**没有任何生产代码把节流判定接到检测
+// 门控上**。本用例把该前提写成可执行约束——在 runRealtimeDetect 与 processFrameRealtime 的函数体
+// 内不得出现 `detThrottleMode_`（它的合法触点只有配置写入 updateDetectionThrottle /
+// updateInferenceThrottle 与状态展示 getDetectionThrottleMode）。
+//
+// 判别点：在 runRealtimeDetect 内加节流门（例如节流窗内 `detectionRan = false; return true;`）
+//        ⇒ 本用例翻红；行为侧对应覆盖见 test_engine.cpp 的
+//        DetectionThrottleModeDoesNotSuppressRealDetection。
+// ⚠️ 脆弱性（如实登记）：这是**白名单式**结构断言——将来若合法地在这两个函数体内读一次
+//    `detThrottleMode_`（例如加一行诊断日志），本用例会假红，届时须**连同行为用例一起**复核是否
+//    真的接线了节流语义，再调整白名单，而不是直接删断言。
+// ⚠️ 切片边界（已加固，但仍是字符级近似）：切片终点原为 `code.find("\n}\n", brace)`，依赖「顶层
+//    函数收尾 `}` 独占一行」这一 Allman 风格；内层块若把闭合 `}` 顶格写，切片会**早截**（这两个
+//    函数体当前各约 440 / 约 1110 字符，早截后仍 >200 故 `ASSERT_GT` 放行），此后在**真**函数体内读
+//    `detThrottleMode_` 就不再翻红（假通过）。现改为 `matchBrace` 花括号配对计数，不再依赖缩进风格；
+//    代价是该计数为**纯字符计数**，函数体内出现字面量 '{'/'}' 会失准（失准 ⇒ 断言失败，属假红而非
+//    假通过，见 matchBrace 的注记）。
+TEST(EngineStructuralGuard, DetectionThrottleModeIsNotWiredIntoDetectPath) {
+    const std::string raw = readRepoFile("src/cpp/src/Engine.cpp");
+    ASSERT_FALSE(raw.empty()) << "无法读取 src/cpp/src/Engine.cpp";
+    const std::string code = stripComments(raw);  // 保留原始换行（切片边界见下方 matchBrace 说明）
+
+    const char* const kFns[] = {"Engine::runRealtimeDetect(", "Engine::processFrameRealtime("};
+    for (const char* fn : kFns) {
+        const std::size_t at = code.find(fn);
+        ASSERT_NE(at, std::string::npos) << "Engine.cpp 中找不到函数定义: " << fn;
+        const std::size_t brace = code.find('{', at);
+        ASSERT_NE(brace, std::string::npos) << "找不到函数体起始: " << fn;
+        // 按**花括号配对**取整个函数体（不再用 `\n}\n` 那类依赖缩进风格的锚点，见上方脆弱性登记）。
+        const std::size_t end = matchBrace(code, brace);
+        ASSERT_NE(end, std::string::npos)
+                << fn << " 的函数体花括号未配对到收尾（格式变化或计数失准？）: " << fn;
+        const std::string fnBody = code.substr(brace, end - brace);
+        ASSERT_GT(fnBody.size(), 200u)
+                << fn << " 的切片过短（切片判据可能已失效，勿让空切片伪装成通过）";
+        EXPECT_EQ(fnBody.find("detThrottleMode_"), std::string::npos)
+                << fn << " 内出现 detThrottleMode_：检测门控已被节流模式接线，"
+                   "「生产恒传 detectionRan=true」不变量失效";
+    }
+}
+
+#else
+// 这条 `#error` 是**故意**的（同 test_event_manager.cpp 的范式）：若本文件被编进一个未定义
+// `RK_TEST_SOURCE_ROOT` 的 target，上方整段结构式守卫会**静默消失**（既不注册、也不 skip、也不
+// fail，零信号）。宁可让构建当场失败，也不要留一个看起来在守、实际不存在的守卫。
+// 当前唯一编入本文件的 target 是 core_unit_tests，它定义了该宏（cmake/core.cmake）。
+#error "test_track_coordinator.cpp 的结构式守卫依赖 RK_TEST_SOURCE_ROOT；缺失它会让守卫静默消失"
+#endif  // RK_TEST_SOURCE_ROOT

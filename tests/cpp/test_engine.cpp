@@ -129,9 +129,13 @@ public:
     const char* name() const override { return "content_rec"; }
 };
 
-// 双色调嵌入：按对齐脸灰度均值二值化为两种可区分的常量向量，用于构造「两张不同身份
-// 的人脸」场景（ConstantEmbedder 对两张脸给同一向量，无法区分 alice/bob）。亮区 → 全 1
-// （匹配 alice 模板）；暗区 → 前 256 个 1（匹配 bob 模板）。
+// 双色调嵌入：按对齐脸灰度均值二值化为两种可区分的**单位向量**，用于构造「两张不同身份
+// 的人脸」场景（ConstantEmbedder 对两张脸给同一向量，无法区分 alice/bob）。
+// 亮区 → a 方向（512 维各 1/√512）；暗区 → b 方向（前 256 维各 1/16）。
+// ⚠️ 必须输出**单位向量**：FaceSearchOptions::assumeL2Normalized 默认为 true，此时
+//    FaceSearch.cpp 的 cosineSimilarity 直接返回**原始点积**（省去两次开方），隐含前提是
+//    库条目与查询都已 L2 归一化。若这里输出非单位向量（例如全 1），两个模板与查询的点积
+//    会与模长纠缠、排序不再是余弦序（本用例初版即因此让暗区脸误配到排前的 alice）。
 class TwoToneEmbedder : public IRealtimeEmbedder {
 public:
     bool embed(const cv::Mat& in, std::vector<float>& out, std::string&) override {
@@ -148,9 +152,11 @@ public:
             static_cast<double>(sum) / (static_cast<double>(in.rows) * in.cols);
         out.assign(512, 0.0f);
         if (mean >= 128.0) {
-            for (float& v : out) v = 1.0f;  // 亮区 → alice 模板
+            const float kBright = 0.044194174f;  // 1/√512；512·k² = 1
+            for (float& v : out) v = kBright;    // 亮区 → alice 模板
         } else {
-            for (int i = 0; i < 256; ++i) out[static_cast<std::size_t>(i)] = 1.0f;  // 暗区 → bob 模板
+            const float kDark = 0.0625f;         // 1/16；256·k² = 1
+            for (int i = 0; i < 256; ++i) out[static_cast<std::size_t>(i)] = kDark;  // 暗区 → bob 模板
         }
         return true;
     }
@@ -373,6 +379,39 @@ TEST(EngineTest, ApplyFlipDoesNotModifyInput) {
     EXPECT_EQ(left[2], right[2]);
 }
 
+// FACE-TRANS-012：flipGeneration_ 只在**变换配置真的变化**时递增（setFlip / setInputMirroredX 均
+// 先 exchange 取旧值，仅当新值 != 旧值才 fetch_add；该计数供状态区诊断展示）。
+// 判别点：删掉 setFlip 里的 `if (oldX != flipX || oldY != flipY)`（改成无条件 fetch_add）
+//        ⇒ 第二段「同值重复设置不得递增」的断言翻红。
+// 注：本成员与 FrameTransformConfig::generation **无任何代码关联**——后者在生产侧恒为 0、
+//     无人写读（见 FrameTransform.h 文件头的 ⚠️ 说明），故不可断言二者一致。
+TEST(EngineTest, FlipGenerationIncrementsOnlyOnRealChange) {
+    Engine engine;  // 只需默认构造：setFlip 只触碰原子成员
+    EXPECT_EQ(engine.getFlipGeneration(), 0u);
+
+    engine.setFlip(true, false);  // 首次真实变化
+    EXPECT_EQ(engine.getFlipGeneration(), 1u);
+    engine.setFlip(true, false);  // 同值重复设置：幂等，不增
+    EXPECT_EQ(engine.getFlipGeneration(), 1u) << "同值重复设置不得递增";
+    engine.setFlip(false, false);  // 再次真实变化
+    EXPECT_EQ(engine.getFlipGeneration(), 2u);
+}
+
+// FACE-TRANS-012：输入镜像标志与 setFlip 共用同一代次计数器（二者都会改变实际水平变换：
+// effective = input XOR target）。
+// 判别点：删掉 setInputMirroredX 里的 `if (old != mirrored)`（改成无条件 fetch_add）
+//        ⇒ 第二段「同值重复设置仍是 2」的断言翻红。
+TEST(EngineTest, InputMirroredXSharesFlipGenerationCounter) {
+    Engine engine;
+    engine.setFlip(true, false);       // 1
+    engine.setInputMirroredX(true);    // 2
+    EXPECT_EQ(engine.getFlipGeneration(), 2u);
+    engine.setInputMirroredX(true);    // 同值重复设置：不增
+    EXPECT_EQ(engine.getFlipGeneration(), 2u) << "同值重复设置不得递增";
+    engine.setInputMirroredX(false);   // 真实变化
+    EXPECT_EQ(engine.getFlipGeneration(), 3u);
+}
+
 // 渲染帧须含人脸检测框（三层重构 029e43f 删除 drawTracks 后无框 → RED）。
 // drawTracks 按 tracks 在帧上画框：认证绿框/未认证红框。
 TEST(EngineTest, DrawTracksDrawsFaceBoxes) {
@@ -492,6 +531,37 @@ TEST(EngineTest, RealtimeEmptyDetectionRemovesTrackPerRule) {
     EXPECT_EQ(engine.getTrackViews().size(), 0u);  // 缺失 2 次：删除
 }
 
+// FACE-TRACK-002（生产恒传 detectionRan=true 的行为面）：检测节流模式**不得**让帧循环跳过真实检测。
+// 前置断言把「确实处于节流模式」钉住，否则本用例与所测命题无关（节流未启用时当然照常检测）。
+// 期望：节流只影响配置与展示，帧循环仍每帧真实调用检测 ⇒ 实际空检测照常累计缺失，已确认轨迹在
+// 连续 2 次空检测后消失。
+// 判别点：把 detThrottleMode_ / detIntervalMs_ 接进 runRealtimeDetect，在节流窗内返回
+//        detectionRan=false ⇒ TrackCoordinator::update 走 `if (!detectionRan) return views();` 早退，
+//        旧轨迹永不消失 ⇒ 末条断言（size()==0）翻红。
+// 源文本侧的对应守卫见 test_track_coordinator.cpp 的 EngineStructuralGuard 用例。
+TEST(EngineTest, DetectionThrottleModeDoesNotSuppressRealDetection) {
+    Engine engine;
+    engine.updateDetectionThrottle("manual", 10000);  // 10s 间隔：若真接线，本帧必被「跳过」
+    ASSERT_NE(engine.getDetectionThrottleMode(), InferenceThrottleMode::Off)
+            << "前置：节流模式必须已置为非 Off，否则本用例不覆盖任何东西";
+
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    engine.setRealtimePipeline(makeRtPipeline(det));
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) engine.processFrameOnce(frame);
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+
+    det->boxes.clear();  // 实际空检测
+    engine.processFrameOnce(frame);
+    EXPECT_EQ(engine.getTrackViews().size(), 1u) << "缺失 1 次：已确认轨迹保留";
+    engine.processFrameOnce(frame);
+    EXPECT_EQ(engine.getTrackViews().size(), 0u)
+            << "缺失 2 次必须删除：节流模式不得把本帧变成「跳过检测」而让旧框长生";
+}
+
 // 模型不可用：继续预览（发布帧）但显式 missing_model，且不产生任何轨迹，
 // 绝不静默回退 LBPH（BioAuth 未初始化也不会被调用）。
 TEST(EngineTest, RealtimeMissingModelPreviewsWithExplicitReason) {
@@ -533,6 +603,66 @@ TEST(EngineTest, RealtimeGalleryMatchAssignsIdentity) {
     const auto tracks = engine.getTrackViews();
     ASSERT_EQ(tracks.size(), 1u);
     EXPECT_EQ(tracks[0].stableId, "alice");
+}
+
+// FACE-CLEAN-020①：引擎层「两个不同认证身份共存且互不串号」。
+// 此前本文件通篇只有 alice，TwoToneEmbedder（按对齐脸灰度均值二值化）自引入以来**零引用**
+// ⇒ 引擎的多身份**排序**从未被验证过（ConstantEmbedder 对两张脸给同一向量，天然无法区分排序，
+// 这正是 TwoToneEmbedder 存在的理由）。
+// ★ 数值构造（已核算）——库条目**必须是 L2 归一化的单位向量**，否则本用例不成立：
+//   alice = 512 维各 1/√512（模 1）；bob = 前 256 维各 1/16、其余 0（模 1）。
+//   Engine 侧经 FaceSearchOptions{} 走默认 assumeL2Normalized=true ⇒ 打分**就是原始点积**
+//   （FaceSearch.cpp:99），只有两端都是单位向量时它才等于余弦。初版用「全 1 / 前 256 个 1」
+//   时，暗区探针与两个模板的点积**都是 256（打平）**，胜负退化为插入序 ⇒ 暗区脸误配到 alice。
+//   cos(alice, bob_probe) = cos(bob, alice_probe) = 0.7071 > identitySimilarity(0.45)
+//   ⇒ 两个身份**互为命中**；但自相似 = 1.0 > 0.7071 ⇒ top-1 仍必须是正确的那一个
+//   （assignRealtimeIdentities 取 hits[0] 后比阈值）。
+// 判别点：把检索结论从「取 top-1」改成「取第一个过阈值的条目」（或反转相似度排序）
+//        ⇒ 暗区脸会拿到库中排在前的 alice，`darkId == "bob"` 翻红。
+TEST(EngineTest, RealtimeTwoDistinctIdentitiesCoexistWithoutCrossAssignment) {
+    std::vector<float> bobTemplate(512, 0.0f);
+    for (int i = 0; i < 256; ++i) bobTemplate[static_cast<std::size_t>(i)] = 0.0625f;  // 1/16
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    std::vector<FaceSearchEntry> entries = {
+        {"alice", std::vector<float>(512, 0.044194174f)},  // 1/√512
+        {"bob", bobTemplate},
+    };
+    ASSERT_TRUE(index->reset(std::move(entries), 512, err)) << err;
+
+    // 亮区（255）⇒ TwoToneEmbedder 给**单位向量** 512 维各 1/√512（= alice 模板方向）；
+    // 暗区（50）⇒ 给**单位向量**「前 256 维各 1/16、其余 0」（= bob 模板方向）。见上方 TwoToneEmbedder
+    // 类注释：这里**必须是单位向量**——FaceSearchOptions::assumeL2Normalized 默认为 true ⇒ 打分是
+    // **原始点积**（FaceSearch.cpp:99）。初版夹具写「全 1 / 前 256 个 1」正是因此让暗区脸误配 alice。
+    // 两块框均 160×200 > 112×112，重采样到嵌入输入时不会把背景均值拉过 128 的判定线。
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(50, 50, 50));
+    const cv::Rect bright(80, 80, 300, 300);
+    frame(bright).setTo(cv::Scalar(255, 255, 255));
+    const cv::Rect aliceBox(140, 120, 160, 200);  // 完全落在亮区内
+    const cv::Rect bobBox(440, 120, 160, 200);    // 落在暗区（两框中心相距 300px，不被 NMS/包含抑制合并）
+
+    Engine engine;
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(aliceBox), boxOf(bobBox)};
+    engine.setRealtimePipeline(
+        makeRtPipeline(det, index, /*reload=*/true, std::make_shared<TwoToneEmbedder>()));
+
+    for (int i = 0; i < 3; ++i) engine.processFrameOnce(frame);  // stableFrames=3
+
+    const auto tracks = engine.getTrackViews();
+    ASSERT_EQ(tracks.size(), 2u) << "两个互不重叠的检测框应各建一条轨迹";
+    std::string brightId;  // 亮区那条（应为 alice）
+    std::string darkId;    // 暗区那条（应为 bob）
+    for (const auto& t : tracks) {
+        if (t.bbox.x < bright.x + bright.width) {
+            brightId = t.stableId;
+        } else {
+            darkId = t.stableId;
+        }
+    }
+    EXPECT_EQ(brightId, "alice");
+    EXPECT_EQ(darkId, "bob") << "暗区脸不得被串到库中排在前的 alice（top-1 排序被破坏）";
 }
 
 // 第四轮审查 M1：setRealtimePipeline 幂等。同对象重复注入（宿主配置刷新/重复激活同一管线）
@@ -1158,10 +1288,18 @@ TEST(EngineTest, RevocationCannotReturnBetweenFinalCheckAndEmit) {
 // 确定性回归：覆写 onBeforePublishLocked（测试接缝，此时引擎线程**必已持 identityEmitMu_**），在**同一
 // 线程**内同步调用 applyGalleryUpdate，断言其**返回失败（false）**而非挂死。
 //
-// ⚠️ **已知未覆盖（子代理3 用探针实测确认）**：`run()` 的重入守卫**没有判别用例**——注释掉 `Engine::run()`
-// 顶部那行守卫，本套件仍 88 通过 / 0 失败。
+// ⚠️ **覆盖现状（别照旧注释以为只有代表入口被覆盖）**：
+//   · setRealtimePipeline / applyGalleryUpdate / getTrackViews / processFrameOnce 四个入口各有
+//     **专属**判别探针，见下方 EmitGateReentryRejectedOnAllFourRemainingEntryPoints；
+//     本用例只保留最早的那条代表（applyGalleryUpdate，含「被拒绝的调用不得产生副作用」这一额外断言）。
+//   · `run()` 的守卫**仍无行为用例**（子代理3 用探针实测确认：注释掉 `Engine::run()` 顶部那行守卫，
+//     当时的套件仍全绿）。原因不是「做不到」，而是**失败形态不可诊断**：在钩子（已持 identityEmitMu_）
+//     内调用 run() 时，守卫缺失会让它经 processFrameRealtime 取 tracksMu_ 后在 renderResults 再取
+//     同一把 identityEmitMu_ ⇒ **同线程自锁**（挂死也算红，但 CI 表现为超时而非干净失败）。
+//     故 run() 目前**只**有源文本结构断言兜底（test_track_coordinator.cpp 的
+//     EngineStructuralGuard 用例），其脆弱性（改写法即可绕过）已在那边如实登记。
 //
-// 这是**成本收益取舍，不是「做不到」**。子代理4 给出了两条**安全且确定**的测法（其仅为构造性论证，未实做）：
+// 若要给 run() 补**行为**用例，子代理4 给出了两条安全且确定的测法（仅为构造性论证，未实做）：
 //   · 设计 A（需一个极小的测试接缝）：在 `run()` 的守卫之后、`isRunning_ = true` **之前**加一个
 //     `RK_ENABLE_TEST_SEAMS` 下的虚接缝（与既有 onBeforeRenderPublish / onBeforePublishLocked 同款），
 //     测试子类覆写它并抛哨兵异常。无守卫时该异常在**循环外的无 try 区**抛出 → 穿透到 worker 的
@@ -1170,9 +1308,8 @@ TEST(EngineTest, RevocationCannotReturnBetweenFinalCheckAndEmit) {
 //   · 设计 B（零生产改动）：让 `run()` 无帧可消费（不接相机）⇒ 恒走 `processed=false → sleep → continue`，
 //     永不触碰 identityEmitMu_；另起守护线程限时调 `stop()`（只置原子、不取两把锁）以有界终止，再用
 //     gtest `CaptureStdout()` 判「守卫之后那行 `Engine started.` 是否输出」——**文本断言，非计时断言**。
-//   ⇒ 之所以仍**不做**：该守卫**生产不可达**（结果回调不可能同步调用阻塞主循环），且 5 个入口共用同一行
-//   守卫形态、已由本用例的 `applyGalleryUpdate` 这一代表覆盖；为一个不可达路径引入新生产接缝（设计 A 要
-//   改头文件）或做 stdout 捕获（设计 B 较繁琐），收益不抵成本。**若该路径将来变得可达，按设计 A 补测。**
+//   ⇒ 仍**不做**的理由：该守卫**生产不可达**（结果回调不可能同步调用阻塞主循环），收益不抵成本。
+//     **若该路径将来变得可达，按设计 A 补测。**
 //
 // ℹ️ RED 的**平台差异**（别照字面理解本用例的"死锁"描述）：MSVC 的 `std::mutex` 对**同线程重入**会**抛**
 // `system_error`（"resource deadlock would occur"）而非挂死 ⇒ 被 worker 的 `catch(...)` 接住、照常置
@@ -1273,10 +1410,129 @@ TEST(EngineTest, ResultCallbackReentryFromEmitGateIsRejectedNotDeadlocked) {
     delete engine;
 }
 
+// FACE-PIPE-015 免死锁契约的**逐入口**判别探针：setRealtimePipeline / applyGalleryUpdate /
+// getTrackViews / processFrameOnce 四个入口各一条断言（run() 不用行为用例，理由见上方注释块）。
+//
+// 为什么同一线程内能**确定性**触发：重入标记是 thread_local，只有**引擎线程自己**能命中；而
+// onBeforePublishLocked（Engine.h 的测试接缝）正运行在引擎线程、且**已在发射门内**
+//（renderResults 先持 identityEmitMu_、再经 RAII 置位标记，随后调用本钩子——见 Engine.h 对
+// identityEmitMu_ 的条目）。故把重入调用写进本钩子即是确定性的复现，不需要 sleep/竞态。
+//
+// 四个探针的判别力（逐一登记「改坏哪一处会让它变红」）：
+//   · setRealtimePipeline(nullptr) → false：**只可能**来自本拒绝（无别的 false 出口）；
+//   · applyGalleryUpdate(空库快照, {}) → false：同上（Engine.h 明确记载这两者的 false 无歧义）；
+//     两者若守卫缺失，都会在取到 tracksMu_ 后**等待已被本线程持有的 identityEmitMu_**
+//     ⇒ 同线程自锁（MSVC 抛 system_error 被 worker 吞掉 ⇒ probeDone 不置位 ⇒ 本用例干净失败）。
+//   · getTrackViews().size() == 0：与「确实无已确认轨迹」同值 ⇒ 前置**必须**已建立 ≥1 条已确认轨迹
+//     （见用例断言的 stableId == "alice"），否则本探针恒真、不判别；
+//   · processFrameOnce(合法帧) → false：与「preprocessFrame 失败」同值 ⇒ 必须传入一张**本来能成功**
+//     的帧；用例在探针结束后另驱动一帧断言 true 作为**正对照**，证明该帧合法、故而那个 false 只能
+//     来自拒绝。
+// ⚠️ 探针顺序不可换：processFrameOnce 必须**最先**（setRealtimePipeline(nullptr) 一旦被接受就会关掉
+//    实时管线，其后驱动帧会因模型缺失返回 false，判别力归零；当前它理应被拒绝，故顺序安全）。
+// ⚠️ 防递归：processFrameOnce 内部会再进 renderResults → 再次调用本钩子；故调用前先清 probeArmed。
+class EmitGateProbeEngine : public Engine {
+public:
+    std::atomic<bool> probeArmed{false};
+    std::atomic<bool> probeDone{false};
+
+    std::atomic<bool> frameOk{true};          // 期望 false
+    std::atomic<bool> setPipelineOk{true};    // 期望 false
+    std::atomic<bool> galleryOk{true};        // 期望 false
+    std::atomic<std::size_t> viewsSize{999};  // 期望 0
+
+    std::shared_ptr<const FaceSearchLinearIndex> gallery;  // 探针内换入的库（调用应被拒绝，内容无关）
+    cv::Mat probeFrame;                                    // 探针内驱动帧用的合法帧
+
+protected:
+    void onBeforePublishLocked() override {
+        if (!probeArmed.load()) return;  // 其余帧走等价空钩子
+        probeArmed.store(false);         // 先清，避免内层 renderResults 递归回入本钩子
+        frameOk.store(processFrameOnce(probeFrame));
+        setPipelineOk.store(setRealtimePipeline(nullptr));
+        galleryOk.store(applyGalleryUpdate(gallery, {}));
+        viewsSize.store(getTrackViews().size());
+        probeDone.store(true);
+    }
+};
+
+TEST(EngineTest, EmitGateReentryRejectedOnAllFourRemainingEntryPoints) {
+    auto aliceIdx = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(aliceIdx->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err)) << err;
+    auto emptyIdx = std::make_shared<FaceSearchLinearIndex>();
+    std::string e2;
+    ASSERT_TRUE(emptyIdx->reset({}, 512, e2)) << e2;
+
+    // 堆分配：RED（未拒绝）时 worker 会卡在自锁上，需 detach 并**泄漏**本对象以保证套件存活。
+    EmitGateProbeEngine* engine = new EmitGateProbeEngine();
+
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    ASSERT_TRUE(engine->setRealtimePipeline(makeRtPipeline(det, aliceIdx)));
+
+    const cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH, CV_8UC3,
+                        cv::Scalar(50, 50, 50));
+    engine->probeFrame = frame;
+    engine->gallery = emptyIdx;
+
+    for (int i = 0; i < 3; ++i) engine->processFrameOnce(frame);  // 确认 alice（stableFrames=3）
+    const auto pre = engine->getTrackViews();
+    ASSERT_EQ(pre.size(), 1u) << "前置：getTrackViews 探针需要至少一条已确认轨迹才有判别力";
+    ASSERT_EQ(pre[0].stableId, "alice");
+
+    engine->probeArmed.store(true);
+
+    // 有界驱动（同上方代表用例的取舍）：探针在 worker 线程内执行，主线程限时等待。
+    // ⚠️ 超时分支会 detach，detach 后 worker 仍可能恢复运行，故捕获的一切都不得是本栈局部量：
+    //   · workerDone 堆分配 + shared_ptr 按值捕获；frame 按值捕获（cv::Mat 引用计数）；
+    //   · engine 是堆指针，超时分支**刻意泄漏**（其内存仍被 detach 线程引用）。
+    auto workerDone = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([engine, frame, workerDone] {
+        // 吞掉逃逸异常：RED 时同一线程二次取 identityEmitMu_/tracksMu_，MSVC 的 std::mutex 会**抛**
+        // system_error（libstdc++ 上真挂死）；任其逃出 worker 线程 → std::terminate 中止进程，
+        // 而非「用例失败」。捕获后照常置 workerDone，使 RED 收敛为确定性断言失败。
+        try {
+            engine->processFrameOnce(frame);
+        } catch (...) {
+        }
+        workerDone->store(true);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + kInterleaveWait;
+    while (!workerDone->load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    if (!workerDone->load()) {
+        ADD_FAILURE() << "重入未被拒绝：worker 在超时内未返回（疑似发射门自锁）";
+        worker.detach();
+        return;  // 泄漏 engine（不得析构：其内存仍被 detach 线程引用）
+    }
+    worker.join();
+
+    EXPECT_TRUE(engine->probeDone.load());
+    EXPECT_FALSE(engine->frameOk.load())
+            << "processFrameOnce 的重入守卫缺失（同一帧在门外本应处理成功，见下方正对照）";
+    EXPECT_FALSE(engine->setPipelineOk.load()) << "setRealtimePipeline 的重入守卫缺失";
+    EXPECT_FALSE(engine->galleryOk.load()) << "applyGalleryUpdate 的重入守卫缺失";
+    EXPECT_EQ(engine->viewsSize.load(), 0u) << "getTrackViews 的重入守卫缺失（应返回空快照）";
+
+    // 正对照 + 无副作用：四项均被拒绝 ⇒ 管线仍在、图库未换、身份未撤，故同一张帧在门外照常成功。
+    // 这同时证明上面那个 false **只能**来自拒绝，而不是「帧非法 / 预处理失败」。
+    EXPECT_TRUE(engine->processFrameOnce(frame));
+    const auto post = engine->getTrackViews();
+    ASSERT_EQ(post.size(), 1u);
+    EXPECT_EQ(post[0].stableId, "alice");
+
+    delete engine;
+}
+
 // ── §10.11 D4b：平台默认值的正向覆盖（本 target **无** RK_BENCH_ENFORCE_BUDGET）──
 //
 // 本 target（core_gtest_tests）经 RK_FACE_INFER_CORE_SOURCES 编译 RealtimeFacePipeline.cpp，
-// 却**不定义** RK_BENCH_ENFORCE_BUDGET（该宏仅当全局选项显式设置时才注入，见 CMakeLists.txt:345；
+// 却**不定义** RK_BENCH_ENFORCE_BUDGET（该宏仅当全局选项显式设置时才注入——见 CMakeLists.txt 中
+// core_gtest_tests 的 `if(NOT RK_BENCH_ENFORCE_BUDGET STREQUAL "")` 注入块；
 // 本仓选项默认留空 ⇒ 零行为变化）⇒ .cpp 的 kDefaultEnforceBudget 走**平台回落分支**
 // （`#elif defined(__aarch64__)` → x64 取 `#else` = false），即生产 x64 的真实默认。
 //

@@ -6,6 +6,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -96,6 +98,14 @@ struct Controls {
     std::shared_ptr<IRealtimeDetector> detector;
     std::shared_ptr<IRealtimeEmbedder> embedder;
     std::string detectorErr;  // 非空 → loadDetector 返回 nullptr 并把该值写入 err
+    // 非空 → loadGallery 返回 nullptr 并把该值写入 err（触发「图库加载失败」分支）。
+    // 注意：「返回 nullptr + 空 err」是**合法空图库**，不触发失败分支。
+    std::string galleryErr;
+    // verifyFiles 返回 false 时写入 err 的文本（仅 verifyOk=false 时使用）。
+    // 默认取 FaceRuntimeManifest::verifyFiles 的真实文案之一——**不要**写 "model_missing" 这类
+    // 既非固定码、也不是 verifyFiles 文案的字符串：它经 normalizeReasonCode 会落成
+    // runtime_init_failed，容易让断言写成与实现无关的错值。
+    std::string verifyErr = "缺失模型文件: model.param";
     bool selfCheckOk = true;
     bool benchmarkOk = true;
     double p95 = 10.0;
@@ -107,7 +117,7 @@ RealtimePipelineHooks makeMutableHooks(std::shared_ptr<Controls> ctl) {
     RealtimePipelineHooks h;
     h.verifyFiles = [ctl](const FaceRuntimeProfile&, const std::string&, std::string& err) {
         if (!ctl->verifyOk) {
-            err = "model_missing";
+            err = ctl->verifyErr;
             return false;
         }
         return true;
@@ -124,8 +134,12 @@ RealtimePipelineHooks makeMutableHooks(std::shared_ptr<Controls> ctl) {
                            std::string&) -> std::shared_ptr<IRealtimeEmbedder> {
         return ctl->embedder;
     };
-    h.loadGallery = [](const FaceRuntimeProfile&, const std::string&,
-                       std::string& err) -> std::shared_ptr<const FaceSearchLinearIndex> {
+    h.loadGallery = [ctl](const FaceRuntimeProfile&, const std::string&,
+                          std::string& err) -> std::shared_ptr<const FaceSearchLinearIndex> {
+        if (!ctl->galleryErr.empty()) {
+            err = ctl->galleryErr;  // nullptr + 非空 err ⇒ 走「图库加载失败」分支
+            return nullptr;
+        }
         err.clear();
         return nullptr;  // 空图库合法
     };
@@ -156,6 +170,28 @@ std::shared_ptr<Controls> makeControls() {
     ctl->detector = std::make_shared<FakeDetector>("detector_A");
     ctl->embedder = std::make_shared<FakeEmbedder>("embedder_A");
     return ctl;
+}
+
+// ── 供 FaceRuntimeManifest::verifyFiles 的**真实实现**用例使用的两个辅助 ──────────────
+
+// 临时基目录（仿 tests/cpp/test_face_runtime_profile.cpp 的 tempBase() 范式；名字独立，避免与其
+// 它用例的临时目录互相干扰）。调用方**必须**自行清理，见用例内的 remove_all。
+std::filesystem::path verifyCouplingTempBase() {
+    return std::filesystem::temp_directory_path() / "rk3288_opencv_pipeline_verify_coupling";
+}
+
+// 与 validManifest() 同构，但给 detector.param 钉一个 sha256（用于触发「摘要不匹配」分支）。
+// 值取 64 个 'a'：只要文件内容不是「SHA-256 恰等于 64 个 a」的怪文件，就必然不等——本用例只要求
+// 「格式合法 + 不相等」，不必真算摘要。锚点未命中时返回**空串**（不返回无 sha 的 manifest）：
+// 否则调用方会拿到一个语义不同的 manifest 而断言仍可能通过，属静默失真。
+std::string manifestWithDetectorParamSha256() {
+    std::string m = validManifest();
+    const std::string anchor = "\"param\":{\"path\":\"scrfd/scrfd.param\"}";
+    const std::size_t pos = m.find(anchor);
+    if (pos == std::string::npos) return std::string();
+    m.insert(pos + anchor.size() - 1,  // 插在该对象闭合 '}' 之前
+             ",\"sha256\":\"" + std::string(64, 'a') + "\"");
+    return m;
 }
 
 }  // namespace
@@ -357,9 +393,10 @@ TEST(RealtimeFacePipeline, DestructorWaitsForPendingAsyncReload) {
 // ── 构造函数写入机制：构造函数须把 .cpp 的 kDefaultEnforceBudget 写入 bench_ ──
 //
 // ⚠️ 本用例测的是**机制**——「构造函数是否真的把那行默认值写进了 bench_」（见
-//    RealtimeFacePipeline.cpp:313 `bench_.enforceBudget = kDefaultEnforceBudget;`），
+//    RealtimeFacePipeline.cpp 构造函数内的 `bench_.enforceBudget = kDefaultEnforceBudget;`），
 //    **不是**「平台默认值正确」。
-//    本 target（core_unit_tests）被 CMake 注入 RK_BENCH_ENFORCE_BUDGET=1（cmake/core.cmake:131），
+//    本 target（core_unit_tests）被 CMake 注入 RK_BENCH_ENFORCE_BUDGET=1（cmake/core.cmake 中
+//    core_unit_tests 的 RK_BENCH_ENFORCE_BUDGET 注入），
 //    使 `#if defined(RK_BENCH_ENFORCE_BUDGET)` 在本 target **恒成立** ⇒ .cpp 的
 //    `#elif defined(__aarch64__)` 与 `#else` 两个**平台回落分支在这里根本不被编译**。
 //    ⇒ 「非 arm64 平台默认 = false」这条语义**不由本用例覆盖**：它由 core_gtest_tests 的
@@ -374,14 +411,15 @@ TEST(RealtimeFacePipeline, ConstructorWritesDefaultEnforceBudgetIntoBench) {
            "kDefaultEnforceBudget 决定";
 
     // (b) 构造函数须把 kDefaultEnforceBudget 写入 bench_。期望值取自本 target 被 CMake 注入的
-    //     RK_BENCH_ENFORCE_BUDGET（cmake/core.cmake:131）：它与 RealtimeFacePipeline.cpp 在同一 target
-    //     内看到的宏逐字一致，且被刻意置为与头文件默认(false)相反 ⇒ 对本 target 的**构造写入**有判别力
-    //     （删掉构造函数那行赋值，bench_ 退回头文件默认 false ⇒ 此处翻红）。
+    //     RK_BENCH_ENFORCE_BUDGET（见 cmake/core.cmake 中 core_unit_tests 的注入语句）：它与
+    //     RealtimeFacePipeline.cpp 在同一 target 内看到的宏逐字一致，且被刻意置为与头文件默认(false)
+    //     相反 ⇒ 对本 target 的**构造写入**有判别力（删掉构造函数那行赋值，bench_ 退回头文件默认
+    //     false ⇒ 此处翻红）。
     //     下面这道守卫守的是「**本测试 target 的注入契约**」：注入一旦缺失（有人删掉 core.cmake 的
     //     target_compile_definitions、或误改判据），期望值推导会静默错位到未定义宏(=0)，故在编译期直接
     //     炸，而非让断言悄悄跑偏。
 #if !defined(RK_BENCH_ENFORCE_BUDGET)
-#error "本用例要求 core_unit_tests 注入 RK_BENCH_ENFORCE_BUDGET（见 cmake/core.cmake:131）"
+#error "本用例要求 core_unit_tests 注入 RK_BENCH_ENFORCE_BUDGET（见 cmake/core.cmake 的 core_unit_tests 注入）"
 #endif
     constexpr bool kExpectedDefaultEnforceBudget = (RK_BENCH_ENFORCE_BUDGET != 0);
     auto ctl = makeControls();
@@ -401,4 +439,139 @@ TEST(RealtimeFacePipeline, ConstructorWritesDefaultEnforceBudgetIntoBench) {
     // ★ 残余（如实）：本 target 因注入而**不覆盖** .cpp 的 #elif/#else 平台回落分支（见用例头注释）；
     //    该覆盖由 core_gtest_tests 的 RealtimeFacePipelinePlatformDefault 用例承担。头文件若重新引入
     //    __aarch64__ 分支，x64 上其 #else 值(false)与平台中立判定同值 ⇒ 该复发仅在 arm64 上可判别。
+}
+
+// ── FACE-PIPE-010 ②：图库加载失败的 reason 必须由 err 归一得出 ──────────────────
+
+// 图库加载失败（钩子返回 nullptr **且** err 非空）时，reason 由 reasonFromLoadError(err) 归一，
+// 而非硬编码 missing_model：否则自定义钩子报出的「非缺文件」类失败会被误导性地写成 missing_model。
+// 判别点：把该分支改回硬编码 "missing_model" ⇒ 本条翻红。
+// ⚠️ 判别力的前提是**钩子写的码与 missing_model 不同**（本例用 unsupported_input）：若写成
+//    err = "missing_model"，改前改后同值 ⇒ 无判别力。
+TEST(RealtimeFacePipeline, GalleryLoadFailureReasonComesFromErr) {
+    auto ctl = makeControls();
+    ctl->galleryErr = "unsupported_input";
+    RealtimeFacePipeline pipe(makeMutableHooks(ctl));
+
+    const RealtimeReloadResult r = pipe.reload(validManifest(), "", "arm64-v8a", "");
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(r.reason, "unsupported_input");
+    EXPECT_EQ(r.generation, 0u);       // 首次 reload 即失败：无成功代次可言
+    EXPECT_EQ(pipe.generation(), 0u);
+    EXPECT_EQ(pipe.snapshot(), nullptr);
+    // err 原文随 evidence 透传（此行改前改后一致，**不是**本次修复带来的差异，只作回归护栏）
+    EXPECT_NE(r.evidence.find("图库加载失败: unsupported_input"), std::string::npos);
+}
+
+// FACE-PIPE-010 ②/新3：verifyFiles 失败时 reason **按 err 语义分类**（reasonFromVerifyError），
+// 不再一律 missing_model。判据不是「等于某个我猜的码」，而是**两类语义不同的失败必须落到不同的码上**。
+// 判别点（两条，任一即红）：
+//   · 改回硬编码 missing_model            ⇒ 两次得到的 reason 相同
+//   · 改回无脑套 reasonFromLoadError      ⇒ 两条人类文本都归一成 runtime_init_failed，仍相同
+// 另附兜底分支：钩子直接写固定码时原样透传（不是人类文本 ⇒ 交回 reasonFromLoadError）。
+//
+// ⚠️ **本用例的判别力边界（如实登记，勿高估）**：下面两条 err 文本**抄自**生产文案
+//    FaceRuntimeManifest::verifyFiles（src/cpp/src/FaceRuntimeProfile.cpp 的 "缺失模型文件: " 与
+//    "SHA-256 不匹配: "），但它们是写进**可变钩子**（Controls::verifyErr）的字面串——本用例
+//    **从不调用**真实 verifyFiles ⇒ 它钉住的只是 RealtimeFacePipeline.cpp 的 `reasonFromVerifyError`
+//    关键字映射（子串语义）这**一侧**。改 FaceRuntimeProfile.cpp 的 err 文案时，本用例**不会**翻红
+//    （映射会**静默**退化：未知文本 → runtime_init_failed）。提醒：不要把这些字面串当随手测试数据删改，
+//    它们是「关键字映射仍与文案约定一致」的快照；而「生产文案本身仍在约定关键字上」这一侧由下面
+//    紧邻的 VerifyFilesProductionTextStaysCoupledToReasonClassification 用例用**真实** verifyFiles 钉住。
+//    （若将来改为「verifyFiles 出参直接给 reasonCode」，两个用例都应改为按新契约断言，而不是继续复刻字面串。）
+TEST(RealtimeFacePipeline, VerifyFilesFailureReasonFollowsErrSemantics) {
+    auto ctl = makeControls();
+    RealtimeFacePipeline pipe(makeMutableHooks(ctl));
+    ctl->verifyOk = false;
+
+    // 语义一：文件不在位 → missing_model（唯一应报此码的语义）
+    ctl->verifyErr = "缺失模型文件: det.param";
+    const RealtimeReloadResult missing = pipe.reload(validManifest(), "", "arm64-v8a", "");
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.reason, "missing_model");
+    EXPECT_EQ(missing.generation, 0u);
+    EXPECT_EQ(pipe.snapshot(), nullptr);
+    EXPECT_NE(missing.evidence.find("缺失模型文件: det.param"), std::string::npos)
+            << "err 原文一直随 evidence 透传（改前改后一致）";
+
+    // 语义二：内容不符（摘要不匹配）→ 另一个码（unsupported_input）
+    ctl->verifyErr = "SHA-256 不匹配: det.param";
+    const RealtimeReloadResult corrupt = pipe.reload(validManifest(), "", "arm64-v8a", "");
+    EXPECT_FALSE(corrupt.ok);
+    EXPECT_EQ(corrupt.reason, "unsupported_input");
+    EXPECT_NE(corrupt.evidence.find("SHA-256 不匹配: det.param"), std::string::npos);
+
+    // 核心断言：语义不同 ⇒ 码必须不同
+    EXPECT_NE(missing.reason, corrupt.reason)
+            << "两类语义不同的校验失败给出同一个 reason 码，说明分类未生效";
+
+    // 兜底：钩子直接写契约固定码时原样透传（既非人类文本，走 reasonFromLoadError）
+    ctl->verifyErr = "build_disabled";
+    EXPECT_EQ(pipe.reload(validManifest(), "", "arm64-v8a", "").reason, "build_disabled");
+}
+
+// FACE-PIPE-010 ②（补齐侧）：**生产文案本身**与 reason 分类的**端到端**耦合。
+//
+// 为什么需要（A2 审计实证的缺口）：上面那条用例把 err 文本写进可变钩子，只钉住 `reasonFromVerifyError`
+// 的关键字映射这一侧；改 FaceRuntimeProfile.cpp 里 verifyFiles 的文案（如把 "缺失模型文件: " 改字）
+// 会让生产 reason 从 missing_model **静默**退化为 runtime_init_failed，而**全仓无红**。本用例把
+// `verifyFiles` 钩子直接设为**生产实现** `FaceRuntimeManifest::verifyFiles`，让真实文案经真实归类路径
+// 产出 reason，从而同时钉住两侧。
+//
+// 判别点（改坏任一处即红，且失败信息能指出是哪一侧）：
+//   · 改 FaceRuntimeProfile.cpp 的 "缺失模型文件: " / "SHA-256 不匹配: " 文案 ⇒ evidence 断言与 reason
+//     断言同时翻红（reason 退化为 runtime_init_failed）；
+//   · 改 RealtimeFacePipeline.cpp 的 reasonFromVerifyError 关键字 ⇒ reason 断言翻红（evidence 仍绿）；
+//   · 把该分支改回硬编码 missing_model ⇒ 摘要不匹配那一档翻红（两类语义不再落不同码）。
+//
+// ⚠️ 判据依赖文件系统（真实 verifyFiles 读盘）：用 temp_directory_path() 下的**独立**子目录，用例
+//    开始/结束各清理一次；「文件不在位」一档刻意不创建任何文件。若临时目录不可写，本用例会**失败**
+//    （不是静默通过）——写盘在本仓库既有 core_unit_tests 用例（test_face_runtime_profile.cpp、
+//    test_file_hash.cpp 等）中已是既定范式。
+// ⚠️ 未覆盖（如实登记）：verifyFiles 的另两类文案（"非法模型路径…" / "Git LFS pointer（未拉取）"）
+//    未在此端到端用例中出现——前者被 parseV1 先行拒绝（插不进 manifest），后者需再构造一个内容为
+//    LFS pointer 的文件。它们目前仍只由「字面串钩子」的上一条用例（文案→码的映射一侧）覆盖。
+TEST(RealtimeFacePipeline, VerifyFilesProductionTextStaysCoupledToReasonClassification) {
+    const std::filesystem::path base = verifyCouplingTempBase();
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);  // 清掉上次运行/崩溃的残留，保证「文件不在位」这一前提成立
+    ASSERT_FALSE(std::filesystem::exists(base)) << "临时基目录无法清除，本用例前提不成立";
+
+    RealtimePipelineHooks h;
+    // ★ 关键：钩子**就是生产实现**（不是字面串复制品）。其余钩子**刻意留空**：verifyFiles 若意外通过
+    //（例如模型文件真的在位），后续会走「detector 装配失败」分支 ⇒ reason 变成别的码、断言失败，
+    // 而**不会**静默通过。
+    h.verifyFiles = &rk_core::FaceRuntimeManifest::verifyFiles;
+    RealtimeFacePipeline pipe(h);
+
+    // (a) 语义一：模型文件不在位 ⇒ 生产文案「缺失模型文件: <相对路径>」⇒ missing_model
+    const RealtimeReloadResult missing =
+        pipe.reload(validManifest(), base.string(), "arm64-v8a", "");
+    ASSERT_FALSE(missing.ok);
+    EXPECT_NE(missing.evidence.find("模型文件校验失败: 缺失模型文件: scrfd/scrfd.param"),
+              std::string::npos)
+            << "生产 verifyFiles 的「缺失模型文件」文案变了（或条目次序变了）："
+               "src/cpp/src/FaceRuntimeProfile.cpp";
+    EXPECT_EQ(missing.reason, "missing_model")
+            << "production reason 未由生产文案归类得出（文案与 reasonFromVerifyError 关键字不再对齐）";
+    EXPECT_EQ(missing.generation, 0u);
+    EXPECT_EQ(pipe.snapshot(), nullptr);
+
+    // (b) 语义二：文件在位但摘要不符 ⇒ 生产文案「SHA-256 不匹配: <相对路径>」⇒ unsupported_input
+    //     只需创建 detector.param 一个文件：verifyFiles 的条目次序里 detectorParam 最先，命中即返回。
+    std::filesystem::create_directories(base / "scrfd", ec);
+    {
+        std::ofstream out(base / "scrfd" / "scrfd.param", std::ios::binary);
+        out << "X";  // 内容任意：只要其 SHA-256 不等于清单里钉的 64 个 'a'
+    }
+    const std::string manifest = manifestWithDetectorParamSha256();
+    ASSERT_FALSE(manifest.empty()) << "锚点未命中：manifestWithDetectorParamSha256 的插入点已漂移";
+    const RealtimeReloadResult corrupt = pipe.reload(manifest, base.string(), "arm64-v8a", "");
+    ASSERT_FALSE(corrupt.ok);
+    EXPECT_NE(corrupt.evidence.find("SHA-256 不匹配: scrfd/scrfd.param"), std::string::npos)
+            << "生产 verifyFiles 的「SHA-256 不匹配」文案变了：src/cpp/src/FaceRuntimeProfile.cpp";
+    EXPECT_EQ(corrupt.reason, "unsupported_input")
+            << "两类语义不同的校验失败必须落到不同的码；落到同一个码说明分类已静默退化";
+
+    std::filesystem::remove_all(base, ec);
 }
