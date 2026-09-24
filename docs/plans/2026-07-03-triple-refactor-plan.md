@@ -6,6 +6,9 @@ as_of=2026-07-03
 
 # 三层重构实施计划
 
+> **状态**: 历史快照（`as_of=2026-07-03`），保留原文不作订正。下文所有代码片段与行号都是**当时的形态，不代表现行实现**。
+> ⚠️ **其中一处是缺陷接线（快照内指路，非现行实现描述）**：下述 `RuntimeBootstrap::build()` 代码块里 ArcFace 分支的 `initialize()` 实参（该行尾已加 `⚠️ 历史接线` 标记）把 LBPH 专用的 `identifyThreshold`（卡方距离阈值，默认 55.0）传给了 `ArcFaceWinRecognizer::initialize`，而 ArcFace 的判定量纲是**余弦相似度**（∈[-1,1]）⇒ `bestSim >= 55.0` 恒假 ⇒ `identify()` 恒返回 UNKNOWN（`FACE-ARCWIN-006`）。**已由 `0f9b6df` 修正**：现行 `RuntimeBootstrap::build()` 在 ArcFace 分支注入 `identifyThresholdArcFace`，`identifyThreshold` 仅 LBPH 使用。LBPH 分支本身正确，不在修正之列。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 FramePipeline、HttpFacesServer、Engine 三个模块从"大而全执行类"重构为"薄协调器 + 可替换阶段"，在不改变外部接口的前提下实现局部变化只影响局部对象、每个阶段独立可测。
@@ -94,7 +97,7 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         auto arcRec = std::make_unique<ArcFaceWinRecognizer>();
         cascadeOk = arcRec->initialize(cascadeUtf8, cfg.recognition.databasePath,
             cfg.recognition.arcFaceModelPath.string(),
-            cfg.recognition.minFaceSizePx, cfg.recognition.identifyThreshold);
+            cfg.recognition.minFaceSizePx, cfg.recognition.identifyThreshold);  // ⚠️ 历史接线：已由 0f9b6df 改为 identifyThresholdArcFace
         result.recognizer = std::move(arcRec);
     } else {
         auto lbpRec = std::make_unique<FaceRecognizer>();

@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-17
+as_of=2026-09-23
 -->
 
 # 模型获取与导入流程（Android 端）
@@ -150,12 +150,25 @@ profile 只能判「未提交」，把一次成功的替换**静默回滚**；�
 ## 5. 未导入模型时的行为（禁止静默回退 LBP）
 
 - 未导入/未激活时，Android 端应保持**降级预览**并显式报告 `missing_model`，**绝不静默回退 LBPH**。
-- 代码强制点：`Engine.cpp` 注释与逻辑（“模型尚未加载时仅预览并显式 missing_model，绝不静默回退 LBPH”）、`RealtimeFacePipeline.cpp` 的 `failResult("missing_model", …)`、`native_face_bridge.cpp` 的 `getRuntimeStatus` 缺省 `reason="missing_model"`、`MainActivity` 显示“缺失原因=…”。
+- 代码强制点：`Engine.cpp` 注释与逻辑（“模型尚未加载时仅预览并显式 missing_model，绝不静默回退 LBPH”）、`FaceRuntimeManifest::verifyFiles` 的模型文件校验结果（`src/cpp/src/FaceRuntimeProfile.cpp`：文件缺失归一为 `missing_model`，路径非法 / Git LFS pointer / SHA-256 不符归一为 `unsupported_input`；归一函数是 `src/cpp/src/pipeline/RealtimeFacePipeline.cpp` 的 `reasonFromVerifyError`，经 `failResult(reason, …)` 上报）、`native_face_bridge.cpp` 的 `getRuntimeStatus` 缺省 `reason="missing_model"`（首帧前 `reason` 为空时按快照是否生效取 `"ok"` / `"missing_model"`）、`MainActivity` 显示“缺失原因=…”。
 - `missing_model` 是加速契约固定 reason 码之一（`src/cpp/include/AccelerationContract.h`）。
 
 ## 6. 未覆盖项
 
-- 导入 UI 的完整交互（许可确认、SAF 选择、进度、失败提示）**已接线**（任务 18）：`MainActivity.bindModelManagementUi` 绑定 `btn_import_model`（`:3497`）→ `confirmLicenseThenPickModelZip` → SAF 回选后 `importModelZip`（`:3638`）在后台调用 `FaceModelManager.importZip` 并展示成功/失败。
-- 注册 UI 亦已接线（`btn_register_face`，`MainActivity:3500`），但注册闭环因缺 native 逐帧特征源仍不可用（Blocker，待补），详见 `docs/designs/android-enrollment-design.md` §3。
+- 导入 UI 的完整交互（许可确认、SAF 选择、进度、失败提示）**已接线**（任务 18）：`MainActivity.bindModelManagementUi` 绑定 `btn_import_model` → `confirmLicenseThenPickModelZip` → SAF 回选后 `importModelZip` 在后台调用 `FaceModelManager.importZip` 并展示成功/失败。（原文在此附有 `MainActivity` 行号，已删除：行号随代码漂移，此处只保留符号级引用，见 §7。）
+- 注册 UI 亦已接线（`btn_register_face` → `showFaceRegisterDialog` → `startEnrollment`）；注册**闭环**是否可用属注册设计范畴，以 `docs/designs/android-enrollment-design.md` §3 为唯一权威表述，本文不复述其状态（同一事实只允许一处权威表述，见 `docs/DOC_STANDARD.md` §3）。
 - 模型下载/自动获取不在本项目范围；本仓库不提供模型分发。
 - 多 profile 并存时的磁盘占用与清理策略未定义（当前保留 `.bak_<profileId>` 以便回滚）。
+
+## 7. 与代码的同步边界（语义漂移无门禁，如实登记）
+
+本文描述的大部分事实（校验链顺序、常量值、结果码、JNI 契约）在代码里各有一份实现。二者的一致性目前靠人工维护，风险边界如下：
+
+- **已被结构审计纳管（这不是缺口）**：`docs/designs/*.md` **在** `scripts/docs-sync-audit.js` 的扫描范围内——它按 `git ls-files --cached --others --exclude-standard "*.md"` 全量枚举 `.md`（不做目录级豁免），故 `docs/designs/` 下的**每一份**都在其中（此处刻意不写死份数：该目录随时可能增删）；本文件也已登记进 `docs/index.md`。受检的范围是**元数据块 / 索引完整性 / `.md` 交叉引用 / 反引号路径存在性 / 排版格式**。
+  ⚠️ **精确性订正（本批）**：`tests/scripts/docs-sync-audit.test.js` 里的断言是
+  `requiresDocMeta("docs/designs/a.md") === true`，即「**designs 不被豁免元数据**」。因该枚举是
+  「全部 `.md`」，二者**实质等价**，但**不是同一条断言**——此前本文写「已把『designs 必须纳管』
+  **固化**为断言」，属**表述夸大**（把「不豁免」说成了「被点名要求纳管」）。以实际断言为准。
+- **真正的残余缺口：语义一致性无门禁**。该审计器不做语义校验——没有任何规则能判定「文档里描述的字段序、常量值或函数签名与代码不符」。因此本文与代码之间的**语义漂移不会被任何门禁拦下**，只能靠人工复核发现（例：`.txn_` 字段序的描述曾与实现不一致，已修，但当时无门禁可拦）。
+- **行号引用一律不作数**。本文此前附带的 `MainActivity` 行号已改为符号级引用（见 §6）：行号随代码漂移且无人校验，引用它等于制造下一处失真。
+- **推荐处置方向（比新造检查器更划算）**：把本文中**已与代码重复的事实**（字段名单、常量表、结果码表）逐步改为**指针**而非副本——唯一事实源留在代码（`FaceModelManager` / `FaceModelManifest` / `FaceRuntimeManifest::verifyFiles`），本文只写一句「详见 `<符号>`」。这与 `docs/DOC_STANDARD.md` §3「同一事实只允许一处权威表述」同向，成本远低于另造一套「文档↔代码字段序比对器」。是否照此收敛由后续任务决定；本条只登记风险，不改变任何既有判定语义。

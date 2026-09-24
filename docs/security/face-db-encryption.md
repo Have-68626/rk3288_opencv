@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-08-13
+as_of=2026-09-23
 -->
 
 # FaceDatabase 加密安全规格（S-SEC-B09-002）
@@ -92,3 +92,86 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
   `bcrypt`/`crypt32`。本次验证以 `-E win_face_database_perf` 排除 ctest。
 - 密钥文件管理辅助（`ensureOrLoadKey`/`loadKey`）与 `WinJsonConfig` 内同名逻辑结构相似但
   参数化为任意路径；如需统一，后续可提取共享 `DpapiKeyFile` 工具（越出允许路径，另立任务）。
+
+## 7. 关联登记：日志中的明文 `person_id`（FACE-LOG-002，2026-09-23 追加）
+
+> **本节为新增登记，不改变 §1–§6 的任何条款**（密钥边界、存储格式、版本化迁移与回滚、
+> 公共 API 边界、验收判据均不变）。本节的写入链与 §1–§6 讨论的 `FaceDatabase` 文件加密
+> **互不相干**——`FaceDatabase` 的落盘加密已生效，本节讨论的是**另一条**未加密的持久化路径。
+> **决策状态：待拍板。当前为如实登记（未实施任何掩码，未改动任何日志写入代码）。**
+
+### 7.1 事实（已逐行核实）
+
+- `src/win/src/StructuredLogger.cpp:166-167` 把 `f.personId` 以**明文**写进 `faces_json`
+  片段（仅经 `escapeJson` 转义 JSON，**不做掩码**）。同一片段落在两处：
+  - CSV 的 `faces_json` 列（表头见 `:141`，落列见 `:181`）→ `<logDir>/recognition.csv`；
+  - JSONL 的 `faces` 数组（见 `:193`）→ `<logDir>/recognition.jsonl`。
+  - 文件路径由 `StructuredLogger.cpp:81-82` 拼出；`logDir` 默认 = exe 同级 `storage/win_logs`
+    （`src/win/src/WinJsonConfig.cpp` 的 `defaultAppConfig()` 中 `log.logDir` 默认值），
+    可由配置项 `log.logDir` 覆盖。
+- 每条人脸记录含 `x` / `y` / `w` / `h` / `person_id` / `distance` / `confidence`
+  （结构见 `src/win/include/rk_win/StructuredLogger.h:31-39`）。其中 `distance` 由
+  `src/win/src/SideEffectSink.cpp:37` **恒写 0.0**（不携带任何信息），只有 `confidence` 是真实值。
+- **结构性缺口（不是「漏了 personId 这一个键」）**：脱敏工具 `maskSensitiveData`
+  （`src/cpp/src/NativeLog.cpp:228-270`）的敏感键预检清单（`:193-197`）与 KV 正则
+  （`:249-254`）确实不含 `personId` / `person_id`；但更本质的是——`StructuredLogger`
+  **完全不调用任何脱敏函数**（它只有 `escapeJson`，仅转义、不掩码），`maskSensitiveData`
+  只服务于 `rklog::`（`NativeLog.cpp`）那条链（⚠️ 该链在 Windows 服务下**不落盘**——`src/win/`
+  未接入 rklog，见 §7.2 末条）。⇒ 现状是
+  「**有一条脱敏工具、有一条明文写入，两者互不相干**」；把 `personId` 加进键清单**不会**
+  改变 `StructuredLogger` 的写入（它根本不经过该函数）。
+- **仓内消费方：零**。全仓检索 `recognition.csv` / `recognition.jsonl` / `faces_json`，命中的
+  只有**写方**与**注释/文案**两类，没有任何一处**读取**：
+  - 写方：`StructuredLogger.cpp:81` / `:82`（拼两个路径）、`:141`（CSV 表头）、
+    `:181`（`faces_json` 落列）、`:193`（JSONL 的 `faces` 数组）——**这几处行号已于本批逐条复核、当前准确**
+    （区别于 `WinJsonConfig.cpp` 那类本批大幅改动过的文件）；
+  - 忽略规则：`.gitignore:46-47`；
+  - 注释/文案（**均不读写该文件**）：`src/win/include/rk_win/WinConfig.h`（落盘上限说明）、
+    `src/win/src/WinJsonConfig.cpp`（日志容量分摊告警文案）、
+    `tests/win/test_win_json_config.cpp`（用例注释），以及本文件与
+    `docs/guides/windows-service/deploy_and_rollback.md`。
+  - 另有一份**仓根残留的未跟踪产物** `recognition.csv`（测试副作用、被 `.gitignore` 忽略）。
+  ⚠️ 本节此前写「**只**命中写方与 `.gitignore`」——那是**穷举式断言**，已被本批自身推翻
+  （上面列出的 `WinConfig.h` / `WinJsonConfig.cpp` 文案即反例），故改为分类列举。
+  **实质结论不变且仍成立：无端点、无脚本、无测试读取该文件**。下游是人（Excel / pandas / jq）。
+- **同一身份的实际暴露面（如实核对，勿据单点推断）**：
+  - HTTP 的 JSON 接口**不返回** `personId`：`/api/faces`、`/api/v1/faces` 与 SSE 流
+    （`/api/faces/stream`、`/api/v1/faces/stream`）均经 `buildFacesJson`
+    （`src/win/src/FacesJson.cpp`）序列化，每张脸只有 `bbox` / `display_bbox` / `confidence`
+    ——**没有** personId 字段。
+  - `personId` **确实**出现在另外两处：(a) 本节的日志文件；(b) **预览画面像素**——
+    `SideEffectSink::drawFacesOverlay`（`src/win/src/SideEffectSink.cpp`，标签拼装见 `:125`、
+    `cv::putText` 见 `:133`）把 `personId + 置信度` 文本绘制到渲染帧上，而该帧正是
+    `/api/v1/preview.jpg` 与 `/api/v1/preview.mjpeg` 返回的内容。
+  - 识别库自身（`FaceDatabase`）以 AES-256-GCM 加密落盘（§1–§3），身份标签不在磁盘明文。
+- 即：**personId 的明文入口是「日志文件」与「预览像素」两处**，性质不同——前者是持久化、
+  可离线复制/外发的结构化 PII；后者是需认证（token 配置后）的实时画面。
+
+### 7.2 未做掩码的决策依据（客观陈述，不替用户下结论）
+
+- 掩码**会**减少一处持久化的明文身份面（日志文件长期留存，且随文件被复制/外发带走）；
+  但同一身份仍会经预览画面像素暴露，故掩码**不消除全部**暴露路径。
+- 掩码**会**损失「日志直接点名」的排障便利：排障者将无法从 `recognition.csv` 直接读出
+  「谁被识别 / 未被识别」。掩码后仍保留的定位信息是**人脸框坐标 + `confidence`**
+  （`distance` 恒 0，不提供信息）；若排障需要跨表关联身份，需另行引入可控关联手段。
+- 可选掩码策略至少三种，**尚未拍板**：
+  1. 全掩码（`person_id` 恒写为占位符）；
+  2. 保留 SHA-256 前 8 字节（可跨表关联、不可反查身份）；
+  3. 维持现状（明文），改以「日志目录按敏感数据保护」的运维约束承接。
+- 相关但独立的既有事实（⚠️ **本批更正**，原文称「`logDir` 同时承载 `rklog::` 日志与上述结构化日志」）：
+  **`logDir` 下没有、也不会有 `rklog::` 日志**。`src/win/` **根本未接入 rklog**（全仓 `src/win/` 对
+  `rklog` 只命中 `WinJsonConfig.cpp` 里那句「本服务未接入 rklog」的注释，无任何 `rklog::logXxx` 调用），
+  而 rklog 的文件落盘需先调 `rklog::setLogDirs`（`src/cpp/src/NativeLog.cpp`），其调用方只有 Android
+  JNI（`src/cpp/jni/config.cpp`）与两个测试 ⇒ Windows 服务下 `logDir` **只承载三份文件集**
+  （`recognition.csv` / `recognition.jsonl` / `event_log.jsonl`，另有各自 `.1`…`.N` 滚动档位）。
+  ⇒ 「按敏感数据保护 `logDir`」因此**不**与 §7.1 那条 `rklog::` 掩码链重叠：它是一条**只针对这三份
+  明文结构性日志**的运维约束，也不改变「落盘面 = 3 份」的记账口径（加 rklog 才是 4 份，而它不落盘）。
+
+### 7.3 拍板前即已成立的约束
+
+- `storage/win_logs/`（或 `log.logDir` 指向的目录）**须按敏感数据保护**：其中含明文 PII
+  （`person_id`），敏感级别与 `config.key.dpapi`、`FaceDatabase` 密钥文件同级。
+- 部署与运维侧的落地要求见 `docs/guides/windows-service/deploy_and_rollback.md`
+  「运行期所需文件清单」。
+- 本节**未改动任何日志写入代码**（`StructuredLogger.cpp` / `NativeLog.cpp` 均未改），
+  也**未实施任何掩码**；掩码策略一旦拍板，须先更新本节再同步实现与测试。

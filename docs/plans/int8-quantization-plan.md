@@ -6,8 +6,8 @@ as_of=2026-06-23
 
 # INT8 量化工具链 Implementation Plan
 
->
-> **状态**: 历史任务记录。原任务曾按 `yolo_face` 路径完成；当前量化脚本和 CI 已转向 SCRFD，但 C++ 运行时与测试尚未完成同名迁移，不能再视为端到端全部完成。
+> **状态**: 历史快照（`as_of=2026-06-23`），保留原文不作订正。下文所有代码片段与行号都是**当时的形态，不代表现行实现**——被它引用的文件（`src/win/src/WinJsonConfig.cpp`、`src/win/include/rk_win/WinConfig.h`、`src/cpp/src/FaceInferStages.cpp`）此后都经过大幅改动，快照里的行号早已落到别处（其中 `WinConfig.h` 的 `ModelConfig` 与 `WinJsonConfig.cpp` 的两处，在**本批改动之前的 HEAD 上即已失准**，并非本批所致）。⇒ 下文的**一切行号一律不作数**；行号随代码漂移且无人校验，引用它等于制造下一处失真（同 `docs/plans/2026-07-03-triple-refactor-plan.md` 的文件头先例与 `docs/designs/model-acquisition-import.md` §7 的处置方向）。**本节刻意不复述任何「当前行号」**——写死行号正是它要防的失真形态；确需定位时一律以符号（结构体 / 函数 / 配置键名）为准。
+> **状态（续）**: 历史任务记录。原任务曾按 `yolo_face` 路径完成；当前量化脚本和 CI 已转向 SCRFD，但 C++ 运行时与测试尚未完成同名迁移，不能再视为端到端全部完成。
 
 ## 当前实现校准
 
