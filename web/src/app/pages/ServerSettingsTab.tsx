@@ -598,14 +598,14 @@ export function ServerSettingsTab() {
                     <Form.Item
                       label="单文件最大字节数"
                       name={['log', 'maxFileBytes']}
-                      tooltip="声明上界 1 GiB；生效上界约 85.33 MiB —— 运行期按三份文件集（recognition.csv / recognition.jsonl / event_log.jsonl）合计 512 MiB 的总预算只钳不拒地下调（单份均分额约 170.67 MiB，本键取其一半）。填更大的值不会报错，只会被下调并告警（configStatus 转 degraded）；后端返回的是钳后生效值。"
+                      tooltip="声明上界 1 GiB；生效上界 64 MiB —— 运行期按四份文件集（recognition.csv / recognition.jsonl / event_log.jsonl，以及旧版 UI 目标的 render_metrics.jsonl）合计 512 MiB 的总预算只钳不拒地下调（单份均分额 128 MiB，本键取其一半）。填更大的值不会报错，只会被下调并告警（configStatus 转 degraded）；后端返回的是钳后生效值。"
                     >
                       <InputNumber min={1024} max={1024 * 1024 * 1024} style={{ width: '100%' }} />
                     </Form.Item>
                     <Form.Item
                       label="滚动文件数"
                       name={['log', 'maxRollFiles']}
-                      tooltip="声明上界 1000；生效上界由运行期按同一总预算下调 = 单份均分额（约 170.67 MiB）÷ 钳后的「单文件最大字节数」− 1（默认 10 MiB 时为 16）。填大于生效上界的值不会报错，只会被下调并告警（configStatus 转 degraded）；后端返回的是钳后生效值。"
+                      tooltip="声明上界 1000；生效上界由运行期按同一总预算下调 = 单份均分额（128 MiB）÷ 钳后的「单文件最大字节数」− 1（默认 10 MiB 时为 11）。填大于生效上界的值不会报错，只会被下调并告警（configStatus 转 degraded）；后端返回的是钳后生效值。"
                     >
                       <InputNumber min={1} max={1000} style={{ width: '100%' }} />
                     </Form.Item>

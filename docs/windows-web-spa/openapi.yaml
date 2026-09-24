@@ -34,7 +34,7 @@ paths:
           无法判定配置状态，仅内部测试路径可达）。判据优先级：`unknown` > `rejected` > `degraded` > `ok`。
           恒出现使监控能区分「配置正常」与「对端为旧版本、尚未实现本字段」。
           ⚠️ `degraded` 的成因不止「默认配置写盘失败 / 序列化未通过 schema」，还包括启动期的
-          **越界值钳制告警**（`log.maxFileBytes`、`log.maxRollFiles` 超三份文件集合计的 512 MiB 总预算，
+          **越界值钳制告警**（`log.maxFileBytes`、`log.maxRollFiles` 超**四份**文件集合计的 512 MiB 总预算，
           或 `recognition.identifyThreshold` 超物理上界 64）与**不安全路径告警**（路径含 `..` 段）。
           这两类成因有一个关键性质：启动期**只告警、不拒绝**（拒绝会触发 INI 回落并清空用户配置）；
           其中越界值另在**内存中**被夹进合法区间（「只钳不拒」），越界路径则原样保留。
@@ -938,10 +938,16 @@ components:
           description: |
             单日志文件最大字节数（**声明值**）。
             ⚠️ 该值**可能被运行期按总预算静默下调**，`GET /api/v1/settings` 返回的是**钳后生效值**：
-            本服务的落盘面是 **3 份**文件集（`recognition.csv`、`recognition.jsonl`、`event_log.jsonl`），
-            各占 `maxFileBytes × (maxRollFiles + 1)` 字节，三份**合计**受 512 MiB 总预算约束
-            （单份均分额约 170.67 MiB = 178956970 B），故本键生效上界取均分额的一半 ≈ **85.33 MiB**
-            （89478485 B），以保证 `maxRollFiles` 取 schema 下界 1 时单份仍需 `maxFileBytes × 2`。
+            落盘面为 **4 份**文件集（`recognition.csv`、`recognition.jsonl`、`event_log.jsonl`，
+            以及**旧版 UI 目标**（`win_camera_face_recognition`）另写的 `render_metrics.jsonl`），
+            各占 `maxFileBytes × (maxRollFiles + 1)` 字节，四份**合计**受 512 MiB 总预算约束
+            （单份均分额 = 512 MiB / 4 = 128 MiB = 134217728 B），故本键生效上界取均分额的一半
+            = **64 MiB**（67108864 B），以保证 `maxRollFiles` 取 schema 下界 1 时单份仍需
+            `maxFileBytes × 2`。
+            ⚠️ 除数取 **4** 而非 3 的推导：`maxFileBytes` / `maxRollFiles` 是**同一份 `config.json`
+            的两个键**、被两个可执行体共用，而两者写入的文件集数不同（`win_local_service` 写 3 份；
+            `win_camera_face_recognition` 写 4 份）⇒ 预算要成立就必须按**写得多**的那个分配。
+            取大只让实际占用更小，方向安全。
             下调只**告警**（`configStatus` 转 `degraded`）、不拒绝；`maximum` 保持 schema 契约值不变，
             **不要**据此收紧（收紧会让既有合法配置失效）。
             ⚠️ 上述「只**告警**（`configStatus` 转 `degraded`）、不拒绝」**只对启动装载
@@ -949,7 +955,7 @@ components:
             （`reloadFromDisk`）虽同样只告警、不拒绝，但其告警只并入内部 `outErr`（生产调用方忽略）
             ⇒ 用户不可见、**不**产生 `degraded`，且该路径**不写盘**；**PUT 路径不成立**：
             `PUT /api/v1/settings` **不产生告警、也不产生 `degraded`**，但提交会把**钳后的生效值**
-            （如 `maxRollFiles=1000` 在默认 `maxFileBytes` 下变为 16）**静默写回** `config.json`
+            （如 `maxRollFiles=1000` 在默认 `maxFileBytes` 下变为 11）**静默写回** `config.json`
             ⇒ PUT 侧是「**静默收敛到生效值**」，与 `config.schema.json` 的同键 description 同口径。
           minimum: 1024
           maximum: 1073741824
@@ -958,9 +964,9 @@ components:
           type: number
           description: |
             滚动保留日志文件数（**声明值**）。
-            ⚠️ 同 `maxFileBytes`：可能被运行期按三份文件集合计的 512 MiB 总预算静默下调——上界
-            = 单份均分额（约 170.67 MiB）/ **钳后的** `maxFileBytes` − 1；默认 10 MiB 时上界为 **16**
-            （178956970 / 10485760 = 17，下取整后减 1），`maxFileBytes` 取上限时上界为 1。
+            ⚠️ 同 `maxFileBytes`：可能被运行期按**四份**文件集合计的 512 MiB 总预算静默下调——上界
+            = 单份均分额（128 MiB）/ **钳后的** `maxFileBytes` − 1；默认 10 MiB 时上界为 **11**
+            （134217728 / 10485760 = 12，下取整后减 1），`maxFileBytes` 取上限时上界为 1。
             `GET /api/v1/settings` 返回钳后生效值；**启动装载**下调只告警、不拒绝（`configStatus` 转
             `degraded`，磁盘原值不改）。
             ⚠️ 同 `maxFileBytes`：**热重载**的同类告警用户不可见且不写盘；**PUT 路径不产生告警、也不

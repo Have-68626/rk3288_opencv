@@ -187,7 +187,7 @@ double clampIdentifyThreshold(double v) {
 
 std::uint64_t clampLogMaxFileBytes(std::uint64_t v) {
     // 只压上界（不抬到 1024）：下界属既有 schema 契约，放宽会改变「既有非法配置被拒」的语义。
-    // 上界 = 单份文件集均分额的一半（kLogPerSetBudgetBytes / 2 = 89478485），见 kLogMaxFileBytesCap 的推导。
+    // 上界 = 单份文件集均分额的一半（kLogPerSetBudgetBytes / 2 = 67108864），见 kLogMaxFileBytesCap 的推导。
     return std::min(v, kLogMaxFileBytesCap);
 }
 
@@ -195,7 +195,7 @@ int clampLogMaxRollFiles(std::uint64_t maxFileBytes, int v) {
     // 按**单份均分额**反推上界：maxFileBytes × (maxRollFiles + 1) ≤ kLogPerSetBudgetBytes
     //   ⇒ maxRollFiles ≤ 均分额 / maxFileBytes − 1（无符号整数除法即下取整）。
     // ⚠️ 分子必须用**钳后**的 maxFileBytes：用原值会算出比真实上界更小的值（例：原值 1 GiB 时
-    //    均分额/原值 = 178956970/1073741824 = 0 ⇒ 上界退化为 1，钳不住均分额；这正是 maxFileBytes
+    //    均分额/原值 = 134217728/1073741824 = 0 ⇒ 上界退化为 1，钳不住均分额；这正是 maxFileBytes
     //    也要钳的原因）。
     const std::uint64_t effective = clampLogMaxFileBytes(maxFileBytes);
     const std::uint64_t ratio = (effective == 0) ? 1 : (kLogPerSetBudgetBytes / effective);
