@@ -37,8 +37,29 @@ exit /b %ERRORLEVEL%
 - `rk_android_gate.bat`：上面这段（Android 全门禁：assemble + 单测 + lint）
 - `rk_probe.bat`：同上去掉 assemble/lint，`--tests "%~1"`（单个全限定类名）
 - `rk_javatest.bat`：同上，`--tests "com.example.rk3288_opencv.FaceModelManagerTest"`
-- `rk_docsgate.bat`：`node scripts\docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit`
-  然后 `echo AUDIT_EXIT=%ERRORLEVEL%`，再 `node scripts\clean-repo-junk.js scan --ci` 后 `echo HYGIENE_EXIT=%ERRORLEVEL%`
+- `rk_docsgate.bat`：门禁前置脚本（文档同步审计 + 仓库卫生扫描）。**必须存成 UTF-8 + CRLF**
+  （本机 cmd 活动代码页为 65001；实测 UTF-8 注释若用 LF-only 换行，cmd 会误解析多字节注释并执行乱码、
+  连带污染 `ERRORLEVEL` —— **必须 CRLF**）。⚠️ **两步都要跑到**（第一步失败不得跳过第二步，否则少一个
+  信号）；`%ERRORLEVEL%` 必须先 `set` 存进 `AUDIT_EXIT` / `HYGIENE_EXIT` 再判（cmd 在 `if` 块里会提前
+  展开 `%ERRORLEVEL%`，直接写 `if %ERRORLEVEL% neq 0` 会读到进入该块前的陈旧值）；**末尾必须以 `exit /b`
+  透出真实退出码**：两步都为 `0` ⇒ `0`，否则先返回审计码（`AUDIT_EXIT`）、审计为 `0` 时才返回卫生码
+  （`HYGIENE_EXIT`）。**末尾若缺 `exit /b`，最后一句是 `echo` 会让退出码恒为 `0`（假绿，本脚本曾犯此错）**：
+
+  ```bat
+  @echo off
+  setlocal
+  cd /d D:\19842\Documents\GitHub\rk3288_opencv
+  node scripts\docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit
+  REM 先把 ERRORLEVEL 存进变量再判，避开 if 块里 %ERRORLEVEL% 的陈旧展开陷阱
+  set AUDIT_EXIT=%ERRORLEVEL%
+  echo AUDIT_EXIT=%AUDIT_EXIT%
+  node scripts\clean-repo-junk.js scan --ci
+  set HYGIENE_EXIT=%ERRORLEVEL%
+  echo HYGIENE_EXIT=%HYGIENE_EXIT%
+  REM 审计优先：审计为 0 时才返回卫生码
+  if not "%AUDIT_EXIT%"=="0" exit /b %AUDIT_EXIT%
+  exit /b %HYGIENE_EXIT%
+  ```
 
 ### 构建目录（`builds/`）
 ```bash
