@@ -92,7 +92,16 @@ std::vector<float> runNcnnModel(const std::string& modelDir,
     }
 
     ncnn::Extractor ex = net.create_extractor();
-    ex.input(inputBlob, inputMat);
+    // ⚠️ 返回值**必须检查**（2026-09-26 二次审计补）：`ex.input()` 在 blob 名与模型不符时返回非 0
+    //    （`ncnn_set_input_failed`）而**不抛异常**。此前忽略返回值 ⇒ 输入名写错时 extract 一并失败，
+    //    再看下面 extract 的 ret ⇒ 只会打印 "extract failed"，被上层归因成「本版本不支持解析」并
+    //    **以成功退出**（假 SKIP）。这与 `674f91a` 修的 ncnn 输入名静默失败是同一类形态。
+    int inRet = ex.input(inputBlob, inputMat);
+    if (inRet != 0) {
+        std::cerr << "input failed for blob \"" << inputBlob << "\" ret=" << inRet
+                  << "（blob 名与模型不符？核对 .param 第 3 行的 Input 层名）" << std::endl;
+        return {};
+    }
 
     ncnn::Mat out;
     ret = ex.extract(outputBlob, out);
@@ -208,6 +217,11 @@ bool testDetectPrecision() {
     ncnn::Mat in = preprocessImage(img, 640, 640, meanVals, normVals);
 
     // FP32 推理（det_10g 有三个输出: out2=score, out5=bbox, out8=关键点）
+    // ⚠️ 输入 blob 名 `"in0"` —— **此处是对的，已核实**（2026-09-26 二次审计）：
+    //    本用例的 `fp32Dir` 是同函数内的常量 `"deps/insightface"`（见上方），实际加载的是
+    //    `deps/insightface/det_10g.ncnn.param`，而该文件第 3 行实测为 `Input in0`。
+    //    ⚠️ 勿用本仓 `models/` 下的 SCRFD 结论去"纠正"它：那 10 个 `.param`（PNNX 转换版）
+    //    第 3 行是 `Input input.1`，**与这份未转换的 ncnn 版不是同一命名系** —— 两者都对。
     auto fp32Score = runNcnnModel(fp32Dir, "det_10g.ncnn.param", "det_10g.ncnn.bin",
                                    "in0", "out2", in);
     auto fp32Bbox = runNcnnModel(fp32Dir, "det_10g.ncnn.param", "det_10g.ncnn.bin",

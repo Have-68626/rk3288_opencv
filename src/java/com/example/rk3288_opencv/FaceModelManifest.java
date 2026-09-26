@@ -251,8 +251,14 @@ public final class FaceModelManifest {
         if (detParam == null || detBin == null) {
             return new ParseResult(Status.MISSING_FIELD, null, "detector 配置缺失或非法");
         }
-        // 检测器输入节点缺键回落值 = "input.1"（与 C++ FaceRuntimeProfile 逐字镜像）。
-        // 证据：本仓所有 SCRFD .param 的 Input 层名都是 input.1；"in0" 是 ArcFace 侧的名字，曾被人误抄。
+        // 检测器输入节点缺键回落值 = "input.1"（**方向**与 C++ FaceRuntimeProfile 一致）。
+        // ⚠️ 精确措辞（2026-09-26 二次审计更正）：本行**不是**「与 C++ 逐字镜像」——
+        //    C++ `getString` 在**空串**时也回落（`v->s.empty()` ⇒ 用默认值），而本行的 `strOr`
+        //    **只在 null 时**回落 ⇒ manifest 写 `"input": ""` 时 C++ 得 input.1、Java 得 ""。
+        //    该分歧属**已知边界**（空串是坏 manifest，两条路径都会在推理期失败），不在此处改行为。
+        // 证据：**`models/` 下全部 10 个** SCRFD .param（含 int8 侧）的 Input 层名都是 input.1；
+        // 勿推广到 `deps/insightface/det_10g.ncnn.param`——那份未转换的 ncnn 版实测是 in0。
+        // "in0" 是 ArcFace 侧的名字，曾被人误抄。
         String detInput = strOr(asString(det.get("input")), "input.1");
         List<String> detOutputs = new ArrayList<>();
         Object detOutsRaw = det.get("outputs");
