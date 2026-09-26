@@ -100,7 +100,20 @@ public class MainActivityDisplayNameLifecycleTest {
                 count(text, "displayNameStore().save(") == 1);
     }
 
-    /** 契约 4：取消、会话结束、销毁三条路径都要清空内存显示名。 */
+    /**
+     * 契约 4：取消、会话结束、销毁三条路径都要清空内存显示名。
+     *
+     * <p><b>诚实边界声明（勿高估本守卫）</b>：本条是<b>形态判据</b>——读 {@code MainActivity.java} 全文后做
+     * 字符下标/子串算术（{@code count}/{@code indexOf}），<b>不是行为覆盖</b>：它证明不了这三条路径在运行时
+     * 真的清空了字段，只证明源码里出现了足够数量的 {@code pendingEnrollmentDisplayName = null;} 且位置
+     * 靠近对应方法。等价重排（改名、抽方法、改写法）即可绕开。
+     *
+     * <p>升级为行为断言所需的<b>接缝不存在</b>：{@code MainActivity} 是 {@code AppCompatActivity}，纯 JVM
+     * 不可构造（见类 javadoc）；且 {@code pendingEnrollmentDisplayName} 是 <b>private 字段</b>，
+     * {@code MainActivity} 全文<b>无任何 {@code @VisibleForTesting} / {@code *ForTesting} 成员</b>，
+     * 无法在 JVM 内驱动并断言其运行行为。故<b>不得</b>把本条当作行为证据；真升级需先引入可注入接缝
+     * （生产结构改动，另行评审）。
+     */
     @Test
     public void memoryDisplayNameIsClearedOnCancelCommitAndDestroy() throws IOException {
         String text = source();
@@ -119,7 +132,18 @@ public class MainActivityDisplayNameLifecycleTest {
         assertTrue("销毁路径必须清空内存显示名", destroyClear > destroy && destroyClear - destroy < 400);
     }
 
-    /** 契约 5：迁移必须「先验证密文可读、再删原明文」，绝不先删后验。 */
+    /**
+     * 契约 5：迁移必须「先验证密文可读、再删原明文」，绝不先删后验。
+     *
+     * <p><b>诚实边界声明（勿高估本守卫）</b>：本条同样是<b>形态判据</b>——读 {@code MainActivity.java} 全文后
+     * 做字符下标/子串算术，<b>不是行为覆盖</b>：它证明不了迁移在运行时确实「先读回验证、后删原值」，只证明
+     * 源码里 {@code readFromDisk(} 与 {@code prefs.edit().remove(key).apply();} 的相对下标顺序。等价重排即可绕开。
+     *
+     * <p>升级为行为断言所需的<b>接缝不存在</b>：{@code migrateLegacyDisplayNames()} 与 {@code displayNameStore()}
+     * 均为 <b>private</b>，{@code MainActivity} 全文<b>无任何 {@code @VisibleForTesting} / {@code *ForTesting}
+     * 成员</b>，{@code LegacyDisplayNames} 也只暴露键选择助手、<b>不含迁移路径</b>（见类 javadoc）。故<b>不得</b>
+     * 把本条当作行为证据；真升级需先把迁移体抽为可注入协作者（生产结构改动，另行评审）。
+     */
     @Test
     public void migrationVerifiesCiphertextBeforeDeletingPlaintext() throws IOException {
         String text = source();

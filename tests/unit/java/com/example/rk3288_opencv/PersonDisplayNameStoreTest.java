@@ -12,8 +12,12 @@ import static org.junit.Assert.assertTrue;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.WildcardType;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -794,9 +798,28 @@ public class PersonDisplayNameStoreTest {
      *   <li>新增**任意**静态接缝类型字段（如 {@code private static FileOps fileOps}）⇒ 字段判据红。</li>
      * </ul>
      *
-     * <p><b>边界（如实声明）</b>：仍只按**形态**判据（setter 命名 + 接缝参数/字段类型）。以**其它类型**
-     * 承载（静态 {@code Consumer<FileOps>} 等）或以**非 setter 命名**承载（{@code static void install(...)}）
-     * 的静态注入，本条**不覆盖**。
+     * <p><b>边界（如实声明，收紧后）</b>：类型判据已**递归下探泛型实参**（见 {@link #mentionsSeamType(Type)}）
+     * —— {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
+     * {@code FileOps[]} / {@code ? extends FileOps} 等「以其它类型承载」的静态注入**已被覆盖**；
+     * **非 setter 命名**承载（{@code static void install(FileOps)}）由判据②覆盖。仍**不覆盖**的只有：
+     * 把接缝藏进**自定义 Holder 类内部**（如 {@code static final Holder H} 而 {@code Holder} 内才有
+     * {@code FileOps} 字段）—— 判据只作用于成员自身声明的（泛型）类型，**不反射进任意 Holder 类的内部**。
+     *
+     * <p><b>净缺口（如实登记，本批收紧判据的代价）</b>：存在一类形态**旧判据覆盖、新判据不覆盖** ——
+     * 「<b>静态</b>、<b>非 {@code set*} 命名</b>、<b>返回非 void</b>、<b>恰一个接缝类型参数</b>」的注入方法
+     * （如 {@code static FileOps installForTesting(FileOps)}）：**旧**形态判据（任意静态、参数恰为一个接缝
+     * 类型）会判红；**新**判据①需 {@code set} 前缀（不命中）、②需 {@code void} 返回（不命中）⇒ 静默放过。
+     * **为何接受**：与其余三处同类守卫采用同一套两条口径 —— {@code FeatureTemplateEncryptedStoreTest.
+     * featureTemplateEncryptedStoreExposesNoStaticInjectionSeam}、{@code FaceModelManagerTest.
+     * faceModelManagerExposesNoStaticFileOpsSeam}、{@code AndroidEnrollmentRepositoryTest.
+     * androidEnrollmentRepositoryExposesNoStaticInjectionSeam}（均为 ①{@code set*}+接缝参数 /
+     * ②{@code void}+单接缝参数）。补回该形态需**单独评估放宽面**（放宽会引入新的误伤面），故此处只登记、
+     * **不放宽判据**。
+     *
+     * <p><b>已知代价（如实声明，不得隐瞒）</b>：递归判据会命中一批**合法**的静态常量 —— 若将来合法
+     * 新增 {@code private static final Map<String, FileOps> DEFAULTS}，本条**会真红**。那不是假红，是
+     * **策略边界被推进**，需显式白名单 + 评审。⚠️ **不要**为了绕过它而放行 {@code Map}/{@code Optional}
+     * （那等于把判据换回空气），也不要直接删判据。
      */
     @Test
     public void personDisplayNameStoreExposesNoStaticInjectionSeam() {
@@ -805,8 +828,8 @@ public class PersonDisplayNameStoreTest {
                 continue;   // 合法注入方法在本类均为**实例**方法，故只查静态
             }
             boolean hasSeamParam = false;
-            for (Class<?> p : m.getParameterTypes()) {
-                if (isSeamType(p)) {
+            for (Type p : m.getGenericParameterTypes()) {
+                if (mentionsSeamType(p)) {
                     hasSeamParam = true;
                     break;
                 }
@@ -816,7 +839,7 @@ public class PersonDisplayNameStoreTest {
                     m.getName().startsWith("set") && hasSeamParam);
             boolean voidSingleSeam = m.getReturnType() == void.class
                     && m.getParameterCount() == 1
-                    && isSeamType(m.getParameterTypes()[0]);
+                    && mentionsSeamType(m.getGenericParameterTypes()[0]);
             assertFalse("不应暴露静态注入入口（返回 void 且参数恰为一个接缝类型）：" + m.getName(),
                     voidSingleSeam);
         }
@@ -825,13 +848,54 @@ public class PersonDisplayNameStoreTest {
                             + "——默认值请引用 FileStoreUtils.DEFAULT_FILE_OPS / "
                             + "FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER，静态字段会成为进程级可变注入入口："
                             + f.getName(),
-                    Modifier.isStatic(f.getModifiers()) && isSeamType(f.getType()));
+                    Modifier.isStatic(f.getModifiers()) && mentionsSeamType(f.getGenericType()));
         }
     }
 
-    /** 类型是否为任一测试接缝（{@link FileStoreUtils.FileOps} / {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}）。 */
-    private static boolean isSeamType(Class<?> type) {
-        return FileStoreUtils.FileOps.class.isAssignableFrom(type)
-                || FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(type);
+    /**
+     * 类型（含泛型）是否**提及**任一测试接缝（{@link FileStoreUtils.FileOps} /
+     * {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}）。
+     *
+     * <p>递归下探：{@code Class}（数组取组件类型）、{@link ParameterizedType}（递归每个实参）、
+     * {@link GenericArrayType}（递归组件类型）、{@link WildcardType}（递归上界）。故
+     * {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
+     * {@code FileOps[]} / {@code ? extends FileOps} 均命中。
+     *
+     * <p><b>为何不下探 Holder 类内部</b>：本判据只作用于成员**自身声明的（泛型）类型**，不反射进任意
+     * 自定义 Holder 类内部 —— 那是无界的，会把「任何持有接缝的类型」都算成接缝，误伤面失控。
+     *
+     * <p><b>已知代价（如实声明）</b>：递归会命中一批**合法**的静态常量（如 {@code private static final
+     * Map<String, FileOps> DEFAULTS}）—— 那不是假红，而是**策略边界被推进**，需显式白名单 + 评审。
+     * 不要为了绕过它而放行 {@code Map}/{@code Optional}（那等于把判据换回空气）。
+     */
+    private static boolean mentionsSeamType(Type type) {
+        if (type instanceof Class<?>) {
+            Class<?> c = (Class<?>) type;
+            if (c.isArray()) {
+                return mentionsSeamType(c.getComponentType());
+            }
+            return FileStoreUtils.FileOps.class.isAssignableFrom(c)
+                    || FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(c);
+        }
+        if (type instanceof ParameterizedType) {
+            for (Type arg : ((ParameterizedType) type).getActualTypeArguments()) {
+                if (mentionsSeamType(arg)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (type instanceof GenericArrayType) {
+            return mentionsSeamType(((GenericArrayType) type).getGenericComponentType());
+        }
+        if (type instanceof WildcardType) {
+            for (Type bound : ((WildcardType) type).getUpperBounds()) {
+                if (mentionsSeamType(bound)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
     }
 }

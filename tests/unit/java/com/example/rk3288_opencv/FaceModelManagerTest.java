@@ -10,8 +10,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.WildcardType;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
@@ -2941,45 +2945,127 @@ public class FaceModelManagerTest {
     }
 
     /**
-     * **结构守卫**：{@code FaceModelManager} 上**不再存在**静态 {@code FileOps} 注入入口 / 任意静态
-     * {@code FileOps} 注入字段（与 {@code PersonDisplayNameStoreTest} 对 {@code FileStoreUtils} 的守卫同构）。
+     * **结构守卫**：{@code FaceModelManager} 上**不再存在**静态接缝注入入口 / 任意静态接缝
+     * （{@code FileOps}）字段（与 {@code PersonDisplayNameStoreTest} 对 {@code FileStoreUtils} 的守卫同口径）。
      *
      * <p>反例原理：只要类上还能「一次注入、全局生效」，本仓的 JVM 内串行测试模型就可能被跨类污染。
      * 故用反射把「没有静态接缝」钉成可执行断言。
      *
-     * <p><b>打红方式</b>（改任一处即红）：
+     * <p><b>判据（含 FACE-TEST-003 收紧，与本仓其余三处守卫对齐）</b>：
      * <ul>
-     *   <li>新增**任何**接受单个 {@code FileOps} 参数的静态方法（**不限名**，含把
-     *       {@code setFileOpsForTesting} 改回静态/改名后重新加回）⇒ 方法断言红；</li>
-     *   <li>新增**任意**静态 {@code FileOps} 字段（含把 {@code fileOps} 改回 {@code private static volatile}）
-     *       —— 仅放行唯一合法常量 {@code DEFAULT_FILE_OPS} ⇒ 字段断言红。</li>
+     *   <li><b>方法①（收紧）</b>：不存在「名为 {@code set*} 且带接缝类型参数」的**静态**方法 ——
+     *       **不限返回类型**、**不限参数个数**；</li>
+     *   <li><b>方法②</b>：不存在「返回 {@code void} 且参数恰为一个接缝类型」的**静态**方法；</li>
+     *   <li><b>字段③</b>：静态接缝字段必须 {@code final}，且唯一允许的常量名是
+     *       {@code DEFAULT_FILE_OPS}（与 {@code FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER} 同构）。</li>
      * </ul>
      *
-     * <p><b>本守卫的边界（如实声明）</b>：只按**形态**判据（静态单 {@code FileOps} 参数方法 / 静态
-     * {@code FileOps} 字段）。若有人以**其它类型**承载注入（如静态 {@code Consumer<FileOps>}），本条不覆盖。
+     * <p><b>为何不误伤既有合法 API</b>：本类合法注入方法 {@code setFileOpsForTesting} 为**实例**方法
+     * ⇒ 方法判据（先过滤 {@code static}）不命中；静态 {@code dirLockForTesting} 等亦不带接缝类型参数。
+     *
+     * <p><b>打红方式</b>（改任一处即红）：
+     * <ul>
+     *   <li>把 {@code setFileOpsForTesting} 改为 {@code static}（不限返回类型/参数个数）⇒ 判据①红；</li>
+     *   <li>新增「返回 void 且参数恰为一个接缝类型」的静态方法 ⇒ 判据②红；</li>
+     *   <li>新增**任意**静态接缝字段（含把 {@code fileOps} 改回 {@code private static volatile}）
+     *       —— 仅放行唯一合法常量 {@code DEFAULT_FILE_OPS} ⇒ 字段判据红；</li>
+     *   <li>以**其它类型**承载接缝（静态 {@code Consumer<FileOps>} / {@code Map<String, FileOps>} 等）
+     *       ⇒ 判据①/②/③（递归下探泛型实参后）红。</li>
+     * </ul>
+     *
+     * <p><b>边界（如实声明，收紧后）</b>：类型判据已**递归下探泛型实参**（见 {@link #mentionsSeamType(Type)}）
+     * —— 静态 {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
+     * {@code FileOps[]} / {@code ? extends FileOps} 等「以其它类型承载」的静态注入**已被覆盖**；
+     * **非 setter 命名**承载（{@code static void install(FileOps)}）由判据②覆盖。仍**不覆盖**的只有：
+     * 把接缝藏进**自定义 Holder 类内部**（如 {@code static final Holder H} 而 {@code Holder} 内才有
+     * {@code FileOps} 字段）—— 判据只作用于成员自身声明的（泛型）类型，**不反射进任意 Holder 类的内部**。
+     *
+     * <p><b>已知代价（如实声明，不得隐瞒）</b>：递归判据会命中一批**合法**的静态常量 —— 若将来合法
+     * 新增 {@code private static final Map<String, FileOps> DEFAULTS}，本条**会真红**。那不是假红，是
+     * **策略边界被推进**，需显式白名单 + 评审。⚠️ **不要**为了绕过它而放行 {@code Map}/{@code Optional}
+     * （那等于把判据换回空气），也不要直接删判据。
      */
     @Test
     public void faceModelManagerExposesNoStaticFileOpsSeam() {
         for (Method method : FaceModelManager.class.getDeclaredMethods()) {
-            boolean staticMethod = Modifier.isStatic(method.getModifiers());
-            boolean takesSingleFileOps = method.getParameterCount() == 1
-                    && FaceModelManager.FileOps.class.equals(method.getParameterTypes()[0]);
-            assertFalse("FaceModelManager 不应再暴露静态 FileOps 注入入口（不限名的单 FileOps 参数静态方法）："
-                            + method.getName(),
-                    staticMethod && takesSingleFileOps);
+            if (!Modifier.isStatic(method.getModifiers())) {
+                continue;   // 合法注入方法在本类均为**实例**方法，故只查静态
+            }
+            boolean hasSeamParam = false;
+            for (Type p : method.getGenericParameterTypes()) {
+                if (mentionsSeamType(p)) {
+                    hasSeamParam = true;
+                    break;
+                }
+            }
+            // 判据①：名为 set* 且带接缝类型参数的静态方法 —— 不限返回类型/参数个数。
+            assertFalse("FaceModelManager 不应暴露静态注入入口（名为 set* 且带接缝类型参数的静态方法，"
+                            + "不限返回类型/参数个数）：" + method.getName(),
+                    method.getName().startsWith("set") && hasSeamParam);
+            // 判据②：返回 void 且参数恰为一个接缝类型的静态方法。
+            boolean voidSingleSeam = method.getReturnType() == void.class
+                    && method.getParameterCount() == 1
+                    && mentionsSeamType(method.getGenericParameterTypes()[0]);
+            assertFalse("FaceModelManager 不应暴露静态注入入口（返回 void 且参数恰为一个接缝类型）："
+                    + method.getName(), voidSingleSeam);
         }
         for (Field f : FaceModelManager.class.getDeclaredFields()) {
-            boolean staticFileOps = Modifier.isStatic(f.getModifiers())
-                    && FaceModelManager.FileOps.class.isAssignableFrom(f.getType());
-            if (!staticFileOps) {
+            boolean staticSeam = Modifier.isStatic(f.getModifiers())
+                    && mentionsSeamType(f.getGenericType());
+            if (!staticSeam) {
                 continue;
             }
-            assertTrue("静态 FileOps 字段必须是 final 不可变常量：" + f.getName(),
+            assertTrue("静态接缝字段必须是 final 不可变常量：" + f.getName(),
                     Modifier.isFinal(f.getModifiers()));
-            assertTrue("静态 FileOps 字段仅允许唯一合法常量 DEFAULT_FILE_OPS，不得新增注入字段："
+            assertTrue("静态接缝字段仅允许唯一合法常量 DEFAULT_FILE_OPS，不得新增注入字段："
                             + f.getName(),
                     "DEFAULT_FILE_OPS".equals(f.getName()));
         }
+    }
+
+    /**
+     * 类型（含泛型）是否**提及**测试接缝 {@link FaceModelManager.FileOps}。
+     *
+     * <p>递归下探：{@code Class}（数组取组件类型）、{@link ParameterizedType}（递归每个实参）、
+     * {@link GenericArrayType}（递归组件类型）、{@link WildcardType}（递归上界）。故
+     * {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
+     * {@code FileOps[]} / {@code ? extends FileOps} 均命中。
+     *
+     * <p><b>为何不下探 Holder 类内部</b>：本判据只作用于成员**自身声明的（泛型）类型**，不反射进任意
+     * 自定义 Holder 类内部 —— 那是无界的，会把「任何持有接缝的类型」都算成接缝，误伤面失控。
+     *
+     * <p><b>已知代价（如实声明）</b>：递归会命中一批**合法**的静态常量（如 {@code private static final
+     * Map<String, FileOps> DEFAULTS}）—— 那不是假红，而是**策略边界被推进**，需显式白名单 + 评审。
+     * 不要为了绕过它而放行 {@code Map}/{@code Optional}（那等于把判据换回空气）。
+     */
+    private static boolean mentionsSeamType(Type type) {
+        if (type instanceof Class<?>) {
+            Class<?> c = (Class<?>) type;
+            if (c.isArray()) {
+                return mentionsSeamType(c.getComponentType());
+            }
+            return FaceModelManager.FileOps.class.isAssignableFrom(c);
+        }
+        if (type instanceof ParameterizedType) {
+            for (Type arg : ((ParameterizedType) type).getActualTypeArguments()) {
+                if (mentionsSeamType(arg)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (type instanceof GenericArrayType) {
+            return mentionsSeamType(((GenericArrayType) type).getGenericComponentType());
+        }
+        if (type instanceof WildcardType) {
+            for (Type bound : ((WildcardType) type).getUpperBounds()) {
+                if (mentionsSeamType(bound)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
     }
 
     /** 记录每次破坏性调用的替身（委托真实文件系统，使导入等流程仍能成功走完）。 */

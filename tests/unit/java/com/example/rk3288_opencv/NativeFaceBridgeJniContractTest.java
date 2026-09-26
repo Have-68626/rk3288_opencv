@@ -46,6 +46,11 @@ import static org.junit.Assert.assertTrue;
  *       「校验并暂存」而非「已生效」；</li>
  *   <li>{@link #jniSourceIsWiredIntoCmakeAndroidBuild()} —— 新 JNI 源已接入 cmake/android.cmake
  *       构建源列表。</li>
+ *   <li>{@link #nativeLibHardcodedMethodLookupsMatchJavaDeclarations()} —— src/cpp/native-lib.cpp 中
+ *       <b>手写</b>的 {@code GetMethodID}/{@code GetStaticMethodID} 描述符与 Java 侧真实声明一致。
+ *       该文件此前<b>零守护</b>：{@code jni/} 目录里的方法走 {@code JniMethodRegistry} 动态注册、
+ *       不需要 {@code GetMethodID}，唯 {@code native-lib.cpp} 这一处是手写描述符，改名/改签名
+ *       不会有任何测试变红。</li>
  * </ol>
  * 真实的 C++ 边界行为（非 direct/长度不符/超限返回失败）依赖 JNIEnv + Android NDK，
  * 无法在 core_unit_tests（cmake/core.cmake 未收录 jni/*.cpp 且禁止改动）中实例化，
@@ -353,6 +358,140 @@ public class NativeFaceBridgeJniContractTest {
         return null;
     }
 
+    /**
+     * src/cpp/native-lib.cpp 的 {@code GetMethodID}/{@code GetStaticMethodID} 调用点正则。
+     *
+     * <p>与 {@link #CPP_GET_STATIC_METHOD_ID} 同源同风格，但额外覆盖 {@code GetMethodID}
+     * （<b>实例</b>方法查找，本仓 native-lib.cpp 用的就是它）。四个捕获组依次为：
+     * 查找种类、接收者 jclass 变量名、方法名、描述符。同样刻意不含行号（本仓行号大面积漂移），
+     * 且各分隔用 {@code \s*} 通配以允许调用折行。
+     */
+    private static final Pattern CPP_METHOD_ID_LOOKUP = Pattern.compile(
+            "(GetMethodID|GetStaticMethodID)\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*,\\s*"
+                    + "\"([^\"]+)\"\\s*,\\s*\"([^\"]+)\"\\s*\\)");
+
+    /**
+     * native-lib.cpp 中每个 GetMethodID/GetStaticMethodID 查找点方法名 → <b>声明该方法的 Java 源文件</b>
+     * （相对仓库根路径）。
+     *
+     * <p><b>为什么宿主是 MainActivity 而非 NativeFaceBridge：</b>native-lib.cpp 的查找载体是
+     * {@code GetObjectClass(activityLocal)}，{@code activityLocal} 派生自全局 {@code g_activity}；
+     * {@code g_activity} 由 {@code jni/engine.cpp} 在 {@code nativeInit}/{@code nativeInitFile} 里
+     * 以 {@code NewGlobalRef(thiz)} 存入，而这两个 native 方法是 {@code MainActivity} 的<b>实例</b>方法
+     * （{@code thiz} 即 MainActivity 实例）⇒ 运行时类为 MainActivity，故 {@code onNativeResult}
+     * 声明在 {@code MainActivity.java}。
+     *
+     * <p>未在此登记的方法名会让用例变红：新增硬编码查找点而不登记，「同类漏网」被显式阻断，
+     * 而不是静默跳过。
+     */
+    private static final Map<String, String> LOOKUP_HOST_JAVA = new LinkedHashMap<>();
+    static {
+        LOOKUP_HOST_JAVA.put("onNativeResult",
+                "src/java/com/example/rk3288_opencv/MainActivity.java");
+    }
+
+    /** 抽取 C++ 源中全部 GetMethodID/GetStaticMethodID 硬编码查找点；元素为 [种类, 接收者, 名, 描述符]。 */
+    private static List<String[]> cppMethodIdLookups(String src) {
+        List<String[]> out = new ArrayList<>();
+        Matcher m = CPP_METHOD_ID_LOOKUP.matcher(stripCommentsLexical(src));
+        while (m.find()) {
+            out.add(new String[]{m.group(1), m.group(2), m.group(3), m.group(4)});
+        }
+        return out;
+    }
+
+    /**
+     * 词法级去注释：按字符顺序扫描，正确跳过字符串/字符字面量，并按出现先后处理行注释与块注释。
+     *
+     * <p><b>为什么不复用 {@link #stripComments(String)}：</b>后者先删块注释、后删行注释，
+     * 会被「行注释里含一个块注释起始符」的写法骗到。src/cpp/native-lib.cpp 恰有此写法 ——
+     * 第 20 行是一句 {@code //} 行注释，正文里有 {@code jni/}<b>斜杠星号</b>{@code cpp} 这样的
+     * 路径片段；该块注释起始符会与第 179 行一处真正块注释的结束符配成一对，把两行之间的整个函数体
+     * （含本次要核对的 GetMethodID 调用点）一并吞掉 ⇒ 直接漏采。既有调用点（native_face_bridge.cpp
+     * 等）不含这种写法，故<b>本用例不动 {@link #stripComments(String)}</b>，改用本词法级实现。
+     *
+     * <p><b>保留字符串字面量内容</b>（不移除引号内文本）：本用例正需从中读取方法名/描述符。
+     */
+    private static String stripCommentsLexical(String src) {
+        StringBuilder out = new StringBuilder(src.length());
+        int i = 0;
+        int n = src.length();
+        while (i < n) {
+            char c = src.charAt(i);
+            if (c == '"' || c == '\'') {
+                // 字符串/字符字面量：连引号原样保留，内部转义不参与注释判定
+                char quote = c;
+                out.append(c);
+                i++;
+                while (i < n) {
+                    char d = src.charAt(i);
+                    out.append(d);
+                    i++;
+                    if (d == '\\' && i < n) {
+                        out.append(src.charAt(i));
+                        i++;
+                    } else if (d == quote) {
+                        break;
+                    }
+                }
+            } else if (c == '/' && i + 1 < n && src.charAt(i + 1) == '/') {
+                // 行注释：跳到行尾（保留换行，避免相邻 token 粘连）
+                i += 2;
+                while (i < n && src.charAt(i) != '\n' && src.charAt(i) != '\r') {
+                    i++;
+                }
+            } else if (c == '/' && i + 1 < n && src.charAt(i + 1) == '*') {
+                // 块注释：跳到配对的结束符之后
+                i += 2;
+                while (i + 1 < n && !(src.charAt(i) == '*' && src.charAt(i + 1) == '/')) {
+                    i++;
+                }
+                i = Math.min(n, i + 2);
+            } else {
+                out.append(c);
+                i++;
+            }
+        }
+        return out.toString();
+    }
+
+    /** 去掉 Java 参数/返回类型上的注解（如 {@code @NonNull}），避免其污染 JNI 描述符映射。 */
+    private static String stripJavaAnnotations(String s) {
+        return s == null ? "" : s.replaceAll("@\\w+(\\s*\\([^)]*\\))?", " ");
+    }
+
+    /**
+     * 抽取 Java 源中可见性为 public/protected/private 的（可含 static/final 等修饰）方法声明描述符，
+     * 按名筛选。类型映射复用 {@link #paramTypes} + {@link #typeToDesc}，保证与
+     * {@link #javaNativeDescriptors(String)} / {@link #javaPrivateStaticMethodDescriptors(String, String)}
+     * 口径一致（仅额外剥离参数/返回类型上的注解）。
+     *
+     * <p><b>刻意要求至少一个可见性修饰符</b>：声明必有之，而调用点（如 {@code obj.onNativeResult(x)}）
+     * 没有 ⇒ 调用点不会被误当声明，避免「恰好 1 处」断言被调用点满足而失去判别力。
+     */
+    private static List<String> javaMethodDescriptors(String src, String methodName) {
+        String clean = stripCommentsLexical(src);
+        String pkg = parsePackage(clean);
+        Map<String, String> imports = parseImports(clean);
+        Pattern p = Pattern.compile(
+                "\\b(?:public|protected|private)\\s+"
+                        + "(?:(?:static|final|synchronized|abstract|native|strictfp)\\s+)*"
+                        + "([\\w<>.$\\[\\]@ ]+?)\\s+"
+                        + Pattern.quote(methodName) + "\\s*\\(([^)]*)\\)");
+        List<String> out = new ArrayList<>();
+        Matcher m = p.matcher(clean);
+        while (m.find()) {
+            String ret = stripJavaAnnotations(m.group(1).trim());
+            StringBuilder desc = new StringBuilder("(");
+            for (String t : paramTypes(stripJavaAnnotations(m.group(2)))) {
+                desc.append(typeToDesc(t, imports, pkg));
+            }
+            desc.append(')').append(typeToDesc(ret, imports, pkg));
+            out.add(desc.toString());
+        }
+        return out;
+    }
+
     // ---------- 测试 ----------
 
     @Test
@@ -596,5 +735,103 @@ public class NativeFaceBridgeJniContractTest {
                         + "（Java 声明 vs C++ GetStaticMethodID）：Java=" + javaDesc
                         + " / C++=" + cppDesc,
                 javaDesc, cppDesc);
+    }
+
+    /**
+     * src/cpp/native-lib.cpp 中<b>硬编码</b>的 GetMethodID/GetStaticMethodID 描述符的 Java↔C++ 机械核对。
+     *
+     * <p><b>为什么必须单独开一个用例（此前零守护）：</b>{@code jni/} 目录里的 native 方法走
+     * {@code JniMethodRegistry} <b>动态注册</b>（{@code RegisterNatives} 以「名 + 签名」成对绑定，
+     * 由 {@link #cppRegistryMatchesJavaDeclarationsExactly()} 等用例覆盖），它们<b>不需要</b>
+     * {@code GetMethodID}。唯 {@code native-lib.cpp} 里 {@code sendRecognitionResult} 对上层回调
+     * {@code onNativeResult} 采用<b>手写描述符</b>的 {@code GetMethodID} 查找 —— 这是全仓唯一一处手写
+     * 描述符，却<b>零机械守护</b>：把 {@code "(Ljava/lang/String;)V"} 改成任意别的字符串、或把 Java 侧
+     * {@code onNativeResult} 改名/改签名，此前都不会有任何测试变红，只有真机运行时 {@code GetMethodID}
+     * 返回 null、回调静默丢失才会暴露。
+     *
+     * <p><b>本用例覆盖 {@code src/cpp/native-lib.cpp}；既有
+     * {@link #enrollmentFrameCallbackDescriptorMatchesCppStaticMethodLookup()} 覆盖
+     * {@code src/cpp/jni/native_face_bridge.cpp} —— 两者互不重叠、各司其职。</b>
+     *
+     * <p><b>判别点（改坏任一处本用例必红）：</b>
+     * <ul>
+     *   <li>把 native-lib.cpp 的 {@code "(Ljava/lang/String;)V"} 改成 {@code "(Ljava/lang/Object;)V"}
+     *       等 ⇒ 与由 Java 声明现求的描述符不等；</li>
+     *   <li>把 {@code MainActivity.onNativeResult} 改名 ⇒ Java 侧抽取数为 0，命中「恰好 1 处」断言；
+     *       改其形参（{@code String} → {@code Object}、或多加一个形参）⇒ 描述符随之变化、两侧不等。</li>
+     * </ul>
+     *
+     * <p><b>本用例不把期望描述符写成字面量</b>（写死等于把同一份字面量抄第二遍，两侧日后会一起漂移
+     * 而恒绿）：改为<b>两侧各自从源码现求</b>再比对，并显式断言「确实抽到了」——
+     * <ol>
+     *   <li>native-lib.cpp 中 {@code GetMethodID}/{@code GetStaticMethodID} 字面量出现次数 == 正则解析出的
+     *       调用点数（正则一旦失配，计数不等即红，而非「空 == 空」通过）；</li>
+     *   <li>解析出的调用点数不得为 0（0 处会让本用例判别力归零，必须红）；</li>
+     *   <li>每个查找点的方法名都必须在 {@link #LOOKUP_HOST_JAVA} 中登记（否则「同类漏网」被静默放过）；</li>
+     *   <li>Java 侧对应方法声明数 == 1（0 处 = 不存在/被改名，&gt;1 处 = 歧义，两者都必须红）。</li>
+     * </ol>
+     *
+     * <p><b>边界如实登记（文本解析，非运行时反射）：</b>本判据是<b>源码文本解析</b>，若 native-lib.cpp
+     * 写法变形（如把描述符拆成两行/赋给 {@code const char*} 变量、接收者写成 {@code env->FindClass(...)}
+     * 而非裸标识符），正则将<b>解析不到</b>该调用点。此时字面量计数（按符号子串统计）与解析出的调用点数
+     * <b>不再相等 ⇒ 用例报错</b>，绝不会静默当通过。这一取向与本仓「无法解析 ⇒ 不得静默当通过」一致。
+     *
+     * <p>定位方式<b>刻意不含行号</b>（本仓行号大面积漂移）：C++ 侧一律按符号 + 字面量定位。
+     */
+    @Test
+    public void nativeLibHardcodedMethodLookupsMatchJavaDeclarations() throws IOException {
+        File root = findRepoRoot();
+        String cppSrc = read(new File(root, "src/cpp/native-lib.cpp"));
+        String clean = stripCommentsLexical(cppSrc);
+
+        List<String[]> lookups = cppMethodIdLookups(cppSrc);
+
+        // 防「静默漏采」：字面量出现次数必须等于正则解析出的调用点数。
+        // 注意 "GetStaticMethodID" 不含子串 "GetMethodID"，故两个计数互不重叠、可安全相加。
+        int literalCount = countOccurrences(clean, "GetMethodID")
+                + countOccurrences(clean, "GetStaticMethodID");
+        assertEquals("native-lib.cpp 中 GetMethodID/GetStaticMethodID 字面量出现次数必须等于正则解析出的"
+                        + "调用点数（不等即正则失配/写法变形，必须红而非静默漏采）",
+                literalCount, lookups.size());
+
+        // 承重点：本缺陷的载体必须至少存在一处硬编码查找，否则「0 处 == 0 处」会静默通过、判别力归零。
+        assertFalse("native-lib.cpp 必须至少有一处 GetMethodID/GetStaticMethodID 硬编码查找点"
+                        + "（0 处 = 解析器失配或载体被移走，两者都必须红）",
+                lookups.isEmpty());
+
+        for (String[] lookup : lookups) {
+            String kind = lookup[0];       // GetMethodID / GetStaticMethodID
+            String receiver = lookup[1];   // 接收者 jclass 变量名
+            String name = lookup[2];       // 方法名
+            String cppDesc = lookup[3];    // C++ 手写描述符
+
+            assertFalse(kind + " 的接收者 jclass 变量名不得为空", receiver.trim().isEmpty());
+            assertFalse(kind + " 的方法名字面量不得为空", name.trim().isEmpty());
+            assertFalse(kind + "(\"" + name + "\") 的描述符字面量不得为空", cppDesc.trim().isEmpty());
+
+            // 每个查找点都必须登记宿主 Java 文件 —— 未登记即「同类漏网」，必须红。
+            String javaRel = LOOKUP_HOST_JAVA.get(name);
+            assertNotNull("native-lib.cpp 的 " + kind + "(\"" + name + "\", …) 查找点未登记宿主 Java 文件"
+                            + "（新增硬编码查找点时必须在本用例 LOOKUP_HOST_JAVA 中登记，否则同类漏网将被静默放过）",
+                    javaRel);
+
+            // Java 侧真实声明现求描述符。
+            String javaSrc = read(new File(root, javaRel));
+            List<String> javaDescs = javaMethodDescriptors(javaSrc, name);
+            assertEquals("Java 侧 " + javaRel + " 中 `" + name + "(…)` 方法声明必须恰好 1 处"
+                            + "（0 处 = 方法不存在/被改名，>1 处 = 抽取器歧义，两者都必须红）",
+                    1, javaDescs.size());
+            String javaDesc = javaDescs.get(0);
+            assertFalse("Java 侧 " + name + " 描述符不得为空", javaDesc.trim().isEmpty());
+            assertTrue("Java 侧 " + name + " 描述符必须形如 (参数…)返回：实际 " + javaDesc,
+                    javaDesc.startsWith("(") && javaDesc.indexOf(')') > 0);
+
+            // 逐字相等；不等时给出可读的「应改为 …」修复提示。
+            assertEquals("native-lib.cpp 手写的 JNI 描述符与 " + javaRel + " 的真实声明不一致："
+                            + "C++ " + kind + "(\"" + name + "\", \"" + cppDesc + "\") 应改为 \"" + javaDesc
+                            + "\"（若确为 Java 侧签名变更，请同步修改 Java；两侧不一致时真机运行时 GetMethodID"
+                            + " 会返回 null、回调静默丢失。Java=" + javaDesc + " / C++=" + cppDesc + "）",
+                    javaDesc, cppDesc);
+        }
     }
 }
