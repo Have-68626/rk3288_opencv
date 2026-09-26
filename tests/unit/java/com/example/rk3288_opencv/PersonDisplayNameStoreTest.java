@@ -723,41 +723,72 @@ public class PersonDisplayNameStoreTest {
      *
      * <p><b>打红方式</b>（改任一处即红）：
      * <ul>
-     *   <li>新增**任何**接受单个 {@code FileOps} 参数的静态方法（**不限名**，含把
-     *       {@code setFileOpsForTesting} 改名后重新加回）⇒ 方法断言红；</li>
-     *   <li>新增**任意**静态 {@code FileOps} 字段（含 {@code private static final FileOps fileOps}）——
+     *   <li>新增**任何**静态方法、恰一个「提及接缝类型」的参数（**不限名、不限返回类型**，含把
+     *       {@code setFileOpsForTesting} 改名后重新加回，或写成 {@code Consumer<FileOps>} /
+     *       {@code Map<String, FileOps>} / {@code FileOps[]} 等承载形态），**或** {@code set*} 名带
+     *       **任一**接缝参数（**不限参数个数**）⇒ 方法断言红；</li>
+     *   <li>新增**任意**静态接缝字段（含 {@code private static final FileOps fileOps}）——
      *       仅放行唯一合法常量 {@code DEFAULT_FILE_OPS} ⇒ 字段断言红。</li>
      * </ul>
      *
-     * <p><b>本守卫的边界（如实声明）</b>：
+     * <p><b>本守卫的边界（如实声明，仅述本守卫自身收紧后的口径）</b>：类型判据已**递归下探泛型实参**
+     * （见 {@link #mentionsSeamType(Type)}）——静态 {@code Consumer<FileOps>}、{@code Map<String, FileOps>}、
+     * {@code Optional<FileOps>}、{@code FileOps[]}、{@code ? extends FileOps} 这类「以其它类型承载」的
+     * 静态注入**同样命中**。仍**不覆盖**的只有：把接缝藏进**自定义 Holder 类内部**（例如静态字段
+     * {@code Holder h}，而 {@code Holder} 类里才有 {@code FileOps} 字段）——递归只看该成员**自身**的
+     * 类型签名，不做跨类型的成员下探。
      * <ul>
-     *   <li>只按**形态**判据：静态方法「参数恰为一个 {@code FileOps}」、静态字段「类型为
-     *       {@code FileOps}」。若有人以**其它类型**承载注入（如静态 {@code Consumer<FileOps>}、
-     *       静态 {@code Map} 缓存替身），本条**不覆盖**；</li>
      *   <li>合法的 {@code deleteWithBackup(File, FileOps)}（静态、双参）不在拦截范围内——
-     *       它是生产调用方显式传入 {@code ops} 的正规入口，非注入接缝。</li>
+     *       它是生产调用方显式传入 {@code ops} 的正规入口，非注入接缝；</li>
+     *   <li><b>与本仓其余四处守卫的关系（<u>不得</u>写成「同口径」）</b>：**类型判据**一致（同为递归
+     *       {@link #mentionsSeamType(Type)}）；**方法判据**为本条**严格覆盖**其余四处——
+     *       判据①「{@code set*} + 任一接缝参数」与它们**同口径**，判据②「静态 + 恰一个接缝参数」
+     *       比它们的「返回 {@code void} + 恰一个接缝参数」**更宽**（本条不限返回类型、不限方法名）。
+     *       ⚠️ 因此**不得**照抄那两条来"统一口径"：那会**丢失**本条能抓的形态（非 {@code set} 名、
+     *       非 {@code void} 返回、单接缝参数的静态方法），构成覆盖回归。</li>
+     *   <li><b>修过的窄口（2026-09-26 二次审计）</b>：本条原先只判「恰一个接缝参数」⇒
+     *       **多参静态 setter**（如 {@code static X setFileOpsForTesting(FileOps, boolean)}）会被静默放过；
+     *       已按上面判据①补上。仍**不覆盖**的是「**非** {@code set} 名 + 多参 + 含接缝参数」
+     *       （如 {@code static X apply(FileOps, int)}）——其余四处同样不覆盖，属共同边界、非本条净缺口。</li>
+     *   <li><b>已知代价（不得隐瞒）</b>：递归判据会命中未来**合法**的静态 {@code Map}/{@code Optional}
+     *       &lt;接缝类型&gt; 常量 ⇒ 会真红。那属**策略边界被推进**、需要白名单 + 评审，
+     *       **不是假红，切勿为绕过它去削判据或给 {@code Map}/{@code Optional} 开豁免**。</li>
      * </ul>
      */
     @Test
     public void fileStoreUtilsExposesNoStaticInjectionSeam() {
         for (Method m : FileStoreUtils.class.getDeclaredMethods()) {
             boolean staticMethod = Modifier.isStatic(m.getModifiers());
-            // 注入接缝形态：任意名静态方法，参数恰为一个 FileOps
-            boolean takesSingleFileOps = m.getParameterCount() == 1
-                    && FileStoreUtils.FileOps.class.equals(m.getParameterTypes()[0]);
-            assertFalse("FileStoreUtils 不应再暴露静态注入入口（不限名的单 FileOps 参数静态方法）："
+            // 注入接缝形态①：`set*` 名 + **任一**带接缝类型的参数（**不限参数个数**、不限返回类型）
+            //   —— 与其余四处守卫的判据①同口径。补它的原因（2026-09-26 二次审计）：本条原先只判
+            //   「恰一个接缝参数」，于是「多参静态 setter」（如 `static X setFileOpsForTesting(FileOps, boolean)`）
+            //   会被**静默放过**，而本仓教义明确把多参静态 setter 当作真实注入形态。
+            boolean setNamedWithSeamParam = false;
+            if (m.getName().startsWith("set")) {
+                for (Type p : m.getGenericParameterTypes()) {
+                    if (mentionsSeamType(p)) {
+                        setNamedWithSeamParam = true;
+                        break;
+                    }
+                }
+            }
+            // 注入接缝形态②：**任意名**静态方法，恰一个「提及接缝类型」的参数（类型判据递归，见 mentionsSeamType）。
+            boolean takesSingleSeamParam = m.getParameterCount() == 1
+                    && mentionsSeamType(m.getGenericParameterTypes()[0]);
+            assertFalse("FileStoreUtils 不应再暴露静态注入入口（`set*` 名 + 任一接缝参数，或恰一个接缝参数类型的静态方法）："
                             + m.getName(),
-                    staticMethod && takesSingleFileOps);
+                    staticMethod && (setNamedWithSeamParam || takesSingleSeamParam));
         }
         for (Field f : FileStoreUtils.class.getDeclaredFields()) {
-            boolean staticFileOps = Modifier.isStatic(f.getModifiers())
-                    && FileStoreUtils.FileOps.class.isAssignableFrom(f.getType());
-            if (!staticFileOps) {
+            // 字段类型判据同样递归：以 Map/Optional/数组等承载的静态接缝字段也会命中。
+            boolean staticSeamField = Modifier.isStatic(f.getModifiers())
+                    && mentionsSeamType(f.getGenericType());
+            if (!staticSeamField) {
                 continue;
             }
-            assertTrue("静态 FileOps 字段必须是 final 不可变常量：" + f.getName(),
+            assertTrue("静态接缝字段必须是 final 不可变常量：" + f.getName(),
                     Modifier.isFinal(f.getModifiers()));
-            assertTrue("静态 FileOps 字段仅允许唯一合法常量 DEFAULT_FILE_OPS，不得新增注入字段："
+            assertTrue("静态接缝字段仅允许唯一合法常量 DEFAULT_FILE_OPS，不得新增注入字段："
                             + f.getName(),
                     "DEFAULT_FILE_OPS".equals(f.getName()));
         }

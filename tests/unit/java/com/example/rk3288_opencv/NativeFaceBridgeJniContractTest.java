@@ -405,10 +405,14 @@ public class NativeFaceBridgeJniContractTest {
      *
      * <p><b>为什么不复用 {@link #stripComments(String)}：</b>后者先删块注释、后删行注释，
      * 会被「行注释里含一个块注释起始符」的写法骗到。src/cpp/native-lib.cpp 恰有此写法 ——
-     * 第 20 行是一句 {@code //} 行注释，正文里有 {@code jni/}<b>斜杠星号</b>{@code cpp} 这样的
-     * 路径片段；该块注释起始符会与第 179 行一处真正块注释的结束符配成一对，把两行之间的整个函数体
-     * （含本次要核对的 GetMethodID 调用点）一并吞掉 ⇒ 直接漏采。既有调用点（native_face_bridge.cpp
-     * 等）不含这种写法，故<b>本用例不动 {@link #stripComments(String)}</b>，改用本词法级实现。
+     * 「共享全局变量」那一节的分节注释（一句 {@code //} 行注释）正文里有
+     * {@code jni/}<b>斜杠星号</b>{@code cpp} 这样的路径片段（即含一个块注释<b>起始符</b>）；
+     * 它会与 {@code JNI_OnLoad} 形参处那个块注释形式的保留参数说明（{@code JavaVM* vm} 之后、
+     * 由斜杠星号包住 {@code reserved}）的<b>结束符</b>配成一对，把两者之间的整个函数体
+     * （含本次要核对的 GetMethodID 调用点）一并吞掉 ⇒ 直接漏采。既有调用点
+     * （native_face_bridge.cpp 等）不含这种写法，故<b>本用例不动 {@link #stripComments(String)}</b>，
+     * 改用本词法级实现。
+     * （⚠️ 此处刻意用**符号/结构**而非行号定位：本仓行号大面积漂移，写死行号即制造下一处失真。）
      *
      * <p><b>保留字符串字面量内容</b>（不移除引号内文本）：本用例正需从中读取方法名/描述符。
      */
