@@ -33,6 +33,21 @@ as_of=2026-09-26
 
 原 `native-lib.cpp` 的两处裸配对（`ANativeWindow_lock`/`unlockAndPost`、`AndroidBitmap_lockPixels`/`unlockPixels`）已由 `src/cpp/jni/preview.cpp` 的 RAII 类封装（#444）；`native-lib.cpp` 现零裸配对。
 
+> ⚠️ **上表「（无）」的范围限定 —— 请勿读成「契约 #1 整体已闭环」**（2026-09-26 二次审计订正）：
+> 机械检查（`scripts/check-raii-violations.sh`）只扫描 **2 个符号族** —— `ANativeWindow_lock`/`ANativeWindow_unlockAndPost`
+> 与 `AndroidBitmap_lockPixels`/`AndroidBitmap_unlockPixels`。而**本契约的规则原文还覆盖
+> `open/close`、`allocate/free`、`begin/end` 三个配对族**，后三族**没有**机械检查，且**确实存在**裸配对
+> （审计逐个读过，均非外包第三方代码；下表的行号为 **2026-09-26 快照**，会漂移，以函数/符号为准）：
+>
+> | 文件 | 裸配对 | 说明 |
+> |---|---|---|
+> | `src/cpp/src/pipeline/PerfReporter.cpp` | `fopen`（:57）→ `fclose`（:64） | 函数内手工配对，未封装 |
+> | `src/cpp/src/MppDecoder.cpp` | `std::fopen`（:90）→ `std::fclose`（:253） | 成员句柄跨 `open()`/`close()` 两个方法手工配对 |
+> | `src/win/src/HttpFacesServer.cpp` | `socket`（:208）→ `closesocket`（:220 / :224 / :236 三个错误出口 + **:253 `stop()` 的正常关闭**）；accept 循环（:299 / :371）亦**手写关闭** | **同文件 :44 的结构体 `SocketGuard`**（:47 是其析构函数）**只在一个位置用上**（:728 的 client socket）⇒ 上面那些 socket（含监听与 accept）**都**是手写配对 |
+>
+> ⇒ 正确读法：「**#444 已把 `ANativeWindow`/`AndroidBitmap` 两族清零**」，**不是**「契约 #1 已闭环」。
+> `open/close` 族的收口（补 RAII 或把扫描面扩到该族）已登记为独立待办。
+
 ### 自动检查
 
 ```bash
@@ -41,7 +56,11 @@ scripts/check-raii-violations.sh
 
 对全部 tracked `*.cpp`/`*.h` 做**块级结构判定**（非 grep 文本匹配）：先剔除注释与字符串/字符字面量，再以花括号平衡定位 `ScopedWindowLock` / `ScopedBitmapLock` 的类体区间，落在该区间之外的裸 `ANativeWindow_lock` / `AndroidBitmap_lockPixels` 计为违规。
 
-> 已知边界（审计实测）：若同一行内既有类体闭合又开启新块（如 `} void g(){`），或类体内存在**多行 raw string** 导致花括号平衡漂移，豁免可能不退出（漏报）。
+> 已知边界（审计实测；逐条与 `scripts/check-raii-violations.sh` 头部登记保持同一口径）：
+> - `};` 与紧随的 `{` 落在**同一行**时（如 `}; {` / `} void g(){`），该行花括号净变化为 0 ⇒ **该行之后新开块的区间内**豁免边界失效、**该区间内的裸调用漏报**；区间结束后检查恢复正常。⚠️ **不是**「整文件免检」——若豁免区因此一直不闭合，下面的安全网会报 WARNING 并计入违规（合成件实测：`}; {` 触发 rc=4、脚本判 **FAIL**）。**未修**（需更完整的作用域模型，超出本文本工具的射程）。
+> - ⚠️ **另一条静默漏报（2026-09-26 二次审计实测复现，未修）**：裸调用与封装类的闭合 `};` **同行**时（如 `}; ANativeWindow_lock(a,&b,0);`），该行被判为仍在豁免区内 ⇒ 真违规漏报；且豁免区随后正常退出，下面的安全网**也不触发**。成因与上一条同源：判定发生在花括号计数**之前**。
+> - ⚠️ **安全网**：若豁免区扫到**文件末尾仍未闭合**（无论何因），脚本会输出「RAII 豁免区未闭合」告警并**计入违规**（退出码非 0）⇒「静默整文件免检」已被改成**可见信号**。
+> - 曾与上两条同族的形态「类体内存在**多行 raw string** 导致花括号平衡漂移、豁免永不退出」**已修**（字面量状态跨行保持，raw 串内部不再参与花括号计数）。
 
 ---
 
@@ -87,7 +106,7 @@ currentState.store(
 
 ### 适用场景
 
-- `g_previewWindow` / `g_previewGeneration` 的**定义与释放**在 `src/cpp/native-lib.cpp`（释放于 `stopAndJoinEngineThreadIfRunning`），**设置/取用**在 `src/cpp/jni/preview.cpp`（`preview_nativeSetPreviewSurface` / `preview_nativeRenderFrameToSurface`），**声明**在 `src/cpp/include/jni_shared.h`——三处分离，使用时须核对全部三个落点
+- `g_previewWindow` / `g_previewGeneration` 的**定义与释放**在 `src/cpp/native-lib.cpp`（`stopAndJoinEngineThreadIfRunning` 释放），⚠️ **释放点不止一处**：`src/cpp/jni/preview.cpp` 在 Surface 重建时也会 `ANativeWindow_release(g_previewWindow); g_previewWindow = nullptr;` 并递增代次（`preview_nativeSetPreviewSurface`）；**设置/取用**在 `src/cpp/jni/preview.cpp`（`preview_nativeSetPreviewSurface` / `preview_nativeRenderFrameToSurface`），**声明**在 `src/cpp/include/jni_shared.h`——多落点分离，使用时须核对全部落点
 - `Engine::currentTracks_` 当前通过互斥锁保护 → 可演进为 `std::atomic<std::shared_ptr<const std::vector<TrackView>>>`
 
 ---
@@ -151,7 +170,7 @@ std::unique_ptr<IRecognizer> CreateArcFaceRecognizer(const RecognizerConfig&);
 
 | 契约 | 违规数 | 修复状态 |
 |------|--------|----------|
-| #1 RAII 资源封装 | 0 处 | 已闭环（#444） |
+| #1 RAII 资源封装 | 0 处（**仅** `ANativeWindow`/`AndroidBitmap` 两符号族；`open/close` 族未收口，见上节范围限定） | 部分口径已闭环（#444） |
 | #2 纯函数管线 | 1 处 (P1) | 待修复 |
 | #3 原子状态提交 | 2 处 (P1) | 待修复 |
 | #4 错误通道 | 2 处 (P1) | 待修复 |

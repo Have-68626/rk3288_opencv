@@ -202,7 +202,7 @@ JNI 函数按领域拆分到 `src/cpp/jni/`（`camera.cpp` / `engine.cpp` / `pre
 
 ### 架构契约
 
-`docs/architecture/ARCHITECTURE.md` 定义 5 条跨子系统契约：RAII 资源封装、纯函数管线、原子状态提交、错误通道、接口隔离。**该文档自身的状态表目前只有 #1 RAII 资源封装标为已闭环（#444），其余 4 条仍标为「待修复」——它们是目标契约，不是已落地规则。** 检查脚本 `scripts/check-raii-violations.sh` 存在，但**未接入 CI**，需手动运行。
+`docs/architecture/ARCHITECTURE.md` 定义 5 条跨子系统契约：RAII 资源封装、纯函数管线、原子状态提交、错误通道、接口隔离。**该文档自身的状态表目前只有 #1 RAII 资源封装标为已闭环（#444），且该闭环只覆盖 `ANativeWindow`/`AndroidBitmap` 两个符号族——契约原文的 `open/close` 族仍未收口；其余 4 条仍标为「待修复」——它们是目标契约，不是已落地规则。** 检查脚本 `scripts/check-raii-violations.sh` 存在，但**未接入 CI**，需手动运行。
 
 ### Acceleration contract
 
@@ -275,7 +275,7 @@ JNI 函数按领域拆分到 `src/cpp/jni/`（`camera.cpp` / `engine.cpp` / `pre
 - **DEVELOP.md** —— 模块详解、构建变体、加速架构
 - **CREDITS.md** —— 完整依赖清单 + 模型清单
 - **README.md** —— 项目概览、快速开始、CI 流水线、治理进度
-- **docs/architecture/ARCHITECTURE.md** —— 5 条架构契约（含合规总表；#1 已闭环，#2–#5 待修复）
+- **docs/architecture/ARCHITECTURE.md** —— 5 条架构契约（含合规总表；#1 仅在 `ANativeWindow`/`AndroidBitmap` 两符号族上闭环，`open/close` 族未收口，#2–#5 待修复）
 - **docs/windows-web-spa/openapi.yaml** —— REST API 规范
 - **docs/windows-web-spa/config.schema.json** —— Windows 配置 JSON Schema
 - **docs/specs/2026-07-03-triple-refactor-design.md** —— 三层重构设计文档

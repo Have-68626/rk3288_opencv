@@ -53,7 +53,7 @@ rk3288_opencv/
 
 项目定义了 5 条跨子系统架构契约（详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)）：
 
-> ⚠️ 这 5 条是**目标契约**：合规总表中 #1 RAII 资源封装已闭环（#444），其余 4 条仍待修复。
+> ⚠️ 这 5 条是**目标契约**：合规总表中 #1 RAII 资源封装已在 `ANativeWindow`/`AndroidBitmap` **两个符号族**上闭环（#444），**该契约的 `open/close` 族仍未收口**；其余 4 条仍待修复。
 
 | 契约 | 规则 |
 |------|------|
