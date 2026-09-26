@@ -612,7 +612,7 @@ test("additionalProperties：openapi 各 *Settings 的**嵌套** object 分支�
   // 为何刻意排斥 Envelope 系（非契约 ⇒ 不应加 additionalProperties: false 约束）：
   //   · Envelope.data 是**纯自由结构**——该节点只有 `type: object`，既无 properties 也无
   //     additionalProperties（逐字见 openapi.yaml：description 为「响应数据（具体结构因端点而异）」）；
-  //     响应 data 的形态随端点而异（Settings / 模型列表 / 人脸库快照 …），本就不可枚举。
+  //     响应 data 的形态随端点而异（Settings / 模型列表 / 当前帧人脸快照 …），本就不可枚举。
   //   · Envelope.error 是 **API 响应错误结构**（code/message/details），属**响应**契约而非**配置文档**
   //     契约；其 details 承载自由诊断串，对之收束未知键与其用途冲突。
   //   故纳入会**误报**：探针实测二者的 hasNoExtra 均为 false，必然令下方断言变红。
