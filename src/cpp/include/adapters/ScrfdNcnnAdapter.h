@@ -29,7 +29,13 @@ class ncnn_net_holder;  // 前向声明，隐藏 ncnn 头（RK_SKIP_OPENCV 构�
 struct ScrfdNcnnConfig {
     std::string paramPath;
     std::string binPath;
-    std::string inputName = "in0";
+    // ⚠️ 结构体默认值 = 本仓 SCRFD ncnn 模型的真实 Input 层名 `input.1`
+    //    （`models/` 下全部 10 个 SCRFD `.param` 第 3 行皆为 `Input input.1`）。
+    //    旧默认值 `in0` 是 **ArcFace/MobileFaceNet 侧**的名字，曾被误抄到检测器侧 ⇒ **已知为假**，
+    //    2026-09-26 二次审计订正。注意该默认值当前**不可达**（`configFromProfile` 在
+    //    `profile.detectorInput` 非空时覆盖它，而后者由 `FaceRuntimeProfile` 保证非空），
+    //    故这是**潜伏的默认值**，改它的意义是「不留一个已知为假的默认」。
+    std::string inputName = "input.1";
     std::string scoreNames[3] = {"out0", "out1", "out2"};
     std::string bboxNames[3] = {"out3", "out4", "out5"};
     std::string kpsNames[3] = {"out6", "out7", "out8"};

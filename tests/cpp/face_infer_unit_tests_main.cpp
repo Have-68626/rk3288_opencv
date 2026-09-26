@@ -97,6 +97,8 @@ bool test_publisher_concurrent_set_and_publish();
 // INT8 回落链：int8Enabled 生产者 + arcface_int8 节点名注入（见 test_face_infer_pipeline.cpp）。
 // 判别点：去掉「捕获节点名」的替身所观察到的 in0/out0 注入即红。
 bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names();
+// FACE-TEST-005①：embed 失败的 err 必须带出差异化文本（不得回落成固定文案）。
+bool test_face_infer_embed_failure_carries_differential_err();
 
 int main() {
     using namespace rk_face_infer_test;
@@ -161,6 +163,8 @@ int main() {
         {"video_manager_uri_log_sink_no_userinfo", test_video_manager_uri_log_sink_no_userinfo},
         {"face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names",
          test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names},
+        {"face_infer_embed_failure_carries_differential_err",
+         test_face_infer_embed_failure_carries_differential_err},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

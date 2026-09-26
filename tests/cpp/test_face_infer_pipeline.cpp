@@ -15,6 +15,7 @@ using namespace rk_core;
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -355,6 +356,71 @@ bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names() {
         if (g_int8LoadCalls == 0) return false;
         if (g_int8InputName != "in0") return false;
         if (g_int8OutputName != "out0") return false;
+    }
+    return true;
+}
+
+// FACE-TEST-005①：embed 失败时 **err 必须带出差异化文本**，不得丢弃成固定文案。
+//
+// 为什么之前没有守护：上一批把 `FaceInferStages.cpp` FP32 回落链尾的 `failStatus("arc_embed",
+// "arc_embed_failed")` 改成「有 err 就带出」，但变异性扫掠实测「改回硬编码 ⇒ core_* 全绿」
+// ⇒ 该口径**无判别用例**。本用例补上**可达**那条（注入路径，与回落链尾同口径）的守护。
+//
+// 怎么造出确定性的「embed 失败且 err 非空」：用一个**极小合成 ONNX**（`tests/fixtures/onnx/`，
+// 生成脚本与期望 sha256 见该目录）——`readNet` 接受它（故 `ArcFaceEmbedder::initialize` 成功），
+// 但它是 `Identity`，前向把 `1×3×112×112` 原样透传 ⇒ 输出 37632 个元素 ≠ 512 ⇒ 命中
+// `takeFirst512AsF32` 的 `total != 512`，而 `ArcFaceEmbedder` 的**每一条**失败路径都写 `*err`。
+//
+// 判别点：把 `failStatus("arc_embed", …)` 的 err 支改回硬编码 `"arc_embed_failed"` ⇒ 本用例红。
+//
+// ⚠️ 如实登记两处边界：
+//   ① 本用例走的是 **ctx.embedder 非空**的**注入路径**（`FaceInferStages.cpp` 的 embed 分支），
+//      **不是** FP32 回落链尾那一处。后者在现有架构下**不可达**：Pipeline 级与 Stage 级用**同一份
+//      cfg / 同一路径**构建嵌入器 ⇒ 「Pipeline 级 init 失败（ctx.embedder 为 null）」必然蕴含
+//      「Stage 级 init 也失败」⇒ 控制流停在 `arc_init` 出口，永远到不了链尾。该结论已用「把链尾
+//      改成哨兵文本后整套 C++ 用例无一变化」实测印证。
+//   ② 固定件缺失 ⇒ **报错返回 false**（固定件在库内，缺失即真错），不静默跳过。
+bool test_face_infer_embed_failure_carries_differential_err() {
+    const std::filesystem::path model = "tests/fixtures/onnx/tiny_identity_1x512.onnx";
+    if (!std::filesystem::exists(model)) {
+        std::cerr << "[face_infer_embed_err] 前置缺失（固定件应在库内）：" << model.string()
+                  << "（ctest 的 WORKING_DIRECTORY 已设为源码根；手工运行时请在仓库根执行）" << std::endl;
+        return false;
+    }
+
+    const auto dir = makeTempDir("fp32_embed_err");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = true;      // 只关心嵌入段，避免依赖检测模型
+    req.fakeEmbedding = false;  // 关键：必须走真实嵌入路径
+    req.int8Enabled = false;
+    req.arcBackend = "opencv";
+    req.arcModelPath = model.string();  // 合成件：initialize 成功、embed 必失败（见上）
+
+    const auto out = runFaceInferOnce(req);
+
+    // 判别点 1：必须真的走到 embed 段并以失败收场（否则本用例的判据不在射程内）。
+    if (out.ok) {
+        std::cerr << "[face_infer_embed_err] 期望 embed 失败，实际 ok（合成件或链路口径已变）" << std::endl;
+        return false;
+    }
+    if (out.stage != "arc_embed") {
+        std::cerr << "[face_infer_embed_err] 期望 stage=arc_embed，实际=" << out.stage
+                  << "（若停在 arc_init，说明嵌入器 initialize 未成功）" << std::endl;
+        return false;
+    }
+
+    // 判别点 2（本用例的核心）：err 必须是上游带出的差异化文本，**不得**是固定回落文案。
+    if (out.message.empty()) {
+        std::cerr << "[face_infer_embed_err] err 为空——失败静默，违反「失败不静默」" << std::endl;
+        return false;
+    }
+    if (out.message == "arc_embed_failed") {
+        std::cerr << "[face_infer_embed_err] err 是固定文案 arc_embed_failed ⇒ 上游差异化文本被丢弃"
+                     "（这正是本用例要拦的回退）" << std::endl;
+        return false;
     }
     return true;
 }
