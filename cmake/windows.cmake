@@ -185,6 +185,22 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
                 $<TARGET_FILE_DIR:win_camera_face_recognition>/webroot
         COMMENT "Copy webroot for local HTTP static hosting"
     )
+
+    # models/ 拷贝：与上方 win_local_service 的同名块保持一致（完整理由与该处的配置期守卫、
+    # 收益边界说明见其注释，此处不再复述以免两处漂移）。
+    # 简言之：`models/*` 为 gitignore 的二进制目录，开发机上可能不存在 ⇒ 必须先判存在再拷，
+    # 否则 copy_directory 会让构建失败；`if(EXISTS ...)` 是配置期求值，若 configure 时该目录不存在
+    # 则本 POST_BUILD 步骤不会被注册，需重新 configure 才会生效。
+    # ⚠️ 收益边界（如实）：本项**不会**让默认 ArcFace 权重变可用——`models/` 内并没有
+    #    `arcface_w600k_r50.onnx`（默认路径在 WinJsonConfig.cpp 指向它）。
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
+        add_custom_command(TARGET win_camera_face_recognition POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${CMAKE_CURRENT_SOURCE_DIR}/models
+                    $<TARGET_FILE_DIR:win_camera_face_recognition>/models
+            COMMENT "Copy models dir (best-effort) for win_camera_face_recognition UI"
+        )
+    endif()
 endif()
 
 # ── Windows CLI 工具 ──
