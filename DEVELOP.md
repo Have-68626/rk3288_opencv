@@ -22,7 +22,7 @@ as_of=2026-09-26
 
 ## 2. 系统架构 (System Architecture)
 
-> **架构契约**：项目定义了 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。这 5 条是目标契约：合规总表中 #1 RAII 资源封装已闭环（#444），其余 4 条仍待修复。
+> **架构契约**：项目定义了 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。这 5 条是目标契约：合规总表中 #1 RAII 资源封装已在 `ANativeWindow`/`AndroidBitmap` **两个符号族**上闭环（#444），**该契约的 `open/close` 族仍未收口**；其余 4 条仍待修复。
 
 ### 2.1 分层架构 (Layered Architecture)
 系统采用分层设计，确保底层加速库与上层业务逻辑解耦。
@@ -197,7 +197,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 - **`RK_ENABLE_NCNN=ON`** 启用 ncnn 后端（Android 默认开启，Windows 需手动指定）
 - **CMake 模块化**：`CMakeLists.txt` 已拆分为 `cmake/opencv.cmake` / `core.cmake` / `face_infer.cmake` / `android.cmake` / `windows.cmake`
 - **MSVC** 必须使用 `-G "Visual Studio 17 2022" -A x64`
-- **Gradle** 始终使用 `--no-daemon`（Gradle 9.0-milestone-1 预发布版稳定性问题）
+- **Gradle** 始终使用 `--no-daemon`（该约定起于 wrapper 尚为 `9.0-milestone-1` 预发布版的时期；现行 wrapper 与校验和已锁定正式的 `gradle-9.0`，约定保留以保证 CI 与本机一致）
 - **`JAVA_HOME`** 建议设到 JDK 17+，否则 Gradle 会使用 PATH 中的 java
 
 ### 4.5 依赖状态
