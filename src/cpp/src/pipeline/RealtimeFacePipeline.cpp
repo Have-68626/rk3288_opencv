@@ -264,9 +264,22 @@ RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
 #if !defined(RK_SKIP_OPENCV) && defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
         const std::string paramPath =
             (std::filesystem::path(baseDir) / profile.embedderParam.relativePath).string();
+        // 缺口2：与检测侧 loadDetector 对称 —— 检测侧同时消费 detectorParam + detectorBin 并把
+        // binPath 显式交给装配器；嵌入侧此前**只取 embedderParam**，bin 由 ArcFaceAdapter 按
+        // param stem 自行推导，导致 profile.embedderBin 只被 verifyFiles 用于存在性/摘要校验、
+        // **从未被装配消费**。当前无害仅因本仓 manifest 里两文件同 stem；一旦 bin 名与 param stem
+        // 不同，就会静默加载到错误的 .bin。此处显式消费 manifest 声明的 embedderBin；声明缺失
+        // （相对路径为空）时回落 ArcFaceAdapter 既有的 stem 推导（见 setModelBinPath 的空串语义）。
+        const std::string binPath =
+            profile.embedderBin.relativePath.empty()
+                ? std::string()
+                : (std::filesystem::path(baseDir) / profile.embedderBin.relativePath).string();
         auto emb = std::make_shared<ArcFaceAdapter>();
         // 注入 manifest 节点名（ncnn 节点名 / OpenCV blob 名同源对齐）；空串则保留默认。
         emb->setNodeNames(profile.embedderInput, profile.embedderOutput);
+        // 缺口3：注入 manifest 声明的期望嵌入维度（setExpectedEmbeddingDim 对 <=0 忽略，保留默认）。
+        emb->setExpectedEmbeddingDim(profile.embeddingDim);
+        emb->setModelBinPath(binPath);  // 空串 ⇒ 适配器回落 stem 推导
         std::string loadErr;
         if (!emb->load(paramPath, loadErr)) {
             err = reasonFromLoadError(loadErr);
@@ -310,6 +323,10 @@ RealtimePipelineHooks makeDefaultRealtimePipelineHooks() {
             err = reasonFromLoadError(eerr);
             return false;
         }
+        // 缺口3：即便已把 manifest 的 embeddingDim **注入** ArcFaceAdapter（见 loadEmbedder 的
+        // setExpectedEmbeddingDim），此处仍按**实际** emb.size() 事后比对、不删：注入的是 manifest
+        // **声明值**，模型实际输出维度仍可能与之不符（.param 与 manifest 漂移、bin/param 不匹配等），
+        // 声明值无法自证。故用真实前向的输出维度做最后一道校验。
         if (snap.profile.embeddingDim > 0 &&
             static_cast<int>(emb.size()) != snap.profile.embeddingDim) {
             err = "unsupported_input";
@@ -512,10 +529,13 @@ RealtimeReloadResult RealtimeFacePipeline::buildAndPublishLocked(
     // 先发布后自增，则读侧至多看到「快照已前进而 generation() 暂滞后一步」，
     // 绝不会读到不存在的代次。reloadMu_ 串行化所有发布，load+1 无写入竞争。
     //
-    // ⚠️ 本顺序**当前无判别性用例**：把下面两行（atomic_store 与 generation_.store）
-    //    颠倒过来，不会使任何现有用例变红——断言只读取「某时刻的快照与代次」，而上述错序
-    //    只制造一个**窗口期**内的可观测差异，非并发采样几乎撞不上。要确定性判别需在读侧加
-    //    测试接缝（如可注入的发布间隙钩子），成本未评估，故本批只保留注释、不加测试。
+    // ⚠️ 本顺序**现有判别性用例**（tests/cpp/test_realtime_face_pipeline.cpp 的
+    //    PublishOrderInvariantSnapshotNeverBehindGeneration）：用例经下面注入的 publishGapHook
+    //    在上述两行**之间**采样不变量 `snapshot()->generation >= generation()`。
+    //    · 正确顺序：钩子点处 snapshot()->generation==gen（新快照已发布）而 generation()==gen-1
+    //      ⇒ gen >= gen-1 成立；
+    //    · 颠倒两行：钩子点处 generation()==gen 而 snapshot()->generation==gen-1（仍指旧快照）
+    //      ⇒ 不变量破 ⇒ 用例确定性变红。用例另以 sawGap 标志防「钩子未被调用 ⇒ 空转假绿」。
     candidate->effective = true;
     candidate->reason = "ok";
     candidate->benchmarkP95Ms = p95;
@@ -526,6 +546,8 @@ RealtimeReloadResult RealtimeFacePipeline::buildAndPublishLocked(
     const std::uint64_t gen = generation_.load(std::memory_order_acquire) + 1;
     candidate->generation = gen;
     std::atomic_store(&snapshot_, std::shared_ptr<const RealtimePipelineSnapshot>(candidate));
+    // 发布间隙测试接缝：生产恒为空；非空时在两行之间采样（见 .h 中 publishGapHook 说明）。
+    if (hooks.publishGapHook) hooks.publishGapHook();
     generation_.store(gen, std::memory_order_release);
 
     RealtimeReloadResult r;

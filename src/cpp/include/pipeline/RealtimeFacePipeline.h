@@ -147,6 +147,17 @@ struct RealtimePipelineHooks {
     std::function<bool(const RealtimePipelineSnapshot&, const RealtimeBenchmarkConfig& cfg,
                        double& p95Ms, std::string& err)>
         benchmark;
+
+    // ⚠️ **仅供测试注入，生产恒为空**（默认构造的 std::function 为空 ⇒ 生产零行为变化）。
+    // 由 buildAndPublishLocked 在「atomic_store 新快照」与「generation_.store 自增」**两行之间**
+    // 调用一次（见 .cpp 发布段注释）。存在的唯一目的：给读侧一个**确定性**的采样点，在发布顺序的
+    // 临界处校验不变量 `snapshot()->generation >= generation()`。若把这两行颠倒，钩子点处会读到
+    // `generation() == gen` 而 `snapshot()->generation == gen-1` ⇒ 不变量破 ⇒ 用例确定性变红
+    // （tests/cpp/test_realtime_face_pipeline.cpp 的 PublishOrderInvariant* 用例）。
+    // ⚠️ 调用上下文：该钩子由 reload() 在**持有 reloadMu_** 的临界区内被**同步**调用（reload 先取锁，
+    // 再经 buildAndPublishLocked 走到发布段调用它）⇒ **钩子内不得回调 reload/reloadAsync 或任何取
+    // reloadMu_ 的路径**（reloadMu_ 非递归锁，重入即自死锁）。现有用例的钩子只做原子读，安全。
+    std::function<void()> publishGapHook;
 };
 
 /** 生产默认钩子：manifest 文件校验（SHA/LFS）→ SCRFD/ArcFace 装配 → 真实推理自检/基准。 */
