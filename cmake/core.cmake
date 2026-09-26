@@ -140,7 +140,20 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     if(MSVC)
         target_compile_options(core_unit_tests PRIVATE /utf-8)
     endif()
-    add_test(NAME core_unit_tests COMMAND core_unit_tests)
+    # ⚠️ **必须给 WORKING_DIRECTORY**（2026-09-26 二次审计实测）：不设时 ctest 的 cwd = 构建目录，
+    #    而本 target 里 `NcnnParamGuard.AcceptsRealRepoParamsIfPresent` 用**相对路径**扫
+    #    `models/` 与 `deps/insightface/`（**目录扫描 + `GTEST_SKIP`**，不是 fileExists 判定）
+    #    ⇒ 构建目录下它**静默跳过**（实测读数：ctest **163 过/40 跳** vs 仓库根直接跑 exe **164/39**，
+    #     两边都 exit 0，差别正好是这一条；验收代理用逐例复合键独立复核过）
+    #    ⇒ 照 §10 那条 ctest 命令跑会**少覆盖一条用例且看不出**。
+    #    设源码根后，本机 ctest 与「从仓库根直接跑 exe」口径一致（读 ctest 须带 `-C Release`：
+    #    多配置生成器下裸 `ctest` 会报 6 条 Not Run）。与 face_infer_unit_tests / core_gtest_tests 同口径。
+    #    ⚠️ **CI 行为不变的条件（不得漏写）**：windows job 的 ctest 步（ci.yml 的 `Run ctest`）位于
+    #    量化/INT8 步**之前**，且 `models/*.param` **不入库**（`git ls-files "*.param"` 为空）
+    #    ⇒ 全新检出时该用例照旧跳过。**一旦将来在 ctest 之前产出 `models/*.param`，这一条会由
+    #    SKIP 变 RUN（覆盖是收益，但读数会变）。**
+    add_test(NAME core_unit_tests COMMAND core_unit_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Q-CQ-B06-003 编译器契约测试：异常禁用 flag 与语法一致性回归保护
     # （Clang/GNU -fno-exceptions 下必须编译失败；MSVC /EH- 下必须触发 C4530）
