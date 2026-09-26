@@ -197,3 +197,38 @@ bool test_face_db_encrypted_roundtrip() {
     }
     return true;
 }
+
+// FACE-DB-001：把 `load()` 对**不存在**路径的语义**钉住**（它是**有意的、被依赖的**，不是缺陷）。
+//
+// 为什么要有这条：该语义此前只活在一句注释里（tests/win/test_runtime_bootstrap.cpp 的
+// 「不存在的路径走 FaceDatabase::load 的 `!exists ⇒ 返回 true`（空库）⇒ 初始化成功」），
+// 代码侧零显式用例。⇒ 任何人都可以「顺手把它修成 false」而**不会变红**，同时又有一条
+// 生产装配链依赖它。本用例把「true」与「空库」同时钉死，并配**判别对照**证明该 true 来自
+// 「路径不存在」这一分支、不是「load 恒真」。
+bool test_face_db_load_nonexistent_path_is_intentionally_ok() {
+    const auto dir = makeTempDir("nonexistent_path");
+
+    // ① 首次运行形态：目标路径连父目录都不存在 ⇒ 必须 true + 空库。
+    const auto missing = dir / "not_created_yet" / "db.yml";
+    if (std::filesystem::exists(missing)) return false;   // 前置：确认它真的不存在
+    rk_win::FaceDatabase db;
+    if (!db.load(missing)) return false;                  // 不得因「库文件尚未创建」而失败
+    if (!db.listPersonIds().empty()) return false;        // 且必须是**空**库，不是残留状态
+
+    // ② 判别对照（本用例的判别力所在）：**存在**但打不开的路径必须返回 false
+    //    ⇒ 证明 ① 的 true 来自 `!exists` 分支，而非「load 恒返回 true」。
+    //    （同一条对照也是 test_runtime_bootstrap 里「传 "." 会失败」那句注释的机器化版本。）
+    rk_win::FaceDatabase db2;
+    if (db2.load(dir)) return false;
+    if (!db2.listPersonIds().empty()) return false;       // 失败后不得留下半截状态
+
+    // ③ 该语义的**用途**仍成立：空库 load 成功后，save 应能自建父目录并真正落盘
+    //    （这正是「父目录缺失不需在 load 期拦」的依据）。
+    const auto created = dir / "later_created" / "db.yml";
+    rk_win::FaceDatabase db3;
+    if (!db3.load(created)) return false;
+    db3.updateMean("henry-008", {0.1f, 0.2f});
+    if (!db3.save(created)) return false;
+    if (!std::filesystem::exists(created)) return false;
+    return true;
+}
