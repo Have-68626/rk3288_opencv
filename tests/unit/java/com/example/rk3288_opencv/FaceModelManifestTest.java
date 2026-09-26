@@ -274,6 +274,13 @@ public class FaceModelManifestTest {
         assertEquals("1", r.profile.modelVersion);
         assertTrue(r.profile.licenseId.isEmpty());
         assertTrue(r.profile.detectorOutputs.isEmpty());
+        // 回归护栏（判别性）：**检测器**输入名的缺键回落值必须是本仓 SCRFD .param 的真实 Input 层名
+        // `input.1`（`models/scrfd_face_detect_ncnn/scrfd_*-opt2.param` 第 3 行皆为 `Input input.1 0 1 input.1`）。
+        // 旧回落值 `in0` 是 **ArcFace 侧**的名字（`arcface.param` 第 3 行），曾被误抄到检测器侧；
+        // 用错会让 `ex.input()` 报 `ncnn_set_input_failed`。把回落值改回 "in0" ⇒ 本断言红。
+        assertEquals("input.1", r.profile.detectorInput);
+        // 对照：嵌入器侧**确实**叫 in0，不得被同一次改动误改。
+        assertEquals("in0", r.profile.embedderInput);
     }
 
     @Test

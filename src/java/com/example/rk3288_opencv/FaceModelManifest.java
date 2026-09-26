@@ -251,7 +251,9 @@ public final class FaceModelManifest {
         if (detParam == null || detBin == null) {
             return new ParseResult(Status.MISSING_FIELD, null, "detector 配置缺失或非法");
         }
-        String detInput = strOr(asString(det.get("input")), "in0");
+        // 检测器输入节点缺键回落值 = "input.1"（与 C++ FaceRuntimeProfile 逐字镜像）。
+        // 证据：本仓所有 SCRFD .param 的 Input 层名都是 input.1；"in0" 是 ArcFace 侧的名字，曾被人误抄。
+        String detInput = strOr(asString(det.get("input")), "input.1");
         List<String> detOutputs = new ArrayList<>();
         Object detOutsRaw = det.get("outputs");
         if (detOutsRaw != null) {

@@ -193,7 +193,12 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
         err = "detector 配置缺失或非法";
         return false;
     }
-    if (!getString(*det, "input", out.detectorInput)) out.detectorInput = "in0";
+    // 检测器输入节点缺键回落值 = "input.1"。
+    // 证据：本仓 SCRFD .param（models/scrfd_face_detect_ncnn/scrfd_*-opt2.param）的 Input 层名
+    // **全部**是 input.1，与 manifest 用 sha256 钉住的 scrfd_500m/2.5g_kps-opt2.param 一致。
+    // 旧值 "in0" 是 ArcFace 侧的名字（models/arcface_ncnn/arcface.param 第 3 行），曾被误抄到检测器侧；
+    // 用错会让 ex.input() 失败（err="ncnn_set_input_failed"）。
+    if (!getString(*det, "input", out.detectorInput)) out.detectorInput = "input.1";
     const rk_win::JsonValue* detOuts = det->find("outputs");
     if (detOuts) {
         if (!detOuts->isArray()) {
