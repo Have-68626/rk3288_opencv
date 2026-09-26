@@ -56,7 +56,7 @@ as_of=2026-09-15
 | `web/README.md` | 准确（React/Vite/AntD 版本、产物路径、代理目标逐项一致） |
 | `docs/RK3288_CONSTRAINTS.md` | 准确 |
 | `docs/architecture/cpp-engine.md` | 基本准确，仅一处行号漂移 |
-| `docs/superpowers/plans/2026-07-03-triple-refactor-plan.md` | 计划勾选状态失真（0/55 勾选 vs 交付物已 100% 落地） |
+| `docs/plans/2026-07-03-triple-refactor-plan.md` | 计划勾选状态失真（0/55 勾选 vs 交付物已 100% 落地） |
 | `README.md` | **存在实质错误**（见 2.2） |
 
 **5/8 内容完全准确，仅 1 份有会被读者误用的错误** —— 这 45 个 high 中绝大多数是假阳性。

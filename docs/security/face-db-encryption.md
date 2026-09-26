@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-09-23
+as_of=2026-09-26
 -->
 
 # FaceDatabase 加密安全规格（S-SEC-B09-002）
@@ -85,11 +85,14 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
 
 ## 6. 越界记录（不在此任务内）
 
-- `win_face_database_perf`（`cmake/windows.cmake`）仅编译 `FaceDatabase.cpp`，**不含
+- ~~`win_face_database_perf`（`cmake/windows.cmake`）仅编译 `FaceDatabase.cpp`，**不含
   `WinCrypto.cpp`/bcrypt/crypt32**；加密接入后该 target 将**链接失败**。该 target 为既有
   挂起缺陷（SEC-02：>20s 无输出，与本次无关），且 `windows.cmake` 不在允许路径内 → 记录为
   **“待共享/待接线”后续任务**：向 `win_face_database_perf` 源表追加 `WinCrypto.cpp` 并链接
-  `bcrypt`/`crypt32`。本次验证以 `-E win_face_database_perf` 排除 ctest。
+  `bcrypt`/`crypt32`。本次验证以 `-E win_face_database_perf` 排除 ctest。~~
+  **【已闭环】** `cmake/windows.cmake` 的 `win_face_database_perf` target 源表已含
+  `src/win/src/WinCrypto.cpp`，并已 `target_link_libraries(win_face_database_perf ... bcrypt crypt32)`；
+  上述链接缺口已消除。⚠️ **SEC-02（>20s 无输出）是另一独立问题**，不随本条闭环，仍待处理。
 - 密钥文件管理辅助（`ensureOrLoadKey`/`loadKey`）与 `WinJsonConfig` 内同名逻辑结构相似但
   参数化为任意路径；如需统一，后续可提取共享 `DpapiKeyFile` 工具（越出允许路径，另立任务）。
 

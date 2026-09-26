@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-22
+as_of=2026-09-26
 -->
 
 # 文档索引
@@ -33,7 +33,7 @@ as_of=2026-09-22
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
-| `architecture/ARCHITECTURE.md` | living | 5 条跨子系统架构契约（含合规总表——注意当前 5/5 待修复） |
+| `architecture/ARCHITECTURE.md` | living | 5 条跨子系统架构契约（含合规总表——当前 **#1 已闭环**，#2–#5 待修复） |
 | `architecture/android-layer.md` | living | Android 层架构说明 |
 | `architecture/cpp-engine.md` | living | C++ 核心引擎架构说明 |
 

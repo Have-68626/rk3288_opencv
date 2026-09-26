@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-18
+as_of=2026-09-26
 -->
 
 ﻿# RK3288 AI Engine - 开发指南 (Development Guide)
@@ -22,7 +22,7 @@ as_of=2026-09-18
 
 ## 2. 系统架构 (System Architecture)
 
-> **架构契约**：项目定义了 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。注意这 5 条是**目标契约**，尚未全部落地——该文档的合规总表当前把 5 条全部标为「待修复」。
+> **架构契约**：项目定义了 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。这 5 条是目标契约：合规总表中 #1 RAII 资源封装已闭环（#444），其余 4 条仍待修复。
 
 ### 2.1 分层架构 (Layered Architecture)
 系统采用分层设计，确保底层加速库与上层业务逻辑解耦。

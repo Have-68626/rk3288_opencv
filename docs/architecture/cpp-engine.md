@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=architecture
 status=living
-as_of=2026-09-15
+as_of=2026-09-26
 -->
 
 # C++ 引擎架构文档
@@ -254,11 +254,19 @@ classDiagram
 | 注册 ID | 适配器 | 推荐场景 | 平台限制 |
 |---------|--------|----------|----------|
 | `yolo_face` | YoloFaceAdapter | 高精度 | 通用 |
-| `scrfd_0.5gf` | ScrfdNcnnAdapter | 高速 | 通用 |
+| `scrfd_0.5gf` | ScrfdNcnnAdapter | 高速 | ⚠️ 经**注册表**默认构造无法正确解码（见下） |
 | `yunet` | YuNetAdapter | 均衡 | 通用 |
 | `dnn_ssd` | DnnSsdAdapter | 均衡 | Windows only |
 | `cascade_lbp` | CascadeAdapter | 高速 | Windows only |
 | `yolo_face_int8` | YoloFaceAdapter | 高速（INT8） | 条件编译 |
+
+> **`scrfd_0.5gf` 的注册表路径限制**：经注册表装配时，工厂为
+> `make_unique<ScrfdNcnnAdapter>()`（**默认构造**）后只调 `load(modelPath)` 填模型路径；默认
+> `cfg_` 为 `decodeMode=kDelta` + `anchorsPerPos={1,1,1}`，且**不消费任何 profile**。
+> 真实 SCRFD det_10g 需要 `kDistance` + 每位置 2 anchor ⇒ 经此路径取得的实例**必然解错框位**。
+> 正确装配路径是**不经注册表**的 `RealtimeFacePipeline`（经
+> `ScrfdNcnnAdapter::configFromProfile(profile, …)` 消费 profile 后再构造）。出处：
+> `src/cpp/src/ModelRegistry.cpp`。
 
 **特征提取器（Embedder 接口）：**
 
