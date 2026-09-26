@@ -12,7 +12,7 @@
       "path": "scrfd.bin",
       "sha256": "b76dfa38cafe3d9c9581fbfa284c6de58b08090aceee4cc21b3dd38fcf3f3f74"
     },
-    "input": "in0",
+    "input": "input.1",
     "outputs": ["score_8","score_16","score_32","bbox_8","bbox_16","bbox_32","kps_8","kps_16","kps_32"],
     "inputWidth": 640,
     "inputHeight": 640,

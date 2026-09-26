@@ -271,6 +271,27 @@ TEST_F(FaceRuntimeManifestTest, DetectorRuntimeDefaultsBackwardCompatible) {
     EXPECT_EQ(opt.numAnchors[0], 1);
 }
 
+TEST_F(FaceRuntimeManifestTest, MissingDetectorInputFallsBackToRealScrfdBlobName) {
+    // 回归护栏（判别性）：**检测器**输入名的缺键回落值必须是本仓 SCRFD .param 的真实 Input 层名
+    // `input.1`（`models/scrfd_face_detect_ncnn/scrfd_*-opt2.param` 第 3 行皆为 `Input input.1 0 1 input.1`）。
+    // 旧回落值 `in0` 是 **ArcFace 侧**的名字（`models/arcface_ncnn/arcface.param` 第 3 行），曾被误抄到检测器侧；
+    // 用错会让 `ScrfdNcnnAdapter` 的 `ex.input()` 报 `ncnn_set_input_failed`。
+    // 把回落值改回 "in0" ⇒ 本用例红；把嵌入器回落值也"顺手"改成 input.1 ⇒ 第二断言红。
+    const std::string minimal =
+        "{"
+        "\"schemaVersion\":1,\"profileId\":\"m\",\"displayName\":\"M\","
+        "\"supportedAbis\":[\"arm64-v8a\"],"
+        "\"detector\":{\"param\":{\"path\":\"d.param\"},\"bin\":{\"path\":\"d.bin\"}},"
+        "\"embedder\":{\"param\":{\"path\":\"e.param\"},\"bin\":{\"path\":\"e.bin\"}},"
+        "\"detectionConfidence\":0.5,\"nmsIou\":0.4,\"identitySimilarity\":0.4"
+        "}";
+    FaceRuntimeProfile p;
+    std::string err;
+    ASSERT_TRUE(FaceRuntimeManifest::parseV1(minimal, "arm64-v8a", p, err)) << err;
+    EXPECT_EQ(p.detectorInput, "input.1");
+    EXPECT_EQ(p.embedderInput, "in0");
+}
+
 TEST_F(FaceRuntimeManifestTest, DetectorDecodeModeInvalidRejected) {
     std::string bad = manifestWithDetectorRuntime();
     auto pos = bad.find("\"decodeMode\":\"distance\"");

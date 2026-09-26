@@ -18,10 +18,12 @@ struct FaceRuntimeProfile {
     std::string displayName;
     std::vector<std::string> supportedAbis;
 
-    // detector（SCRFD ncnn 约定：in0 输入、out0-8 输出；节点名随 manifest）
+    // detector（SCRFD ncnn：输入节点名 input.1、out0-8 输出；节点名随 manifest）
+    // 缺键回落 = "input.1"——本仓全部 SCRFD .param 的 Input 层名皆为 input.1；
+    // "in0" 是 ArcFace 侧名字（arcface.param 第 3 行），曾被误抄到检测器侧。
     FaceModelManifestEntry detectorParam;
     FaceModelManifestEntry detectorBin;
-    std::string detectorInput = "in0";
+    std::string detectorInput = "input.1";
     std::vector<std::string> detectorOutputs;  // 9 个：score×3/bbox×3/kps×3，缺省走约定
     int detectorInputW = 640;
     int detectorInputH = 640;
