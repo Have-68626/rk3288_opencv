@@ -596,6 +596,9 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
     }
 
     {
+        // 复用 initErr 作为 embed 的 err 出参：`initialize`（上方）成功才会走到这里，而
+        // `embedAlignedFaceBgr` 在**每一条**失败路径上都写 `*err`（见 ArcFaceEmbedder.cpp:137-258），
+        // 故此处 initErr 已被 embed 的差异化文本覆盖，不再残留 init 阶段的内容。
         auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
         if (e.has_value()) {
             ctx.embedding = std::move(e->values);
@@ -604,7 +607,11 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
     }
 
     if (!ctx.embeddingOk) {
-        return failStatus("arc_embed", "arc_embed_failed");
+        // 与上方注入路径（:401）同口径：带出差异化 err，缺失时才回落固定文案。
+        // 此前此处硬编码 "arc_embed_failed"，把 embedAlignedFaceBgr 写好的
+        //「输入为空 / forward 失败 / 输出维度不是 512 / L2 归一化失败 / ncnn input|extract 失败 …」
+        // 全部丢弃，违反「失败不静默、err 要带差异」；stage 与文案形状（空则回落同串）保持不变。
+        return failStatus("arc_embed", initErr.empty() ? "arc_embed_failed" : initErr);
     }
     const auto te1 = std::chrono::steady_clock::now();
     m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
