@@ -114,6 +114,18 @@ struct NodeNameCapturingArcFaceAdapter final : public ArcFaceAdapter {
     }
 };
 
+// 「加载成功但输出维度不符」的 INT8 替身（FACE-PIPE-INT8-DIM 用）。
+// 刻意**不**碰真实文件：`load` 直接返回 true（模拟加载成功），`embed` 返回 256 维（≠512）。
+static std::atomic<int> g_wrongDimEmbedCalls{0};
+
+struct WrongDimInt8Adapter final : public ArcFaceAdapter {
+    bool load(const std::string&, std::string&) override { return true; }
+    std::optional<std::vector<float>> embed(const cv::Mat&, std::string&) override {
+        g_wrongDimEmbedCalls.fetch_add(1);
+        return std::vector<float>(256, 0.5f);
+    }
+};
+
 }  // namespace
 
 bool test_face_infer_image_load_failure() {
@@ -420,6 +432,57 @@ bool test_face_infer_embed_failure_carries_differential_err() {
     if (out.message == "arc_embed_failed") {
         std::cerr << "[face_infer_embed_err] err 是固定文案 arc_embed_failed ⇒ 上游差异化文本被丢弃"
                      "（这正是本用例要拦的回退）" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// FACE-PIPE-INT8-DIM（2026-09-26 二次审计登记的 **High**）：INT8 分支**不得**把「输出维度不符」当成功。
+//
+// 背景：该分支原在 `e.has_value()` 时**无条件** `return okStatus()`，而 `ctx.embeddingOk` 已被置 false
+// ⇒ 下游 `searchTopK` 因 `!embeddingOk` 早退 ⇒ 表现为「**无搜索结果**」而不是失败（失败静默）。
+// ⚠️ 该分支是**唯一能把「维度不符」变成静默成功的活路径**（★ 措辞已按验收 A1/A2 订正：**不要**写成
+//    「唯一能产出 512 契约违例的路径」——两个**生产** INT8 适配器自带维度校验，错维输出在那里已被拒，
+//    能走到该行的错维结果只来自**替身**；也**不要**引用「FP32 死代码」那一说法，它说的是 FP32 回落段
+//    **整段**不可达，与本分支不是同一处）。
+//
+// 判别点（用注册表替身让 INT8 候选「加载成功但输出 256 维」）：
+//   修复前：整体 outcome **ok=true**（静默成功）⇒ 本用例红；
+//   修复后：该候选**视作失败** ⇒ 继续尝试其余 INT8 候选 ⇒ 最终 FP32 回落（`arcModelPath` 不存在，必失败）
+//           ⇒ 整体 **ok=false** ⇒ 本用例绿。
+// 前置锚 `g_wrongDimEmbedCalls >= 1`：证明本用例**真的**走到了那条分支（防「路径没走到也绿」）。
+// ⚠️ 刻意用**不存在**的 `arcModelPath`：让其余 INT8 候选与 FP32 回落都必然失败 ⇒ 结果与本机是否存有
+//    真实模型**无关**（否则若本机正好存在可用 INT8 模型，修复后也会（正当地）成功，判据就飘了）。
+bool test_face_infer_int8_dim_mismatch_is_not_silent() {
+    const auto dir = makeTempDir("int8_dim_mismatch");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    // 顺序同 `test_face_infer_int8_chain_…` 的既有告诫：必须先让内建条目注册完，再用替身覆盖它。
+    ModelRegistry::ensureBuiltinRegistered();
+    ModelRegistry::instance().registerEmbedder(
+        "arcface_int8",
+        []() -> std::unique_ptr<Embedder> { return std::make_unique<WrongDimInt8Adapter>(); },
+        ModelEntry{"arcface_int8", "Wrong-dim INT8 stub", "recognize", "维度不符替身（测试用）", "high_speed", 2});
+    g_wrongDimEmbedCalls.store(0);
+
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = true;      // 只关心嵌入段
+    req.fakeEmbedding = false;  // 必须走真实嵌入路径
+    req.int8Enabled = true;     // 踩 INT8 支
+    req.arcBackend = "opencv";
+    req.arcModelPath = (dir / "no_such_int8_model.onnx").string();  // 见上：保证结果确定
+
+    const auto out = runFaceInferOnce(req);
+
+    if (g_wrongDimEmbedCalls.load() < 1) {
+        std::cerr << "[face_infer_int8_dim] 替身未被调用 ⇒ 本用例没走到 INT8 的 embed 分支，判据不在射程内"
+                  << std::endl;
+        return false;
+    }
+    if (out.ok) {
+        std::cerr << "[face_infer_int8_dim] INT8 候选输出 256 维（≠512）却被判**成功** ⇒ 失败被静默吞掉"
+                     "（下游会表现为「无搜索结果」而不是失败）" << std::endl;
         return false;
     }
     return true;

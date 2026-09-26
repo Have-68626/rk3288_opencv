@@ -15,6 +15,7 @@ using namespace rk_core;
 
 #include <atomic>
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -383,6 +384,11 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         ctx.embeddingFake = true;
         const auto te1 = std::chrono::steady_clock::now();
         m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+        // ⚠️ 同形状登记（2026-09-26 验收 A2 指出，**非本轮引入、本轮不改**）：本行与下面 INT8 分支
+        //    当初的缺陷是**同一形态** —— 先算 `embeddingOk`、再**无条件**返回 ok。当前**不可触发**
+        //    （`makeFakeEmbedding512` 恒返回 `kDim`），故属**潜伏**而非活缺陷；但若将来该函数的返回
+        //    维度变了，这里会立刻复现同一个「失败静默」。改动前请看 INT8 分支的处理（把原因写进 err
+        //    并走失败路径），保持同一口径。
         return okStatus();
     }
 
@@ -528,11 +534,44 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
                     if (e.has_value()) {
                         ctx.embedding = std::move(*e);
                         ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
-                        ctx.embeddingFake = false;
-                        ctx.arcBackendName = std::string(int8Emb->name()) + " (INT8)";
-                        const auto te1 = std::chrono::steady_clock::now();
-                        m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-                        return okStatus();
+                        if (ctx.embeddingOk) {
+                            ctx.embeddingFake = false;
+                            ctx.arcBackendName = std::string(int8Emb->name()) + " (INT8)";
+                            const auto te1 = std::chrono::steady_clock::now();
+                            m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+                            return okStatus();
+                        }
+                        // ★ 输出维度不符 ⇒ **不得当成功返回**（2026-09-26 二次审计登记、本轮修）。
+                        //   此前此处**无条件** `return okStatus()`，而 `embeddingOk` 已被置 false
+                        //   ⇒ 下游 `searchTopK`（本文件 `if (!(hasFace && embeddingOk)) return okStatus();`）
+                        //   早退 ⇒ 表现为「**无搜索结果**」而不是失败。
+                        //   ★ 精确措辞（验收 A1/A2 各订正一次）：这是**唯一能把「维度不符」变成静默成功
+                        //   的活路径** —— 不要把本句写成「唯一能产出 512 契约违例的路径」：两个**生产**
+                        //   INT8 适配器自身都做维度校验（`ArcFaceEmbedder` / `MobileFaceNetAdapter`），
+                        //   错维输出在那里就已被拒；能走到本行的错维结果只来自**替身/注册表替身**。
+                        //   也不要引用「FP32 死代码」：那句说的是本文件 FP32 回落段**整段**在现有装配下
+                        //   不可达（见 `FaceInferStages.cpp` 中该方法后段与 `tests/cpp/test_face_infer_pipeline.cpp`
+                        //   的用例注释），与「本分支」不是同一处，原注释里的「见该分支注释」是**悬空引用**。
+                        //   处置：把原因写进 `embedErr`、丢弃不合契约的向量、**不 return** ⇒
+                        //   落到本支既有的那一条 warn（"failed: load=… embed=…"）⇒ 继续尝试其余 INT8
+                        //   候选 ⇒ 最终仍有下面的 FP32 回落。⇒ 失败**可见**，fail-open 可恢复性**不变**。
+                        //   ⚠️ 与其余失败路径的**唯一差别**（如实登记）：本路径**额外**做了「清零 + clear」
+                        //   （其余路径不动 `ctx.embedding`）。理由：不让一个不合契约的向量留在 `ctx` 里；
+                        //   已核实仓内无「`embeddingOk==false` 时仍读 `ctx.embedding`」的路径，
+                        //   且该动作**可观测行为上不承重**（见下方处置处的说明）。
+                        //   ⚠️ 勿改为在此 `return failStatus(...)`：那会让本候选的失败**短路掉 FP32 回落**，
+                        //   与本支「先试 INT8、再回落 FP32」的设计（见本段开头的「本段不得删除」）冲突。
+                        const std::size_t actualDim = ctx.embedding.size();
+                        // 丢弃该不合契约的向量：**先清零再清空** —— 与本仓对嵌入字节的既有口径一致
+                        // （`FaceSearch.h` 的 `std::fill(...0.0f)`、`native_face_bridge.cpp` 的 `secureClear`）。
+                        // ⚠️ 如实登记（验收 S3 指出）：① 单用 `clear()` **不清零**（只改 size），
+                        //    那与上面那条口径不一致；② 这两步在**可观测行为上都不是承重的** ——
+                        //    唯一的向量读点 `searchTopK` 被 `embeddingOk` 守卫（失败路径不读、成功路径
+                        //    覆盖写）⇒ 它纯属**内存卫生**，**无测试覆盖**（别把它写成"必须"）。
+                        std::fill(ctx.embedding.begin(), ctx.embedding.end(), 0.0f);
+                        ctx.embedding.clear();
+                        embedErr = "输出维度不是 " + std::to_string(ArcFaceEmbedding::kDim) +
+                                   "（实际 " + std::to_string(actualDim) + "）";
                     }
                 }
                 // 清单条目 S2：MobileFaceNetAdapter 的 embed() 对「输入节点不存在 / 输出节点提取
