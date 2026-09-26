@@ -167,6 +167,53 @@ TEST(TrackCoordinator, CenterDistanceFallbackKeepsAdjacentFacesSeparate) {
     EXPECT_NE(t4[1].trackId, 1);
 }
 
+// 任务5（补缺）：同一帧内**两个 det 争抢同一条已确认 track 的回退匹配**——中心距离回退分支里的
+// 「已占位即跳过」(TrackCoordinator.cpp:97 `if (trackUsed[ti]) continue;`) 与「占位登记」
+// (:99 `trackUsed[ti] = true;`) 这一对**此前从未被「≥2 个 det 同时落在同一 track 的回退半径内」构造过**：
+// 既有的 CenterDistanceFallbackKeepsAdjacentFacesSeparate（:153-168）把第二张脸**刻意放到回退半径之外**
+// （中心距 ≈152.1 > 0.8×100=80），走的是「不匹配 → 新建 track」的另一条路，从不进入同一 track 的回退循环。
+// 本用例把**两张脸都放进回退半径内**、又都让 IoU 不足以走 IoU 路径，从而首次逼出这一对语句。
+//
+// 判别负载在 :97 与 :99 的**配对**，不在 :101 的 `break` 本身：
+//   · 删掉 :97 的 `if (trackUsed[ti]) continue;`（或删掉 :99 的 `trackUsed[ti] = true;` 登记）
+//     ⇒ 两个 det 都会映射到同一条 track T ⇒ 步 3 不再新建第二条 track ⇒ trackCount()==1 ⇒ 本用例 RED。
+//   · **只删 :101 的 `break` 不会变红**：登记（:99）仍在，该 det 本轮已 `detToTrack[idx]=ti`；
+//     即便继续循环，后续 ti 也会被 :97 的 trackUsed 挡掉，且此刻 tracks_ 只有 1 条，多绕一圈无副作用。
+//     故「删 break 该红」是**错误预期**，勿据此误判本用例的判别力。
+TEST(TrackCoordinator, TwoDetectionsCompeteForOneTrackInFallback) {
+    pipeline::TrackCoordinator tc;
+    // 帧 1000/1100/1200：单张 (0,0,100,100) 建立并确认一条 track（trackId=1，稳定确认 3 帧）。
+    EXPECT_TRUE(tc.update({face(0, 0, 100, 100)}, 1000, true).empty());
+    EXPECT_TRUE(tc.update({face(0, 0, 100, 100)}, 1100, true).empty());
+    ASSERT_EQ(tc.update({face(0, 0, 100, 100)}, 1200, true).size(), 1u);
+
+    // 帧 1300：两个 det 对 T 的 IoU 都 < 0.3（走不进 IoU 路径），但中心距都 ≤ 80（进得了回退）：
+    //   A = (60,0,100,100)：中心 (110,50)，dx=60、dy=0 → 中心距 60；与 T 交 40×100=4000，
+    //        并集 10000+10000-4000=16000 → IoU = 4000/16000 = 0.25 < 0.3；尺寸比 100/100 = 1.0 ∈ [0.5,2.0]。
+    //   B = (0,60,100,100)：中心 (50,110)，dx=0、dy=60 → 中心距 60；与 T 交 100×40=4000，
+    //        并集同为 16000 → IoU = 0.25 < 0.3；尺寸比同样 1.0 ∈ [0.5,2.0]。
+    // 两者面积都是 10000 ⇒ sort(order)（:78，非稳定）无论谁先谁后结论一致，断言不依赖排序结果。
+    tc.update({face(60, 0, 100, 100), face(0, 60, 100, 100)}, 1300, true);
+    // 第一个 det 占用 T（:99 登记），第二个 det 再进回退循环时被 :97 挡掉 → 不匹配 → 步 3 新建第二条 track。
+    EXPECT_EQ(tc.trackCount(), 2)
+            << "两个 det 争抢同一条 track 时，第二个 det 应另建轨迹而非被吞（:97/:99 的配对失效）";
+
+    // 再累积两帧同形（新 track 需再命中 2 次才达 stableFrames=3）。
+    tc.update({face(60, 0, 100, 100), face(0, 60, 100, 100)}, 1400, true);
+    auto t5 = tc.update({face(60, 0, 100, 100), face(0, 60, 100, 100)}, 1500, true);
+    ASSERT_EQ(t5.size(), 2u) << "两张脸都应被确认输出（第二张脸未被吞掉）";
+    EXPECT_NE(t5[0].trackId, t5[1].trackId) << "两条 track 必须是不同 trackId";
+    // 两条 bbox 须互不相同：一条落在 +x（60,0），一条落在 +y（0,60）。用逐字段计数而非 Rect 比较——
+    // mock OpenCV（RK_SKIP_OPENCV）的 cv::Rect 未定义 operator==/!=（见 deps/opencv/.../core/types.hpp）。
+    int xMoved = 0, yMoved = 0;
+    for (const auto& v : t5) {
+        if (v.bbox.x == 60 && v.bbox.y == 0) ++xMoved;
+        if (v.bbox.x == 0 && v.bbox.y == 60) ++yMoved;
+    }
+    EXPECT_EQ(xMoved, 1) << "应恰有一条轨迹落在 +x 位移的 (60,0)";
+    EXPECT_EQ(yMoved, 1) << "应恰有一条轨迹落在 +y 位移的 (0,60)";
+}
+
 // TTL 仍作长期无帧的兜底清理
 TEST(TrackCoordinator, TtlStillCullsTracksAsFallback) {
     pipeline::TrackCoordinator tc;

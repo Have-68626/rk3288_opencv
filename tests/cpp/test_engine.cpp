@@ -5,13 +5,19 @@
 #include "Engine.h"
 #include "Config.h"
 #include "FaceSearch.h"
+// Engine::noteEmbedError 的限频行为用例需要捕获落盘日志：NativeLog 已由本 target
+// （core_gtest_tests，见 CMakeLists.txt 的 RK_CORE_LITE_SOURCES）编译链接。
+#include "NativeLog.h"
 
 #include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -279,6 +285,54 @@ protected:
         cv.wait_for(lock, kInterleaveWait, [&] { return emitRelease; });
     }
 };
+
+// ── noteEmbedError 限频行为用例的替身与日志读取工具（范式抄自 test_native_log_redaction.cpp）──
+
+// 判别性测试替身：在**同一次** captureEnrollmentFaces 调用（⇒ 同一条限频时间窗，窗口 5s）
+// 内制造两条**文本不同**的 err ——
+//   · 第 1 次 embed 返回 false 且给出非空 err（非空才会被 noteEmbedError 记录）⇒ .../embed 站点；
+//   · 第 2 次 embed 返回 true 但产出**维度不符**的向量（256 ≠ 512）⇒ .../dim 站点。
+// 这正是闸门修复所针对的形态：逐帧路径上多张脸给出**不同** err 文本。纯时间窗闸门 ⇒ 窗内只放行
+// 一条；回退成「文本相同才抑制」⇒ 两条都放行。故本替身让「文本不同」成为可判别的行为差异。
+class TwoTextErrorEmbedder : public IRealtimeEmbedder {
+public:
+    std::atomic<int> calls{0};
+    bool embed(const cv::Mat&, std::vector<float>& out, std::string& err) override {
+        if (calls.fetch_add(1) == 0) {
+            err = "vitest-embed-alpha";  // 与下方维度文本不同；不含敏感 KV，不会被日志脱敏改写
+            return false;                // → captureEnrollmentFaces/embed 站点
+        }
+        out.assign(256, 0.5f);           // 维度不符（kEmbeddingDim == 512）
+        return true;                     // → captureEnrollmentFaces/dim 站点
+    }
+    int embeddingDim() const override { return 512; }
+    const char* name() const override { return "two_text_err"; }
+};
+
+// 跨进程唯一临时目录后缀（同 test_native_log_redaction.cpp 约定）
+std::string uniqueSuffix() {
+    return "_" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+// 读取文件全部内容
+std::string readFileAll(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// 统计 needle 在 hay 中**非重叠**出现的次数（逐字节，用于数日志行）。
+int countOccurrences(const std::string& hay, const std::string& needle) {
+    if (needle.empty()) return 0;
+    int n = 0;
+    for (std::size_t pos = hay.find(needle); pos != std::string::npos;
+         pos = hay.find(needle, pos + needle.size())) {
+        ++n;
+    }
+    return n;
+}
 
 }  // namespace
 
@@ -927,6 +981,82 @@ TEST(EngineTest, EnrollmentCaptureNotTriggeredWhenModelMissing) {
     engine.processFrameOnce(frame);
     EXPECT_EQ(count.load(), 0);
     EXPECT_EQ(engine.getRealtimeReason(), "missing_model");
+}
+
+// ★ 行为判别：Engine::noteEmbedError 的限频闸门必须是**纯时间窗**（不分站点、不看文本）。
+//
+// 背景：闸门已抽为 pipeline::LogRateLimiter，core_unit_tests 有它的单元用例，另有一条读
+// Engine.cpp 文本的**形态守卫**（tests/cpp/test_log_rate_limiter.cpp）。但那条只是文本判据——
+// 把闸门**回退成**「文本与上一条相同且在窗内才抑制」，全套仍绿。本用例补的正是**行为**承重：
+// Engine.cpp 不在 core_unit_tests 的编译面内，故必须落在编 Engine.cpp 的 core_gtest_tests
+// （本文件）。noteEmbedError 是 private，经其唯一间接生产者 captureEnrollmentFaces 驱动
+//（照 EnrollmentCaptureCallbacksOnlyWhenEnabled 那条路子在无模型环境下走）。
+//
+// 设计（把判别点从"时刻"改成"条数"，因此**无需**时钟接缝、也**无需**缩短 5s 窗口）：在**同一次**
+// processFrameOnce（⇒ 同一条限频窗）内，用 TwoTextErrorEmbedder 让两张脸各产出一条**文本不同**
+// 的 err：
+//   · 纯时间窗闸门（当前实现）⇒ 窗内只放行一条 ⇒ 该行只出现 **1** 次；
+//   · 回退版（文本相同才抑制）⇒ 两条不同文本都放行 ⇒ 出现 **2** 次 ⇒ 确定性 RED。
+// 正向锚：必须出现 **≥1** 次——防"一条都没打"这种另一种破法（本仓明确拒绝"静默"）。
+TEST(EngineTest, NoteEmbedErrorLimiterSuppressesSecondDistinctTextWithinWindow) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("rk_engine_ratelimit" + uniqueSuffix());
+    std::filesystem::create_directories(dir);
+    const std::string fileName = "rk_engine_ratelimit.log";
+
+    // 开文件 sink（**进程级**，用完必须关，勿污染其它用例）。与 test_native_log_redaction.cpp
+    // 同范式：setLogDirs(dir,"",fileName) 开、跑完 setLogDirs("","","rk3288.log") 关 FD 并复位
+    // 默认文件名（第三参非空；NativeLog 仅在其非空时覆盖默认名，故此处正是「关 FD + 复位默认名」），
+    // 再读回文件。
+    rklog::setLogDirs(dir.string(), "", fileName);
+
+    auto det = std::make_shared<ScriptedDetector>();
+    // 两张**互不重叠**的脸（IoU=0，NMS 与包含框抑制都不会删其一）⇒ captureEnrollmentFaces 逐脸
+    // 处理两次。关键点均落在 640×480 画面内（即便关键点仿射失败也会回落到 bbox 裁剪，仍能对齐）。
+    RealtimeFaceBox fa = boxOf(cv::Rect(80, 120, 140, 180), 0.9f);
+    fa.hasKeypoints = true;
+    fa.keypoints = {110.f, 150.f, 190.f, 150.f, 150.f, 190.f, 125.f, 225.f, 175.f, 225.f};
+    RealtimeFaceBox fb = boxOf(cv::Rect(400, 120, 140, 180), 0.9f);
+    fb.hasKeypoints = true;
+    fb.keypoints = {430.f, 150.f, 510.f, 150.f, 470.f, 190.f, 445.f, 225.f, 495.f, 225.f};
+    det->boxes = {fa, fb};
+
+    auto emb = std::make_shared<TwoTextErrorEmbedder>();
+    // gallery = nullptr ⇒ assignRealtimeIdentities 在读库处早退（不产 err），限频窗只被
+    // captureEnrollmentFaces 的两条 err 使用，判别不掺入识别侧噪声。
+    Engine engine;
+    engine.setRealtimePipeline(makeRtPipeline(det, nullptr, /*reload=*/true, emb));
+    engine.setEnrollmentCapture(true);  // captureEnrollmentFaces 仅在采集模式开启时被调用
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(90, 90, 90));
+    engine.processFrameOnce(frame);
+
+    rklog::setLogDirs("", "", "rk3288.log");  // 关闭 FD 并复位默认文件名
+
+    const std::string content = readFileAll(dir / fileName);
+    std::filesystem::remove_all(dir);
+
+    // 前置自检：两张脸都被嵌入（⇒ 两条 err 都确实被生产出来）。若此断言失败，说明场景未构造成功
+    // （例如脸被后处理删了一张），后续计数断言便无意义——用 ASSERT 明确判失败，而非静默假通过。
+    ASSERT_EQ(emb->calls.load(), 2)
+        << "场景未构造：captureEnrollmentFaces 未逐脸调用 embed 两次（脸被后处理删了一张？）";
+
+    const int total = countOccurrences(content, "人脸特征路径失败 err=");
+    const int alpha = countOccurrences(content, "err=vitest-embed-alpha");          // embed 失败站点
+    const int dim = countOccurrences(content, "维度不符: 实际 256 期望 512");        // 维度不符站点
+
+    // ③ 正向锚：至少落一条（拒绝"静默"）。缺了这条，"闸门恒抑制/日志 sink 未生效"会伪装成通过。
+    EXPECT_GE(total, 1)
+        << "noteEmbedError 一条都没打：日志 sink 未生效或闸门被改成恒抑制（禁止静默）";
+    // 两条已知文案恰好命中一条：证明断言针对**真实文案**（且两条文本确实不同），而非臆造串。
+    EXPECT_EQ(alpha + dim, 1)
+        << "期望恰好命中一条已知 err 文本（vitest-embed-alpha / 维度不符: 实际 256 期望 512）";
+    // ★ 判别点：同一时间窗内两条**文本不同**的 err 只应放行一条。
+    //   把闸门回退成「文本与上一条相同且在窗内才抑制」⇒ 两条不同文本都放行 ⇒ total==2 ⇒ 本行翻红。
+    EXPECT_EQ(total, 1)
+        << "同一限频窗内两条不同文本的 err 只应落 1 条；出现 2 条说明闸门退化成了"
+           "「文本相同才抑制」（多张脸给出不同 err 文本时会逐帧×每脸刷屏、日志量无上界）";
 }
 
 // 质量指标纯函数：常量图 Laplacian 方差为 0；中心亮点响应方差 > 0。

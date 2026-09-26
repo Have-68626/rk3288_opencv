@@ -361,6 +361,71 @@ TEST(RealtimeFacePipeline, SwitchDuringInferenceKeepsSnapshotAlive) {
     }
 }
 
+// 发布顺序不变量（β-N4①）：buildAndPublishLocked 必须**先** atomic_store 新快照、**后**自增
+// generation_。错序（先自增再发布）只制造一个**窗口期**内的可观测差异——「代次领先于快照」——
+// 所有既有用例都在两次 store **之后**才读，非并发采样撞不上；SwitchDuringInferenceKeepsSnapshotAlive
+// 也只观测快照自带的 generation，从不把 generation() 与 snapshot()->generation 配成一对。
+//
+// 本用例经 publishGapHook 在两行**之间**取一个**确定性**采样点，采样并断言不变量：
+//     snapshot()->generation >= generation()
+//
+// 判别力（逐字）：
+//   · 正确顺序（先发布后自增）：钩子点处新快照已发布 ⇒ snapshot()->generation==gen；而
+//     generation_ 尚未更新 ⇒ generation()==gen-1 ⇒ gen >= gen-1 成立 ⇒ 绿。
+//   · 把 528/529 两行颠倒（先自增后发布）：钩子点处 generation_.store(gen) 已执行 ⇒
+//     generation()==gen；而 snapshot_ 仍指旧快照 ⇒ snapshot()->generation==gen-1 ⇒ gen-1 >= gen
+//     为假 ⇒ invariantHeld 翻假 ⇒ 下面 EXPECT_TRUE 变红；同时 EXPECT_EQ(gapSnapshotGen, 2u)/
+//     (gapPipeGen, 1u) 一并翻红。本用例做**两次** reload，使 gen-1 在钩子点处是**真实存在**的旧快照
+//     （首次 reload 时旧快照为 nullptr，判别同样成立但读到的不是「gen-1」这一具体值）。
+//
+// 防「空转假绿」：钩子若**未被调用**（例如发布段被改写、或接缝被移除），sawGap 保持 false ⇒
+// 末尾 EXPECT_TRUE(sawGap) 翻红，不会因「什么都没采样到」而静默通过。
+//
+// ⚠️ 本用例**刻意不**以「读源码文本断两行先后」为判据（形态判据，本仓已明确拒绝）；它只在
+//    运行时经接缝观测不变量，属行为判据。
+TEST(RealtimeFacePipeline, PublishOrderInvariantSnapshotNeverBehindGeneration) {
+    auto ctl = makeControls();
+    RealtimePipelineHooks h = makeMutableHooks(ctl);
+
+    RealtimeFacePipeline* pipePtr = nullptr;  // 构造后回填（钩子需在 reload 时引用本对象）
+    bool sawGap = false;
+    bool invariantHeld = true;
+    int gapCalls = 0;
+    std::uint64_t gapSnapshotGen = 0;
+    std::uint64_t gapPipeGen = 0;
+
+    h.publishGapHook = [&]() {
+        sawGap = true;
+        ++gapCalls;
+        // 在发布间隙采样不变量：快照自带代次必须 >= 管线对外代次。
+        auto s = pipePtr->snapshot();
+        gapSnapshotGen = s ? s->generation : 0;
+        gapPipeGen = pipePtr->generation();
+        if (gapSnapshotGen < gapPipeGen) invariantHeld = false;
+    };
+
+    RealtimeFacePipeline pipe(std::move(h));
+    pipePtr = &pipe;
+
+    // 两次 reload：使第二次钩子点处的「旧快照」是真实存在的代次 1。
+    ASSERT_TRUE(pipe.reload(validManifest(), "", "arm64-v8a", "").ok);
+    const RealtimeReloadResult r2 = pipe.reload(validManifest(), "", "arm64-v8a", "");
+    ASSERT_TRUE(r2.ok) << r2.evidence;
+
+    // 防空转：钩子必须确实被调用（每次成功的发布各一次）。
+    EXPECT_TRUE(sawGap) << "publishGapHook 未被调用：本用例空转，判别力失效";
+    EXPECT_EQ(gapCalls, 2);
+
+    // 核心不变量：发布间隙处快照代次不得落后于管线代次（错序时此断言必红）。
+    EXPECT_TRUE(invariantHeld)
+        << "发布顺序被颠倒：间隙处 snapshot()->generation=" << gapSnapshotGen
+        << " < generation()=" << gapPipeGen;
+    // 正确顺序下的具体采样值（第二次 reload，gen=2）：快照已推进到 2，generation() 仍滞后为 1。
+    EXPECT_EQ(gapSnapshotGen, 2u);
+    EXPECT_EQ(gapPipeGen, 1u);
+    EXPECT_EQ(pipe.generation(), 2u);
+}
+
 // 后台重载：reloadAsync 完成后快照已就绪。
 TEST(RealtimeFacePipeline, AsyncReloadPublishesSnapshot) {
     auto ctl = makeControls();
