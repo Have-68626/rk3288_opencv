@@ -15,8 +15,12 @@ import static org.junit.Assert.assertTrue;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.WildcardType;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.SecureRandom;
@@ -394,8 +398,9 @@ public class FeatureTemplateEncryptedStoreTest {
      * </ul>
      *
      * <p><b>为何收紧后仍不误伤既有合法 API</b>：{@code isPlatformSupported(PlatformKeyProvider)} 虽是
-     * 静态单参方法，但其名以 {@code is} 开头（**非 setter**）且返回 {@code boolean} ⇒ 判据①②均不命中，守卫
-     * 仍绿。
+     * 静态单参方法，但其形参是**裸** {@code PlatformKeyProvider}（无泛型实参）、方法名以 {@code is}
+     * 开头（**非 setter**）且返回 {@code boolean} ⇒ 判据①（需 {@code set} 前缀）与判据②（需
+     * {@code void}）均不命中，递归判据 {@link #mentionsSeamType(Type)} 收紧后守卫仍绿。
      *
      * <p><b>双向</b>：既断言「无静态注入入口 / 无可变静态字段」，也断言 {@code DEFAULT_KEY_PROVIDER}
      * 仍对同包可见且非空（生产调用方的默认实例）。
@@ -413,18 +418,26 @@ public class FeatureTemplateEncryptedStoreTest {
      *       ⇒ 字段断言红。</li>
      * </ul>
      *
-     * <p><b>边界（如实声明，与 {@code fileStoreUtilsExposesNoStaticInjectionSeam} 同）</b>：仍只按**形态**
-     * 判据（setter 命名 + 接缝参数类型）。若有人以**其它类型**承载静态注入（如静态 {@code
-     * Consumer<PlatformKeyProvider>}、静态 {@code Map} 缓存替身），或以**非 setter 命名**承载（如
-     * {@code static void install(PlatformKeyProvider p)}），本条**不覆盖**。
+     * <p><b>边界（如实声明，仅述本守卫自身收紧后的口径）</b>：
+     * 类型判据已**递归下探泛型实参**（见 {@link #mentionsSeamType(Type)}）—— 静态 {@code
+     * Consumer<PlatformKeyProvider>} / 静态 {@code Map<String, PlatformKeyProvider>} 等「以其它类型
+     * 承载」的静态注入**已被覆盖**；**非 setter 命名**承载（如 {@code static void
+     * install(PlatformKeyProvider p)}）由判据②覆盖。仍**不覆盖**的只有：把接缝藏进**自定义 Holder
+     * 类内部**（如 {@code static final Holder H} 而 {@code Holder} 内才有 {@code PlatformKeyProvider}
+     * 字段）—— 判据只作用于成员自身声明的（泛型）类型，**不反射进任意 Holder 类的内部**。
+     *
+     * <p><b>已知代价（如实声明，不得隐瞒）</b>：递归判据会命中一批**合法**的静态常量 —— 若将来合法
+     * 新增 {@code private static final Map<String, PlatformKeyProvider> DEFAULTS}，本条**会真红**。
+     * 那不是假红，是**策略边界被推进**，需显式白名单 + 评审。⚠️ **不要**为了绕过它而放行
+     * {@code Map}/{@code Optional}（那等于把判据换回空气），也不要直接删判据。
      */
     @Test
     public void featureTemplateEncryptedStoreExposesNoStaticInjectionSeam() {
         for (Method m : FeatureTemplateEncryptedStore.class.getDeclaredMethods()) {
             boolean isStatic = Modifier.isStatic(m.getModifiers());
             boolean hasProviderParam = false;
-            for (Class<?> p : m.getParameterTypes()) {
-                if (FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(p)) {
+            for (Type p : m.getGenericParameterTypes()) {
+                if (mentionsSeamType(p)) {
                     hasProviderParam = true;
                     break;
                 }
@@ -436,8 +449,7 @@ public class FeatureTemplateEncryptedStoreTest {
             boolean voidSingleProvider = isStatic
                     && m.getReturnType() == void.class
                     && m.getParameterCount() == 1
-                    && FeatureTemplateEncryptedStore.PlatformKeyProvider.class
-                            .equals(m.getParameterTypes()[0]);
+                    && mentionsSeamType(m.getGenericParameterTypes()[0]);
             assertFalse("不应暴露静态注入入口（返回 void 且参数恰为一个 PlatformKeyProvider 的静态方法）："
                     + m.getName(), voidSingleProvider);
             assertFalse("不应再存在任何 setPlatformKeyProviderForTesting 方法（注入点已下移到调用方）："
@@ -445,7 +457,7 @@ public class FeatureTemplateEncryptedStoreTest {
         }
         for (Field f : FeatureTemplateEncryptedStore.class.getDeclaredFields()) {
             boolean staticProvider = Modifier.isStatic(f.getModifiers())
-                    && FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(f.getType());
+                    && mentionsSeamType(f.getGenericType());
             if (!staticProvider) {
                 continue;
             }
@@ -458,5 +470,51 @@ public class FeatureTemplateEncryptedStoreTest {
         // 编译期引用：证明 DEFAULT_KEY_PROVIDER 仍对同包可见且非空（生产调用方的默认实例）。
         assertNotNull("DEFAULT_KEY_PROVIDER 应对同包可见且非空",
                 FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER);
+    }
+
+    /**
+     * 类型（含泛型）是否**提及**测试接缝 {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}。
+     *
+     * <p>递归下探：{@code Class}（数组取组件类型）、{@link ParameterizedType}（递归每个实参）、
+     * {@link GenericArrayType}（递归组件类型）、{@link WildcardType}（递归上界）。故静态
+     * {@code Consumer<PlatformKeyProvider>} / {@code Map<String, PlatformKeyProvider>} /
+     * {@code Optional<PlatformKeyProvider>} / {@code PlatformKeyProvider[]} / {@code ? extends
+     * PlatformKeyProvider} 均命中。
+     *
+     * <p><b>为何不下探 Holder 类内部</b>：本判据只作用于成员**自身声明的（泛型）类型**，不反射进任意
+     * 自定义 Holder 类内部 —— 那是无界的，会把「任何持有接缝的类型」都算成接缝，误伤面失控。
+     *
+     * <p><b>已知代价（如实声明）</b>：递归会命中一批**合法**的静态常量（如 {@code private static final
+     * Map<String, PlatformKeyProvider> DEFAULTS}）—— 那不是假红，而是**策略边界被推进**，需显式白名单
+     * + 评审。不要为了绕过它而放行 {@code Map}/{@code Optional}（那等于把判据换回空气）。
+     */
+    private static boolean mentionsSeamType(Type type) {
+        if (type instanceof Class<?>) {
+            Class<?> c = (Class<?>) type;
+            if (c.isArray()) {
+                return mentionsSeamType(c.getComponentType());
+            }
+            return FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(c);
+        }
+        if (type instanceof ParameterizedType) {
+            for (Type arg : ((ParameterizedType) type).getActualTypeArguments()) {
+                if (mentionsSeamType(arg)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (type instanceof GenericArrayType) {
+            return mentionsSeamType(((GenericArrayType) type).getGenericComponentType());
+        }
+        if (type instanceof WildcardType) {
+            for (Type bound : ((WildcardType) type).getUpperBounds()) {
+                if (mentionsSeamType(bound)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
     }
 }

@@ -9,8 +9,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.RandomAccessFile;
 import java.lang.reflect.Field;
+import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.WildcardType;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.SecureRandom;
@@ -880,8 +884,17 @@ public class AndroidEnrollmentRepositoryTest {
      * {@code static}，或新增「返回非 void / 多参」的静态 setter ⇒ 判据①红；新增任意静态接缝类型字段 ⇒
      * 字段判据红。</p>
      *
-     * <p><b>边界（如实声明）</b>：仍只按**形态**判据（setter 命名 + 接缝参数/字段类型）；以其它类型或非
-     * setter 命名承载的静态注入不覆盖。</p>
+     * <p><b>边界（如实声明，收紧后）</b>：类型判据已**递归下探泛型实参**（见 {@link #mentionsSeamType(Type)}）
+     * —— {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
+     * {@code FileOps[]} / {@code ? extends FileOps} 等「以其它类型承载」的静态注入**已被覆盖**；
+     * **非 setter 命名**承载（{@code static void install(FileOps)}）由判据②覆盖。仍**不覆盖**的只有：
+     * 把接缝藏进**自定义 Holder 类内部**（如 {@code static final Holder H} 而 {@code Holder} 内才有
+     * {@code FileOps} 字段）—— 判据只作用于成员自身声明的（泛型）类型，**不反射进任意 Holder 类的内部**。
+     *
+     * <p><b>已知代价（如实声明，不得隐瞒）</b>：递归判据会命中一批**合法**的静态常量 —— 若将来合法
+     * 新增 {@code private static final Map<String, FileOps> DEFAULTS}，本条**会真红**。那不是假红，是
+     * **策略边界被推进**，需显式白名单 + 评审。⚠️ **不要**为了绕过它而放行 {@code Map}/{@code Optional}
+     * （那等于把判据换回空气），也不要直接删判据。
      */
     @Test
     public void androidEnrollmentRepositoryExposesNoStaticInjectionSeam() {
@@ -890,8 +903,8 @@ public class AndroidEnrollmentRepositoryTest {
                 continue;   // 合法注入方法在本类均为**实例**方法，故只查静态
             }
             boolean hasSeamParam = false;
-            for (Class<?> p : m.getParameterTypes()) {
-                if (isSeamType(p)) {
+            for (Type p : m.getGenericParameterTypes()) {
+                if (mentionsSeamType(p)) {
                     hasSeamParam = true;
                     break;
                 }
@@ -901,7 +914,7 @@ public class AndroidEnrollmentRepositoryTest {
                     m.getName().startsWith("set") && hasSeamParam);
             boolean voidSingleSeam = m.getReturnType() == void.class
                     && m.getParameterCount() == 1
-                    && isSeamType(m.getParameterTypes()[0]);
+                    && mentionsSeamType(m.getGenericParameterTypes()[0]);
             assertFalse("不应暴露静态注入入口（返回 void 且参数恰为一个接缝类型）：" + m.getName(),
                     voidSingleSeam);
         }
@@ -910,7 +923,7 @@ public class AndroidEnrollmentRepositoryTest {
                             + "——默认值请引用 FileStoreUtils.DEFAULT_FILE_OPS / "
                             + "FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER，静态字段会成为进程级可变注入入口："
                             + f.getName(),
-                    Modifier.isStatic(f.getModifiers()) && isSeamType(f.getType()));
+                    Modifier.isStatic(f.getModifiers()) && mentionsSeamType(f.getGenericType()));
         }
     }
 
@@ -977,10 +990,51 @@ public class AndroidEnrollmentRepositoryTest {
         return out;
     }
 
-    /** 类型是否为任一测试接缝（{@link FileStoreUtils.FileOps} / {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}）。 */
-    private static boolean isSeamType(Class<?> type) {
-        return FileStoreUtils.FileOps.class.isAssignableFrom(type)
-                || FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(type);
+    /**
+     * 类型（含泛型）是否**提及**任一测试接缝（{@link FileStoreUtils.FileOps} /
+     * {@link FeatureTemplateEncryptedStore.PlatformKeyProvider}）。
+     *
+     * <p>递归下探：{@code Class}（数组取组件类型）、{@link ParameterizedType}（递归每个实参）、
+     * {@link GenericArrayType}（递归组件类型）、{@link WildcardType}（递归上界）。故
+     * {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
+     * {@code FileOps[]} / {@code ? extends FileOps} 均命中。
+     *
+     * <p><b>为何不下探 Holder 类内部</b>：本判据只作用于成员**自身声明的（泛型）类型**，不反射进任意
+     * 自定义 Holder 类内部 —— 那是无界的，会把「任何持有接缝的类型」都算成接缝，误伤面失控。
+     *
+     * <p><b>已知代价（如实声明）</b>：递归会命中一批**合法**的静态常量（如 {@code private static final
+     * Map<String, FileOps> DEFAULTS}）—— 那不是假红，而是**策略边界被推进**，需显式白名单 + 评审。
+     * 不要为了绕过它而放行 {@code Map}/{@code Optional}（那等于把判据换回空气）。
+     */
+    private static boolean mentionsSeamType(Type type) {
+        if (type instanceof Class<?>) {
+            Class<?> c = (Class<?>) type;
+            if (c.isArray()) {
+                return mentionsSeamType(c.getComponentType());
+            }
+            return FileStoreUtils.FileOps.class.isAssignableFrom(c)
+                    || FeatureTemplateEncryptedStore.PlatformKeyProvider.class.isAssignableFrom(c);
+        }
+        if (type instanceof ParameterizedType) {
+            for (Type arg : ((ParameterizedType) type).getActualTypeArguments()) {
+                if (mentionsSeamType(arg)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (type instanceof GenericArrayType) {
+            return mentionsSeamType(((GenericArrayType) type).getGenericComponentType());
+        }
+        if (type instanceof WildcardType) {
+            for (Type bound : ((WildcardType) type).getUpperBounds()) {
+                if (mentionsSeamType(bound)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
     }
 
     private static FeatureTemplateEncryptedStore.PlatformKeyProvider jceProvider() throws Exception {
