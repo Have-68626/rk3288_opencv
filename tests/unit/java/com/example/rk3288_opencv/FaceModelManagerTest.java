@@ -2946,7 +2946,13 @@ public class FaceModelManagerTest {
 
     /**
      * **结构守卫**：{@code FaceModelManager} 上**不再存在**静态接缝注入入口 / 任意静态接缝
-     * （{@code FileOps}）字段（与 {@code PersonDisplayNameStoreTest} 对 {@code FileStoreUtils} 的守卫同口径）。
+     * （{@code FileOps}）字段。
+     *
+     * <p>⚠️ <b>与 {@code PersonDisplayNameStoreTest} 对 {@code FileStoreUtils} 的守卫之关系</b>：
+     * 两者的**类型判据同源**（同为 {@code mentionsSeamType} 递归下探），但那条守卫的**方法判据更宽**
+     * ——它只要求「静态 + 恰一个接缝参数」，**不限方法名、不限返回类型**（见其 javadoc 的
+     * 「与本仓其余四处守卫的关系」一节）。故**不得**把两者写成「同口径」：本类的覆盖是那两条
+     * 收窄后的形态，{@code FileStoreUtils} 那条比它更严。
      *
      * <p>反例原理：只要类上还能「一次注入、全局生效」，本仓的 JVM 内串行测试模型就可能被跨类污染。
      * 故用反射把「没有静态接缝」钉成可执行断言。
