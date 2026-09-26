@@ -2,6 +2,7 @@
 
 #include "rk_win/WinCrypto.h"
 
+#include <opencv2/core.hpp>
 #include <opencv2/core/persistence.hpp>
 
 #ifdef _WIN32
@@ -300,32 +301,71 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
         }
     } else {
         // 旧明文 YAML：先读明文（兼容既有库），再尝试加密迁移（失败/中止保留旧库，可回滚）。
-        cv::FileStorage fs(path.string(), cv::FileStorage::READ);
-        if (!fs.isOpened()) {
+        //
+        // ⚠️ **本段必须整体受异常保护**（2026-09-26 二次审计登记、本轮修）：本分支是 `load()` 里
+        //    唯一触碰 OpenCV **解析**的面，而它的操作**是抛异常的**（不是返回错误码）。
+        //    ★ 精确机制（验收 A1 用独立探针实测后订正；我原先写的「序列元素不是 map」**不成立**——
+        //      实测 `persons` 的元素 **isMap=1（是 map）**）：
+        //      ①② 两个畸形臂**都栽在 `mean` 这一个字段上**，只是经由不同代码：
+        //        - `mean` 是**标量**（如 `mean: 3.14`）时：`(*it)["mean"] >> meanMat` 进入
+        //          `cv::read(const FileNode&, Mat&, …)`，其**第一条语句**读 `node["dt"]` ⇒ 对**非 map**
+        //          节点调 `cv::FileNode::operator[]` ⇒ 抛 `isMap()`（实测文本：
+        //          `OpenCV(4.10.0) … persistence.cpp:2171: error: (-215:Assertion failed) isMap() in
+        //           function 'cv::FileNode::operator []'`，本机 4.10.0 原样复现）；
+        //        - `mean` 是**CV_64F 矩阵**（结构合法、类型不符）时：不抛，落到下面的**显式校验**。
+        //    修前：上述①会**抛穿** `load()`（无 try/catch），而 `load()` 的契约是「受控返回 false 并
+        //    清空内存库」（见 `FaceDatabase.h` 的 javadoc），调用链
+        //    （`ArcFaceWinRecognizer::initialize` → `RuntimeBootstrap::build`）**没有** try/catch
+        //    ⇒ 会在**装配期**直接抛穿。
+        //    ⇒ 现口径：本分支的一切 **`cv::Exception`** 等价于「库不可读」，与
+        //      「读不开 / 解密失败 / 反序列化失败」同一处置（清空内存库 + 返回 false）。
+        //    ⚠️ **代价（不得隐瞒，验收 A2 指出）**：① 该 catch **只兜 `cv::Exception`** ——
+        //      `std::bad_alloc` / `std::length_error`（`e.mean.resize`、`tmp.emplace`）与
+        //      `std::filesystem` 异常**仍会抛穿**（修前是「全都不兜」，故不构成回归，但**不得**把
+        //      现口径写成「对一切可预期的坏库都是受控返回」）；
+        //      ② `cv::Exception` 也覆盖 `cv::Error::OutOfMemoryError` 等 ⇒ 真 OOM / 内部 bug 会被
+        //      报成「库不可读」，且本函数**没有日志依赖**（`FaceDatabase.cpp` 无 `rklog`）⇒
+        //      坏库与错密钥在诊断上**不可区分**。收窄它需引入日志依赖，**不在本轮改动面**。
+        try {
+            cv::FileStorage fs(path.string(), cv::FileStorage::READ);
+            if (!fs.isOpened()) {
+                std::lock_guard<std::mutex> lock(mu_);
+                persons_.clear();
+                return false;
+            }
+            cv::FileNode persons = fs["persons"];
+            if (persons.type() == cv::FileNode::SEQ) {
+                for (auto it = persons.begin(); it != persons.end(); ++it) {
+                    PersonEntry e;
+                    (*it)["id"] >> e.id;
+                    int count = 0;
+                    (*it)["count"] >> count;
+                    e.count = count;
+                    cv::Mat meanMat;
+                    (*it)["mean"] >> meanMat;
+                    meanMat = meanMat.reshape(1, 1);
+                    e.mean.resize(static_cast<std::size_t>(meanMat.cols));
+                    // 修前此处是 `CV_Assert(...)`：畸形条目 ⇒ 抛 cv::Exception 穿出 `load()`。
+                    // 现改为**显式校验**：不满足契约即判该库不可读（不抛、不留半截状态）。
+                    if (meanMat.type() != CV_32F || !meanMat.isContinuous() ||
+                        e.mean.size() != static_cast<std::size_t>(meanMat.total())) {
+                        std::lock_guard<std::mutex> lock(mu_);
+                        persons_.clear();
+                        return false;
+                    }
+                    std::copy(meanMat.ptr<float>(), meanMat.ptr<float>() + meanMat.total(), e.mean.begin());
+                    if (!e.id.empty() && !e.mean.empty()) {
+                        tmp.emplace(e.id, std::move(e));
+                    }
+                }
+            }
+        } catch (const cv::Exception&) {
+            // 兜住本段其余 cv:: 抛出点（FileStorage 解析畸形 YAML、`>>` 类型不匹配等）。
             std::lock_guard<std::mutex> lock(mu_);
             persons_.clear();
             return false;
         }
-        cv::FileNode persons = fs["persons"];
-        if (persons.type() == cv::FileNode::SEQ) {
-            for (auto it = persons.begin(); it != persons.end(); ++it) {
-                PersonEntry e;
-                (*it)["id"] >> e.id;
-                int count = 0;
-                (*it)["count"] >> count;
-                e.count = count;
-                cv::Mat meanMat;
-                (*it)["mean"] >> meanMat;
-                meanMat = meanMat.reshape(1, 1);
-                e.mean.resize(static_cast<std::size_t>(meanMat.cols));
-                CV_Assert(meanMat.type() == CV_32F && meanMat.isContinuous() &&
-                          e.mean.size() == static_cast<std::size_t>(meanMat.total()));
-                std::copy(meanMat.ptr<float>(), meanMat.ptr<float>() + meanMat.total(), e.mean.begin());
-                if (!e.id.empty() && !e.mean.empty()) {
-                    tmp.emplace(e.id, std::move(e));
-                }
-            }
-        }
+        // `migratePlaintextToEncrypted` 不使用 OpenCV（纯加密 + 文件 IO，自带回滚）⇒ 刻意留在 try 之外。
         std::string migErr;
         (void)migratePlaintextToEncrypted(path, tmp, migErr);
     }

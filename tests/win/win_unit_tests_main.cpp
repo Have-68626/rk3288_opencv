@@ -124,6 +124,8 @@ bool test_face_db_migration_encrypts_legacy();
 bool test_face_db_migration_failure_preserves_legacy();
 bool test_face_db_encrypted_roundtrip();
 bool test_face_db_load_nonexistent_path_is_intentionally_ok();
+// FACE-DB-002：畸形旧明文库必须受控失败（不得抛穿 load() 的 false 契约）。
+bool test_face_db_malformed_legacy_is_controlled_failure();
 // FACE-ARCWIN-002：initialize() 初始化自检块的判别用例（含阳性对照臂，防 cascade 静默失败造成假绿）。
 bool test_arcwin_selfcheck_positive_control();
 bool test_arcwin_selfcheck_rejects_dim_mismatch();
@@ -307,6 +309,7 @@ int main(int argc, char** argv) {
         {"face_db_migration_failure_preserves_legacy", test_face_db_migration_failure_preserves_legacy},
         {"face_db_encrypted_roundtrip", test_face_db_encrypted_roundtrip},
         {"face_db_load_nonexistent_path_is_intentionally_ok", test_face_db_load_nonexistent_path_is_intentionally_ok},
+        {"face_db_malformed_legacy_is_controlled_failure", test_face_db_malformed_legacy_is_controlled_failure},
         {"arcwin_selfcheck_positive_control", test_arcwin_selfcheck_positive_control},
         {"arcwin_selfcheck_rejects_dim_mismatch", test_arcwin_selfcheck_rejects_dim_mismatch},
         {"arcwin_selfcheck_rejects_unknown_input_blob", test_arcwin_selfcheck_rejects_unknown_input_blob},
