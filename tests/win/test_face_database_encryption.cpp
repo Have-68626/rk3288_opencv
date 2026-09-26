@@ -20,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -230,5 +231,87 @@ bool test_face_db_load_nonexistent_path_is_intentionally_ok() {
     db3.updateMean("henry-008", {0.1f, 0.2f});
     if (!db3.save(created)) return false;
     if (!std::filesystem::exists(created)) return false;
+    return true;
+}
+
+// FACE-DB-002（2026-09-26 二次审计登记、本轮修）：畸形「旧明文库」必须**受控失败**，不得抛穿。
+//
+// 修前：明文分支的所有 OpenCV 解析**都是抛出式的**，而 `load()` 内既无 try/catch、其契约又是
+// 「返回 false 并清空内存库」⇒ 装配链（`ArcFaceWinRecognizer::initialize` → `RuntimeBootstrap::build`）
+// 会在**初始化期直接抛穿**。
+//
+// 本用例覆盖**两条防线**（缺一不可；★ 机制描述已按验收 A1/S3 的独立探针订正）：
+//   A 手写 YAML：条目的 `mean` 写成**实数标量** ⇒ `(*it)["mean"] >> meanMat` 进入
+//     `cv::read(const FileNode&, Mat&, …)`，其**第一条语句**先取 `node["dt"]` ⇒ 对**非 map** 的
+//     `mean` 节点触发 `cv::FileNode::operator[]` 的 `isMap()` 断言
+//     （实测异常文本：`persistence.cpp:2171: error: (-215:Assertion failed) isMap()`）
+//     ⇒ 由**新加的 try/catch** 兜住；
+//   B 用 `cv::FileStorage` 写出的**结构合法**库，但 `mean` 写成 **CV_64F 矩阵**（旧格式是 CV_32F）
+//     ⇒ 不抛，落到新的**显式校验**（修前是 `CV_Assert` ⇒ 抛 ⇒ 也被 catch 兜住）。
+//   ★ 勿把 A 说成「`persons` 的元素不是 map」——**实测元素 `isMap=1`（是 map）**，`["id"]`/`["count"]`
+//     都不抛；**两条畸形臂都栽在 `mean` 这同一个字段上**，只是经由不同的代码路径。
+// 两者都必须：**不抛** + 返回 **false** + 内存库为空（与「读不开 / 解密失败 / 反序列化失败」同一处置）。
+//
+// ★ 本用例的**判别力边界（实测，如实登记）**：
+//   - 撤销整条修复（显式校验换回 `CV_Assert` **且**让 catch 重抛）⇒ 本用例**红**（异常文本为
+//     `persistence.cpp:2171: (-215:Assertion failed) isMap()`）⇒ 判别力成立；
+//   - 但**只**把显式校验换回 `CV_Assert`、**保留** try/catch ⇒ 本用例**仍绿**
+//     ⇒ 两半在**可观测行为上等价**（异常同样被 catch 成 false）。故：
+//       · 判别力落在 **try/catch** 那一半；
+//       · **显式校验那一半无法被单独判别**（它的价值是「不用异常表达常规失败」+ 在将来可能的
+//         无异常编译配置下仍成立），上表 B 臂对它只有**覆盖率**意义、没有判别力。
+bool test_face_db_malformed_legacy_is_controlled_failure() {
+    const auto dir = makeTempDir("malformed_legacy");
+
+    struct Case {
+        const char* name;
+        std::filesystem::path path;
+    };
+    std::vector<Case> cases;
+
+    // A：手写畸形 YAML（首 8 字节不是 `RKFDBCRY` ⇒ 走明文分支）。
+    {
+        const auto p = dir / "handwritten_bad.yml";
+        std::ofstream ofs(p, std::ios::binary);
+        if (!ofs) return false;
+        ofs << "%YAML:1.0\n---\npersons:\n   - id: \"bad-A\"\n     count: 1\n     mean: 3.1400001\n";
+        cases.push_back({"手写畸形（mean 是实数标量 ⇒ Mat 读取器对非 map 节点抛 isMap）", p});
+    }
+    // B：结构合法但 `mean` 的**类型**不符（CV_64F 而非 CV_32F）。
+    {
+        const auto p = dir / "double_mean.yml";
+        cv::FileStorage fs(p.string(), cv::FileStorage::WRITE);
+        fs << "version" << 1;
+        fs << "persons" << "[";
+        fs << "{";
+        fs << "id" << std::string("bad-B");
+        fs << "count" << 1;
+        cv::Mat m(1, 2, CV_64F);
+        m.at<double>(0, 0) = 0.1;
+        m.at<double>(0, 1) = 0.2;
+        fs << "mean" << m;
+        fs << "}";
+        fs << "]";
+        fs.release();
+        cases.push_back({"结构合法但 mean 是 CV_64F", p});
+    }
+
+    for (const auto& c : cases) {
+        if (!std::filesystem::exists(c.path)) return false;
+
+        rk_win::FaceDatabase db;
+        bool threw = false;
+        bool ok = true;
+        try {
+            ok = db.load(c.path);
+        } catch (const std::exception& ex) {
+            threw = true;
+            std::cerr << "[face_db_malformed] " << c.name
+                      << "：load() 抛出了异常（契约要求受控返回 false）：" << ex.what() << std::endl;
+        }
+        if (threw) return false;                        // 判别点 ①：不得抛
+        if (ok) return false;                           // 判别点 ②：不得静默成功
+        if (!db.listPersonIds().empty()) return false;  // 失败后不得留下半截状态
+    }
     return true;
 }
