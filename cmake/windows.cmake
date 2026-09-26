@@ -311,6 +311,9 @@ add_executable(win_unit_tests
     "tests/win/test_lbph_embedder.cpp"
     "tests/win/test_http_faces_server.cpp"
     "tests/win/test_runtime_bootstrap.cpp"
+    # FACE-ARCWIN-002 自检判别用例（2026-09-26）：需要定位 tests/fixtures/onnx/ 下的合成 ONNX 固定件，
+    # 故本 target 必须定义 RK_TEST_SOURCE_ROOT（见下方 target_compile_definitions）。
+    "tests/win/test_arcface_win_recognizer_selfcheck.cpp"
     "tests/win/test_event_logger.cpp"
     "tests/win/test_log_rotation.cpp"
     "tests/win/test_endpoint_registry.cpp"
@@ -359,6 +362,13 @@ target_include_directories(win_unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
 )
 target_compile_definitions(win_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+# 结构/固定件类用例需定位源码根以读取仓内文件（`add_test` 未设 WORKING_DIRECTORY ⇒ ctest 的 cwd 是
+# 构建目录，不能靠相对路径）。与 cmake/core.cmake 对 core_unit_tests 的同一宏保持同一口径。
+# ⚠️ **副作用（实测，2026-09-26）**：一旦定义，`tests/win/test_http_faces_server.cpp` 里
+#    `#ifdef RK_TEST_SOURCE_ROOT` 包着的结构守卫会**从休眠变为启用**（win_unit_tests 的 GTest 用例数
+#    46 → 47）。⇒ **删掉这一行会让那条守卫静默消失**（既不注册、也不 skip、也不报错），
+#    正是本仓反复登记过的「宏缺失 ⇒ 守卫静默消失」形态；改动前请先看该文件的 `#ifdef`。
+target_compile_definitions(win_unit_tests PRIVATE RK_TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
     target_compile_options(win_unit_tests PRIVATE /utf-8)
 endif()

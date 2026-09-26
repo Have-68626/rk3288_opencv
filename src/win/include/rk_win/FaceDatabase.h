@@ -28,6 +28,21 @@ struct PersonEntry {
 // 校验失败 → load 受控返回 false（不崩溃、不写明文）。密钥文件丢失/损坏 = 数据库不可恢复。
 class FaceDatabase {
 public:
+    // 从 path 装载库。
+    //
+    // ⚠️ 语义（FACE-DB-001，**有意为之，勿当作缺陷**）：`path` **不存在**时返回 `true` 并置为**空库**
+    //    —— 「首次运行 / 库尚未创建」必须算成功，装配链依赖它（`RuntimeBootstrap` 用不存在的
+    //       databasePath 表达「空库、初始化成功」，见 tests/win/test_runtime_bootstrap.cpp 的同名注释）；
+    //       且 `save()` 会 `create_directories(path.parent_path())`，故父目录缺失也不需在 load 期拦。
+    //    真正的失败面是「路径**存在**但读不开 / 解密失败（错密钥、密文被篡改）/ 反序列化失败」
+    //    ⇒ 一律返回 `false` 并清空内存库。⇒ 因此**不能**把「返回 true」当成「库文件存在且已装载」的证据。
+    //    ⚠️ **例外（2026-09-26 二次审计读码发现）**：**旧明文 YAML** 分支的条目校验用的是
+    //    `cv::CV_Assert`（维度/类型不符即**抛异常**），而 `load()` 内**没有 try/catch**
+    //    ⇒ 一份「能打开但内容畸形」的旧明文库会让 `load()` **抛**而不是返回 false，
+    //    即该分支的失败**不是**受控返回。已登记为待办（修法二选一：改成显式校验返回 false，或在
+    //    `load()` 外层兜住 `cv::Exception`）。
+    //    判别对照与钉住用例：tests/win/test_face_database_encryption.cpp 的
+    //    `face_db_load_nonexistent_path_is_intentionally_ok`。
     bool load(const std::filesystem::path& path);
     bool save(const std::filesystem::path& path) const;
 

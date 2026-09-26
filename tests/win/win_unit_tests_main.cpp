@@ -123,6 +123,11 @@ bool test_face_db_wrong_key_controlled_failure();
 bool test_face_db_migration_encrypts_legacy();
 bool test_face_db_migration_failure_preserves_legacy();
 bool test_face_db_encrypted_roundtrip();
+bool test_face_db_load_nonexistent_path_is_intentionally_ok();
+// FACE-ARCWIN-002：initialize() 初始化自检块的判别用例（含阳性对照臂，防 cascade 静默失败造成假绿）。
+bool test_arcwin_selfcheck_positive_control();
+bool test_arcwin_selfcheck_rejects_dim_mismatch();
+bool test_arcwin_selfcheck_rejects_unknown_input_blob();
 // test_http_faces_server_path_validation 已在 core_unit_tests 注册,
 // 此处不重复注册, 避免跨测试套件重复执行。
 
@@ -301,6 +306,10 @@ int main(int argc, char** argv) {
         {"face_db_migration_encrypts_legacy", test_face_db_migration_encrypts_legacy},
         {"face_db_migration_failure_preserves_legacy", test_face_db_migration_failure_preserves_legacy},
         {"face_db_encrypted_roundtrip", test_face_db_encrypted_roundtrip},
+        {"face_db_load_nonexistent_path_is_intentionally_ok", test_face_db_load_nonexistent_path_is_intentionally_ok},
+        {"arcwin_selfcheck_positive_control", test_arcwin_selfcheck_positive_control},
+        {"arcwin_selfcheck_rejects_dim_mismatch", test_arcwin_selfcheck_rejects_dim_mismatch},
+        {"arcwin_selfcheck_rejects_unknown_input_blob", test_arcwin_selfcheck_rejects_unknown_input_blob},
     };
     const bool boolOk = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     ::testing::InitGoogleTest(&argc, argv);
