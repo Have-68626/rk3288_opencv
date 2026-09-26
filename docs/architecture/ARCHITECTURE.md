@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=architecture
 status=living
-as_of=2026-07-06
+as_of=2026-09-26
 -->
 
 # RK3288 OpenCV 架构契约
@@ -21,23 +21,17 @@ as_of=2026-07-06
 ### 已有正例
 
 - `SocketGuard`（Windows `HttpFacesServer.cpp`）— 析构自动 `closesocket`
-- `WindowReleaser`（`native-lib.cpp`）— 析构自动 `ANativeWindow_release`
-
-### 反例（待修复）
-
-```
-// native-lib.cpp — 裸 lock/unlock，中间路径异常则泄漏
-ANativeWindow_lock(win, &buf, nullptr);
-// ... 操作 ...
-ANativeWindow_unlockAndPost(win);
-```
+- `WindowReleaser`（`src/cpp/jni/preview.cpp`）— 析构自动 `ANativeWindow_release`
+- `ScopedWindowLock`（`src/cpp/jni/preview.cpp`）— 析构自动 `ANativeWindow_unlockAndPost`
+- `ScopedBitmapLock`（`src/cpp/jni/preview.cpp`）— 析构自动 `AndroidBitmap_unlockPixels`
 
 ### 违规清单
 
 | 文件 | 行号 | 裸调用 | 优先级 |
 |------|------|--------|--------|
-| `src/cpp/native-lib.cpp` | ~751 | `ANativeWindow_lock` / `ANativeWindow_unlockAndPost` | P0 |
-| `src/cpp/native-lib.cpp` | ~653 | `AndroidBitmap_lockPixels` / `AndroidBitmap_unlockPixels` | P0 |
+| （无） | — | — | — |
+
+原 `native-lib.cpp` 的两处裸配对（`ANativeWindow_lock`/`unlockAndPost`、`AndroidBitmap_lockPixels`/`unlockPixels`）已由 `src/cpp/jni/preview.cpp` 的 RAII 类封装（#444）；`native-lib.cpp` 现零裸配对。
 
 ### 自动检查
 
@@ -45,7 +39,9 @@ ANativeWindow_unlockAndPost(win);
 scripts/check-raii-violations.sh
 ```
 
-对所有 `.cpp`/`.h` 文件 grep `_lock(` 和 `_unlock` 裸调用（不在 RAII 类定义中）。
+对全部 tracked `*.cpp`/`*.h` 做**块级结构判定**（非 grep 文本匹配）：先剔除注释与字符串/字符字面量，再以花括号平衡定位 `ScopedWindowLock` / `ScopedBitmapLock` 的类体区间，落在该区间之外的裸 `ANativeWindow_lock` / `AndroidBitmap_lockPixels` 计为违规。
+
+> 已知边界（审计实测）：若同一行内既有类体闭合又开启新块（如 `} void g(){`），或类体内存在**多行 raw string** 导致花括号平衡漂移，豁免可能不退出（漏报）。
 
 ---
 
@@ -91,7 +87,7 @@ currentState.store(
 
 ### 适用场景
 
-- `g_previewWindow` / `g_previewGeneration` 在 `native-lib.cpp` 中的使用路径
+- `g_previewWindow` / `g_previewGeneration` 的**定义与释放**在 `src/cpp/native-lib.cpp`（释放于 `stopAndJoinEngineThreadIfRunning`），**设置/取用**在 `src/cpp/jni/preview.cpp`（`preview_nativeSetPreviewSurface` / `preview_nativeRenderFrameToSurface`），**声明**在 `src/cpp/include/jni_shared.h`——三处分离，使用时须核对全部三个落点
 - `Engine::currentTracks_` 当前通过互斥锁保护 → 可演进为 `std::atomic<std::shared_ptr<const std::vector<TrackView>>>`
 
 ---
@@ -155,7 +151,7 @@ std::unique_ptr<IRecognizer> CreateArcFaceRecognizer(const RecognizerConfig&);
 
 | 契约 | 违规数 | 修复状态 |
 |------|--------|----------|
-| #1 RAII 资源封装 | 2 处 (P0) | 待修复 |
+| #1 RAII 资源封装 | 0 处 | 已闭环（#444） |
 | #2 纯函数管线 | 1 处 (P1) | 待修复 |
 | #3 原子状态提交 | 2 处 (P1) | 待修复 |
 | #4 错误通道 | 2 处 (P1) | 待修复 |

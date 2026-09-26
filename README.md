@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-18
+as_of=2026-09-26
 -->
 
 # RK3288 机器视觉引擎 (AI Engine)
@@ -53,7 +53,7 @@ rk3288_opencv/
 
 项目定义了 5 条跨子系统架构契约（详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)）：
 
-> ⚠️ 这 5 条是**目标契约**，尚未全部落地——该文档的合规总表当前把 5 条**全部**标为「待修复」。
+> ⚠️ 这 5 条是**目标契约**：合规总表中 #1 RAII 资源封装已闭环（#444），其余 4 条仍待修复。
 
 | 契约 | 规则 |
 |------|------|

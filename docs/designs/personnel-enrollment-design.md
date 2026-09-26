@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-07-21
+as_of=2026-09-26
 -->
 
 # 人员注册与权限系统顶层设计（Win + Android 双端）
@@ -15,7 +15,7 @@ as_of=2026-07-21
 当前项目已经具备以下基础能力：
 
 - Windows 侧已经形成 `本地服务 + Web SPA` 主线，提供本地 REST API、配置热重载、识别结果展示、模型管理等能力。
-- Android 侧已经具备摄像头权限状态机、安全模式和独立的 `FeatureTemplateEncryptedStore` 工具；当前未找到该存储工具接入人脸注册按钮或完整人员工作流的调用证据。
+- Android 侧已经具备摄像头权限状态机、安全模式和独立的 `FeatureTemplateEncryptedStore` 工具；且该存储工具**已接入人脸注册按钮与人员工作流**——调用链为 `MainActivity.bindModelManagementUi` → `btnRegisterFace` → `MainActivity.showFaceRegisterDialog` → `MainActivity.startEnrollment` → `enrollmentRepository().add(...)` → `AndroidEnrollmentRepository` → `FeatureTemplateEncryptedStore.write`/`readAndConsume`（符号级证据与边界见 `docs/designs/android-enrollment-design.md`）。
 - C++ 侧已有共享的人脸检测、识别、跟踪与注册原型，但当前人员数据模型仍过于简单，只有 `personId + 均值模板 + 样本数`，无法支撑完整人员生命周期和权限治理。
 
 ### 1.1 当前落地边界
@@ -25,9 +25,9 @@ as_of=2026-07-21
 | Windows/Web 基础注册 | 已落地 | `POST /api/v1/actions/enroll` 接受 `personId`，Web 预览页可发起请求；接口返回表示请求已受理，不表示采样已完成 |
 | Windows 清库 | 已落地 | `POST /api/v1/actions/db/clear` 触发异步清库命令 |
 | Windows 人脸库 | 已落地（原型） | `FaceDatabase::PersonEntry` 仅含 `id`、均值向量和样本数 |
-| Android 加密模板存储工具 | 已落地（独立能力） | 使用 Android Keystore/AES-GCM；尚未证明已接入注册 UI 或双端同步 |
+| Android 加密模板存储工具 | 已落地 | 使用 Android Keystore/AES-GCM；**已接入注册 UI**（证据同上）；**真机闭环未验收**；双端同步仍为研究项 |
 | `PersonProfile` / `BiometricProfile` 领域模型 | 未实现 | 本文第 5 节为目标模型 |
-| 人员冻结、删除单人、重复人检测、质量门禁 | 未实现 | 当前公开动作仅基础注册与整库清空 |
+| 人员冻结、删除单人、重复人检测、质量门禁 | 部分实现 | **Android 侧已有**：删除单人（`AndroidEnrollmentRepository.remove`）、重复人检测（`EnrollmentSession` 的 `DUPLICATE_PERSON`）、质量门禁（`ImageMetrics`：Laplacian ≥80 / 灰度均值 / 面积占比）；**人员冻结仍未实现**；Windows REST 侧公开动作仅基础注册与整库清空 |
 | RBAC + ABAC、操作员会话、后端鉴权 | 未实现 | 当前本地 REST API 不能视为已具备人员权限治理 |
 | 审计检索、审批、离线采集同步、多站点 | 未实现 | 本文相关章节均为后续设计，不是现有能力 |
 
@@ -393,7 +393,7 @@ Draft
 
 ### 6.5 注册质量门槛
 
-当前项目尚未实现注册前质量门槛，第一期必须补齐以下检查：
+当前项目**主控（Windows/Web）侧**尚未实现注册前质量门槛（Android 现场端已实现单人脸、清晰度/光照/姿态/面积占比与重复人检测，见 `docs/designs/android-enrollment-design.md`）；第一期必须在主控侧补齐以下检查：
 
 - 单人脸约束：同一帧只允许一个主要人脸。
 - 清晰度阈值：模糊图像直接拒绝。
