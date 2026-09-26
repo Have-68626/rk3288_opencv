@@ -92,7 +92,7 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
   crypto/rotate / privacy/open）。
 - **管理类读操作**：`GET /api/v1/models`、`GET /api/v1/settings`（含路径/配置，
   虽脱敏仍属内部信息）、`GET /api/v1/cameras`、`GET /api/faces`、
-  `GET /api/v1/faces`（人脸库快照，隐私敏感）、`GET /api/v1/preview.jpg`（相机画面）。
+  `GET /api/v1/faces`（**当前帧**人脸快照；不含 personId 等身份字段，但暴露在场人员人脸，仍属隐私敏感）、`GET /api/v1/preview.jpg`（相机画面）。
 - **流式端点**（SSE / MJPEG）：`/api/faces/stream`、`/api/v1/faces/stream`、
   `/api/v1/preview.mjpeg` —— 流暴露相机画面与人脸结果，必须认证。
 - **OpenAPI 文档**：`/api/v1/openapi`、`/openapi.json` —— 管理面文档，一并纳入认证
