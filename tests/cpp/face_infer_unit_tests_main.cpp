@@ -99,6 +99,8 @@ bool test_publisher_concurrent_set_and_publish();
 bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names();
 // FACE-TEST-005①：embed 失败的 err 必须带出差异化文本（不得回落成固定文案）。
 bool test_face_infer_embed_failure_carries_differential_err();
+// FACE-PIPE-INT8-DIM：INT8 分支不得把「输出维度不符」当成功（失败静默）。
+bool test_face_infer_int8_dim_mismatch_is_not_silent();
 
 int main() {
     using namespace rk_face_infer_test;
@@ -165,6 +167,8 @@ int main() {
          test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names},
         {"face_infer_embed_failure_carries_differential_err",
          test_face_infer_embed_failure_carries_differential_err},
+        {"face_infer_int8_dim_mismatch_is_not_silent",
+         test_face_infer_int8_dim_mismatch_is_not_silent},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;
