@@ -1,9 +1,10 @@
-import { AppstoreOutlined, ReloadOutlined, SettingOutlined, VideoCameraOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, ReloadOutlined, SettingOutlined, TeamOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import { Badge, Button, Layout, Menu, Space, Typography } from 'antd'
 import type { MenuProps } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { useAppStore } from '../state/AppStore'
+import { DegradedBanner } from './DegradedBanner'
 
 const { Header, Sider, Content } = Layout
 
@@ -24,6 +25,8 @@ export function MainLayout() {
       ? 'settings'
       : loc.pathname.startsWith('/preview')
         ? 'preview'
+        : loc.pathname.startsWith('/faces')
+          ? 'faces'
       : loc.pathname.startsWith('/home')
         ? 'home'
         : 'home'
@@ -48,17 +51,21 @@ export function MainLayout() {
           onClick={(e: Parameters<NonNullable<MenuProps['onClick']>>[0]) => {
             if (e.key === 'home') nav('/home')
             if (e.key === 'preview') nav('/preview')
+            if (e.key === 'faces') nav('/faces')
             if (e.key === 'settings') nav('/settings')
           }}
           items={[
             { key: 'home', icon: <AppstoreOutlined />, label: '概览' },
             { key: 'preview', icon: <VideoCameraOutlined />, label: '预览' },
+            { key: 'faces', icon: <TeamOutlined />, label: '人脸结果' },
             { key: 'settings', icon: <SettingOutlined />, label: '设置' },
           ]}
         />
       </Sider>
 
       <Layout>
+        {/* 运行期降级横幅：仅在 health.status === 'degraded' 时渲染，否则不占位。 */}
+        <DegradedBanner />
         <Header style={{ background: 'transparent', padding: '0 16px' }}>
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <Space>
