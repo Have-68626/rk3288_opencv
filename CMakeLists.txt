@@ -266,7 +266,12 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     # build 才会解析失败。设源码根使 fixture 契约独立于 build 位置（B15-001）。
     add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    # 并发死锁保护：与 win_unit_tests 同策略，超时防卡死挂起整个 ctest（B06-014）
+    # 超时保护：与 win_unit_tests 同策略 —— 该 target 内若有阻塞会无限挂起整个 ctest，
+    # 故设 120s 把「挂起」降级为一次可观测的 Timeout 失败。
+    # ⚠️ 归因订正（2026-09-28，与 cmake/windows.cmake 的同名订正配套）：原注释把成因写作
+    #    「（B06-014）」—— **B06-014 实为 FramePipeline 运行时所有权并发的 UAF**（模型热重载
+    #    释放处理线程正在使用的对象），与本处挂起无关；本超时实为**模板式复制**。
+    #    ⇒ 两处注释此前互相矛盾（windows.cmake 已改、此处未改），现已同步。
     set_tests_properties(face_infer_unit_tests PROPERTIES TIMEOUT 120)
 endif()
 

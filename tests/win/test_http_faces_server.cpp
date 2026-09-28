@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -837,6 +838,17 @@ bool makeLoopbackSocketPair(SOCKET& serverSock, SOCKET& clientSock) {
     SOCKET s = accept(ls, nullptr, nullptr);
     closesocket(ls);
     if (s == INVALID_SOCKET) { closesocket(c); return false; }
+    // ★ 与服务端生产口径对齐（2026-09-28 补）：HttpFacesServer.cpp 对每个 accept 到的连接都设
+    //   SO_SNDTIMEO（kSocketTimeoutMs = 5000），因为 StreamSessionRunner::writeRaw 的 `::send`
+    //   是**阻塞**调用、自身无超时。本 helper 原先**不设**这一项 ⇒ 一旦读者停止消费，
+    //   无界阻塞就完全交给 `th.join()` 承担，表现为 ctest 的 `TIMEOUT 120`（读数看起来像 flake，
+    //   实际是阻塞）。补上后，最坏情况退化为「5s 后 writeRaw 返回 false、会话自行终止」，
+    //   即**把无界挂起变成有界可观测的失败**。
+    {
+        const DWORD sndTimeoutMs = 5000;
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
+                   reinterpret_cast<const char*>(&sndTimeoutMs), sizeof(sndTimeoutMs));
+    }
     serverSock = s;
     clientSock = c;
     return true;
@@ -887,9 +899,18 @@ TEST(HttpFacesStreamQuota, MjpegFpsThrottle) {
     const std::string data = recvUntilDeadline(clientSock, std::chrono::milliseconds(1500));
 
     running = false;
+    // ★ 顺序：先关**客户端** socket，再 join（2026-09-28 修）。此刻本线程已停止 recv，
+    //   runner 的写入原语是阻塞 `::send`（StreamSessionRunner.cpp 的 writeRaw 循环；本文件的
+    //   socket 对另有 `SO_SNDTIMEO = 5000` 兜底）⇒ 若服务端正卡在 send 上，`running = false`
+    //   **无法**令其返回；join 只能靠「send 报错」或「5s 发送超时」才有可能返回。
+    //   ⚠️ 原写「而原先**唯一**能解塞的动作（closesocket(clientSock)）」——**该全称句不成立**：
+    //     关 serverSock 同样能让阻塞的 send 立即失败（实测 0ms），且上面的 `SO_SNDTIMEO` 也会兜底
+    //     （有界 5s）。准确说法是：**关掉对端是「最快」的解塞手段**，把它排在 join 之后会让它来得
+    //     太晚 —— 超过本用例的判据窗口。
+    //   关掉对端 ⇒ send 立刻失败 ⇒ writeRaw 返回 false ⇒ 线程退出 ⇒ join 返回。
+    closesocket(clientSock);
     th.join();
     closesocket(serverSock);
-    closesocket(clientSock);
     WSACleanup();
 
     // 帧边界计数：multipart 每帧部分以 "--rk_boundary\r\n" 开头（响应头仅含
@@ -938,9 +959,18 @@ TEST(HttpFacesStreamQuota, MjpegByteQuotaTerminatesSession) {
     }
 
     running = false;
+    // ★ 顺序：先关**客户端** socket，再 join（2026-09-28 修）。此刻本线程已停止 recv，
+    //   runner 的写入原语是阻塞 `::send`（StreamSessionRunner.cpp 的 writeRaw 循环；本文件的
+    //   socket 对另有 `SO_SNDTIMEO = 5000` 兜底）⇒ 若服务端正卡在 send 上，`running = false`
+    //   **无法**令其返回；join 只能靠「send 报错」或「5s 发送超时」才有可能返回。
+    //   ⚠️ 原写「而原先**唯一**能解塞的动作（closesocket(clientSock)）」——**该全称句不成立**：
+    //     关 serverSock 同样能让阻塞的 send 立即失败（实测 0ms），且上面的 `SO_SNDTIMEO` 也会兜底
+    //     （有界 5s）。准确说法是：**关掉对端是「最快」的解塞手段**，把它排在 join 之后会让它来得
+    //     太晚 —— 超过本用例的判据窗口。
+    //   关掉对端 ⇒ send 立刻失败 ⇒ writeRaw 返回 false ⇒ 线程退出 ⇒ join 返回。
+    closesocket(clientSock);
     th.join();
     closesocket(serverSock);
-    closesocket(clientSock);
 
     // 会话被字节配额终止（资源有界，而非依赖 running=false 外力停止）
     EXPECT_TRUE(runnerDone.load()) << "字节配额未生效：会话未自行终止";
@@ -990,15 +1020,98 @@ TEST(HttpFacesStreamQuota, SseDurationTerminatesSession) {
     const bool terminatedByTimeout = runnerDone.load();
 
     running = false;  // 兜底：确保线程可退出（未自行终止时）
+    // ★ 同前：必须先关客户端 socket 再 join，否则「服务端卡在阻塞 send」时 join 自锁。
+    closesocket(clientSock);
     th.join();
     closesocket(serverSock);
-    closesocket(clientSock);
 
     // 超时终止生效（独立于全局 ConnectionQuota 的流级时长限制）
     EXPECT_TRUE(terminatedByTimeout) << "会话超时未生效：SSE 会话未自行终止";
     // 正常流可用：终止前已正常送出 SSE 响应头
     EXPECT_NE(data.find("HTTP/1.1 200 OK"), std::string::npos) << "SSE 未收到响应头";
     EXPECT_NE(data.find("text/event-stream"), std::string::npos) << "SSE 响应头缺 event-stream";
+    WSACleanup();
+}
+
+// RED→GREEN 判别 4：读者停止消费 + 关掉对端时，runner 线程**必须能退出**（不得让 join 自锁）。
+// 机制（见 StreamSessionRunner.cpp 的 writeRaw）：写入原语是**阻塞 `::send`**。当「单帧 JPEG 体积 >
+// 客户端接收缓冲 + 服务端发送缓冲」且读者**完全不再 recv** 时，`::send` 会阻塞，`running = false`
+// **不能**令其返回（循环体卡在 send 里，退出条件根本没机会被求值）。此时若把 `th.join()` 排在
+// 「关掉对端」**之前**，join 在判据窗口内就不会返回 —— 这正是本用例要判别的形态。
+//   ⚠️ 前提必须带上（增量核查指出，本注释原写成无前提的全称句）：**帧要足够大**才会阻塞。
+//      实测本机：1080p 噪声帧 q80 编码 ≈1.32 MiB，而回环默认容量 ≈1.0 MiB ⇒ 首帧被吞下、次帧阻塞。
+//   ⚠️ 也**不要**写成「没有任何动作能解塞 / 必然无界挂起」：本文件的 socket 对已由
+//      makeLoopbackSocketPair 设了 `SO_SNDTIMEO = 5000`，即便无人关 socket，阻塞的 send 最迟
+//      **5s 后也会自行失败**（即有界）。⇒ 准确说法是：**关掉对端能把「有界 5s」压到近 0ms**
+//      （实测 0ms），而**本用例的判据是 3s** ⇒ 它判别的正是「有没有在等待之前先关掉对端」这一步。
+//   ⚠️ 兜底的 `joiner.wait()` **本身不可超时**：它的有界性完全依赖上面那条 `SO_SNDTIMEO`
+//      （以及本平台 `closesocket` 能唤醒阻塞 `send` 的语义）。⇒ 谁若删掉那个 setsockopt，且平台
+//      语义不同（POSIX 下 `close` 不保证唤醒阻塞 send），兜底就会退回**无界挂起**。
+// ★ 覆盖面（依据是一次**落盘变异**，过程与还原见本次改动对应的提交信息，不在本文件内）：
+//   上方三条 stream 用例的参数（48×64 小帧 / 读者持续或短窗口消费 / 会话自终止）都**不足以**
+//   制造出阻塞态 ⇒ 它们**不覆盖**本路径（该变异把 close/join 改回旧序并删掉 `SO_SNDTIMEO` 后，
+//   那三条仍全绿、无 hang）。⇒ 本用例补上的是**此前无人覆盖**的那条路径。
+// ★ 前置锚（见下）：先只置 `running = false` 并等一小段，确认它**没有**自行退出 —— 以此证明
+//   「阻塞态确实被制造出来了」。否则本用例会因「帧太小 / 缓冲没填满」而**静默失去判别力**。
+TEST(HttpFacesStreamQuota, RunnerExitsWhenReaderStopsAndPeerCloses) {
+    WSADATA wsaData;
+    ASSERT_EQ(WSAStartup(MAKEWORD(2, 2), &wsaData), 0);
+    SOCKET serverSock = INVALID_SOCKET, clientSock = INVALID_SOCKET;
+    ASSERT_TRUE(makeLoopbackSocketPair(serverSock, clientSock));
+    setRecvTimeoutMs(clientSock, 50);
+
+    // 高熵大帧（1080p 噪声、固定种子 ⇒ 内容可复现）：编码后体积须**大于**回环缓冲容量，才能在
+    // 「读者不读」时把服务端卡在 send 上（实测本机：q80 编码 ≈1.32 MiB vs 默认回环容量 ≈1.0 MiB）。
+    // （**不可**改用小帧或纯色帧：实测 48×64 纯色仅 **677 B**、1080p 纯色 q80 也仅 **≈32 KB**，
+    //  都装得进缓冲 ⇒ 根本不会阻塞 ⇒ 本用例会**静默失去判别力**。）
+    cv::Mat frame(1080, 1920, CV_8UC3);
+    {
+        std::uint32_t s = 0x12345678u;
+        uchar* p = frame.data;
+        const std::size_t n = frame.total() * frame.elemSize();
+        for (std::size_t i = 0; i < n; ++i) {
+            s = s * 1664525u + 1013904223u;
+            p[i] = static_cast<uchar>(s >> 24);
+        }
+    }
+
+    std::atomic<bool> running{true};
+    std::atomic<bool> runnerExited{false};
+    rk_win::StreamLimits limits;
+    limits.mjpegMaxFps = 0;  // 不限速（0 ⇒ 帧间最小间隔 0），确保迅速填满发送缓冲
+    rk_win::StreamSessionRunner runner(
+        running, [&](cv::Mat& out) { out = frame; return true; }, limits);
+
+    std::thread th([&]() {
+        runner.run(static_cast<std::uintptr_t>(serverSock), rk_win::StreamType::Mjpeg);
+        runnerExited = true;
+    });
+
+    // 故意**完全不 recv**：客户端接收缓冲 → 服务端发送缓冲依次填满 ⇒ 服务端卡在 ::send。
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+    // ——— 前置锚：只停 running，**先不关 socket** ———
+    running = false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const bool blockedInSend = !runnerExited.load();
+
+    // ——— 判别点：先关客户端 socket，再 join ———
+    closesocket(clientSock);
+    // join 自身不可超时 ⇒ 放进 async 里 wait_for：这样「自锁」表现为**断言失败**，
+    // 而不是把整个测试进程挂死（旧写法正是如此，最终以 ctest 超时收场）。
+    auto joiner = std::async(std::launch::async, [&]() { th.join(); });
+    const bool exited = joiner.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+    if (!exited) {
+        // 兜底：连服务端 socket 一起关，强制阻塞中的 send 失败，避免留下 joinable 线程。
+        closesocket(serverSock);
+        joiner.wait();
+        serverSock = INVALID_SOCKET;
+    }
+    EXPECT_TRUE(exited) << "runner 在读者停止消费 + 对端关闭后仍未退出（阻塞 ::send ⇒ join 自锁）";
+    if (serverSock != INVALID_SOCKET) closesocket(serverSock);
+    EXPECT_TRUE(blockedInSend)
+        << "前置锚未成立：runner 在读者停读后已自行退出 ⇒ 本配置未制造出阻塞态，本用例无判别力"
+           "（环境差异：发送缓冲过大而大帧仍未填满；此时应调大帧尺寸或调小 SO_SNDBUF）";
     WSACleanup();
 }
 
@@ -1551,6 +1664,9 @@ TEST(HttpFacesStreamQuota, MjpegByteQuotaTerminatesSession) {
     GTEST_SKIP() << "流配额用例需要真实 Winsock socket 对，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesStreamQuota, SseDurationTerminatesSession) {
+    GTEST_SKIP() << "流配额用例需要真实 Winsock socket 对，仅在 win_unit_tests (Windows + OpenCV) 下运行";
+}
+TEST(HttpFacesStreamQuota, RunnerExitsWhenReaderStopsAndPeerCloses) {
     GTEST_SKIP() << "流配额用例需要真实 Winsock socket 对，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(StaticFileToctou, ValidatedPathSwappedOutsideIsReadableByRawOpen) {

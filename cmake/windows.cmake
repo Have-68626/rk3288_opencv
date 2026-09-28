@@ -366,8 +366,19 @@ target_compile_definitions(win_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 # 构建目录，不能靠相对路径）。与 cmake/core.cmake 对 core_unit_tests 的同一宏保持同一口径。
 # ⚠️ **副作用（实测，2026-09-26）**：一旦定义，`tests/win/test_http_faces_server.cpp` 里
 #    `#ifdef RK_TEST_SOURCE_ROOT` 包着的结构守卫会**从休眠变为启用**（win_unit_tests 的 GTest 用例数
-#    46 → 47）。⇒ **删掉这一行会让那条守卫静默消失**（既不注册、也不 skip、也不报错），
-#    正是本仓反复登记过的「宏缺失 ⇒ 守卫静默消失」形态；改动前请先看该文件的 `#ifdef`。
+#    46 → 47）。
+# ★ **事实订正（2026-09-28，S4 变异实测推翻本注释原话）**：原文写「删掉这一行会让那条守卫**静默消失**
+#    （既不注册、也不 skip、也不报错）」——**已不成立**。实测：删掉本行 + 重新 configure，后果是
+#    **硬编译失败** —— `tests/win/test_arcface_win_recognizer_selfcheck.cpp` 里那对
+#    `#ifndef RK_TEST_SOURCE_ROOT / #error`（就在该文件开头）会让构建直接报 **C1189**，
+#    压根到不了「用例数 47→46」那一步。⇒ 删除本行**不再**是静默降覆盖，而是**响亮的构建中断**。
+#    ⚠️ 但原文的担忧方向仍然有效、且这正是要一起看的地方：**若将来有人删掉那个 `#error`**，
+#    本行一旦缺席就会真的退回「守卫静默消失」。⇒ 改动前请**同时**看本行与该自检用例的 `#error`。
+# ⚠️ 本行**必须恰好一份**：本批曾因编辑失误把它写成**两行**（2026-09-28，被增量核查代理 A5 查出）。
+#    两行并存时，注释里那条判据（「删掉本行 ⇒ C1189」）**当场失效** —— 删掉多出来的那份后另一份仍在，
+#    宏照样有定义，构建照过，于是真会退回「守卫静默消失（47→46）」，即本注释正要否定的形态。
+#    功能上 CMake 会在生成期去重（每目标的 PreprocessorDefinitions 只出现一次），故**无行为影响**；
+#    但注释的可核性会被破坏 ⇒ 改这段时请 `grep -c` 数一遍。
 target_compile_definitions(win_unit_tests PRIVATE RK_TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
     target_compile_options(win_unit_tests PRIVATE /utf-8)
@@ -391,7 +402,26 @@ target_link_libraries(win_unit_tests
     dxgi
 )
 add_test(NAME win_unit_tests COMMAND win_unit_tests)
-# 并发死锁保护：win_unit_tests 多线程用例死锁会无限挂起 ctest（B06-014），设 120s 超时
+# 超时保护：win_unit_tests 内的多线程 / 真实 socket 用例若阻塞，会**无限挂起** ctest，
+# 故设 120s 把「挂起」降级为一次可观测的 Timeout 失败。
+# ★ 归因订正（2026-09-28，证伪代理查实、本人复核）：原注释把成因写作「（B06-014）」——
+#   **B06-014 实为「FramePipeline 运行时所有权并发的 UAF」（模型热重载释放处理线程正在使用的
+#   对象，见 .remember/today-2026-08-06.done.md 与提交 a30b93b），与本处挂起无关**。
+#   本超时实际是模板式复制（同一策略也用于 face_infer_unit_tests，见 CMakeLists.txt），
+#   并非为某一编号任务而设。⇒ 勿再由该注释推断此处防的是 UAF。
+# ★ 如实登记（同一轮，**限定条件必须一并引用**）：本仓曾观测到一次
+#   `3 - win_unit_tests (Timeout)`（整体 exit 8，由上一轮审计代理报告），但
+#   **当时的 Testing/Temporary/LastTest.log 已被后续跑覆盖 ⇒ 该次挂起的位置与成因均无存证**；
+#   且 gtest 输出经 ctest 管道重定向后为块缓冲，被超时杀掉时末段会丢失
+#   ⇒ 连「卡在哪个用例」都不能断言。故该次事件**既未证实、也未被否定**。
+#   ⚠️ **尤其不得据此宣称「负载性时序 flake 已被排除」**（增量核查 2026-09-28 实测）：同一二进制、
+#     同一机器、同一构建下，安静的 ctest 记 `Passed 51.11s`，而本轮**其他几次** ctest 只记
+#     11–14s；负载较高时直接跑同一 exe 的**进程总时长**更达 **73.3 / 101.6 / 118.5s**
+#     （那几次只跑 1 条 gtest，工作量**更少**）。⇒ **负载敏感度至少 2–4×，最坏样本距本行这个 120s
+#     只剩 ≈1.5s**。因此「负载」是一个**仍有实测支持的**候选解释，**不要**引用本注释去否定它。
+#   ⚠️ 本行数值**偏紧**（是否上调属需拍板的调整，本轮**不动**）；本轮真正查实并已修的是
+#     **测试装置的一处自锁**（`test_http_faces_server.cpp`：先关客户端 socket 再 join +
+#     补 `SO_SNDTIMEO` 与服务端生产口径对齐），并补了一条**带看门狗的判别用例**覆盖该路径。
 set_tests_properties(win_unit_tests PROPERTIES TIMEOUT 120)
 
 add_executable(win_face_database_perf
