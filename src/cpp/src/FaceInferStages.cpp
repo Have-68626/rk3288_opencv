@@ -396,6 +396,35 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
     if (ctx.embedder) {
         std::string embedErr;
         auto e = ctx.embedder->embedAlignedFaceBgr(ctx.aligned112, &embedErr);
+        // ★ 此处**刻意**不重复校验维度（2026-09-28 复核后登记，勿再当缺陷重报）：
+        //   理由：`ctx.embedder` 的声明类型是 `ArcFaceEmbedder*`（见 FaceInferPipelineData.h 的
+        //   `FaceInferContext::embedder`），而 `ArcFaceEmbedder` **无虚函数、无派生类**
+        //   （全仓按 `:\s*(public|private|protected|virtual)[^;]*ArcFaceEmbedder` 搜零命中）
+        //   ⇒ 对它的成员调用是**静态绑定**，即便有人写派生类也改不掉实现。
+        //    受支持手段内该字段的动态类型恒为 `ArcFaceEmbedder` 或 nullptr：构建树内唯一写入点是
+        //   FaceInferencePipeline.cpp 的 `ctx.embedder = localEmb.get()`，而 `localEmb` 是
+        //   `std::shared_ptr<ArcFaceEmbedder>`。
+        //   ⚠️ 措辞更正（2026-09-28 对抗性代理 A2 指出）：**不要**把这句写成「不存在『注入别的
+        //   实现』的缝隙」—— `FaceInferContext` 是 **public struct**（该字段公开），且
+        //   `FaceInferStages::computeEmbedding` 是 **public static** ⇒ 任何 TU 都能直接写该字段
+        //   （测试里已有多处直接构造 `FaceInferContext`，只是都没写 embedder），
+        //   外加 `reinterpret_cast` / placement-new 一类 UB。准确说法是
+        //   「**受支持手段内**恒为它本身或 nullptr；**绝对**不可能为假」。
+        //   而 `ArcFaceEmbedder::embedAlignedFaceBgr` 的**两条**成功返回路径都保证恰 512 维
+        //   （成功返回恰有 2 处）：
+        //     · OpenCvDnn / Qualcomm（二者共用同一分支，Qualcomm **无**独立推理实现）→
+        //       `hasContractDim512` 拒绝非 512（上游 takeFirst512AsF32 已把 `total != 512` 变成空向量）
+        //     · ncnn → `total != kDim` 直接返回 nullopt
+        //   ⇒ `has_value()` **蕴含** 512 维，下面的 `embeddingOk = true` 是**不变量的推论**而非漏检。
+        //   ⚠️ **更正（A2 指出，我原先写的「断言层面的钉子」证据力虚高）**：这条不变量**不依赖任何
+        //   测试** —— 全仓**没有任何测试调用过 `embedAlignedFaceBgr`**（`grep -rn embedAlignedFaceBgr
+        //   tests/` 零命中）。`ArcFaceContractTest.DimMustBeExactly512` 只测**纯谓词**
+        //   `hasContractDim512` + 手造向量（恒真式，不碰本函数）；端到端那条
+        //   `EXPECT_EQ(emb->size(), 512u)` 所在的用例带两处 `GTEST_SKIP`（无 ncnn / 模型
+        //   gitignored）⇒ **CI 上恒不执行**。⇒ 本不变量的唯一依据是**源码走读**。
+        //   ⚠️ 局限（未核实，A2 列出）：ncnn 侧按 `(const float*)out.data` 取 kDim 个 float，
+        //   而 `out.total()` 是否含 `elempack` 口径**未核实** ⇒ 本注释只主张**维度**，不主张向量可靠。
+        //   ⇒ 本处**不是**可修复的缺陷。
         if (e.has_value()) {
             ctx.embedding = std::move(e->values);
             ctx.embeddingOk = true;
@@ -555,10 +584,26 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
                         //   处置：把原因写进 `embedErr`、丢弃不合契约的向量、**不 return** ⇒
                         //   落到本支既有的那一条 warn（"failed: load=… embed=…"）⇒ 继续尝试其余 INT8
                         //   候选 ⇒ 最终仍有下面的 FP32 回落。⇒ 失败**可见**，fail-open 可恢复性**不变**。
-                        //   ⚠️ 与其余失败路径的**唯一差别**（如实登记）：本路径**额外**做了「清零 + clear」
-                        //   （其余路径不动 `ctx.embedding`）。理由：不让一个不合契约的向量留在 `ctx` 里；
-                        //   已核实仓内无「`embeddingOk==false` 时仍读 `ctx.embedding`」的路径，
-                        //   且该动作**可观测行为上不承重**（见下方处置处的说明）。
+                        //   ⚠️ 与其余失败路径的差别（如实登记）：本路径**额外**做了「清零 + clear」。
+                        //   ★ 措辞更正（2026-09-28 证伪代理提出、本人逐行复核）——原文两处不成立：
+                        //     ①「其余路径不动 `ctx.embedding`」是**空对空**：ctx 每帧新建
+                        //       （见 FaceInferencePipeline.cpp 的 `runFaceInferOnce`），而本函数写入该向量的
+                        //       地方只有**四处**（fake 支 / 注入嵌入器支 / 本 INT8 支 / 末尾 FP32 支）
+                        //       ⇒ 其余失败路径**根本没写过**该向量，无对象可清，
+                        //       故本条**不构成「丢弃口径不一致」**（原文的并列是虚构的对照）。
+                        //     ②「已核实仓内无『`embeddingOk==false` 时仍读 `ctx.embedding`』的路径」
+                        //       被**本行下方相邻的两句**自我证伪：先取 `ctx.embedding.size()`，
+                        //       再做 `std::fill(ctx.embedding.begin(), ctx.embedding.end(), …)`
+                        //       —— 两者都发生在 `embeddingOk == false` 的这条路径上。
+                        //   ⚠️ 本段**不写行号**，一律按语句 / 符号指位置。理由（可核）：行号会漂 —— 本轮实测，
+                        //      本批自己的插入就让上一版引用的**一整组**行号全部失准（验收 S3 逐行比对
+                        //      `git show HEAD` 与工作树查出）。
+                        //   ⚠️ 更正（对抗性代理 A2 指出）：上一版此句自称「本仓把『裸行号』明列为**反面清单**」
+                        //      —— 全仓**没有**这个称谓与出处（按该词搜索只命中这条注释自身），属**杜撰的制度名**。
+                        //      已删除该说法；此处只保留上面那条**实测**理由。
+                        //   准确表述：**无任何消费方读取该向量的数值** —— 唯一数值消费点
+                        //   `searchTopK` 被 `embeddingOk` 守卫（失败路径不读、成功路径覆盖写）；
+                        //   本行下方只读 size 与迭代器、不读数值。⇒「可观测行为上不承重」**成立**。
                         //   ⚠️ 勿改为在此 `return failStatus(...)`：那会让本候选的失败**短路掉 FP32 回落**，
                         //   与本支「先试 INT8、再回落 FP32」的设计（见本段开头的「本段不得删除」）冲突。
                         const std::size_t actualDim = ctx.embedding.size();
@@ -566,8 +611,9 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
                         // （`FaceSearch.h` 的 `std::fill(...0.0f)`、`native_face_bridge.cpp` 的 `secureClear`）。
                         // ⚠️ 如实登记（验收 S3 指出）：① 单用 `clear()` **不清零**（只改 size），
                         //    那与上面那条口径不一致；② 这两步在**可观测行为上都不是承重的** ——
-                        //    唯一的向量读点 `searchTopK` 被 `embeddingOk` 守卫（失败路径不读、成功路径
-                        //    覆盖写）⇒ 它纯属**内存卫生**，**无测试覆盖**（别把它写成"必须"）。
+                        //    唯一读取该向量**数值**的消费点 `searchTopK` 被 `embeddingOk` 守卫
+                        //    （失败路径不读、成功路径覆盖写）⇒ 它纯属**内存卫生**，**无测试覆盖**
+                        //    （别把它写成"必须"）。
                         std::fill(ctx.embedding.begin(), ctx.embedding.end(), 0.0f);
                         ctx.embedding.clear();
                         embedErr = "输出维度不是 " + std::to_string(ArcFaceEmbedding::kDim) +
@@ -638,6 +684,9 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         // 复用 initErr 作为 embed 的 err 出参：`initialize`（上方）成功才会走到这里，而
         // `embedAlignedFaceBgr` 在**每一条**失败路径上都写 `*err`（见 ArcFaceEmbedder.cpp:137-258），
         // 故此处 initErr 已被 embed 的差异化文本覆盖，不再残留 init 阶段的内容。
+        // ★ 同上（2026-09-28 复核）：此处也是**刻意**不重复校验维度。本段直接构造
+        //   `ArcFaceEmbedder emb`（非注入），其 `embedAlignedFaceBgr` 在返回 `has_value()` 前
+        //   必已通过 512 校验 ⇒ `embeddingOk = true` 同样是不变量的推论。
         auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
         if (e.has_value()) {
             ctx.embedding = std::move(e->values);
@@ -646,7 +695,9 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
     }
 
     if (!ctx.embeddingOk) {
-        // 与上方注入路径（:401）同口径：带出差异化 err，缺失时才回落固定文案。
+        // 与上方**注入路径**（`if (ctx.embedder)` 那个分支）同口径：带出差异化 err，缺失时才回落固定文案。
+        // ⚠️ 原写「与上方注入路径（:401）同口径」—— 一个**裸行号**；本批的插入已把它弄钝（该行号现在
+        //    落在本函数上方新增的注释行上，不再指向那条语句）。改按**符号**指位置。
         // 此前此处硬编码 "arc_embed_failed"，把 embedAlignedFaceBgr 写好的
         //「输入为空 / forward 失败 / 输出维度不是 512 / L2 归一化失败 / ncnn input|extract 失败 …」
         // 全部丢弃，违反「失败不静默、err 要带差异」；stage 与文案形状（空则回落同串）保持不变。
