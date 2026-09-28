@@ -1,6 +1,9 @@
 #include "FaceInferOutcomeJson.h"
 #include "FaceInferencePipeline.h"
 #include "FaceInferPipelineData.h"
+// `ArcFaceEmbedding::kDim` 的声明处（测试夹具需要造一个**真实**的 512 维向量，
+// 以免再出现「embeddingOk 为真而向量为空」的不自洽夹具）。
+#include "ArcFaceEmbedder.h"
 #include "ThresholdPolicy.h"
 
 using namespace rk_core;
@@ -82,6 +85,10 @@ bool test_face_infer_outcome_json_full() {
     ctx.usedBboxFallback = false;
     ctx.arcBackendName = "arc_v2";
     ctx.embeddingFake = false;
+    // ★ 2026-09-28 补齐：本夹具原先只置 `embeddingOk = true` 而**从不写** `ctx.embedding`
+    //   ⇒ 造出「embeddingOk 为真但向量为空」的不自洽状态，并使下面那条 `"dim":512` 断言
+    //   恰好掩盖了 `dim` 曾被硬编码的事实。现在给出真实的 512 维向量，`dim` 才是**推导**出来的。
+    ctx.embedding.assign(static_cast<std::size_t>(ArcFaceEmbedding::kDim), 0.1f);
     ctx.embeddingOk = true;
 
     FaceSearchHit hit;
@@ -179,6 +186,15 @@ bool test_face_infer_outcome_json_no_face() {
     std::string json = buildOutcomeJson(in);
 
     if (!contains(json, "\"face\":{\"hasFace\":false}")) return false;
+
+    // ★ RED→GREEN 判别锚（2026-09-28 修 `dim` 硬编码）：本用例无脸 ⇒ `computeEmbedding`
+    //   在 `!ctx.hasFace` 处早退、**从不写** `ctx.embedding` ⇒ 实际维度必须是 **0**。
+    //   修复前 `dim` 被硬编码为 512，会把这个「没有嵌入」的帧谎报成 512 维嵌入
+    //   ⇒ 本断言在旧实现下**必红**（这是本修复唯一的判别点，勿删）。
+    if (!contains(json, "\"embedding\":{\"dim\":0,")) {
+        std::cout << "dim should be 0 when no embedding: " << json << std::endl;
+        return false;
+    }
 
     return true;
 }
