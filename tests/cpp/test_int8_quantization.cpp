@@ -6,6 +6,7 @@ using namespace rk_core;
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -20,8 +21,21 @@ bool fileExists(const std::string& path) {
     return f.good();
 }
 
+// 模型缺失 ⇒ 跳过。★ 2026-09-28 起**留痕**。
+// 原先的 `if (!fileExists(path)) return true;` 是**零输出**的：在自定义 bool runner 里，
+// `return true` 会被打印成 `TEST_PASS` ⇒ 与「用例真的跑过且通过」**不可区分**，
+// 本应执行的用例就这样以「通过」的形式消失，连 ctest 读数都看不出差别。
+// 本仓共 5 种跳过/降覆盖形态，只有这一种是**完全不可见**的（其余分别为 `GTEST_SKIP`、
+// 打印一行 SKIP 文本、以及「前置缺失 ⇒ 响亮 return false」）⇒ 先修这一种。
+// ⚠️ 本改动**只加可见性**，判定与返回值一字未动（仍返回 true、仍计为 PASS）；
+//    根因（相对路径按 cwd 解析）属**未决设计项**，见 plans/pending-only-2026-09-25.md §3.8.5 #4。
+// ⚠️ 标记串**全 ASCII**：CI 控制台代码页不保证 UTF-8，中文只出现在本注释里。
 bool skipIfNoModel(const std::string& path) {
-    if (!fileExists(path)) return true;
+    if (!fileExists(path)) {
+        std::cout << "TEST_SKIP_ABSENT reason=model_absent path=" << path
+                  << " note=path_resolved_against_cwd" << std::endl;
+        return true;
+    }
     return false;
 }
 
