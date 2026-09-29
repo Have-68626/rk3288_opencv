@@ -1386,24 +1386,29 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     //   详见 g_normalizeWarnings 处的通道去向上限登记。
     (void)takeNormalizeWarnings();
 
-    // 落盘：敏感字段强制加密存储
-    const std::string prettyEnc = buildSettingsJson(newCfg, false, true);
-    if (prettyEnc.find("\"_error\"") != std::string::npos) {
-        r.httpStatus = 500;
-        r.code = "crypto_error";
-        r.message = "敏感字段加密失败";
-        r.details.push_back(prettyEnc);
-        return r;
-    }
+    // 落盘：敏感字段强制加密存储。
     // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
     // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘与内存提交（cfg_/generation_）必须在**同一** mu_ 临界区内，
     //   以便与 reloadFromDisk 回滚段的「取快照 → 序列化 → 写回磁盘」互斥，杜绝「回滚线程用旧快照覆盖已提交的
     //   新 PUT」这一竞态（详见 reloadFromDisk 回滚处的同因注释）。
+    // ★ 密钥/密文同源不变量（项 A）：**加密也必须在本临界区内**——buildSettingsJson 经 ensureOrLoadKey
+    //   **每次重读密钥文件**；若加密在锁外，并发的 rotateKeyAndReencrypt 可能在「读密钥」与「写盘」之间
+    //   把密钥文件换成新密钥 ⇒ 本次密文用旧密钥、盘上密钥已是新密钥（或反之）⇒ 下次启动解密失败。
+    //   故把「加密 + 写盘 + 提交」整段纳入同一 mu_ 临界区。
     //   为何可直接扩大 mu_（而非新增专用写锁）：buildSettingsJson / writeAtomicallyWithBackup **均不取 mu_**
     //   （逐字核实），故持 mu_ 调用它们不会递归加锁；全函数仅此一把锁 ⇒ 无锁序问题、无死锁风险。
-    //   代价：写盘期间 mu_ 被持有 ⇒ current() 短暂阻塞（PUT 为低频管理操作，可接受）。
+    //   代价（如实登记）：加密（DPAPI 解保护 + AES-256-GCM）纳入持锁时长 ⇒ 加密期间 mu_ 被持有，
+    //   current() / 热重载会被阻塞 ≈ 一次加密耗时（PUT 为低频管理操作，可接受；reloadFromDisk 回滚段早已如此）。
     {
         std::lock_guard<std::mutex> lock(mu_);
+        const std::string prettyEnc = buildSettingsJson(newCfg, false, true);
+        if (prettyEnc.find("\"_error\"") != std::string::npos) {
+            r.httpStatus = 500;
+            r.code = "crypto_error";
+            r.message = "敏感字段加密失败";
+            r.details.push_back(prettyEnc);
+            return r;
+        }
         if (!writeAtomicallyWithBackup(prettyEnc, err)) {
             r.httpStatus = 500;
             r.code = "io_error";
@@ -1430,100 +1435,158 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
     r.httpStatus = 500;
     r.code = "internal_error";
 
-    AppConfig cfg;
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        cfg = cfg_;
-    }
+    // ★ 不变量（承重）：**盘上的 config.json 必须始终能用盘上的密钥文件解开**（同源）。
+    //   实现口径（项 A）：密钥文件与 config.json 内容**只在同一个 mu_ 临界区内、以同一密钥成对写入**
+    //   ——「写新密钥 → 用它加密 → 写 config.json → 提交」整段持锁 ⇒ 其它写盘路径（PUT / 回滚）
+    //   不可能观察到「新密钥 + 旧密文」或「旧密钥 + 新密文」的中间态。
+    //   ⚠️ 修复前的失效模式：`writeFileAll(keyPath_, ...)` 写在 mu_ **之外**，而 PUT 的加密
+    //      （buildSettingsJson → ensureOrLoadKey **每次重读密钥文件**）也在 mu_ 外 ⇒ 某 PUT 可在
+    //      rotate 写入新密钥**之后**读取密钥并加密 config.json，随后 rotate 的代次复核发现变化 ⇒
+    //      冲突分支 restoreOldKey() 把**旧**密钥写回 ⇒ 磁盘密钥=旧、磁盘密文=新 ⇒ 下次启动解密失败。
+    //   修法：① 冲突分支**不触碰任何磁盘状态**（新密钥仅存在于内存，直接丢弃，**不再** restore）；
+    //        ② 密钥文件与 config.json 在同一临界区内、以同一密钥成对写入；③ PUT 的加密也移入其写盘临界区。
+    //   ⚠️ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘 + 提交（cfg_）同处一个 mu_ 临界区，并在同一
+    //      临界区内复核 generation_ 未变 ⇒ 并发 PUT / 热重载提交的新配置不会被 rotate 的旧快照覆盖。
+    //      修法选**代次校验 + 有界重试**：锁内记 generation_，提交前在同一临界区复核；变了则**不写盘**、
+    //      重取快照重试（有界），耗尽返回 409 conflict。generation_ 是可靠信号：PUT 成功与热重载成功
+    //      都会 fetch_add(1)；rotate 自身不变代数。
+    //   ⚠️ 代价（如实登记）：提交临界区含「写密钥文件 + AES 加密 + 写 config.json」；故持锁时长 ≈
+    //      一次写密钥 + 一次加密 + 一次原子写（比「整段持 mu_」短——随机数生成与 DPAPI 保护仍在锁外）。
+    //   ⚠️ 残余（如实登记）：密钥文件与 config.json 是**两个文件**，无法原子同写 ⇒ 「写密钥之后、
+    //      写 config.json 之前」若**进程崩溃**，磁盘仍可能错配（下次启动隔离）。本批只消除**并发交错**
+    //      造成的错配，**不消除**该崩溃窗口。
+    constexpr int kMaxRotateAttempts = 3;
+    std::string conflictMsg;
+    for (int attempt = 0; attempt < kMaxRotateAttempts; ++attempt) {
+        AppConfig cfg;
+        std::uint64_t genAtSnapshot = 0;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            cfg = cfg_;
+            genAtSnapshot = generation_.load();
+        }
 
-    const bool hadOldKey = std::filesystem::exists(keyPath_);
-    std::string oldKeyB64;
-    std::string ioErr;
-    if (hadOldKey) {
-        if (!readFileAll(keyPath_, oldKeyB64, ioErr)) {
+#if defined(RK_ENABLE_TEST_SEAMS)
+        // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setRotateTestHookForTesting 声明注释）：
+        //   在「取快照之后、生成并替换密钥之前」同步触发一次由测试注入的动作（典型：合法 PUT）。此刻
+        //   **未持 mu_** ⇒ 钩子内调 updateFromJsonBody 不会自锁。**必须在本函数替换密钥文件之前**触发：
+        //   否则磁盘上的 postUrl 密文仍是旧密钥加密的，PUT 的解析/解密会失败（那不是本用例要构造的交错）。
+        //   语义/数据不变；本块新增一次 mu_ 获取/释放（安全读钩子用）。默认未设置（空 std::function）⇒ 恒假。
+        {
+            std::function<void()> testHook;
+            {
+                std::lock_guard<std::mutex> lock(mu_);
+                testHook = rotateTestHook_;
+            }
+            if (testHook) testHook();
+        }
+#endif
+
+        // 生成并 DPAPI 保护新密钥：**纯计算 + DPAPI，均在锁外**，且**不触碰磁盘**——密钥文件留到
+        // 提交临界区内才写（这是「密钥/密文同源」的关键：冲突时磁盘密钥从不被这次调用改动）。
+        std::vector<std::uint8_t> newKey;
+        std::string kerr;
+        if (!randomBytes(32, newKey, kerr)) {
+            r.code = "crypto_error";
+            r.message = "生成新密钥失败";
+            r.details.push_back(kerr);
+            return r;
+        }
+        std::vector<std::uint8_t> protectedBin;
+        if (!dpapiProtect(newKey, protectedBin, kerr)) {
+            r.code = "crypto_error";
+            r.message = "DPAPI 保护密钥失败";
+            r.details.push_back(kerr);
+            return r;
+        }
+        std::string newKeyB64;
+        if (!base64Encode(protectedBin, newKeyB64)) {
+            r.code = "crypto_error";
+            r.message = "密钥 base64 编码失败";
+            return r;
+        }
+        std::string ioErr;
+        if (!ensureParentDir(keyPath_, ioErr)) {
             r.code = "io_error";
-            r.message = "读取旧密钥失败";
+            r.message = "创建密钥目录失败";
             r.details.push_back(ioErr);
             return r;
         }
-    }
 
-    std::vector<std::uint8_t> newKey;
-    std::string kerr;
-    if (!randomBytes(32, newKey, kerr)) {
-        r.code = "crypto_error";
-        r.message = "生成新密钥失败";
-        r.details.push_back(kerr);
-        return r;
-    }
-    std::vector<std::uint8_t> protectedBin;
-    if (!dpapiProtect(newKey, protectedBin, kerr)) {
-        r.code = "crypto_error";
-        r.message = "DPAPI 保护密钥失败";
-        r.details.push_back(kerr);
-        return r;
-    }
-    std::string newKeyB64;
-    if (!base64Encode(protectedBin, newKeyB64)) {
-        r.code = "crypto_error";
-        r.message = "密钥 base64 编码失败";
-        return r;
-    }
-    if (!ensureParentDir(keyPath_, ioErr)) {
-        r.code = "io_error";
-        r.message = "创建密钥目录失败";
-        r.details.push_back(ioErr);
-        return r;
-    }
-    if (!writeFileAll(keyPath_, newKeyB64, ioErr)) {
-        r.code = "io_error";
-        r.message = "写入新密钥失败";
-        r.details.push_back(ioErr);
-        return r;
-    }
-
-    std::string err;
-    const std::string prettyEnc = buildSettingsJson(cfg, false, true);
-    if (prettyEnc.find("\"_error\"") != std::string::npos) {
-        if (hadOldKey) {
-            (void)writeFileAll(keyPath_, oldKeyB64, ioErr);
-        } else {
-            std::error_code ec;
-            std::filesystem::remove(keyPath_, ec);
-        }
-        r.code = "crypto_error";
-        r.message = "使用新密钥加密失败";
-        r.details.push_back(prettyEnc);
-        return r;
-    }
-    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
-    // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘 + 内存提交同处一个 mu_ 临界区，与 PUT / 热重载回滚写回互斥，
-    //   杜绝「回滚线程用旧快照覆盖已提交的新配置」。writeAtomicallyWithBackup / writeFileAll **均不取 mu_**
-    //   （逐字核实）⇒ 无递归加锁；本函数仅此一把锁 ⇒ 无锁序问题。
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        if (!writeAtomicallyWithBackup(prettyEnc, err)) {
-            if (hadOldKey) {
-                (void)writeFileAll(keyPath_, oldKeyB64, ioErr);
+        std::string err;
+        bool retry = false;
+        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。
+        // ★ 密钥/密文同源（项 A）：密钥文件与 config.json 内容在**同一临界区**内成对写入。
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (generation_.load() != genAtSnapshot) {
+                // 快照已过期：期间 PUT / 热重载提交了新配置。**不触碰任何磁盘状态**（新密钥仅存在于
+                // 内存，直接丢弃）⇒ 磁盘密钥/密文同源不变量保持。重取快照重试（有界）。
+                conflictMsg = "配置在密钥轮换期间被并发修改（PUT / 热重载），已重取快照重试";
+                retry = true;
             } else {
+                // 读当前磁盘密钥快照，仅供「已写新密钥、提交前失败」的**回滚**（两文件必须同源）。
+                const bool hadOldKey = std::filesystem::exists(keyPath_);
+                std::string oldKeyB64;
+                if (hadOldKey && !readFileAll(keyPath_, oldKeyB64, ioErr)) {
+                    r.code = "io_error";
+                    r.message = "读取旧密钥失败";
+                    r.details.push_back(ioErr);
+                    return r;
+                }
+                const auto restoreOldKey = [&]() {
+                    if (hadOldKey) {
+                        std::string e;
+                        (void)writeFileAll(keyPath_, oldKeyB64, e);
+                    } else {
+                        std::error_code ec;
+                        std::filesystem::remove(keyPath_, ec);
+                    }
+                };
+
+                // ★ 成对写入：写新密钥 → 用新密钥加密（ensureOrLoadKey 读到的即刚写入的新密钥）
+                //   → 写 config.json → 提交。整段持锁，故外部看不到「新密钥 + 旧密文」的中间态。
+                if (!writeFileAll(keyPath_, newKeyB64, ioErr)) {
+                    r.code = "io_error";
+                    r.message = "写入新密钥失败";
+                    r.details.push_back(ioErr);
+                    return r;
+                }
+                const std::string prettyEnc = buildSettingsJson(cfg, false, true);
+                if (prettyEnc.find("\"_error\"") != std::string::npos) {
+                    restoreOldKey();
+                    r.code = "crypto_error";
+                    r.message = "使用新密钥加密失败";
+                    r.details.push_back(prettyEnc);
+                    return r;
+                }
+                if (!writeAtomicallyWithBackup(prettyEnc, err)) {
+                    restoreOldKey();
+                    r.code = "io_error";
+                    r.message = "写入配置失败（已尝试回滚密钥）";
+                    r.details.push_back(err);
+                    return r;
+                }
+                cfg_ = cfg;
+                lastGoodJsonPretty_ = prettyEnc;
                 std::error_code ec;
-                std::filesystem::remove(keyPath_, ec);
+                lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
             }
-            r.code = "io_error";
-            r.message = "写入配置失败（已尝试回滚密钥）";
-            r.details.push_back(err);
-            return r;
         }
-        cfg_ = cfg;
-        lastGoodJsonPretty_ = prettyEnc;
-        std::error_code ec;
-        lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
+        if (retry) continue;
+
+        r.ok = true;
+        r.httpStatus = 200;
+        r.code = "ok";
+        r.message = "OK";
+        return r;
     }
 
-    r.ok = true;
-    r.httpStatus = 200;
-    r.code = "ok";
-    r.message = "OK";
+    // 有界重试耗尽：配置在 rotate 期间被**持续**并发修改 ⇒ 放弃本次轮换并如实上报（不静默用旧快照覆盖）。
+    // 不变量仍成立：本函数从未在冲突分支写盘 ⇒ 磁盘上的（密钥，密文）对仍是上一次成功写入时的成对状态。
+    r.httpStatus = 409;
+    r.code = "conflict";
+    r.message = conflictMsg.empty() ? "配置在密钥轮换期间被并发修改，已放弃本次轮换" : conflictMsg;
     return r;
 }
 
@@ -1591,6 +1654,21 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         //    ⚠️ 仍**不在** FACE-CONFIG-013「写入内容须持 mu_」的射程内（改名不产生新内容），本处加锁
         //      是为**身份复核**，不是为了满足那条不变量——两件事的理由不同，勿混。
         outErr = "热重载校验失败: " + parseErr;
+#if defined(RK_ENABLE_TEST_SEAMS)
+        // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setReloadTestHookForTesting 声明注释）：
+        //   在「解析被拒之后、重新取锁复核 mtime 之前」同步触发一次由测试注入的动作（典型：合法 PUT）。
+        //   此刻**未持 mu_** ⇒ 钩子内调 updateFromJsonBody 不会自锁。默认未设置（空 std::function）⇒ 恒假。
+        //   语义/数据不变；本块新增一次 mu_ 获取/释放（安全读钩子用），读取在 mu_ 下、调用在锁外，
+        //   避免与 setter 的数据竞争。
+        {
+            std::function<void()> testHook;
+            {
+                std::lock_guard<std::mutex> lock(mu_);
+                testHook = reloadTestHook_;
+            }
+            if (testHook) testHook();
+        }
+#endif
         std::filesystem::path movedTo;
         std::string qerr;
         {
@@ -1760,6 +1838,19 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
 bool WinJsonConfigStore::pollReloadOnce(bool& outApplied, std::string& outErr) {
     return reloadFromDisk(outApplied, outErr);
 }
+
+#if defined(RK_ENABLE_TEST_SEAMS)
+// ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件声明注释）。生产构建不编译本段 ⇒ 无副作用。
+void WinJsonConfigStore::setReloadTestHookForTesting(std::function<void()> hook) {
+    std::lock_guard<std::mutex> lock(mu_);
+    reloadTestHook_ = std::move(hook);
+}
+
+void WinJsonConfigStore::setRotateTestHookForTesting(std::function<void()> hook) {
+    std::lock_guard<std::mutex> lock(mu_);
+    rotateTestHook_ = std::move(hook);
+}
+#endif
 
 bool WinJsonConfigStore::startWatching() {
     stopWatching();

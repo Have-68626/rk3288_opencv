@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -39,6 +40,30 @@ namespace rk_win {
 // 同一个 mu_ 临界区内，是审阅时唯一的可见判据；把约束写进被调函数内部既拦不住新调用点、也不可见。
 // 保护对象：杜绝「回滚线程取旧快照 A → 并发 PUT 写盘 B 并提交 cfg_=B → 回滚线程把旧 A 覆盖回磁盘」
 // 这类「用旧快照覆盖已提交新配置」的竞态（即 FACE-CONFIG-010 的失败模式，只是从确定性版变竞态版）。
+//   ✅ 2026-09-29 补（项 3）：上面这条「杜绝…」是**全称**声明，而 rotateKeyAndReencrypt 此前**不满足**
+//     —— 它的「取快照 + DPAPI 重加密 + 序列化」**在锁外**，只在写盘 + 提交处持 mu_ ⇒ 并发 PUT 成功
+//     提交的新配置会被 rotate 的旧快照静默覆盖（磁盘与内存一起退回旧值）⇒ 修复前该全称声明**对 rotate
+//     为假**。**修法与理由**：rotate 内改用**代次校验 + 有界重试**（锁内记 generation_、写盘前在同一
+//     临界区复核未变；变了则**不触碰任何磁盘状态**、直接重取快照，耗尽次数返回 409 conflict）。
+//     generation_ 是可靠信号：PUT 成功与热重载成功都会 fetch_add(1)，rotate 自身不变代数。
+//
+//   ✅ 2026-09-29 补（项 A，**密钥/密文同源不变量**）：更早的 rotate 版本在**冲突分支**里调
+//     `restoreOldKey()` 把**旧密钥**写回磁盘——但「新密钥文件」当时是在 mu_ **之外**写的，而 PUT 的
+//     加密（buildSettingsJson → ensureOrLoadKey **每次重读密钥文件**）同样在 mu_ 外 ⇒ 存在交错：
+//     某 PUT 在 rotate 写入新密钥**之后**读取密钥并加密 config.json，随后 rotate 的代次复核发现变化
+//     ⇒ 走冲突分支把旧密钥写回 ⇒ **磁盘密钥=旧、磁盘密文=新** ⇒ 下次启动解密失败 ⇒ 配置被隔离、
+//     用户设置静默丢失。**修法（本批）**：把「密钥文件」与「config.json 内容」**只在同一个 mu_ 临界区内、
+//     以同一密钥成对写入**——即 rotate 的「写新密钥 → 用它加密 → 写 config.json → 提交」整段持锁，
+//     且**冲突分支不写盘**（新密钥仅存在于内存，直接丢弃，无 restore）；同时把 PUT 的加密也移入其写盘
+//     临界区。⇒ 盘上 config.json 恒能被盘上密钥文件解开（并发交错不再产生错配）。
+//     ⚠️ **残余（如实登记）**：密钥文件与 config.json 是**两个文件**，无法原子同写 ⇒ 「写密钥之后、
+//     写 config.json 之前」若**进程崩溃**，磁盘仍可能错配（下次启动隔离）。该崩溃窗口本批**不消除**，
+//     只消除**并发交错**造成的错配。
+//     ⚠️ **两个并发 rotate**：二者都不自增 generation_（设计如此，避免密钥轮换触发管线重启），且提交
+//     由 mu_ 串行化 ⇒ 各自写入自洽的（密钥，密文）对，不变量保持；又因 rotate 不改配置内容，不存在
+//     数据丢失（最终密钥为较晚提交者）。
+//     ⇒ 至此三条写盘路径（PUT / 回滚 / rotate）**都**不会用旧快照覆盖已提交的新配置，且**都**满足
+//       「密钥/密文同源」不变量，上述声明成立。
 // 覆盖范围（**5 处调用点注释 / 6 个写盘调用**；reloadFromDisk 回滚段的内存写回与 .bak 写回共用一条）：
 //   updateFromJsonBody（PUT）、rotateKeyAndReencrypt、reloadFromDisk 的回滚写回（2 个调用），
 //   **以及 initialize 的两处写盘**（迁移落盘 / 默认值落盘）。initialize 虽在启动阶段、尚无并发消费者
@@ -82,6 +107,8 @@ public:
     UpdateResult updateFromJsonBody(const std::string& bodyUtf8);
 
     // 敏感字段密钥轮换：生成新 AES 主密钥（DPAPI 保护）并重新加密敏感字段落盘。
+    // 承重不变量：盘上的 config.json 必须**始终**能用盘上的密钥文件解开（二者同源）——密钥文件与
+    // config.json 内容只在同一个 mu_ 临界区内、以同一密钥成对写入（详见类级注释「项 A」）。
     UpdateResult rotateKeyAndReencrypt();
 
     // 热重载：启动后台线程监控 config.json 变更；变更后自动 reload+校验；失败时回滚。
@@ -89,6 +116,24 @@ public:
     bool startWatching();
     void stopWatching();
     bool pollReloadOnce(bool& outApplied, std::string& outErr);  // 便于测试/无线程环境
+
+#if defined(RK_ENABLE_TEST_SEAMS)
+    // ── 测试接缝（编译期开关 RK_ENABLE_TEST_SEAMS；**仅** win_unit_tests 定义该宏，见 cmake/windows.cmake
+    //    与 cmake/core.cmake 的 rk_assert_test_seam_boundary）──
+    // 这两枚钩子只服务「纯黑盒无法确定性观测并发交错」的两条竞态用例（见 tests/win/test_win_json_config.cpp）。
+    //   · setReloadTestHookForTesting：在 reloadFromDisk「解析被拒之后、重新取锁复核 mtime 之前」同步调用。
+    //     此刻**未持 mu_** ⇒ 钩子内可安全调 updateFromJsonBody（否则会自锁）。
+    //   · setRotateTestHookForTesting：在 rotateKeyAndReencrypt「**取快照之后、生成并替换密钥之前**」
+    //     同步调用（即竞态窗口的起点）；此刻同样**未持 mu_**。刻意放在密钥替换之前——否则磁盘上的
+    //     postUrl 密文仍是旧密钥加密的，钩子内的合法 PUT 会在解析/解密处失败。
+    // 语义与代价（**订正**，原措辞「生产路径行为**逐位不变**」已不准确）：**数据/语义不变**；
+    //   ⚠️ 在**定义了本宏的测试构建**中，每次调用会为「安全读取钩子」**新增一次 mu_ 获取/释放**
+    //     （rotate 因有界重试最多 3 次）⇒ 非逐位不变，而是**多一次锁往返**。
+    //   ✅ **生产构建不定义本宏 ⇒ 整个接缝块（声明、成员、读取点）不参与编译 ⇒ 生产路径确实逐位不变**。
+    // 生产代码**绝不**设置它们；未设置时空 std::function ⇒ `if (hook)` 恒假 ⇒ 无任何副作用。
+    void setReloadTestHookForTesting(std::function<void()> hook);
+    void setRotateTestHookForTesting(std::function<void()> hook);
+#endif
 
     std::filesystem::path configPath() const { return configPath_; }
 
@@ -137,6 +182,13 @@ private:
     bool configRejectedOnLoad_ = false;   // 既有配置无法装载 ⇒ 本次降级启动
     std::string initWarning_;             // initialize 的告警文本副本；空串 = 无告警
     std::string initQuarantineFileName_;  // 坏配置被另存的文件名；空串 = 未隔离（非降级启动）或隔离失败
+
+#if defined(RK_ENABLE_TEST_SEAMS)
+    // 测试接缝（编译期开关，仅 win_unit_tests 定义该宏；生产不编译）。语义/数据不变，但读钩子
+    // 会新增一次 mu_ 获取/释放（见上方两枚 setter 的声明注释）。
+    std::function<void()> reloadTestHook_;
+    std::function<void()> rotateTestHook_;
+#endif
 };
 
 }  // namespace rk_win

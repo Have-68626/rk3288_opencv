@@ -309,15 +309,33 @@ endfunction()
 # ⚠️ **仍存的局限（如实记录，勿当作已封死）**：任意第三方/未来引入的 INTERFACE 库的传递传播、
 #    以及目录级 `add_compile_definitions()`，均**不在**本断言的覆盖内。要彻底封死须改读实际
 #    编译命令行，代价与脆弱性都更高，故本轮不做。
-set(RK_TEST_SEAM_TARGETS core_gtest_tests)
+set(RK_TEST_SEAM_TARGETS core_gtest_tests win_unit_tests)
 set(RK_TEST_SEAM_SCANNED_INTERFACE_LIBS rk_core)
+# ★ 2026-09-29（项 B）：白名单新增 win_unit_tests。该宏现在**有两个消费者**——
+#   · core_gtest_tests：Engine 的 protected virtual 接缝（onBeforeRenderPublish）＋虚析构（ABI 变更）；
+#   · win_unit_tests：WinJsonConfigStore 的 setReloadTestHookForTesting / setRotateTestHookForTesting
+#     （编译期开关，门后无该 setter 与成员 ⇒ 生产二进制里不存在，误用变编译错误；**不改任何 ABI**）。
+#   WinJsonConfigStore 的接缝唯一调用点在 tests/win/test_win_json_config.cpp（属 win_unit_tests），
+#   故该宏只在 win_unit_tests 定义（见 cmake/windows.cmake）。两个 target 各自独立编译 WinJsonConfig.cpp /
+#   Engine.cpp，宏状态在各自 target 内一致 ⇒ 无 ODR/布局问题；生产 target 不定义本宏 ⇒ 接缝不参与编译。
+# ⚠️ 复用同一宏（非自创）的代价（如实登记）：本断言的方向②「whitelist 必须携带」对 win_unit_tests 的
+#   实际拦截力较弱——宏缺失时 WinJsonConfigStore 的接缝 setter **不存在** ⇒ 调用它的测试**编译失败**
+#   （响亮），并非静默失效；方向② 在此同样只是**冗余防线**（同 core_gtest_tests 处的如实说明）。
 function(rk_assert_test_seam_boundary)
     # 「断言被跳过」必须与「断言通过」在日志里**长得不一样** —— 否则本断言自身的空转无人察觉
-    # （子代理 4 S3：原实现下二者都是静默的）。仅当白名单 target 在本配置下不存在时提示。
-    if(NOT TARGET ${RK_TEST_SEAM_TARGETS})
+    # （子代理 4 S3：原实现下二者都是静默的）。仅当白名单 target 在本配置下**全部**不存在时提示。
+    # ⚠️ 必须逐项判存在（不可写成 `if(NOT TARGET ${RK_TEST_SEAM_TARGETS})`）——该变量现在是**列表**
+    #    （core_gtest_tests;win_unit_tests），`TARGET` 操作符只接受一个参数，列表展开会触发 CMake 配置期报错。
+    set(_rk_seam_any_present FALSE)
+    foreach(_rk_seam_t ${RK_TEST_SEAM_TARGETS})
+        if(TARGET ${_rk_seam_t})
+            set(_rk_seam_any_present TRUE)
+        endif()
+    endforeach()
+    if(NOT _rk_seam_any_present)
         message(STATUS
-            "rk_assert_test_seam_boundary: 白名单 target ${RK_TEST_SEAM_TARGETS} 在本配置下不存在"
-            "(RK_SKIP_OPENCV / Android) ⇒ 方向② 不适用；方向① 仍照常执行")
+            "rk_assert_test_seam_boundary: 白名单 target(s) ${RK_TEST_SEAM_TARGETS} 在本配置下均不存在"
+            "(RK_SKIP_OPENCV / Android / 非 Windows) ⇒ 方向② 不适用；方向① 仍照常执行")
     endif()
     foreach(t ${RK_ENGINE_TARGETS} ${RK_TEST_SEAM_TARGETS} ${RK_TEST_SEAM_SCANNED_INTERFACE_LIBS})
         if(NOT TARGET ${t})

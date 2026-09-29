@@ -67,6 +67,8 @@ bool test_structured_logger_open_prunes_shrunk_generations();
 bool test_structured_logger_rename_failure_does_not_reset_header();
 // 重开失败后**自动恢复** + 两路独立（2026-09-28 新增）。
 bool test_structured_logger_reopen_recovers_and_paths_independent();
+// ★ 2026-09-29 新增：「每路独立重试窗口」的判别用例（S4：此前零覆盖）。
+bool test_structured_logger_reopen_windows_are_per_path();
 bool test_render_metrics_logger_rotates_and_caps_generations();
 bool test_render_metrics_logger_no_rotation_when_max_bytes_zero();
 bool test_render_metrics_logger_open_default_arguments();
@@ -119,6 +121,14 @@ bool test_config_lbph_threshold_over_physical_max_clamped();
 bool test_config_log_budget_clamped_to_total_budget();
 bool test_config_write_path_parent_ref_put_rejected();
 bool test_config_write_path_startup_warns_not_rejected();
+// ★ 2026-09-29 新增：热重载隔离竞态（项 2）与 rotate 快照竞态（项 3）——均经测试接缝确定性构造交错。
+bool test_config_reload_isolation_skips_when_put_races();
+bool test_config_rotate_does_not_clobber_concurrent_put();
+// ★ 2026-09-29 新增（项 A）：密钥/密文同源不变量 —— rotate 与 PUT 交错后盘上 config.json 必须能
+// 用盘上密钥文件解开（往返）；含 409 重试耗尽路径与普通 rotate 的往返。
+bool test_config_rotate_and_put_keep_disk_key_matched();
+bool test_config_rotate_conflict_exhaustion_keeps_invariant();
+bool test_config_rotate_preserves_sensitive_field_roundtrip();
 bool test_reload_endpoint_bumps_generation();
 bool test_openapi_endpoint_returns_spec_json();
 bool test_face_db_plaintext_vuln_documented();
@@ -260,6 +270,8 @@ int main(int argc, char** argv) {
         {"test_structured_logger_rename_failure_does_not_reset_header", test_structured_logger_rename_failure_does_not_reset_header},
         {"test_structured_logger_reopen_recovers_and_paths_independent",
          test_structured_logger_reopen_recovers_and_paths_independent},
+        {"test_structured_logger_reopen_windows_are_per_path",
+         test_structured_logger_reopen_windows_are_per_path},
         {"test_render_metrics_logger_rotates_and_caps_generations", test_render_metrics_logger_rotates_and_caps_generations},
         {"test_render_metrics_logger_no_rotation_when_max_bytes_zero", test_render_metrics_logger_no_rotation_when_max_bytes_zero},
         {"test_render_metrics_logger_open_default_arguments", test_render_metrics_logger_open_default_arguments},
@@ -308,6 +320,11 @@ int main(int argc, char** argv) {
         {"config_log_budget_clamped_to_total_budget", test_config_log_budget_clamped_to_total_budget},
         {"config_write_path_parent_ref_put_rejected", test_config_write_path_parent_ref_put_rejected},
         {"config_write_path_startup_warns_not_rejected", test_config_write_path_startup_warns_not_rejected},
+        {"config_reload_isolation_skips_when_put_races", test_config_reload_isolation_skips_when_put_races},
+        {"config_rotate_does_not_clobber_concurrent_put", test_config_rotate_does_not_clobber_concurrent_put},
+        {"config_rotate_and_put_keep_disk_key_matched", test_config_rotate_and_put_keep_disk_key_matched},
+        {"config_rotate_conflict_exhaustion_keeps_invariant", test_config_rotate_conflict_exhaustion_keeps_invariant},
+        {"config_rotate_preserves_sensitive_field_roundtrip", test_config_rotate_preserves_sensitive_field_roundtrip},
         {"reload_endpoint_bumps_generation", test_reload_endpoint_bumps_generation},
         {"openapi_endpoint_returns_spec_json", test_openapi_endpoint_returns_spec_json},
         {"face_db_plaintext_vuln_documented", test_face_db_plaintext_vuln_documented},
