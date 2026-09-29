@@ -417,22 +417,32 @@ public final class EnrollmentSession {
                 }
                 for (final AndroidEnrollmentRepository.Entry entry : list.entries) {
                     final float[][] decoded = new float[1][];
-                    AndroidEnrollmentRepository.Result rr = repo.readTemplate(
-                            entry.userId, new AndroidEnrollmentRepository.TemplateConsumer() {
-                                @Override
-                                public void accept(@NonNull byte[] plaintextTemplate) {
-                                    float[] emb = decodeLe(plaintextTemplate);
-                                    if (emb != null) {
-                                        decoded[0] = emb;
+                    try {
+                        AndroidEnrollmentRepository.Result rr = repo.readTemplate(
+                                entry.userId, new AndroidEnrollmentRepository.TemplateConsumer() {
+                                    @Override
+                                    public void accept(@NonNull byte[] plaintextTemplate) {
+                                        float[] emb = decodeLe(plaintextTemplate);
+                                        if (emb != null) {
+                                            decoded[0] = emb;
+                                        }
                                     }
-                                }
-                            });
-                    if (!rr.isOk() || decoded[0] == null) {
-                        // 任一模板读取/解码失败即中止遍历并报告失败：跳过该模板会让本可
-                        // 判重的样本被误放行，必须在判定点整体拒绝本次注册。
-                        return false;
+                                });
+                        if (!rr.isOk() || decoded[0] == null) {
+                            // 任一模板读取/解码失败即中止遍历并报告失败：跳过该模板会让本可
+                            // 判重的样本被误放行，必须在判定点整体拒绝本次注册。
+                            return false;   // finally 仍会清零
+                        }
+                        consumer.accept(entry.userId, decoded[0]);
+                    } finally {
+                        // ★ 2026-09-28 修（外部审查 [P2]「人脸特征明文副本未及时清零」）：
+                        //   明文副本**用完即擦**。放在 finally 里是刻意的 —— 上面的 `return false`
+                        //   与 `consumer.accept` 的正常返回都必须覆盖。擦除放在 accept **之后**
+                        //   是安全的：回调契约是「数组仅在回调内有效」，调用方在此之后不得再使用它。
+                        if (decoded[0] != null) {
+                            Arrays.fill(decoded[0], 0.0f);
+                        }
                     }
-                    consumer.accept(entry.userId, decoded[0]);
                 }
                 return true;
             }

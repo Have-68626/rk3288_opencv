@@ -4570,11 +4570,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * 也绝不用空图库覆盖运行中图库。仓库本就没有人员时按空图库替换（保持既有语义）。
      */
     private boolean refreshGalleryFromRepository() {
+        // ★ 2026-09-28：`embeddings` 提到 `try` **之外**，使外层 `catch` 也能擦净已入列的直接缓冲区
+        //   （本方法此前没有 finally；验收代理指出异常路径会留下未清的堆外副本）。
+        List<ByteBuffer> embeddings = new ArrayList<>();
         try {
             AndroidEnrollmentRepository.ListResult list = enrollmentRepository().list();
             if (!list.isOk()) return false;
             List<String> ids = new ArrayList<>();
-            List<ByteBuffer> embeddings = new ArrayList<>();
             // 注册表的**完整**人员集合：与 ids 不同——ids 只含成功解码模板的条目，而本集合含全部
             // 已注册者。显示名的预取与孤儿清理必须用它：若误用 ids，模板损坏（skipped）的人会被
             // 当成「已注销」而删掉其显示名——那是数据丢失。
@@ -4583,28 +4585,38 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             for (final AndroidEnrollmentRepository.Entry e : list.entries) {
                 allRegisteredIds.add(e.userId);
                 final float[][] decoded = new float[1][];
-                AndroidEnrollmentRepository.Result rr;
                 try {
-                    rr = enrollmentRepository().readTemplate(e.userId, pt -> {
-                        float[] emb = EnrollmentSession.decodeLe(pt);
-                        if (emb != null) {
-                            decoded[0] = emb;
-                        }
-                    });
-                } catch (Throwable t) {
-                    rr = null;  // 单条读取抛异常视同该条失败，逐条隔离、不拖垮整体。
+                    AndroidEnrollmentRepository.Result rr;
+                    try {
+                        rr = enrollmentRepository().readTemplate(e.userId, pt -> {
+                            float[] emb = EnrollmentSession.decodeLe(pt);
+                            if (emb != null) {
+                                decoded[0] = emb;
+                            }
+                        });
+                    } catch (Throwable t) {
+                        rr = null;  // 单条读取抛异常视同该条失败，逐条隔离、不拖垮整体。
+                    }
+                    if (rr == null || !rr.isOk() || decoded[0] == null
+                            || decoded[0].length != NativeFaceBridge.EMBEDDING_DIM) {
+                        skipped++;
+                        continue;   // finally 仍会清零
+                    }
+                    ByteBuffer bb = ByteBuffer.allocateDirect(NativeFaceBridge.EMBEDDING_BYTES);
+                    bb.order(ByteOrder.LITTLE_ENDIAN);
+                    bb.asFloatBuffer().put(decoded[0]);
+                    bb.rewind();
+                    ids.add(e.userId);
+                    embeddings.add(bb);
+                } finally {
+                    // ★ 2026-09-28 修（验收代理指出）：本处原先**不在 finally 里** —— 上面的 `continue`
+                    //   （模板损坏 / 维度不符）与 `readTemplate` 的 catch 都会**跳过**清零，明文模板
+                    //   留到 GC。与 `EnrollmentSession` 判重循环那份（那边是**正确**的 finally 写法）
+                    //   统一口径。
+                    if (decoded[0] != null) {
+                        Arrays.fill(decoded[0], 0.0f);
+                    }
                 }
-                if (rr == null || !rr.isOk() || decoded[0] == null
-                        || decoded[0].length != NativeFaceBridge.EMBEDDING_DIM) {
-                    skipped++;
-                    continue;
-                }
-                ByteBuffer bb = ByteBuffer.allocateDirect(NativeFaceBridge.EMBEDDING_BYTES);
-                bb.order(ByteOrder.LITTLE_ENDIAN);
-                bb.asFloatBuffer().put(decoded[0]);
-                bb.rewind();
-                ids.add(e.userId);
-                embeddings.add(bb);
             }
             // 「全失败」判定：仓库本有人员条目，却没有任何一条成功 —— 不替换运行中图库。
             if (ids.isEmpty() && skipped > 0) {
@@ -4614,6 +4626,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             String resp = NativeFaceBridge.replaceGallery(
                     ids.toArray(new String[0]), embeddings.toArray(new ByteBuffer[0]));
+            // ★ 2026-09-28 修（同 [P2]）：JNI 已把数据**复制**进 native 侧，Java 侧这份直接缓冲区
+            //   用毕即擦（原先不清零，内容留到 GC/Cleaner）。
+            //   ⚠️ 复用本类**既有**的 `zeroDirectBuffer`（它在 :4386，带 isDirect 守卫与 try/catch）——
+            //   本批初版曾另写一份同功能私有方法，被编译器以「已在类中定义」直接驳回（重复造轮子）。
+            for (ByteBuffer bb : embeddings) {
+                zeroDirectBuffer(bb);
+            }
             boolean ok = jsonGetBool(resp, "ok", false);
             if (skipped > 0) {
                 AppLog.w("MainActivity", "refreshGalleryFromRepository",
@@ -4642,6 +4661,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             migrateLegacyDisplayNames();
             return ok;
         } catch (Throwable t) {
+            // ★ 2026-09-28：异常路径也要擦净**已入列**的直接缓冲区（此前直接 return，堆外副本留到 GC）。
+            for (ByteBuffer bb : embeddings) {
+                zeroDirectBuffer(bb);
+            }
             return false;
         }
     }

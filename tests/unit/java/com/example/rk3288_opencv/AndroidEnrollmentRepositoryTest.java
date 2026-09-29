@@ -680,6 +680,52 @@ public class AndroidEnrollmentRepositoryTest {
         assertTrue("恢复成功后主文件应重新存在", dst.exists());
     }
 
+    /**
+     * ★ 2026-09-28 新增（外部审查 [P1]「备份恢复后可能放行重复人脸注册」的**判别用例**）。
+     *
+     * <p>现场摆置（**不真崩**，按真实阶段序手摆文件）：{@code dst} 缺失、{@code .bak} = **旧**
+     * （只有 alice）、{@code .tmp} = **完整**（alice + bob）—— 正是「模板已落盘（add）→
+     * 注册表 {@code dst→bak} 已完成 → {@code tmp→dst} 未完成」的崩溃形态。
+     *
+     * <p>修复前：只认 {@code .bak} ⇒ 恢复出**缺 bob** 的条目集，而判重门
+     * {@code isEnumerationComplete()} 只看 status/skipped ⇒ 放行 ⇒ bob 可用**另一个 userId**
+     * 再注册一次（重复人脸）。修复后：优先提升 {@code .tmp} ⇒ bob 的行被恢复 ⇒ 判重命中。
+     *
+     * <p>判别力：去掉 `loadRegistry` 里「先试 .tmp」那一段 ⇒ {@code list.entries.size()} 为
+     * **1**（而非 2）⇒ 本条必红。
+     */
+    @Test
+    public void recoversUnconsumedTmpWithNewestEntriesInsteadOfStaleBackup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 71), MV, TSV).status);
+        final String aliceOnly = new String(
+                Files.readAllBytes(repo.registryFile().toPath()), StandardCharsets.UTF_8);
+
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 72), MV, TSV).status);
+        final String withBob = new String(
+                Files.readAllBytes(repo.registryFile().toPath()), StandardCharsets.UTF_8);
+
+        File dst = repo.registryFile();
+        File bak = bakFor(repo);
+        File tmp = new File(dst.getParentFile(), dst.getName() + ".tmp");
+
+        // 手摆崩溃后的磁盘形态（顺序与 persistRegistry 的阶段序一致）：
+        Files.write(bak.toPath(), aliceOnly.getBytes(StandardCharsets.UTF_8)); // 阶段 3 的产物（缺 bob）
+        Files.write(tmp.toPath(), withBob.getBytes(StandardCharsets.UTF_8));   // 阶段 4 未消费的 tmp（含 bob）
+        assertTrue("前置锚：dst 必须真的被移除", dst.delete());
+        assertFalse(dst.exists());
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("应从 .tmp 恢复出**最新**条目集（含 bob），而不是从陈旧的 .bak 恢复", 2,
+                list.entries.size());
+        assertTrue("恢复成功后主文件应重新存在", dst.exists());
+        assertTrue("恢复出的枚举应视为完整 —— 判重门据此才不会再放行同一张脸的第二个 ID",
+                list.isEnumerationComplete());
+    }
+
     @Test
     public void staleTmpResidueIsIgnoredWhenMainValid() throws Exception {
         AndroidEnrollmentRepository repo = newRepo();
