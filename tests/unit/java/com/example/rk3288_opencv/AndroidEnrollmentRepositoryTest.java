@@ -806,40 +806,43 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals("alice", list.entries.get(0).userId);
     }
 
-    // ---------- ⑫b 头损坏不回退 .bak（刻意收窄，行为锁定） ----------
+    // ---------- ⑫c 头损坏 + 可用备份 ⇒ 优先自愈（只读，不覆盖主文件字节） ----------
 
     /**
-     * 行为锁定：**只有 IO_ERROR 触发 .bak 回退，CORRUPTED 不触发**（判据范围见 `loadRegistry` 注释）。
+     * 行为：主文件**头损坏** + 备份**可解析**时，应从备份**自愈读回**条目（status OK），而不是把
+     * 健康备份随损坏主文件一起报废。旧行为曾把该情形判为 CORRUPTED，进而让
+     * {@code quarantineCorruptRegistry} 把健康备份一并旁置、清空活性库。
      *
-     * <p>与既有 {@link #unreadableMainRecoversFromBackup} 同构，把「非空目录占用主文件」换成
-     * 「写入非法魔数」：主文件头损坏 + 备份**可解析**时仍报 `CORRUPTED`，且**不得消费备份**。
-     * 理由：写入器经 tmp→rename 替换，崩溃窗口只产生「缺失/不可读」；头损坏来自外部破坏，
-     * 用可能同样陈旧、未必完好的 bak 覆盖回去反而可能丢增量。
+     * <p><b>数据安全（本用例的核心断言）</b>：主文件**存在**（即便字节损坏）时自愈**只读**副产品、
+     * 绝不 rename 覆盖 —— POSIX 的 {@code rename(2)} 会静默覆盖同名目标，覆盖即销毁主文件原字节。
+     * 故断言「主文件字节原样保留」「备份原样留在盘上」。仅当主文件**缺失**时才把副产品改名就位。
      *
-     * <p><b>打红方式</b>：把判据改成 {@code IO_ERROR || CORRUPTED} ⇒ status 变 OK、条目集取自备份，
-     * 前两条断言即红（第三条「bak 是否仍在盘上」取决于平台 rename 语义，不作为判红依据）。
+     * <p><b>打红方式</b>：把 {@code loadRegistry} 里「主文件不可解析时优先自愈」那段去掉（恢复为只对
+     * {@code IO_ERROR} 回退、CORRUPTED 直返）⇒ status 变回 CORRUPTED ⇒ 前两条断言红。
      */
     @Test
-    public void corruptHeaderDoesNotConsumeBackup() throws Exception {
+    public void corruptHeaderRecoversFromUsableBackupWithoutOverwritingMain() throws Exception {
         AndroidEnrollmentRepository repo = newRepo();
         assertEquals(AndroidEnrollmentRepository.Status.OK,
                 repo.add("alice", templateBytes(16, 84), MV, TSV).status);
         byte[] good = Files.readAllBytes(repo.registryFile().toPath());
 
-        // 主文件头损坏（外部破坏的形态）；备份本身完全可解析。
-        Files.write(repo.registryFile().toPath(),
-                "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8));
+        byte[] corruptMain = "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8);
+        Files.write(repo.registryFile().toPath(), corruptMain);   // 主文件头损坏（外部破坏）
         File bak = bakFor(repo);
-        Files.write(bak.toPath(), good);
+        Files.write(bak.toPath(), good);                          // 备份完全可解析
 
         AndroidEnrollmentRepository.ListResult list = repo.list();
-        assertEquals("头损坏应判 CORRUPTED，不得改用备份",
-                AndroidEnrollmentRepository.Status.CORRUPTED, list.status);
-        assertTrue("条目集不得来自备份（否则等于放宽了回退判据）", list.entries.isEmpty());
-        assertTrue("不得消费备份：bak 必须原样留在盘上", bak.exists());
-        assertEquals("主文件不得被备份覆盖", "NOT_A_REGISTRY",
-                new String(Files.readAllBytes(repo.registryFile().toPath()),
-                        StandardCharsets.UTF_8).trim());
+        assertEquals("头损坏 + 可用备份应自愈为 OK（而非 CORRUPTED）",
+                AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("应从备份读回 alice", 1, list.entries.size());
+        assertEquals("alice", list.entries.get(0).userId);
+        assertFalse("自愈恢复的条目集不得宣称权威（备份可能早于最近新增）", list.authoritative);
+
+        // 数据安全：主文件存在时只读自愈，绝不覆盖其字节。
+        assertArrayEquals("主文件字节必须原样保留（只读自愈，绝不 rename 覆盖）", corruptMain,
+                Files.readAllBytes(repo.registryFile().toPath()));
+        assertTrue("备份不得被消费：仍须原样留在盘上", bak.exists());
     }
 
     // ---------- ⑬ 实例级注入不跨实例泄漏（子代理 3 N2 补的结构性守卫，与存储侧对偶） ----------

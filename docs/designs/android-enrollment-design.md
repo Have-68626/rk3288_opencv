@@ -60,8 +60,8 @@ as_of=2026-09-26
 - **容错**：单行损坏跳过并计数（`skippedLineCount`），仅文件头（魔数 `FREG1`/版本）损坏才判 `CORRUPTED`；**自愈需一次成功的 `add`/`remove`**（`persistRegistry` 只序列化**枚举到的**条目，被跳过的坏行不在其中）。
   ⚠️ **自愈边界（如实；本批之后收窄，已在代码中登记为待办 N1，未修）**：注册路径的判重门（`EnrollmentSession.fromRepository` → `ListResult.isEnumerationComplete()`）在存在坏行时对**每一帧**样本返回 `REPO_UNAVAILABLE`，会话永远集不满 8 样本 ⇒ 经 UI 的 `add` **不可达**，**自愈实际只剩 `remove` 一条路**。而 `remove` 的 UI 入口（`MainActivity.showPersonManagementDialog`）按 `list().entries` 列条目：注册表**只剩被跳过的坏行**时 `entries` 为空 ⇒ 列表里**没有任何可删条目**（本批已改为如实弹提示而非「暂无已注册人员」，但出路未变）⇒ **用户从 UI 无法自愈**（只能清除应用数据或手工修文件）。本批已把该损坏信息补上 UI 可见性（人员列表对话框的 message / 空列表 Toast / 采集进度区提示），但**未**提供修复入口。
   ⚠️ 另：`status==OK && skipped==0` **不足以**支撑「可安全用作判重依据」——从 `.bak` 恢复时备份可能早于最近一次 `add`（新条目只存在于未被消费的 `.tmp` 里），此时枚举**确实缺行**而该判据仍为 true；该缺口未修，见 `ListResult.isEnumerationComplete()` 的 javadoc。
-- **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；中间退出导致主文件缺失时，`loadRegistry` 先用 `.bak` 恢复为主文件再解析，避免把唯一索引伪装成空库。
-  ⚠️ **回退范围刻意只含「主文件缺失 / 不可读」（`IO_ERROR`），不含头损坏（`CORRUPTED`）**：写入器经 tmp→rename 替换，崩溃窗口产生的形态是「缺失/不可读」，头损坏只可能来自**外部**破坏（截断/覆写）；从同样可能陈旧、未必完好的 `.bak` 覆盖回去反而可能丢增量。该范围已由行为锁定用例 `corruptHeaderDoesNotConsumeBackup` 钉住，放宽前须先拍板。
+- **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；主文件**缺失或不可解析**时，`loadRegistry` 按「先未消费的 `.tmp`、后 `.bak`」取首个可解析的副本作为注册表。主文件**缺失**时把副本改名就位；主文件**存在**（即便头损坏 / 不可读）时**只读**副本、绝不改名覆盖（POSIX `rename(2)` 会静默覆盖同名目标 ⇒ 覆盖即销毁主文件原字节，违背「不可解析的工件仍应保留、改名不删」）。
+  ⚠️ **头损坏（`CORRUPTED`）也纳入自愈**（2026-09-29 放宽了此前「回退只含 `IO_ERROR`、不含 `CORRUPTED`」的范围）：头损坏 + 健康 `.bak`/`.tmp` 并存时先自愈读回，避免 `quarantineCorruptRegistry` 判定「无可用条目」而把健康副本也一并旁置、清空活性库。范围由 `AndroidEnrollmentRepositoryTest.corruptHeaderRecoversFromUsableBackupWithoutOverwritingMain`（只读、不覆盖主文件字节）与 `RegistryQuarantineRecoveryTest.corruptMainWithUsableBackupSelfHealsInsteadOfQuarantiningBackup`（不旁置健康副本）钉住。
 - **API < 23**：`add/remove/readTemplate` 返回 `UNSUPPORTED_PLATFORM`；`list/get` 放行用于只读预览。
 
 ### 2.2 八样本注册会话 `EnrollmentSession`（任务 17）

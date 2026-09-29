@@ -265,8 +265,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * 故在 {@link #startEnrollment} 的准备阶段落定本提示、由 {@link #buildEnrollmentProgressText}
      * 贴在进度区。文案只含「判重门会拒收本次采集」这一事实与处置办法，**不含任何模板/向量内容**。
      * 处置办法分两档（与 {@link #showPersonManagementDialog} 同结论，避免同一情形下两处文案互斥）：
-     * 人员列表里**有**可删条目时「删除任一位人员以重写注册表」；**一条都没有**时只能清除应用数据或
-     * 手工修复注册表文件。
+     * 人员列表里**有**可删条目时「删除任一位人员以重写注册表」；**一条都没有**时走人员管理里的
+     * 「旁置损坏注册表」（{@link AndroidEnrollmentRepository#quarantineCorruptRegistry()}：改名旁置 +
+     * 建空表，绝不删除原文件）。
      */
     private volatile String enrollmentRegistryWarning = "";
 
@@ -4231,13 +4232,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                             AndroidEnrollmentRepository.ListResult pre = repo.list();
                             if (!pre.isEnumerationComplete()) {
                                 // 兜底半句（「若没有任何可删条目…」）与 showPersonManagementDialog 的
-                                // 「entries 为空且 skipped>0 ⇒ 当前界面无法修复」保持同一结论，
-                                // 避免同一情形下两处文案互斥。
+                                // 「entries 为空且 skipped>0 ⇒ 走旁置恢复」保持同一结论，避免两处文案互斥。
                                 warning = pre.skippedLineCount > 0
                                         ? "⚠ 本地注册表有 " + pre.skippedLineCount + " 行损坏已被跳过，"
                                         + "判重无法覆盖全部在册者，本次采集会被拒绝。"
                                         + "请先用「人员列表 / 删除」删除任一位人员以重写注册表（清除损坏行），再重新注册；"
-                                        + "若人员列表中没有任何可删除的条目，则需清除应用数据或手工修复注册表文件。"
+                                        + "若人员列表中没有任何可删除的条目，请在人员管理里使用「旁置损坏注册表」恢复。"
                                         : "⚠ 本地人员注册表不可读（" + pre.status + "），本次采集会被拒绝。";
                             }
                         }
@@ -4683,7 +4683,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 // #2：Activity 已销毁时不再弹窗，避免窗口 token 失效（BadTokenException）。
                 if (isFinishing() || isDestroyed()) return;
                 if (!list.isOk()) {
-                    Toast.makeText(this, "人员列表读取失败：" + list.message, Toast.LENGTH_LONG).show();
+                    // 整份不可读（头损坏 / IO 错误）：不再只弹一句 Toast 就断头 —— 提供**非破坏性**的
+                    // 「旁置 + 新建空表」恢复入口（外部审查 [P2]「H：注册表全损坏时界面无恢复入口」）。
+                    promptRegistryRecovery("人员列表读取失败：" + list.message);
                     return;
                 }
                 final List<AndroidEnrollmentRepository.Entry> entries = list.entries;
@@ -4692,16 +4694,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 //（skippedLineCount 无人读取；list.message 只在 !list.isOk() 时展示）。这里如实告知，
                 // 并说明界面内的自愈途径 —— 有可删条目时 remove 会经 persistRegistry 重写注册表、
                 // 顺带清除坏行（判重门已切断 add 自愈，见 EnrollmentSession.REPO_UNAVAILABLE 的登记）；
-                // 一条可删条目都没有时界面**无**出路，由下方 isEmpty 支如实上报（清除应用数据 /
-                // 手工修复注册表），该兜底结论已同步到 startEnrollment 的进度区文案。
+                // 一条可删条目都没有（全坏行）时走「旁置损坏注册表」恢复入口（见 promptRegistryRecovery）。
                 // 任务 B 决策：历史明文显示名默认保留、不自动删除，在此处（人员管理入口）提示并提供清除。
                 promptClearLegacyDisplayNamesIfAny();
                 if (entries.isEmpty()) {
                     if (skipped > 0) {
-                        // 死角如实上报：删除入口需要至少一条可删条目，此处一条都没有 ⇒ UI 无出路。
-                        Toast.makeText(this, "注册表有 " + skipped + " 行损坏已被跳过，且没有可删除的人员条目；"
-                                + "当前界面无法修复（需清除应用数据或手工修复注册表文件），修复前无法注册新人员",
-                                Toast.LENGTH_LONG).show();
+                        // 死角：entries 为空 ⇒ 没有可删条目；走非破坏性的旁置恢复，而不是只报「无出路」。
+                        promptRegistryRecovery("注册表有 " + skipped + " 行损坏已被跳过，且没有可删除的人员条目");
                     } else {
                         Toast.makeText(this, "暂无已注册人员", Toast.LENGTH_SHORT).show();
                     }
@@ -4726,6 +4725,60 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 builder.show();
             });
         }, "FacePersonList").start();
+    }
+
+    /**
+     * 注册表「整份不可枚举」（头损坏 / 全部行不合法）时的**非破坏性**恢复入口 —— 外部审查 [P2]
+     * 「H：注册表全损坏时界面无恢复入口」的处置：此前该情形只能由用户清除应用数据或手工改文件。
+     *
+     * <p>弹出说明 + 二次确认，用户确认后才把损坏注册表**改名旁置**并新建空表（绝不删除原文件），
+     * 完成后给出旁置文件的绝对路径供事后手工取回。真正的文件操作与错误通道全部委托给仓库层的
+     * {@link AndroidEnrollmentRepository#quarantineCorruptRegistry()}（不在 UI 里直接做文件 IO）。
+     */
+    private void promptRegistryRecovery(@NonNull String reason) {
+        new AlertDialog.Builder(this)
+                .setTitle("注册表损坏")
+                .setMessage(reason + "\n\n可通过「旁置损坏注册表」恢复：\n"
+                        + "· 原文件不会被删除，只会改名保留为 <原文件名>.corrupt.<时间戳>；\n"
+                        + "· 随后新建一张空注册表，之后可正常注册新人员；\n"
+                        + "· 完成后界面会给出原文件的完整路径，供你事后手工取回。")
+                .setPositiveButton("旁置损坏注册表…", (d, w) -> confirmQuarantineRegistry())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 旁置操作的**二次确认**：恢复后新表为空，须用户显式确认，默认不执行。 */
+    private void confirmQuarantineRegistry() {
+        new AlertDialog.Builder(this)
+                .setTitle("确认旁置损坏注册表？")
+                .setMessage("将把当前注册表文件改名旁置并新建空表。\n"
+                        + "原文件不会被删除，但新建的空表不包含任何已注册人员"
+                        + "（损坏内容无法自动还原）。\n\n确认继续？")
+                .setPositiveButton("确认旁置", (d, w) -> quarantineRegistry())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 后台执行旁置恢复；成功后弹窗给出旁置文件路径，失败经既有错误通道（Result.status/message）如实上报。 */
+    private void quarantineRegistry() {
+        new Thread(() -> {
+            final AndroidEnrollmentRepository.Result result =
+                    enrollmentRepository().quarantineCorruptRegistry();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (result.isOk()) {
+                    new AlertDialog.Builder(this)
+                            .setTitle("已旁置损坏注册表")
+                            .setMessage(result.message)
+                            .setPositiveButton("知道了", null)
+                            .show();
+                    refreshModelManagementStatus();
+                } else {
+                    Toast.makeText(this, "恢复失败（" + result.status + "）：" + result.message,
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "FaceRegistryRecover").start();
     }
 
     /** 删除二次确认（不可逆操作必须显式确认）。 */
