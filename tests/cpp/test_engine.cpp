@@ -509,6 +509,60 @@ TEST(EngineTest, RealtimeSingleFacePartialBoxYieldsOneIdentity) {
     EXPECT_EQ(cv::countNonZero(diff.reshape(1)), 0);
 }
 
+// ★ 2026-09-28 新增（外部审查 [P2]「异常检测框可触发整数转换或加法溢出」的**判别用例**）。
+// 缺陷：修复前本函数只挡 NaN/Inf 就把 float **直接**转 int（C++ `[conv.fpint]`：截断值不可表示即
+//   **UB**），而 SCRFD 的 distance/delta 回归分量**无上界** ⇒ 畸形 / 敌意模型可给出 ~1e9 量级的
+//   **有限**值。修复为「先夹进帧边界、后转换」（空帧时夹进 ±INT_MAX/2，保证端点差也可表示）。
+// 判别力（**已按对抗性核查更正**，初版注释不成立，勿按初版读）：初版写「修复前 `static_cast<int>(3e9f)`
+//   得到 INT_MIN ⇒ bbox.x 明显不同 ⇒ 可判别」——**该推理错的不是事实而是「能否被观测到」**：
+//   旧实现下这四个框经下游 `FacePostProcessor` 裁剪后宽度全为 0、被**全部丢弃** ⇒ `faces` 为空
+//   ⇒ 下面那个 `for` 循环**一次都不执行** ⇒ 所有断言**恒真**、用例在旧实现上照样绿（判别力为零）。
+//   ⇒ **真正的判别点是「有没有框活下来」**，故下面补 `ASSERT_GE(faces.size(), 1u)` 作前置锚。
+//   （对抗性代理用独立探针实测：旧实现 survivors=0 / 新实现 survivors=2。）
+TEST(EngineTest, RealtimeOutOfRangeBoxesAreClampedNotUb) {
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(0, 0, 0));
+    const int W = frame.cols;
+    const int H = frame.rows;
+
+    const auto mk = [](float x, float y, float w, float h, float s) {
+        RealtimeFaceBox b;
+        b.x = x;
+        b.y = y;
+        b.width = w;
+        b.height = h;
+        b.score = s;
+        return b;
+    };
+    const std::vector<RealtimeFaceBox> boxes = {
+        mk(3e9f, 10.0f, 100.0f, 100.0f, 0.9f),    // x 远超 int 域
+        mk(-3e9f, 10.0f, 100.0f, 100.0f, 0.8f),   // x 远低于 int 域
+        mk(-2e9f, 10.0f, 4e9f, 100.0f, 0.7f),     // 端点差 6e9（> INT_MAX）
+        mk(10.0f, 10.0f, 3e9f, 3e9f, 0.6f),       // 宽高巨大
+    };
+    const auto faces = Engine::postProcessRealtimeBoxes(frame, boxes);
+
+    // ★ 前置锚（本用例**唯一的判别点**，见方法上方说明）：修复后必须**有框活下来**。
+    //   旧实现下这四个框会被下游裁剪成宽度 0 而**全部丢弃** ⇒ 本断言红；若删掉它，下面的循环
+    //   在旧实现上根本不执行、整条用例退化为恒真（这正是本用例初版的缺陷）。
+    ASSERT_GE(faces.size(), 1u)
+        << "修复后极值框应被夹进帧内并存活；若为 0 条，说明它们仍被下游丢弃（= 未夹取）";
+
+    // 不断言 NMS 之后剩几条（极值框之间的 IoU 关系不稳定、不是本用例的判别对象），
+    // 只断言**每一条**都落在帧内 —— 这正是「先约束后转换」的语义。
+    for (const auto& f : faces) {
+        EXPECT_GE(f.bbox.x, 0);
+        EXPECT_GE(f.bbox.y, 0);
+        EXPECT_LE(f.bbox.x, W);
+        EXPECT_LE(f.bbox.y, H);
+        EXPECT_GE(f.bbox.width, 0);
+        EXPECT_GE(f.bbox.height, 0);
+        // 用 64 位算端点，避免**测试自身**在未修复的产物上溢出
+        EXPECT_LE(static_cast<long long>(f.bbox.x) + f.bbox.width, W);
+        EXPECT_LE(static_cast<long long>(f.bbox.y) + f.bbox.height, H);
+    }
+}
+
 // 输入帧不被修改：实时路径开启翻转 + 检测框绘制时，输入帧像素必须保持原样
 // （翻转输出新 Mat；绘制前 clone 发布帧）。
 TEST(EngineTest, RealtimeProcessingDoesNotModifyInputFrame) {

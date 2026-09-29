@@ -404,6 +404,48 @@ TEST(ScrfdDecoderTest, DistanceVsDeltaDiffer) {
     EXPECT_NE(delta[0].bbox.width, dist[0].bbox.width);
 }
 
+// ★ 2026-09-28 新增（外部审查 [P2] 整数安全的**判别用例**；最小构造由 S4 的变异扫掠给出并实测）。
+// 背景：本批初版在 `mapToIntClamped` 里把 `std::lround` 误写成 `static_cast<int>`（**向零截断**），
+//   使检测框坐标**静默**变化最多 1px。而当时**无任何用例可判别** —— 本文件既有断言输入**全是整数**
+//   （截断与就近取整同值），唯一含小数的 delta 用例只断言「两个 width 不相等」，**截断与取整两条都过**；
+//   S4 的变异扫掠实证：把修复去掉后本文件 26/26 全绿。
+// 判别点：让端点落在**半整数附近**，截断与就近取整给出不同的整数。
+// 判别力（实测）：把 `mapToIntClamped` 改回 `static_cast<int>` ⇒ 本用例必红（x 由 7 变 6）。
+TEST(ScrfdDecoderTest, DistanceModeRoundsToNearestNotTruncate) {
+    // opt100：origW/H=100、pad=0、scale=1、stride[0]=8 ⇒ mapX/mapY 仅去 pad，端点值可直接推。
+    ScrfdDecodeOptions od = opt100();
+    od.mode = DecodeMode::kDistance;
+
+    const int fw = 2;
+    const int fh = 2;
+    std::vector<float> sv(static_cast<std::size_t>(fw * fh), 0.0f);
+    std::vector<float> bv(4u * static_cast<std::size_t>(fw * fh), 0.0f);
+    std::vector<float> kv(10u * static_cast<std::size_t>(fw * fh), 0.0f);
+    const std::size_t anchor = 1u * fw + 1u;  // (fx=1, fy=1) ⇒ 中心 = 1*stride = 8
+    sv[anchor] = 0.9f;
+    // x1 = 8 - 0.175*8 = 6.6 → 就近 7 / 截断 6
+    bv[anchor * 4 + 0] = 0.175f;
+    bv[anchor * 4 + 1] = 0.175f;
+    // x2 = 8 + 0.200*8 = 9.6 → 就近 10 / 截断 9
+    bv[anchor * 4 + 2] = 0.200f;
+    bv[anchor * 4 + 3] = 0.200f;
+
+    ScrfdTensor score[3], bbox[3], kps[3];
+    for (int i = 0; i < 3; i++) score[i] = bbox[i] = kps[i] = ScrfdTensor{};
+    score[0] = t(sv, 1, fw, fh);
+    bbox[0] = t(bv, 4, fw, fh);
+    kps[0] = t(kv, 10, fw, fh);
+
+    std::string err;
+    auto dets = ScrfdDecoder::decode(score, bbox, kps, od, err);
+    ASSERT_EQ(dets.size(), 1u) << err;  // 前置锚：必须真的产出 1 条，否则本用例退化为恒真
+    // ★ 核心判据：**就近取整**。向零截断会给出 6 ⇒ 本断言红。
+    EXPECT_EQ(dets[0].bbox.x, 7) << "x1=6.6 应就近取整为 7；为 6 说明退回了向零截断";
+    EXPECT_EQ(dets[0].bbox.y, 7) << "y1=6.6 应就近取整为 7";
+    EXPECT_EQ(dets[0].bbox.width, 3) << "10-7=3（截断实现会给 9-6=3，宽度巧合相同，故上面两条才是判别点）";
+    EXPECT_EQ(dets[0].bbox.height, 3);
+}
+
 // distance + dataLen 越界：声明 N*4N*10N 但数据不足 → 拒绝
 TEST(ScrfdDecoderTest, DistanceDataLenShortRejected) {
     ScrfdTensor score[3], bbox[3], kps[3];

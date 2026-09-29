@@ -1281,16 +1281,44 @@ std::vector<pipeline::DetectedFace> Engine::postProcessRealtimeBoxes(
             !std::isfinite(b.width) || !std::isfinite(b.height)) {
             continue;
         }
-        // 半开区间取整：下界 floor，上界 ceil，保证 x2-x1 覆盖原始浮点范围（与任务1
-        // mapRect 半开区间语义一致，避免边缘框的 1px 漂移）。
-        const float x1f = std::floor(b.x);
-        const float y1f = std::floor(b.y);
-        const float x2f = std::ceil(b.x + b.width);
-        const float y2f = std::ceil(b.y + b.height);
+        // ★ 2026-09-28 修（外部审查 [P2]「异常检测框可触发整数转换或加法溢出」+ 独立复核）：
+        //   原实现只挡 NaN/Inf，随后**直接**把 float 转 int。按 C++ `[conv.fpint]`，截断值**不可表示**
+        //   即 **UB**；而 SCRFD 的 distance/delta 回归分量**无上界**（畸形 / 敌意模型可给出 ~1e9 量级的
+        //   **有限**值）⇒ 这条 UB 是真实可达的，不只是理论问题。
+        //   修法：**先约束、后转换**（与 `FaceAlign.cpp` 的 `clampRectToImage` 同一范式）：
+        //     ① 帧非空时，端点各自夹进 `[0, frame.cols]` / `[0, frame.rows]`（全程 double，不溢出）；
+        //     ② 帧为空（cols/rows <= 0）时**不夹进帧边界**，以对齐 `FacePostProcessor::keptIndices`
+        //        的 `clipToFrame == false` 语义（那里同样不裁剪）—— 但**仍**把端点夹进
+        //        `±INT_MAX/2`，因为下面要把端点差转成 int，而「端点各自在 int 域内」**不足以**
+        //        保证差值也在（如 ±2e9 相减）；限制在半个 int 域即让差值必然可表示。
+        //   ⚠️ 该分支的保证**只有「无 UB」这一条，不含「框不被丢」**（对抗性代理 A2 给出反例）：
+        //      若两端点都落在 ±INT_MAX/2 之外，夹取后二者**同值** ⇒ 下面 `x2d - x1d == 0` ⇒
+        //      宽度 0，而下游 `keptIndices`（`FacePostProcessor.cpp` 的 `f.bbox.width <= 0 → continue`）
+        //      会**丢弃**该框 ⇒ 这一支的框数是**会变**的，不要据本注释断言「不丢框」。
+        //   ⚠️ 保持既有语义：仍是**半开区间**（下界 floor、上界 ceil），**不要**改成 `lround`
+        //      —— 那会破坏既有注释固化的「避免边缘框 1px 漂移」约定。
+        constexpr double kIntHalf = 1073741823.0;  // = INT_MAX / 2（写成字面量：免引 <limits> 到本 TU）
+        double x1d = std::floor(static_cast<double>(b.x));
+        double y1d = std::floor(static_cast<double>(b.y));
+        double x2d = std::ceil(static_cast<double>(b.x) + static_cast<double>(b.width));
+        double y2d = std::ceil(static_cast<double>(b.y) + static_cast<double>(b.height));
+        if (frame.cols > 0 && frame.rows > 0) {
+            const double maxX = static_cast<double>(frame.cols);
+            const double maxY = static_cast<double>(frame.rows);
+            x1d = std::min(std::max(x1d, 0.0), maxX);
+            y1d = std::min(std::max(y1d, 0.0), maxY);
+            x2d = std::min(std::max(x2d, 0.0), maxX);
+            y2d = std::min(std::max(y2d, 0.0), maxY);
+        } else {
+            x1d = std::min(std::max(x1d, -kIntHalf), kIntHalf);
+            y1d = std::min(std::max(y1d, -kIntHalf), kIntHalf);
+            x2d = std::min(std::max(x2d, -kIntHalf), kIntHalf);
+            y2d = std::min(std::max(y2d, -kIntHalf), kIntHalf);
+        }
         pipeline::DetectedFace df;
-        df.bbox = cv::Rect(static_cast<int>(x1f), static_cast<int>(y1f),
-                           std::max(0, static_cast<int>(x2f - x1f)),
-                           std::max(0, static_cast<int>(y2f - y1f)));
+        df.bbox = cv::Rect(static_cast<int>(x1d), static_cast<int>(y1d),
+                           std::max(0, static_cast<int>(x2d - x1d)),
+                           std::max(0, static_cast<int>(y2d - y1d)));
         df.confidence = b.score;  // 检测置信度；身份命中后覆盖为相似度
         df.identityId = "Unknown";
         df.isAuthenticated = false;
