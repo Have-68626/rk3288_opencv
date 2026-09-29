@@ -42,6 +42,17 @@ interface AppStore {
   serverSettings: ServerSettingsState
   refreshServerSettings: (opts?: { silent?: boolean }) => Promise<boolean>
   updateServerSettings: (patch: Partial<ServerSettingsDoc>) => Promise<void>
+
+  // ★ 2026-09-28 新增（外部审查 [P2]「Web 后端断线后仍可能显示『已连接』」+ 独立复核）：
+  //   顶栏徽标原先**只**由 `serverSettings.status` 驱动，而该状态只在「挂载时一次 + 用户手动刷新」
+  //   时更新；`GET /api/v1/health` 的 15s 周期检查结果只活在 `DegradedBanner` 的**局部** state 里
+  //   ⇒ 后端断线后徽标会**无限期**保持「已连接」（而 `docs/windows-web-spa/feature_parity.md`
+  //   明写顶栏状态区就是健康检查的入口 ⇒ 这是**承诺与实现的错配**，不只是口味问题）。
+  //   这里让横幅把「最近一次健康检查的判定」回报进来，顶栏据此降级。
+  //   取值：`undefined` = 尚无判定（**不干涉**既有行为）；`true` = 最近一次健康检查成功；
+  //        `false` = 失败/不可达。
+  healthProbe: boolean | undefined
+  setHealthProbe: (ok: boolean | undefined) => void
 }
 
 const Ctx = createContext<AppStore | null>(null)
@@ -58,6 +69,9 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   // 过期响应（逆序完成的旧请求）只丢弃状态写入与提示，保证仅最新 generation 能覆盖状态，
   // 避免“慢 GET 后完成覆盖快 GET/PUT 结果”的竞态。
   const settingsGenRef = useRef(0)
+
+  // 最近一次**健康检查**的判定（见接口处说明）。由 `DegradedBanner` 的轮询回报；`undefined` = 尚无判定。
+  const [healthProbe, setHealthProbe] = useState<boolean | undefined>(undefined)
 
   const setPrefs = (patch: Partial<LocalPrefs>) => {
     setPrefsState((prev) => {
@@ -148,9 +162,11 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       setPrefs,
       serverSettings,
       refreshServerSettings,
+      healthProbe,
+      setHealthProbe,
       updateServerSettings,
     }),
-    [prefs, serverSettings, refreshServerSettings, updateServerSettings],
+    [prefs, serverSettings, refreshServerSettings, updateServerSettings, healthProbe],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
