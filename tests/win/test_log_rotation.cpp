@@ -802,6 +802,96 @@ bool test_structured_logger_reopen_recovers_and_paths_independent() {
     return true;
 }
 
+// ★ 2026-09-29 新增：「每路**独立**重试窗口」的**判别用例**（S4 登记：此前零覆盖）。
+//
+// 缺陷形态（本批初版，已被改掉）：`ensureOpenLocked` 的两路**共用**一个 `nextAttempt` 成员
+//   ⇒ 任一路失败都会把**另一路**（健康但已关闭）也挡回最多 5000ms，与「两路各自独立」的自述不符。
+// 零覆盖的成因（S4 指出）：既有用例 test_structured_logger_reopen_recovers_and_paths_independent
+//   只让 csv 一路失败，**健康的那一路**（jsonl）命中 `ensureOpenLocked` 的 `is_open() && good()`
+//   早退、**根本不读窗口** ⇒ 共用窗口与独立窗口在该构造下读数完全相同，无从判别。
+//
+// 判别构造（**不等 5000ms 窗口过期、不依赖线程交错、不依赖文件锁/权限/杀软**；两段合起来覆盖两个方向）：
+//   ① 正向（csv 失败不得挡 jsonl）：把 csv / jsonl **两路都用同名目录占位** ⇒ `open()` 对两路都失败、
+//      两流均关闭、两窗口均空（`open()` 不设窗口）；随后**只移除 jsonl 的占位目录**，再 append 一次：
+//        · 独立窗口：csv 尝试→失败（设 csv 窗口），jsonl 尝试→**成功**（jsonl 窗口仍空）⇒ jsonl 增长；
+//        · 共用窗口：csv 尝试→失败（设**共用**窗口），jsonl 因 now < 共用窗口被挡⇒**不尝试**⇒ jsonl 不增长。
+//   ② 反向（jsonl 失败不得挡 csv）：只把 jsonl 用目录占位（csv 可用）⇒ open() 后 csv 开、jsonl 关
+//      （jsonl 窗口仍空）；append 一次让 jsonl 失败（设 jsonl 窗口，csv 正常写）；`close()` 关掉两路
+//      （**不改窗口**）；移除 jsonl 占位；再 append 一次：
+//        · 独立窗口：csv 窗口仍空 ⇒ csv **立即**重开续写（jsonl 被自身窗口挡住，与本断言无关）；
+//        · 共用窗口：csv 被 jsonl 的窗口挡住、不尝试 ⇒ csv 不增长。
+// ⚠️ 前提锚（各段 return false 处）不可省：必须确证「预期失败的那一路确实处于关闭态且尝试过」，
+//    否则会退化成恒真断言。本用例刻意**不引入任何生产侧可注入面**——所需交错恰好落在同一次
+//    / 相邻两次 append 内，无需等待窗口过期。
+bool test_structured_logger_reopen_windows_are_per_path() {
+    TempLogDir tmp("reopen_windows_per_path");
+    const auto dir = tmp.path();
+    const auto csvPath = dir / "recognition.csv";
+    const auto jsonlPath = dir / "recognition.jsonl";
+    std::error_code ec;
+    bool ok = true;
+
+    // ── 段①：csv 失败不得挡住 jsonl（正向）──
+    if (!std::filesystem::create_directories(csvPath, ec)) return false;    // 占位：csv 必打不开
+    if (!std::filesystem::create_directories(jsonlPath, ec)) return false;  // 占位：jsonl 必打不开
+    {
+        rk_win::StructuredLogger logger;
+        // 前提锚：两路都打不开 ⇒ open 返回 false ⇒ 两流均关闭、两窗口均空（open 不设窗口）。
+        if (logger.open(dir, /*maxBytes=*/0, /*maxRollFiles=*/0)) {
+            std::cerr << "[reopen_windows_per_path] 段①前提不成立：两路同名目录占位下 open() 竟返回 true"
+                      << std::endl;
+            return false;
+        }
+        std::filesystem::remove_all(jsonlPath, ec);  // 只放开 jsonl（csv 仍被目录挡住）
+        if (pathExists(jsonlPath)) return false;     // 占位必须真的移除
+
+        logger.append(makeFrameEntry("FWD", "x"));
+        // ★ 主判据：jsonl 必须已被**同一次 append** 重开并写入（csv 的失败窗口不得挡住它）。
+        if (readFile(jsonlPath).empty()) {
+            std::cerr << "[reopen_windows_per_path] 段①：csv 的重开失败挡住了 jsonl ——"
+                         "两路疑似**共用**同一个重试窗口（独立窗口下 jsonl 应在同一次 append 内被重开）"
+                      << std::endl;
+            ok = false;  // 不短路：段②仍须执行，使两方向都可被观测
+        }
+    }
+    std::filesystem::remove_all(csvPath, ec);    // 清理占位，供段②复用同一目录
+    std::filesystem::remove_all(jsonlPath, ec);
+
+    // ── 段②：jsonl 失败不得挡住 csv（反向）──
+    if (!std::filesystem::create_directories(jsonlPath, ec)) return false;  // 只占位 jsonl
+    {
+        rk_win::StructuredLogger logger;
+        // csv 可打开、jsonl 打不开（jsonl 窗口仍空）。
+        (void)logger.open(dir, /*maxBytes=*/0, /*maxRollFiles=*/0);
+        logger.append(makeFrameEntry("REV1", "x"));  // jsonl 尝试→失败（设 jsonl 窗口）；csv 正常写
+        // 前提锚：jsonl 必须真的失败过一次（否则共用/独立窗口读数相同，无判别力）。
+        if (logger.reopenFailCount() == 0) {
+            std::cerr << "[reopen_windows_per_path] 段②前提不成立：jsonl 未发生重开失败（reopenFailCount==0）"
+                      << std::endl;
+            return false;
+        }
+        const auto csvSizeBefore = sizeOf(csvPath);
+        if (csvSizeBefore == 0) {
+            std::cerr << "[reopen_windows_per_path] 段②前提不成立：被占位期间的 csv 未写出任何内容"
+                      << std::endl;
+            return false;
+        }
+
+        logger.close();                              // 关掉两路（**不改窗口**：csv 窗口仍空、jsonl 窗口仍在前 5s 内）
+        std::filesystem::remove_all(jsonlPath, ec);  // 放开 jsonl（本段只观察 csv 是否被挡）
+
+        logger.append(makeFrameEntry("REV2", "y"));
+        // ★ 主判据：csv 必须已被**同一次 append** 重开并续写（jsonl 的失败窗口不得挡住它）。
+        if (sizeOf(csvPath) <= csvSizeBefore) {
+            std::cerr << "[reopen_windows_per_path] 段②：jsonl 的重开失败挡住了 csv ——"
+                         "两路疑似**共用**同一个重试窗口（独立窗口下 csv 应在同一次 append 内被重开）"
+                      << std::endl;
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 bool test_render_metrics_logger_rotates_and_caps_generations() {
     TempLogDir tmp("render_rotate");
     const std::filesystem::path dir = tmp.path();

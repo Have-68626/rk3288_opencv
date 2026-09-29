@@ -380,6 +380,16 @@ target_compile_definitions(win_unit_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 #    功能上 CMake 会在生成期去重（每目标的 PreprocessorDefinitions 只出现一次），故**无行为影响**；
 #    但注释的可核性会被破坏 ⇒ 改这段时请 `grep -c` 数一遍。
 target_compile_definitions(win_unit_tests PRIVATE RK_TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+# 测试接缝编译期开关（FACE-CLEAN-019 同族，2026-09-29 项 B）：WinJsonConfigStore 的
+# setReloadTestHookForTesting / setRotateTestHookForTesting 两枚 std::function setter 与成员**仅**在
+# 定义了 RK_ENABLE_TEST_SEAMS 时参与编译（见 src/win/include/rk_win/WinJsonConfig.h）。其唯一测试调用点
+# tests/win/test_win_json_config.cpp 属本 target，故只在此定义。生产 target（win_local_service /
+# win_camera_face_recognition）不定义 ⇒ 两个 setter 与成员在生产二进制里**不存在**，误用是**编译错误**。
+# 使用边界由 cmake/core.cmake 的 rk_assert_test_seam_boundary() 双向钉死（whitelist 已含 win_unit_tests）。
+# ⚠️ 复用 RK_ENABLE_TEST_SEAMS（而非自创宏）是刻意的：本仓只有这一套“测试接缝宏 + 配置期边界断言”机制，
+#    照既有范式可让边界断言自动覆盖本 target，无需另写一套。副作用：该宏在 core_gtest_tests 上原本还
+#    改 Engine 的 ABI（虚析构），而本 target 不编译 Engine.cpp、也不使用 Engine ⇒ 无该影响。
+target_compile_definitions(win_unit_tests PRIVATE RK_ENABLE_TEST_SEAMS)
 if(MSVC)
     target_compile_options(win_unit_tests PRIVATE /utf-8)
 endif()

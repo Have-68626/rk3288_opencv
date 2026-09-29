@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdio>
 #include <chrono>
 #include <cstdint>
@@ -1756,4 +1757,303 @@ bool test_config_write_path_startup_warns_not_rejected() {
     if (store.current().recognition.enrollSamples != 37) return false;
     if (!std::filesystem::exists(cfgPath)) return false;
     return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 2026-09-29 新增（项 2）：「热重载隔离竞态」的**确定性判别用例**（S4：该修复此前零判别锚 ——
+//   改回锁外/去掉复核 ⇒ 全绿，因纯黑盒无法确定性观测交错）。
+//
+// 被钉的修复：把「复核 mtime 未变 + quarantineConfigFile」放进**同一个 mu_ 临界区**，使「读坏文件 →
+//   并发 PUT 写盘合法 B 并提交 cfg_=B → watch 线程据此复核」的交错下**不再隔离刚写好的合法 B**。
+// 判别构造（借**测试接缝** setReloadTestHookForTesting 制造交错）：接缝位于「解析被拒之后、重新取锁
+//   复核 mtime 之前」，此刻**未持 mu_** ⇒ 钩子内可同步调 updateFromJsonBody（合法 PUT）。
+//   · 修复后：复核 mtime 发现 PUT 已改文件 ⇒ **放弃隔离**、outErr 如实说明、无 corrupt 产物、磁盘=PUT 的配置。
+//   · 变异回修复前（**去掉 mtime 复核** / 把隔离移回锁外）：隔离会把 PUT 写的合法 B 改名成
+//     config.json.corrupt.* ⇒ 本例 (b)「无 corrupt 产物」与 (c)「outErr 不谎称隔离」两条变红。
+bool test_config_reload_isolation_skips_when_put_races() {
+    const auto dir = makeTempDir("reload_isolation_race");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    // 接缝：在「解析被拒之后、重新取锁复核之前」同步触发**一次**合法 PUT（改一个可判别字段）。
+    //   ⚠️ 只触发一次（atomic 去重）：修复后的重试/复核路径可能多次经过此处，反复改文件会掩盖结果。
+    std::atomic<bool> fired{false};
+    store.setReloadTestHookForTesting([&store, &fired]() {
+        if (fired.exchange(true)) return;
+        (void)store.updateFromJsonBody("{\"camera\":{\"width\":777}}");  // 此刻未持 mu_ ⇒ 不自锁
+    });
+
+    // 外部把 config.json 改成**坏内容**（JSON 可解析、schema 拒绝：minFaceSizePx 期望 number）并拨快 mtime。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["minFaceSizePx"] = rk_win::JsonValue::makeString("80");
+    const std::string bad = rk_win::toJsonString(doc, true);
+    if (!writeAllText(cfgPath, bad)) return false;
+    // 使 wt（复核读到的坏文件 mtime）明显**晚于** PUT 的写入时刻，避开文件系统时间戳粒度盲区。
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+    store.setReloadTestHookForTesting(nullptr);  // 幂等收尾，避免污染后续用例
+
+    if (applied) return false;  // 坏内容不得被应用
+    // (a) 磁盘上的配置必须是 PUT 写入的那份（camera.width == 777）。
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    rk_win::JsonValue backDoc;
+    std::string berr;
+    if (!rk_win::parseJson(back, backDoc, berr) || !backDoc.isObject()) return false;
+    const rk_win::JsonValue* cam = backDoc.find("camera");
+    if (!cam || !cam->isObject()) return false;
+    const rk_win::JsonValue* wv = cam->find("width");
+    if (!wv || !wv->isNumber() || wv->n != 777) {
+        std::cerr << "[reload_isolation_race] 磁盘 camera.width 非 PUT 写入的 777"
+                     "（隔离复核对并发 PUT 的处置偏离）" << std::endl;
+        return false;
+    }
+    // (b) **没有**生成隔离产物（目录清单里不得出现 config.json.corrupt.*）。
+    const auto corrupts = listCorruptConfigs(dir);
+    if (!corrupts.empty()) {
+        std::cerr << "[reload_isolation_race] 生成了 " << corrupts.size()
+                  << " 个隔离产物（把刚 PUT 成功的合法配置当成坏文件改名了）" << std::endl;
+        return false;
+    }
+    // (c) outErr **不谎称**隔离了坏配置。
+    if (err.find("已隔离") != std::string::npos) {
+        std::cerr << "[reload_isolation_race] outErr 谎称隔离: " << err << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 2026-09-29 新增（项 3）：rotateKeyAndReencrypt 的「快照在锁外」竞态判别用例（A2 查出、本批修复）。
+//
+// 缺陷（修复前）：快照在锁外取、序列化也在锁外，只有「写盘 + 提交 cfg_」在 mu_ 内 ⇒ 并发 PUT 成功提交
+//   的新配置会被 rotate 的**旧快照**静默覆盖（磁盘与内存一起退回旧值）。
+// 修复：锁内记 generation_，写盘前在同一临界区复核未变；变了（期间有 PUT / 热重载提交）则恢复旧密钥、
+//   重取快照重试（有界）；耗尽返回 409。
+// 判别构造：测试接缝 setRotateTestHookForTesting 在「取快照之后、写盘之前」同步触发
+//   一次合法 PUT（此刻未持 mu_；刻意在密钥替换之前，否则 PUT 会因 postUrl 密文与密钥错配而解析失败）。
+//   断言 PUT 的配置在**内存与磁盘两侧**都存活。
+//   · 修复后：rotate 复核 generation 发现变化 ⇒ 重取快照（含 PUT 的 width=999）⇒ 写盘 999、内存 999。
+//   · 变异回旧序（快照在锁外且不复核 generation）：rotate 把旧快照 width=800 写回 ⇒ 磁盘/内存退 800 ⇒ 红。
+bool test_config_rotate_does_not_clobber_concurrent_put() {
+    const auto dir = makeTempDir("rotate_no_clobber_put");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+    if (store.current().camera.width != 800) return false;
+
+    // 接缝：只触发一次合法 PUT（width=999），制造「rotate 取快照 → 并发 PUT → rotate 写盘」交错。
+    std::atomic<bool> fired{false};
+    store.setRotateTestHookForTesting([&store, &fired]() {
+        if (fired.exchange(true)) return;
+        (void)store.updateFromJsonBody("{\"camera\":{\"width\":999}}");  // 此刻未持 mu_ ⇒ 不自锁
+    });
+
+    const auto res = store.rotateKeyAndReencrypt();
+    store.setRotateTestHookForTesting(nullptr);
+
+    if (!res.ok) {
+        std::cerr << "[rotate_no_clobber_put] rotate 返回失败: code=" << res.code << " msg=" << res.message
+                  << "（修复后应经代次复核重取快照后成功）" << std::endl;
+        return false;
+    }
+    // (a) 内存配置 = PUT 的 width=999（旧序会退回 800）。
+    if (store.current().camera.width != 999) {
+        std::cerr << "[rotate_no_clobber_put] 内存 camera.width=" << store.current().camera.width
+                  << "（期望 999）——rotate 的旧快照覆盖了已提交的 PUT" << std::endl;
+        return false;
+    }
+    // (b) 磁盘配置 = width=999（与内存语义一致）。
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    rk_win::JsonValue backDoc;
+    std::string berr;
+    if (!rk_win::parseJson(back, backDoc, berr) || !backDoc.isObject()) return false;
+    const rk_win::JsonValue* cam = backDoc.find("camera");
+    if (!cam || !cam->isObject()) return false;
+    const rk_win::JsonValue* wv = cam->find("width");
+    if (!wv || !wv->isNumber() || wv->n != 999) {
+        std::cerr << "[rotate_no_clobber_put] 磁盘 camera.width != 999 —— 磁盘被旧快照覆盖或与内存不一致"
+                  << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 2026-09-29 新增（项 A）：**密钥/密文同源不变量** —— rotate 与 PUT 交错后，盘上的 config.json 必须
+//   能用盘上的密钥文件成功解密并解析（往返）。
+//
+// 被钉的不变量（承重，直接钉住而非实现细节）：**盘上的 config.json 恒能用盘上的密钥文件解开**。
+//   判据 = 新建一个**全新** WinJsonConfigStore 去装载盘上的文件——只有私钥能解开密文时才会成功，
+//   否则 parseAndValidateSettingsDoc 解密失败 ⇒ 被隔离 + 降级启动（configRejectedOnLoad()==true）
+//   ⇒ 断言 (b) 变红。故本用例**不**依赖任何实现细节（不提 generation_、不提锁）。
+// 修复前的失效模式：rotate 的「新密钥文件写入」在 mu_ 之外，而 PUT 的加密（buildSettingsJson →
+//   ensureOrLoadKey 每次重读密钥文件）也在 mu_ 之外 ⇒ 某 PUT 可在 rotate 写入新密钥**之后**读取密钥
+//   并加密 config.json，随后 rotate 的代次复核发现变化 ⇒ 冲突分支 restoreOldKey() 把**旧**密钥写回
+//   ⇒ 磁盘密钥=旧、磁盘密文=新 ⇒ 下次启动解密失败、用户设置静默丢失。
+// 交错构造（可确定性构造的一种）：rotate 钩子在「取快照后、替换密钥之前」同步触发**一次**合法 PUT
+//   （同时改 camera.width 与**敏感字段** poster.postUrl ⇒ 覆盖「重加密密文」路径）。修复后 rotate
+//   经代次复核重取快照后成功；磁盘与内存都应留有 PUT 的值，且**新密钥能解开新密文**。
+bool test_config_rotate_and_put_keep_disk_key_matched() {
+    // 清空会改写配置解析结果的环境覆盖项（与既有用例一致，保证确定性）。
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("rotate_put_invariant");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+
+    const std::string putUrl = "https://race.example/api/faces";
+    std::atomic<bool> fired{false};
+    store.setRotateTestHookForTesting([&store, &fired, &putUrl]() {
+        if (fired.exchange(true)) return;
+        (void)store.updateFromJsonBody(
+            "{\"camera\":{\"width\":997},\"poster\":{\"postUrl\":\"" + putUrl + "\"}}");
+    });
+
+    const auto res = store.rotateKeyAndReencrypt();
+    store.setRotateTestHookForTesting(nullptr);
+    if (!res.ok) {
+        std::cerr << "[rotate_put_invariant] rotate 返回失败: code=" << res.code << std::endl;
+        return false;
+    }
+
+    // (a) 内存：PUT 的值存活（旧快照被代次复核拦下）。
+    if (store.current().camera.width != 997) return false;
+    if (store.current().poster.postUrl != putUrl) return false;
+
+    // (b) ★ 不变量：全新 store 必须能装载盘上的 config.json（唯一判据 = 私钥能解开密文）。
+    {
+        rk_win::WinJsonConfigStore reloaded;
+        std::string warn2;
+        reloaded.initialize(warn2);
+        if (reloaded.configRejectedOnLoad()) {
+            std::cerr << "[rotate_put_invariant] 新密钥解不开盘上密文（不变量破坏）：" << warn2 << std::endl;
+            return false;
+        }
+        if (!reloaded.initQuarantineFileName().empty()) return false;
+        if (reloaded.current().camera.width != 997) return false;
+        if (reloaded.current().poster.postUrl != putUrl) return false;
+    }
+    if (!listCorruptConfigs(dir).empty()) return false;
+    return true;
+}
+
+// ★ 2026-09-29 新增（项 A）：**409 重试耗尽路径** + 不变量（上一轮明确登记为**零覆盖**）。
+//
+// 构造：rotate 钩子**每次 attempt 都**触发一次合法 PUT（不设去重 ⇒ 反复改 generation）⇒ rotate 每轮
+//   代次复核都发现变化 ⇒ kMaxRotateAttempts 耗尽 ⇒ 返回**可见失败码**（409 / code=conflict）。
+// 判别点：
+//   (a) 返回码可见（此路径此前无任何运行时判据）；
+//   (b) 事后的**不变量仍成立** —— 全新 store 必须能装载盘上的 config.json。修复后冲突分支**不写盘**
+//       ⇒ 密钥/密文同源保持；若冲突分支改成「写新密钥（而不写 config.json）」或去掉「冲突不写盘」的
+//       纪律 ⇒ 磁盘密钥=新、密文=旧 ⇒ 全新 store 解密失败 ⇒ (b) 红。
+bool test_config_rotate_conflict_exhaustion_keeps_invariant() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("rotate_conflict_exhaust");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+
+    // 每次 attempt 都触发一次 PUT（**无**去重）：rotate 每轮都会看到 generation 变化 ⇒ 有界重试耗尽。
+    std::atomic<int> putCount{0};
+    store.setRotateTestHookForTesting([&store, &putCount]() {
+        const int n = putCount.fetch_add(1) + 1;
+        (void)store.updateFromJsonBody("{\"camera\":{\"width\":" + std::to_string(800 + n) + "}}");
+    });
+
+    const auto res = store.rotateKeyAndReencrypt();
+    store.setRotateTestHookForTesting(nullptr);
+
+    // (a) 可见失败码：耗尽 ⇒ 409 / conflict（而非静默成功或旧快照覆盖）。
+    if (res.ok) {
+        std::cerr << "[rotate_conflict_exhaust] 期望失败但 rotate 返回成功" << std::endl;
+        return false;
+    }
+    if (res.httpStatus != 409) {
+        std::cerr << "[rotate_conflict_exhaust] 期望 409 但得到 " << res.httpStatus << std::endl;
+        return false;
+    }
+    if (res.code != "conflict") return false;
+
+    // (b) ★ 不变量：全新 store 必须能装载盘上的 config.json（密钥与密文同源）。
+    {
+        rk_win::WinJsonConfigStore reloaded;
+        std::string warn2;
+        reloaded.initialize(warn2);
+        if (reloaded.configRejectedOnLoad()) {
+            std::cerr << "[rotate_conflict_exhaust] 耗尽后盘上密文无法用盘上密钥解开：" << warn2 << std::endl;
+            return false;
+        }
+        if (!reloaded.initQuarantineFileName().empty()) return false;
+        if (!listCorruptConfigs(dir).empty()) return false;
+    }
+    return true;
+}
+
+// ★ 2026-09-29 新增（项 A）：普通 rotate（无并发）后敏感字段往返 —— 新密钥必须能解开 rotate 写下的密文。
+// 直接钉「rotate 结束后磁盘密钥/密文同源」：PUT 一个真实 postUrl → rotate（换新密钥、重加密落盘）→
+// 全新 store 装载 → postUrl 必须仍是真实值（若密钥与密文错配，装载会解密失败 ⇒ 走隔离+默认值 ⇒ 红）。
+bool test_config_rotate_preserves_sensitive_field_roundtrip() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("rotate_sensitive_roundtrip");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    const std::string realUrl = "https://rotate.example/api/faces";
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + realUrl + "\"}}").ok) return false;
+    if (store.current().poster.postUrl != realUrl) return false;
+
+    const auto res = store.rotateKeyAndReencrypt();
+    if (!res.ok) return false;
+
+    rk_win::WinJsonConfigStore reloaded;
+    std::string warn2;
+    reloaded.initialize(warn2);
+    if (reloaded.configRejectedOnLoad()) {
+        std::cerr << "[rotate_sensitive_roundtrip] rotate 后盘上密文无法解开：" << warn2 << std::endl;
+        return false;
+    }
+    if (!reloaded.initQuarantineFileName().empty()) return false;
+    return reloaded.current().poster.postUrl == realUrl;
 }
