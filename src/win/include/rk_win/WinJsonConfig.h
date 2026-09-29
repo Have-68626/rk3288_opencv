@@ -22,14 +22,16 @@ namespace rk_win {
 //   ⚠️ **改名 / 删除类变更不在本不变量射程**：quarantineConfigFile（std::filesystem::rename 把
 //      config.json 改名另存为 .corrupt.<ts>）与 initialize 的残留清扫（std::filesystem::remove）
 //      都不产生新内容、也不做合并，故不适用「持 mu_」。**不要**据本不变量要求它们在 mu_ 下运行。
-//      ⚠️ 但正因它们不受 mu_ 保护，存在一条**既有**（非本批引入、**尚未修**）的可达竞态：
-//      reloadFromDisk 在 watch 线程上「读坏文件 → **释放 mu_** → 解析被拒 → 调 quarantineConfigFile
-//      改名」；此窗口内 HTTP 线程 PUT 成功、写盘合法配置 B 并提交 cfg_=B，随后 watch 线程把**这份
-//      刚写好的合法 B 改名成 .corrupt.<ts>**（伪造一条 corrupt 证据、outErr 谎称隔离了坏配置），
-//      再持锁把 cfg_(=B) 写回——在「内存序列化不可写 ⇒ 回退 .bak」那条臂里，磁盘会退成更旧的 .bak
-//      而内存是 B，正是 FACE-CONFIG-010 刚消除的「磁盘/内存分歧」。**本轮不修**：修锁结构需并发判别
-//      用例与测试接缝（本类尚未提供），用户已决定「并发与不变量专项」计入后续任务。见 reloadFromDisk
-//      的 quarantine 调用点同因注释。
+//      ⚠️ 但正因它们不受 mu_ 保护，**曾**存在一条可达竞态（**已于 2026-09-28 修复**；此处保留原委，
+//      是为了说清「为什么这次加锁**不意味着**不变量射程扩大」）：reloadFromDisk 在 watch 线程上
+//      「读坏文件 → 释放 mu_ → 解析被拒 → 调 quarantineConfigFile 改名」；该窗口内 HTTP 线程 PUT
+//      成功、写盘合法配置 B 并提交 cfg_=B，随后 watch 线程把**这份刚写好的合法 B** 改名成
+//      .corrupt.<ts>（凭空伪造一条 corrupt 证据，且 outErr 谎称隔离了坏配置），再持锁把 cfg_(=B) 写回。
+//   ✅ **2026-09-28 修法**：把「复核 mtime 未变」与 `quarantineConfigFile` 放进**同一个 mu_ 临界区**
+//      （与同函数的成功臂同款写法）—— PUT 的写盘 + 提交持同一把 mu_ ⇒ 复核与 rename 之间无插入点。
+//      **但本条不变量本身不变**：改名 / 删除仍**不**在 FACE-CONFIG-013 射程内（它们不产生新内容）
+//      —— 那次加锁是为**身份复核**，理由与这条不变量不同。行为变化见 `reloadFromDisk` 的
+//      quarantine 调用点注释（并发修改时不再隔离；持续外部写者会反复推迟隔离）。
 // 为什么这是**结构性**保证、而非「在锁内写句注释就够」：真正落盘的
 //   buildSettingsJson / writeAtomicallyWithBackup / writeFileAll / moveReplaceWriteThrough
 // **都是不取锁的函数**（自由函数与无状态成员函数同理，见 WinJsonConfig.cpp 逐字核实）。谁调用它们，

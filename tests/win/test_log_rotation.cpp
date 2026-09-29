@@ -25,6 +25,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -747,6 +748,60 @@ bool test_structured_logger_rename_failure_does_not_reset_header() {
 // C1 轮转真正生效：同 B1（render_metrics.jsonl + .1/.2）。
 // 判别点：删掉 append 里对 rollIfNeededLocked 的调用 ⇒ 无轮转 ⇒「.1 存在」与「尺寸 <= maxBytes +
 //   单条」两条断言红。
+// ★ 2026-09-28 新增（外部审查 [P2]「日志文件重开失败后不会自行恢复」的**判别用例**）。
+// 缺陷（修复前，两处）：① 某路重开失败后**永久停写**（唯一恢复路径是进程重启 / 重新 initialize）；
+//   ② `append` 用**联合**判据 `!csv_.is_open() || !jsonl_.is_open()` ⇒ **一路坏会把健康的那一路
+//   也一起停写**，且全程无任何计数 / 告警信号。
+// 修复：`append` 每次进入都对**已关闭的那一路**做限频（5000ms）重开尝试；两路各自独立；
+//   失败次数经 `reopenFailCount()` 可观测（另在首失败时打一行 stderr，尽力而为）。
+//
+// 判别力（把 `append` 的联合判据改回去、或去掉 `ensureOpenLocked()` 调用 ⇒ **第 2 段必红**）：
+//   第 2 段断言「CSV 被挡住期间 **jsonl 仍在增长**」—— 旧实现下 jsonl 会一起停写，故必红。
+// 构造方式（**确定性**，不依赖文件锁 / 权限 / 杀软）：用**同名目录**占位 `recognition.csv`
+//   ⇒ `ofstream::open` 必失败；`jsonl` 路径不同、不受影响。
+bool test_structured_logger_reopen_recovers_and_paths_independent() {
+    TempLogDir tmp("reopen_recover");
+    const auto dir = tmp.path();
+    const auto csvPath = dir / "recognition.csv";
+    const auto jsonlPath = dir / "recognition.jsonl";
+
+    // 必须先于 open() 用目录占位 —— 之后才建立就删不掉已打开的句柄了。
+    std::error_code ec;
+    if (!std::filesystem::create_directories(csvPath, ec)) return false;
+
+    rk_win::StructuredLogger logger;
+    // open() 会因 csv 打不开而返回 false —— 那是**预期状态**，不是用例失败；jsonl 应当已打开。
+    (void)logger.open(dir, /*maxBytes=*/0, /*maxRollFiles=*/0);  // 关闭轮转，聚焦「重开」语义
+    if (!pathExists(dir / "recognition.jsonl")) return false;    // 前置锚：jsonl 那一路必须已建立
+
+    // 第 1 段（前置锚）：正常建立后 jsonl 能写，且 csv 的重开确实失败过。
+    logger.append(makeFrameEntry("S1", "x"));
+    const auto jsonl1 = sizeOf(jsonlPath);
+    if (jsonl1 == 0) return false;
+    if (logger.reopenFailCount() == 0) return false;  // 前置锚：csv 重开必须失败过一次
+
+    // 第 2 段（★ 判别点）：CSV 仍被挡住，**jsonl 必须继续增长**。
+    logger.append(makeFrameEntry("S2", "y"));
+    const auto jsonl2 = sizeOf(jsonlPath);
+    if (jsonl2 <= jsonl1) return false;               // 旧实现（联合判据）在此必红
+
+    // 第 3 段：恢复 CSV 的可写性，等过限频窗口后应**自动重开**并续写（且表头恰好一行）。
+    std::filesystem::remove_all(csvPath, ec);
+    if (pathExists(csvPath)) return false;            // 目录必须真的被移除
+    std::this_thread::sleep_for(std::chrono::milliseconds(5100));  // > kReopenRetryWindowMs(5000)
+    logger.append(makeFrameEntry("S3", "z"));
+
+    const std::string csv = readFile(csvPath);
+    if (csv.empty()) return false;                    // 未自动恢复 ⇒ 红
+    std::size_t hdrCount = 0;
+    for (std::size_t pos = csv.find("ts,camera_name"); pos != std::string::npos;
+         pos = csv.find("ts,camera_name", pos + 1)) {
+        ++hdrCount;
+    }
+    if (hdrCount != 1) return false;                  // 表头**恰好一行**（恢复时不得重复写）
+    return true;
+}
+
 bool test_render_metrics_logger_rotates_and_caps_generations() {
     TempLogDir tmp("render_rotate");
     const std::filesystem::path dir = tmp.path();

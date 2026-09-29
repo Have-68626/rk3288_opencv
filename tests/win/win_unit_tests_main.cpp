@@ -65,6 +65,8 @@ bool test_structured_logger_header_preserved_across_open_rotation();
 bool test_structured_logger_header_preserved_across_append_rotation();
 bool test_structured_logger_open_prunes_shrunk_generations();
 bool test_structured_logger_rename_failure_does_not_reset_header();
+// 重开失败后**自动恢复** + 两路独立（2026-09-28 新增）。
+bool test_structured_logger_reopen_recovers_and_paths_independent();
 bool test_render_metrics_logger_rotates_and_caps_generations();
 bool test_render_metrics_logger_no_rotation_when_max_bytes_zero();
 bool test_render_metrics_logger_open_default_arguments();
@@ -82,6 +84,8 @@ bool test_pipeline_enroll_writeback_does_not_overwrite_new_request();
 bool test_pipeline_reload_reruns_manifest_check();
 bool test_config_put_bumps_generation();
 bool test_config_external_write_bumps_generation_once();
+// 读取失败（超上限）后**不**标记 mtime ⇒ 可读性恢复且 mtime 未变时仍会重试（2026-09-28 新增）。
+bool test_config_reload_retries_after_read_failure_without_mtime_change();
 bool test_config_put_and_external_each_consumed_once();
 bool test_config_default_serialization_passes_schema();
 bool test_config_each_single_field_put_passes_schema();
@@ -254,6 +258,8 @@ int main(int argc, char** argv) {
         {"test_structured_logger_header_preserved_across_append_rotation", test_structured_logger_header_preserved_across_append_rotation},
         {"test_structured_logger_open_prunes_shrunk_generations", test_structured_logger_open_prunes_shrunk_generations},
         {"test_structured_logger_rename_failure_does_not_reset_header", test_structured_logger_rename_failure_does_not_reset_header},
+        {"test_structured_logger_reopen_recovers_and_paths_independent",
+         test_structured_logger_reopen_recovers_and_paths_independent},
         {"test_render_metrics_logger_rotates_and_caps_generations", test_render_metrics_logger_rotates_and_caps_generations},
         {"test_render_metrics_logger_no_rotation_when_max_bytes_zero", test_render_metrics_logger_no_rotation_when_max_bytes_zero},
         {"test_render_metrics_logger_open_default_arguments", test_render_metrics_logger_open_default_arguments},
@@ -269,6 +275,8 @@ int main(int argc, char** argv) {
         {"pipeline_reload_reruns_manifest_check", test_pipeline_reload_reruns_manifest_check},
         {"config_put_bumps_generation", test_config_put_bumps_generation},
         {"config_external_write_bumps_generation_once", test_config_external_write_bumps_generation_once},
+        {"config_reload_retries_after_read_failure_without_mtime_change",
+         test_config_reload_retries_after_read_failure_without_mtime_change},
         {"config_put_and_external_each_consumed_once", test_config_put_and_external_each_consumed_once},
         {"config_default_serialization_passes_schema", test_config_default_serialization_passes_schema},
         {"config_each_single_field_put_passes_schema", test_config_each_single_field_put_passes_schema},

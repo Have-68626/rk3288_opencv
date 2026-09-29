@@ -1542,10 +1542,22 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         if (ec) return true;
         if (lastWriteTime_ == wt) return true;
         if (!readFileAll(configPath_, txt, outErr)) {
-            // 记录**已观察到的 mtime**：文件持续不可读（权限 / 独占占用 / 半写）时，若不记录，
-            // 1 秒轮询会反复重读同一份不可读文件并反复失败（IO / 日志噪声）。记录后
-            // lastWriteTime_ == wt ⇒ 下次轮询在上一行直接早退，等价于「等待真正的下一次变更」。
-            lastWriteTime_ = wt;
+            // ★ **2026-09-28 改**（外部审查 [P2]「一次临时读取失败会使热重载停止重试」+ 独立复核）：
+            //   原行为（`2cf7a0e` 有意引入、并在此处写明理由）记录**已观察到的 mtime**，以避免
+            //   「文件持续不可读时每秒反复重读并失败」。**其副作用**才是真问题：读取失败后
+            //   `lastWriteTime_ == wt` 恒成立 ⇒ 后续每次轮询都在上一行 `lastWriteTime_ == wt` 处早退，
+            //   直到 mtime 变化。而 Windows 上**解除占用 / 放宽 ACL 都不会更新 LastWriteTime**
+            //   （只更新 ChangeTime）⇒ 文件恢复可读后，配置会一直陈旧到**下一次真实写入或重启**，
+            //   期间没有任何用户可见提示。
+            //   ⇒ 改为**不标记**：读取失败不算「已处理」，下次轮询（≤1s）重试。
+            //   **代价（如实登记）**：文件持续不可读期间，每秒一次**失败的 `open()`**。
+            //   ⚠️ 且该 `open()` 发生在**上面那个 mu_ 临界区内**（对抗性代理 A2 指出，初版未登记这一点）：
+            //      若该文件位于慢设备/网络盘上、失败的 open 本身也阻塞，则 PUT 与 `current()` 会被
+            //      **周期性**拖住。改前是「首次失败即标记 ⇒ 之后早退」，**不存在**这种周期性重入
+            //      ⇒ 这是本次修复**新引入**的代价，不是既有行为。
+            //   该分支不做解析、不打日志 ⇒ 噪声仅为 IO；以「每秒一次失败 open」换「恢复后 ≤1s 自动
+            //   重载」，判为更优。（若将来出现病态 IO 噪声，再引入**有界退避**：前 N 次不标记、之后
+            //   退化为旧行为——既保原意图又不牺牲最终一致。本轮**不做**，避免过度设计。）
             return false;
         }
     }
@@ -1557,30 +1569,51 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         // （config.json.corrupt.<毫秒时间戳>），使其不被随后写盘覆盖。
         // ⚠️ 该保全**仅限本次处理**（不变量有同样时限）：隔离产物不会被自动清理，但原位置的后续写入
         //    （PUT / 下一次热重载）仍按各自既有语义进行，故「不被就地覆盖」只保证到本次处理结束。
-        // ⚠️ **既有缺陷登记（非本批引入、本轮不修）**：`quarantineConfigFile` 是**改名**（rename），
-        //    不在 FACE-CONFIG-013「写入 config.json 内容必须持 mu_」的射程内，故下面这次调用**不持 mu_**。
-        //    由此存在一条**可达竞态**（三路对抗审查独立推演，时序一致）：
-        //      ① 本函数开头的读锁临界区（`{ std::lock_guard ... }`）已**释放 mu_**；② watch 线程在锁外解析 txt 被判坏；
+        // ★ **2026-09-28 已修**（外部审查 [P2]「热重载可能隔离刚保存的正常配置」+ 独立复核确认可达）：
+        //    原行为是「解析在锁外、隔离也在锁外」，由此存在一条**可达竞态**：
+        //      ① 本函数开头的读锁临界区已**释放 mu_**；② watch 线程在锁外解析 txt 被判坏；
         //      ③ 此窗口内 HTTP 线程 PUT 成功，写盘合法配置 B 并提交 cfg_=B；
-        //      ④ 本线程随即执行 quarantineConfigFile，把**这份刚写好的合法 B** 改名成 config.json.corrupt.<ts>
-        //         ⇒ 凭空伪造一条 corrupt 证据（且下述 outErr 谎称隔离了「坏配置」），该证据永不自清；
-        //      ⑤ 再持锁把 cfg_(=B) 写回——在「内存序列化不可写 ⇒ 回退 .bak」那条臂里，磁盘会退成**更旧的
-        //         .bak** 而内存是 B ⇒ 正是 FACE-CONFIG-010 刚消除的「磁盘/内存分歧」。
-        //    **为何本轮不修**：修锁结构（如让隔离也进入 mu_ 临界区，或「持锁复核 mtime 未变才隔离」）需要
-        //      并发判别用例与测试接缝，而本类当前**没有**
-        //      并发用例；用户已明确决定「并发与不变量专项（带测试接缝）计入后续任务、暂停不做」⇒ 此处仅如实
-        //      登记，不改变锁结构（见 WinJsonConfig.h 类级不变量同因登记）。
+        //      ④ 本线程随即执行 quarantineConfigFile，把**这份刚写好的合法 B** 改名成
+        //         config.json.corrupt.<ts> ⇒ 凭空伪造一条 corrupt 证据（且下述 outErr 谎称隔离了
+        //         「坏配置」），该证据永不自清；
+        //      ⑤ 再持锁把 cfg_(=B) 写回——在「内存序列化不可写 ⇒ 回退 .bak」那条臂里，磁盘会退成
+        //         **更旧的 .bak** 而内存是 B ⇒ 正是 FACE-CONFIG-010 刚消除的「磁盘/内存分歧」。
+        //    **修法**：把「复核 mtime 未变」与「改名」放进**同一个 mu_ 临界区** —— 与下方成功臂
+        //      （`if (!cec && currentWt != wt) { …放弃本次更新 }`）**完全同款**。PUT 的写盘 + 提交
+        //      持的是同一把 mu_ ⇒ 复核与 rename 之间不存在 **PUT** 插入点，**针对进程内写者的**竞态闭合。
+        //    ⚠️ 措辞收窄（对抗性代理 A2 指出）：上面那个「闭合」**只对进程内写者成立**。对**外部**
+        //      写者，判据仍是 mtime 比对，而文件系统时间戳有粒度（NTFS/卷粒度可粗至 ~15.6ms 或更粗）
+        //      ⇒ 坏文件与合法 B 落在**同一 tick** 时二者 mtime 相同、复核漏判。这是 mtime 判据的
+        //      **固有盲区**（成功臂 `currentWt != wt` 处同款，非本批引入），不要据此认为「任何并发修改都能识别」。
+        //    **行为变化（如实登记）**：① 在「读后到隔离前」被并发修改的交错下**不再隔离** —— 此时该
+        //      路径上已不是坏文件，隔离它本就是错的；② 若存在**持续**触碰 config.json 的外部写者，
+        //      坏文件的隔离会被反复推迟 —— 与成功臂「放弃本次热重载」的既有语义一致。
+        //    ⚠️ 仍**不在** FACE-CONFIG-013「写入内容须持 mu_」的射程内（改名不产生新内容），本处加锁
+        //      是为**身份复核**，不是为了满足那条不变量——两件事的理由不同，勿混。
         outErr = "热重载校验失败: " + parseErr;
         std::filesystem::path movedTo;
         std::string qerr;
-        if (!quarantineConfigFile(configPath_, movedTo, qerr)) {
-            // 隔离失败 ⇒ 坏文件仍在原位。记录**已观察到的 mtime**，否则 1 秒轮询会反复重读同一份
-            // 坏文件并反复失败（IO / 日志噪声）。
-            outErr += "; 隔离失败（" + qerr + "），保留原文件";
+        {
             std::lock_guard<std::mutex> lock(mu_);
-            std::error_code wec;
-            lastWriteTime_ = std::filesystem::last_write_time(configPath_, wec);
-            return false;
+            std::error_code cec;
+            const auto curWt = std::filesystem::last_write_time(configPath_, cec);
+            if (cec || curWt != wt) {
+                outErr += "; 配置在本次读取期间已被并发修改 ⇒ 放弃隔离（避免把新内容当作坏文件改名）";
+                return false;
+            }
+            if (!quarantineConfigFile(configPath_, movedTo, qerr)) {
+                // 隔离失败 ⇒ 坏文件仍在原位。记录**已观察到的 mtime**，否则 1 秒轮询会反复重读同一份
+                // 坏文件并反复失败（IO / 日志噪声）。
+                // ⚠️ 已知同类残留（**本轮未改**，如实登记）：与上面 `readFileAll` 失败臂同族 —— 若此后
+                //    该文件的可改名条件恢复而 mtime 未变，本路径同样不会再重试。**不改的理由**：此处的
+                //    重试成本是**完整解析 + DPAPI 解保护**（而非一次 open），且该文件**已知为坏**，
+                //    「配置陈旧」并非本臂的失效形态；用户的修复动作（改写该文件）本身会改 mtime ⇒ 会
+                //    重新进入本函数。
+                outErr += "; 隔离失败（" + qerr + "），保留原文件";
+                std::error_code wec;
+                lastWriteTime_ = std::filesystem::last_write_time(configPath_, wec);
+                return false;
+            }
         }
         outErr += "; 原配置已隔离为 " + movedTo.filename().string();
         // 隔离已把坏文件挪走；随后把**内存中当前生效的配置**写回 config.json，使磁盘与内存**语义一致（非字节一致）**。
