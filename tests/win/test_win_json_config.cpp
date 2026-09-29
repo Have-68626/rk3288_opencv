@@ -214,6 +214,76 @@ bool test_config_external_write_bumps_generation_once() {
     return store.generation() == gen1;
 }
 
+// ★ 2026-09-28 新增（外部审查 [P2]「一次临时读取失败会使热重载停止重试」的**判别用例**）。
+// 缺陷：`reloadFromDisk` 原先在 `readFileAll` 失败时**记录该文件的 mtime** ⇒ 之后每次轮询都在
+//   `lastWriteTime_ == wt` 处早退。而「可读性恢复」这件事在 Windows 上**不会**更新 LastWriteTime
+//   （解除独占占用、放宽 ACL 都只动 ChangeTime）⇒ 文件恢复可读后仍被**永久跳过**，配置一直陈旧到
+//   下一次真实写入或重启，且没有任何用户可见提示。
+// 修复：读取失败**不**标记已处理，下次轮询（≤1s）重试。
+//
+// 判别力（**确定性**，不依赖线程交错、不依赖独占句柄）：要让「旧实现红、新实现绿」，必须构造
+//   「可读性恢复、但 mtime 未变」——做法是先用**超上限**的文件让读取失败（该分支填 err 且不碰
+//   mtime、且 `last_write_time` 照常可取），再把文件改回合法大小，并把 mtime **精确设回**失败时
+//   观察到的值。旧实现已把 lastWriteTime_ 记成该值 ⇒ 相等早退 ⇒ `applied2` 为 false（红）；
+//   新实现未记 ⇒ 正常读入并应用（绿）。
+// 前置锚（两处，均**响亮 return false**，绝不静默跳过）：① 第一次轮询必须失败**且带 err**
+//   （否则可能只是 mtime 查询失败那条早退，等于没测到目标分支）；② 设回的 mtime 必须与 t1
+//   **精确相等**（否则旧实现也会重试 ⇒ 本用例失去判别力，会退化成恒真）。
+//
+// ⚠️ **已知「误红面」（对抗性核查指出，如实登记，不视为缺陷但改动本用例前必须一并考虑）**：
+//   ① 锚 ① 与实现常量**耦合**：超限内容 = `good + 11 MiB 空白`，而判据是
+//      `kMaxConfigFileBytes`（当前 10 MiB）。**若有人把上限抬到 ≥ 11 MiB**，`readFileAll` 就会成功、
+//      `applied1` 为 true ⇒ 本用例在**正确实现**上变红。⇒ 届时须同步把这里的 11 MiB 调大。
+//   ② 锚 ② 对**卷的时间戳粒度**敏感：`makeTempDir` 用的是 `temp_directory_path()`；若落在
+//      FAT/exFAT（2s 粒度）或某些重定向的 `%TEMP%` 上，`last_write_time(path, t1)` 会被取整 ⇒
+//      `t1back != t1` ⇒ 同样在**正确实现**上变红。⇒ 本机（NTFS）实测精确，但换环境需留意。
+//   ③ 同族的构造性依赖：`bumpMtimePlus2s` 失败 / 11 MiB 写入因配额或磁盘满失败 ⇒ 也是红（非静默）。
+bool test_config_reload_retries_after_read_failure_without_mtime_change() {
+    const auto dir = makeTempDir("reload_read_retry");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    // 留一份 initialize 产出的**合法**配置原文，供第 2 步原样写回（保证 schema 校验通过，
+    // 避免把「内容非法 ⇒ 走隔离」误当成「重试成功」）。
+    std::string good;
+    if (!readAllText(cfgPath, good)) return false;
+    if (good.empty()) return false;
+
+    // 第 1 步：写入超上限内容（走 readFileAll 的「文件超过大小上限」分支）。
+    std::string oversized = good;
+    oversized.append(11u * 1024u * 1024u, ' ');  // 11MB > kMaxConfigFileBytes(10MB)
+    if (!writeAllText(cfgPath, oversized)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    std::error_code ec;
+    const auto t1 = std::filesystem::last_write_time(cfgPath, ec);
+    if (ec) return false;
+
+    bool applied1 = true;
+    std::string err;
+    store.pollReloadOnce(applied1, err);
+    if (applied1) return false;    // 前置锚 ①-a：必须先失败
+    if (err.empty()) return false; // 前置锚 ①-b：且必须**带 err**（区别于 mtime 查询失败的静默早退）
+
+    // 第 2 步：恢复可读性，但把 mtime 精确设回 t1 —— 这正是缺陷的前提。
+    if (!writeAllText(cfgPath, good)) return false;
+    std::filesystem::last_write_time(cfgPath, t1, ec);
+    if (ec) return false;
+    std::error_code ecChk;
+    const auto t1back = std::filesystem::last_write_time(cfgPath, ecChk);
+    if (ecChk || t1back != t1) return false;  // 前置锚 ②：设回必须精确，否则本用例无判别力
+
+    // 第 3 步：★ 核心断言（旧实现必红）——可读性恢复后必须能重载。
+    bool applied2 = false;
+    store.pollReloadOnce(applied2, err);
+    if (!applied2) return false;
+    return true;
+}
+
 // PUT 与外部写入两来源各消费一次、无重复/遗漏（模拟服务主循环 lastGen 去重判定）。
 bool test_config_put_and_external_each_consumed_once() {
     const auto dir = makeTempDir("both_gen");
