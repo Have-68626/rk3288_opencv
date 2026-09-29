@@ -605,6 +605,42 @@ public final class AndroidEnrollmentRepository {
         File bak = backupFileFor(dst);
 
         if (!dst.exists()) {
+            // ★★ 2026-09-28 修（外部审查 [P1]「备份恢复后可能放行重复人脸注册」+ 独立复核确认可达）：
+            //   先试**未消费的 `.tmp`**，再退回 `.bak`。
+            //   崩溃窗口「模板已落盘（add）→ 注册表 dst→bak 已完成 → tmp→dst 未完成」下，**最新**的
+            //   条目集在 **`.tmp`** 里，而 `.bak` 是**缺该行**的旧集。原实现只认 `.bak` ⇒ 恢复出缺行集，
+            //   而判重门 `isEnumerationComplete()` 只看 status/skipped、**不**看 `authoritative`
+            //   ⇒ 门被放行 ⇒ 同一张脸可用**另一个 userId** 再注册一次（`add()` 只按 userId 查模板
+            //   文件存在性，换 ID 即绕过）。
+            //   ★ 为什么 `.tmp` 一定更可信：写者不变式是「写 tmp + fsync → dst→bak → tmp→dst」
+            //     ⇒ 只要走到了「dst 缺失」这一步，就说明 dst→bak **已经成功**，而那必然发生在
+            //     tmp **完整落盘并 fsync 之后** ⇒ 此时残留的 tmp 严格**新于** bak。
+            //   ★ 覆盖边界（**已按对抗性核查更正**，勿按初版读）：若 `.tmp` 不存在或 `parseRegistryFile`
+            //     返回非 OK，则退回下面的旧 `.bak` 臂 —— 那条路径的判重缺口**仍存在**。
+            //     ⚠️ 更正一处**不成立**的说法：初版这里写「tmp 被截断一定不可解析 —— 不成立。
+            //       `parseRegistryFile` 只校验首行 `FREG1`，**没有行数 / 尾校验**；而 tmp 是整块
+            //       `fos.write(...)` 落盘的，**部分写若恰好停在换行处**，解析结果会是
+            //       `status==OK && skippedLineCount==0`，但条目集**不完整** ⇒ 判重门照样放行。
+            //       （`getFD().sync()` 失败还被 `catch (Exception ignored)` 吞掉。）
+            //       ⇒ 这是**已登记的剩余缺口**，本轮未修（修它需要一个完整性标记或行数尾校验）。
+            //     ⚠️ 另：初版写的「写到一半就崩不会走到本分支」**只对崩溃**成立（那时 dst 还在，
+            //       走的是 `parseRegistryFile(dst)` 那条路）；**外部截断 / 部分写**不受此保护。
+            File tmp = tmpFileFor(dst);
+            if (tmp.exists()) {
+                RegistrySnapshot fromTmp = parseRegistryFile(tmp);
+                if (fromTmp.status == Status.OK) {
+                    boolean promoted = FileStoreUtils.renameQuietly(tmp, dst);
+                    // `authoritative` 仍置 false：这是**恢复**来的内容，保守起见不宣称权威
+                    //（判重门不看它，故不影响修复效果；语义边界见 RegistrySnapshot 的 javadoc）。
+                    // 遗留的 `.bak` 无需清理：`persistRegistry` 阶段 3 会先删它再改名。
+                    RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromTmp.entries,
+                            fromTmp.skippedLineCount,
+                            promoted ? "已从未消费的 .tmp 恢复注册表（含最新条目）"
+                                    : "注册表主文件缺失，已从 .tmp 读取（含最新条目）");
+                    recovered.authoritative = false;
+                    return recovered;
+                }
+            }
             if (bak.exists()) {
                 // 崩溃恢复：上次 persistRegistry 在「dst→bak」之后、「tmp→dst」完成前退出，
                 // 主文件缺失但备份仍是唯一完整索引。若此处按空库处理，后续写入会先删掉该备份，
@@ -731,6 +767,18 @@ public final class AndroidEnrollmentRepository {
     }
 
     /**
+     * 注册表**未消费的临时文件**（与主文件同目录）。
+     *
+     * <p>★ 2026-09-28 抽出（原为 {@code persistRegistry} 内的内联构造）：崩溃恢复也要用它
+     * —— 见 {@link #loadRegistry()} 的「优先恢复 .tmp」一段。两处必须用**同一命名**，
+     * 故收敛到这里，避免日后只改一处导致恢复静默失效。
+     */
+    @NonNull
+    private static File tmpFileFor(@NonNull File registryFile) {
+        return new File(registryFile.getParentFile(), registryFile.getName() + ".tmp");
+    }
+
+    /**
      * 原子落盘注册表：临时文件 + 阶段替换（与存储层写入策略一致）。
      *
      * <p>阶段顺序（P1-3 崩溃安全）：
@@ -759,7 +807,7 @@ public final class AndroidEnrollmentRepository {
             return Status.IO_ERROR;
         }
 
-        File tmp = new File(parent, dst.getName() + ".tmp");
+        File tmp = tmpFileFor(dst);
         StringBuilder sb = new StringBuilder();
         sb.append(REGISTRY_MAGIC).append('\n');
         for (Entry e : entries) {

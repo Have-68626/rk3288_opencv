@@ -539,6 +539,82 @@
                         android:textColor="#FFFFFF" />
                 </LinearLayout>
 
+                <!-- ★ 2026-09-28 补（外部审查 [P1]「Android 横屏缺少关键管理入口」+ 独立复核）：
+                     横屏此前**从未**包含 model 导入/切换、模型状态、未决替换了结、人员管理这些入口
+                     （`git log -S` 显示这三个 id 在 layout-land 里从未出现过；两个引入它们的提交
+                     `c61f612` / `8e39d5b` 只改了竖屏）⇒ 横屏下 `MainActivity` 的
+                     `findViewById` 拿到 null、`if (x != null)` 静默跳过绑定，横屏用户**无法**进行
+                     模型管理，**连人员列表/删除也进不去**（那是注册表唯一的应用内自愈入口）。
+                     ⚠️ 而横屏很可能是 rk3288 上的**默认**形态（HDMI 常横屏冷启动，且 manifest 未锁定
+                     screenOrientation）⇒ 首次可用界面即残缺。
+                     此处**原样移植同 id 的五个控件**（尺寸沿用竖屏值，便于逐项对照；如需横屏专用尺寸
+                     另开改动），使 `bindModelManagementUi()` 无需改动即自动接线。
+                     守卫：tests/scripts/android-layout-entry-parity.test.js 会断言这组 id 在两份布局里
+                     都存在 —— 若日后再分叉，该用例会红而不是静默退化。 -->
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_model_management_title"
+                    android:textColor="#AAAAAA"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <Button
+                    android:id="@+id/btn_import_model"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="@string/ui_model_import"
+                    android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginBottom="8dp" />
+
+                <Button
+                    android:id="@+id/btn_switch_model"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="@string/ui_model_switch"
+                    android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/tv_model_management"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_model_status_placeholder"
+                    android:textColor="#88FF88"
+                    android:textSize="12sp"
+                    android:layout_marginBottom="16dp" />
+
+                <!-- 未决目录替换的人工了结入口：仅在状态报告「新旧配置并存」时可见（默认 gone）。 -->
+                <Button
+                    android:id="@+id/btn_resolve_swap"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="@string/ui_model_resolve_swap"
+                    android:backgroundTint="#8A4B00"
+                    android:textColor="#FFFFFF"
+                    android:visibility="gone"
+                    android:layout_marginBottom="16dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ui_person_management_title"
+                    android:textColor="#AAAAAA"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <Button
+                    android:id="@+id/btn_manage_persons"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="@string/ui_person_manage"
+                    android:backgroundTint="#444444"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginBottom="16dp" />
+
                 <Button
                     android:id="@+id/btn_register_face"
                     android:layout_width="match_parent"
