@@ -75,10 +75,12 @@ import java.util.List;
  * 登记为待办 N1；修复方向是给坏行本身一个可删条目或一个显式的「重写注册表」入口。
  *
  * <p><b>崩溃恢复（P1-3）</b>：{@link #persistRegistry} 采用
- * 「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」阶段替换。若在中间阶段进程退出，
- * 可能出现「主文件缺失/不可读、而 {@code face_registry_v1.dat.bak} 尚存」的窗口；
- * {@link #loadRegistry} 此时会先尝试把备份恢复为主文件再解析（重命名失败则直接解析备份），
- * 避免把唯一索引伪装成空库、并在后续写入时被先行删除，导致人员索引永久丢失。
+ * 「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」阶段替换。主文件**缺失或不可解析**
+ * （头损坏 / 整体不可读）时，{@link #loadRegistry} 会按「先未消费的 {@code .tmp}、后 {@code .bak}」
+ * 取首个可解析的副产品作为注册表：主文件**不存在**时把它改名就位，主文件**存在**（即便损坏）
+ * 时只读、不覆盖，避免把唯一索引伪装成空库、并在后续写入时被先行删除，导致人员索引永久丢失。
+ * 因此「头损坏 + 健康副本并存」也会先自愈，{@code quarantineCorruptRegistry} 不再把健康的副本
+ * 随损坏主文件一并旁置、清空活性库。
  *
  * <h2>API &lt; 23 行为</h2>
  * 写操作与需密钥操作（{@link #add}、{@link #remove}、{@link #readTemplate}）返回
@@ -93,6 +95,13 @@ public final class AndroidEnrollmentRepository {
 
     /** 注册表首行魔数/版本：文件头损坏或版本不符时判定为 CORRUPTED。 */
     private static final String REGISTRY_MAGIC = "FREG1";
+
+    /**
+     * 旁置文件后缀：把不可用的注册表工件改名保留为 {@code <原名>.corrupt.<毫秒时间戳>}，
+     * 命名习惯与 {@link FeatureTemplateEncryptedStore} 的损坏隔离保持一致（那里也是
+     * {@code <名>.corrupt.<ts>}）。**只改名、绝不删除**。
+     */
+    private static final String CORRUPT_SUFFIX = ".corrupt.";
 
     /** 合法条目字段数：hex(userId) mv sv ciphertextSize sha256hex createdAtMs
      *  （第 4/5 列存的是加密模板**文件**全量值，见 {@link Entry} 字段注释）。 */
@@ -519,6 +528,166 @@ public final class AndroidEnrollmentRepository {
     }
 
     /**
+     * 注册表「整份不可枚举」时的**非破坏性**恢复：把当前注册表工件改名旁置，再新建一张空的可用注册表。
+     *
+     * <h2>为什么需要它</h2>
+     * 注册表的自愈只有一条路：一次成功的 {@link #add}/{@link #remove} 会用 {@link #persistRegistry}
+     * 重写注册表、顺带清除损坏行。但经 UI 的 {@code add} 被 {@link EnrollmentSession} 的判重门
+     * （{@link ListResult#isEnumerationComplete()}）切断，{@code remove} 又需要至少一条可删条目。
+     * 当注册表**整份损坏 / 全部行不合法**（{@code list().entries} 为空）时，UI 里没有任何可删条目
+     * ⇒ 用户无法自愈。本方法为该死角提供一条**不删除任何文件**的出路（外部审查 [P2]「H：注册表全损坏时
+     * 界面无恢复入口」）。
+     *
+     * <h2>绝不丢数据（设计约束）</h2>
+     * <ul>
+     *   <li><b>只改名、绝不删除</b>：把每个存在的工件移到
+     *       {@code <原名>.corrupt.<当前毫秒>}（沿用 {@link FeatureTemplateEncryptedStore} 的损坏隔离
+     *       命名习惯），原字节完整保留，结果 {@link Result#message} 回传它们的**绝对路径**供 UI 原样展示，
+     *       用户可事后手工取回；</li>
+     *   <li><b>一并旁置 {@code .bak}/{@code .tmp}</b>：否则 {@link #persistRegistry} 的阶段 1「恢复基线」
+     *       会在主文件缺失时把这些残留文件改名回主文件、随后被空表覆盖 ⇒ 等于**销毁**它们；</li>
+     *   <li><b>不枚举、不重建、不伪造条目</b>：损坏内容里读不出任何可靠信息，故新表就是一张干净空表
+     *       （仅魔数行）。模板文件仍在磁盘，但其名是 userId 的 SHA-256、无注册表即无法反推，只能由用户
+     *       在取回原注册表后手工恢复 —— 本方法**不猜测**重建任何条目；</li>
+     *   <li>任何一步失败都**回滚已完成的改名**并返回错误，保持原状。</li>
+     * </ul>
+     *
+     * <h2>前置条件（不满足即拒绝，绝不误旁置）</h2>
+     * 仅当注册表**没有任何可用条目**时允许：{@code status != OK}（头损坏 / 整体不可读），或
+     * {@code entries} 为空且 {@code skippedLineCount > 0}（全部数据行损坏）。存在任一可解析条目时返回
+     * {@link Status#INVALID_ARGUMENT} —— 那意味着走既有的 {@code remove} 自愈即可，绝不在此时把仍可用的
+     * 人移出活性路径（用户会误以为人被删了）。
+     *
+     * <h2>与低版本语义自洽</h2>
+     * 与 {@link #remove} 同为写操作，故同样纳入 {@link #isEnrollmentEnabled()} 门禁：API &lt; 23 返回
+     * {@link Status#UNSUPPORTED_PLATFORM}，保持「只读预览」自洽。
+     *
+     * <h2>包内可见（package-private）</h2>
+     * 本方法是**有能力面**的写操作（移动注册表文件），收窄为包内可见是为把这项能力限制在
+     * {@code com.example.rk3288_opencv} 包内 —— 调用方 {@code MainActivity} 与单元测试本就同包，
+     * 收窄不改变调用点；破坏性保护也不再只依赖「调用方会先弹二次确认」这一**约定**，而由编译器兜住。
+     *
+     * <p><b>如实边界</b>：本方法不覆盖「旁置 / 新建空表中途失败」的自动化用例（真实文件系统上难以稳定
+     * 制造 {@code renameTo}/{@code persistRegistry} 失败）；该回滚分支按代码走查保证语义。**回滚本身
+     * 失败**同样是难以构造的路径，故「回滚未完全成功」那一支文案也无自动化判别锚。
+     *
+     * @return {@code OK} 时已旁置原文件并新建空表，{@link Result#message} 含旁置文件绝对路径（绝不包含
+     *         模板/向量内容）；失败时状态码与既有错误通道一致，且文案**如实**反映回滚是否成功。
+     */
+    @NonNull
+    Result quarantineCorruptRegistry() {
+        synchronized (dirLock()) {
+            if (!isEnrollmentEnabled()) {
+                return new Result(Status.UNSUPPORTED_PLATFORM, null, unsupportedReason());
+            }
+            RegistrySnapshot snap = loadRegistry();
+            boolean noUsableEntries = snap.status != Status.OK
+                    || (snap.entries.isEmpty() && snap.skippedLineCount > 0);
+            if (!noUsableEntries) {
+                return new Result(Status.INVALID_ARGUMENT, null,
+                        "注册表当前可用，未做任何改动；如需清除个别损坏行，请在人员列表删除任意一位人员");
+            }
+
+            File dst = registryFile();
+            File parent = dst.getParentFile();
+            long ts = System.currentTimeMillis();
+            // 主文件 + 写入器备份 + 未消费的临时文件：三者都必须旁置，理由见方法 javadoc。
+            File[] sources = new File[]{dst, backupFileFor(dst), tmpFileFor(dst)};
+            List<File> movedFrom = new ArrayList<>();
+            List<File> movedTo = new ArrayList<>();
+            for (File f : sources) {
+                if (!f.exists()) {
+                    continue;
+                }
+                // 目标名必须取「当前不存在」的：POSIX/Android 的 rename(2) 会**静默覆盖**同名目标，
+                // 不取唯一名会销毁此前的旁置证据（Windows 上 renameTo 到已存在目标会失败，故只在
+                // POSIX 上危险）。同名时依次追加 `-<序号>`。
+                File aside = uniqueAsideFile(parent, f.getName(), ts);
+                if (!FileStoreUtils.renameQuietly(f, aside)) {
+                    // 回滚已完成的改名，保持原状后如实报错。回滚失败必须如实说明实际状态，
+                    // 不得谎报「未做任何改动」。
+                    List<File> failed = rollbackMoves(movedFrom, movedTo);
+                    return failed.isEmpty()
+                            ? new Result(Status.IO_ERROR, null, "损坏注册表旁置失败，未做任何改动")
+                            : new Result(Status.IO_ERROR, null,
+                                    "损坏注册表旁置失败，且回滚未完全成功；以下文件仍在旁置位置"
+                                            + "（原件未删除，可手工取回）：" + joinPaths(failed));
+                }
+                movedFrom.add(f);
+                movedTo.add(aside);
+            }
+
+            // 建一张干净的空表。三部曲都已移开 ⇒ persistRegistry 阶段 1 不会再把它们改名回主文件后被覆盖。
+            Status created = persistRegistry(new ArrayList<Entry>());
+            if (created != Status.OK) {
+                // 新建失败：把旁置的文件逐项移回原位。回滚失败必须如实说明实际状态，
+                // 不得谎报「已还原原注册表」。
+                List<File> failed = rollbackMoves(movedFrom, movedTo);
+                return failed.isEmpty()
+                        ? new Result(created, null, "新建空注册表失败，已还原原注册表")
+                        : new Result(created, null,
+                                "新建空注册表失败，且回滚未完全成功；以下文件仍在旁置位置"
+                                        + "（原件未删除，可手工取回）：" + joinPaths(failed));
+            }
+
+            String message = movedTo.isEmpty()
+                    ? "已新建空注册表（无可旁置的原文件）"
+                    : "损坏注册表已旁置（原件未删除，可手工取回）：" + joinPaths(movedTo);
+            return new Result(Status.OK, null, message);
+        }
+    }
+
+    /**
+     * 把已旁置的文件逐一移回原位，返回**未能还原**的文件（空列表 = 完全还原）。
+     * 不因单项失败而中断（继续尝试其余项），以便如实报告实际残留状态。
+     */
+    @NonNull
+    private static List<File> rollbackMoves(@NonNull List<File> movedFrom, @NonNull List<File> movedTo) {
+        List<File> failed = new ArrayList<>();
+        for (int i = movedFrom.size() - 1; i >= 0; i--) {
+            if (!FileStoreUtils.renameQuietly(movedTo.get(i), movedFrom.get(i))) {
+                failed.add(movedTo.get(i));
+            }
+        }
+        return failed;
+    }
+
+    /** 用 {@code ；} 连接若干文件的**绝对路径**（供结果文案；只含路径，绝不含模板/向量内容）。 */
+    @NonNull
+    private static String joinPaths(@NonNull List<File> files) {
+        StringBuilder sb = new StringBuilder();
+        for (File f : files) {
+            if (sb.length() > 0) {
+                sb.append("；");
+            }
+            sb.append(f.getAbsolutePath());
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 为一旁置候选选一个**当前不存在**的目标名：{@code <原文件名>.corrupt.<ts>}，若已被占用则依次
+     * 追加 {@code -<序号>}。POSIX/Android 的 {@code rename(2)} 会**静默覆盖**同名目标 ⇒ 不取唯一名
+     * 会销毁此前的旁置证据；Windows 上 {@code renameTo} 到已存在目标会失败（失败安全）。
+     */
+    @NonNull
+    @androidx.annotation.VisibleForTesting
+    static File uniqueAsideFile(@Nullable File parent, @NonNull String baseName, long ts) {
+        File candidate = asideCandidate(parent, baseName, Long.toString(ts));
+        for (int seq = 1; candidate.exists(); seq++) {
+            candidate = asideCandidate(parent, baseName, ts + "-" + seq);
+        }
+        return candidate;
+    }
+
+    @NonNull
+    private static File asideCandidate(@Nullable File parent, @NonNull String baseName,
+                                       @NonNull String tsToken) {
+        String name = baseName + CORRUPT_SUFFIX + tsToken;
+        return (parent == null) ? new File(name) : new File(parent, name);
+    }
+
+    /**
      * 读取并消费模板明文：明文只在 {@code consumer} 回调内有效，回调返回后由存储层
      * {@code Arrays.fill(pt, 0)} 清零，仓库不会向调用方泄漏明文数组。
      *
@@ -625,37 +794,17 @@ public final class AndroidEnrollmentRepository {
             //       ⇒ 这是**已登记的剩余缺口**，本轮未修（修它需要一个完整性标记或行数尾校验）。
             //     ⚠️ 另：初版写的「写到一半就崩不会走到本分支」**只对崩溃**成立（那时 dst 还在，
             //       走的是 `parseRegistryFile(dst)` 那条路）；**外部截断 / 部分写**不受此保护。
-            File tmp = tmpFileFor(dst);
-            if (tmp.exists()) {
-                RegistrySnapshot fromTmp = parseRegistryFile(tmp);
-                if (fromTmp.status == Status.OK) {
-                    boolean promoted = FileStoreUtils.renameQuietly(tmp, dst);
-                    // `authoritative` 仍置 false：这是**恢复**来的内容，保守起见不宣称权威
-                    //（判重门不看它，故不影响修复效果；语义边界见 RegistrySnapshot 的 javadoc）。
-                    // 遗留的 `.bak` 无需清理：`persistRegistry` 阶段 3 会先删它再改名。
-                    RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromTmp.entries,
-                            fromTmp.skippedLineCount,
-                            promoted ? "已从未消费的 .tmp 恢复注册表（含最新条目）"
-                                    : "注册表主文件缺失，已从 .tmp 读取（含最新条目）");
-                    recovered.authoritative = false;
-                    return recovered;
-                }
+            // 崩溃恢复：上次 persistRegistry 在「dst→bak」之后、「tmp→dst」完成前退出，主文件缺失
+            // 但未消费的 tmp / 备份仍是唯一完整索引。若此处按空库处理，后续写入会先删掉它们，
+            // 已注册人员索引将永久丢失（P1-3）。主文件缺失 ⇒ 可安全把副产品改名就位（不覆盖任何字节）。
+            RegistrySnapshot recovered = recoverFromSidecar(dst, "缺失");
+            if (recovered != null) {
+                return recovered;
             }
+            // 走到这里：无 `.tmp`，且 `.bak` 不存在或不可解析。
             if (bak.exists()) {
-                // 崩溃恢复：上次 persistRegistry 在「dst→bak」之后、「tmp→dst」完成前退出，
-                // 主文件缺失但备份仍是唯一完整索引。若此处按空库处理，后续写入会先删掉该备份，
-                // 已注册人员索引将永久丢失（P1-3）。
-                RegistrySnapshot fromBak = parseRegistryFile(bak);
-                if (fromBak.status == Status.OK) {
-                    boolean restored = FileStoreUtils.renameQuietly(bak, dst);
-                    RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
-                            fromBak.skippedLineCount,
-                            restored ? "已从备份恢复注册表" : "注册表主文件缺失，已从备份读取");
-                    recovered.authoritative = false;   // 备份可能早于最近新增，条目集未必完整
-                    return recovered;
-                }
                 // 备份也损坏/不可读：如实上报，避免伪装成空库后被一次写入覆盖。
-                return fromBak;
+                return parseRegistryFile(bak);
             }
             // 无注册表文件：无法区分「全新安装」与「索引丢失」，故不视为权威。
             RegistrySnapshot none = new RegistrySnapshot(Status.OK, new ArrayList<Entry>(), 0, "");
@@ -664,36 +813,82 @@ public final class AndroidEnrollmentRepository {
         }
 
         RegistrySnapshot snap = parseRegistryFile(dst);
-        // 主文件存在但不可读：若备份可解析则从备份恢复，避免「不可读」退化为空库/丢索引。
-        // ⚠️ 判据**刻意**只含 IO_ERROR，不含 CORRUPTED（范围由 9ea2f2c 定，与本处注释及类 javadoc
-        // 的「缺失/不可读」一致，**不是遗漏**）：本写入器走「tmp 落盘+fsync → dst→bak → tmp→dst」，
-        // 崩溃窗口产生的形态是「主文件缺失/不可读」，头损坏只可能来自**外部**破坏（截断/覆写）；
-        // 从同样可能陈旧、且未必完好的 .bak 覆盖回去，反而可能丢掉比它新的增量。
-        // 若要放宽到 CORRUPTED，须先拍板并同步上面的恢复语义，不得只改这一行。
-        if (snap.status == Status.IO_ERROR && bak.exists()) {
-            RegistrySnapshot fromBak = parseRegistryFile(bak);
-            if (fromBak.status == Status.OK) {
-                // 恢复返回值必须接：dst 存在（正是本分支成立的前提）时 renameTo 常失败
-                //（Windows 上目标已存在即失败；dst 是不可读目录时 POSIX 亦失败），
-                // 而 `renameQuietly` 只做裸 renameTo、不先删目标 ⇒ 不得无条件谎报「已从备份恢复」。
-                //
-                // ⚠️ 如实申报：本处是**行为变更**，不是「只加注释」。此前无条件使用「已从备份恢复」
-                // 一句文案（无论改名是否真的成功）。语义边界（改动前后逐项确认）：
-                //   * status 码不变：两条路径都返回 Status.OK，条目集都取自备份；
-                //   * authoritative 两条路径一致：都为 false（备份未必反映最新状态）；
-                //   * 变的只有 message ——「已从备份恢复」现在只在实际改名成功时给出，
-                //     否则退化为「已从备份读取」（主文件仍不可读，但索引已从备份读出）。
-                // 与 remove 路径**同口径**：那里同样检查 deleteWithBackup 的返回值并据此改变
-                // 文案/错误码（见 remove 的「模板文件删除失败，已回滚注册表」分支），绝不谎报操作结果。
-                boolean restored = FileStoreUtils.renameQuietly(bak, dst);
-                RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
-                        fromBak.skippedLineCount, restored ? "注册表主文件不可读，已从备份恢复"
-                                : "注册表主文件不可读，已从备份读取");
-                recovered.authoritative = false;   // 同上：备份未必反映最新状态
+        if (snap.status != Status.OK) {
+            // ★ 2026-09-29 修（头损坏 + 健康 .bak/.tmp 并存时错失自愈）：主文件**不可解析**
+            //   （头损坏 CORRUPTED，或整体不可读 IO_ERROR）时，若仍有**可解析**的 `.tmp`/`.bak`，
+            //   优先用它自愈，而不是把健康的副产品随主文件一起报废。
+            //   未修前的后果：头损坏 + `.bak` 完好 ⇒ 快照返回 CORRUPTED ⇒ `quarantineCorruptRegistry`
+            //   判定「无可用条目」⇒ 把健康的 `.bak` 也一并旁置、建空表 —— 数据不丢（是改名），
+            //   但**活性库被清空**，而 `.bak` 本可用于自愈。
+            //   ⚠️ 旧的收窄理由（`.bak` 可能陈旧、未必完好，覆盖回去可能丢增量）只在「`.bak` 是唯一
+            //   来源」时成立；这里只是把副产品**读出来用**，主文件一律不被覆盖（见下），故不存在
+            //   「用旧覆盖新」。
+            //   ⚠️ 与旧实现的差异（如实申报）：旧 IO_ERROR 分支在改名成功时会把 `.bak` 提升覆盖主文件；
+            //   现在**只有主文件不存在时**才提升（见 recoverFromSidecar）—— 主文件存在（哪怕字节损坏/
+            //   不可读）时一律只读、绝不 rename 覆盖，以兑现「不可解析的工件仍应保留、改名不删」的
+            //   数据安全约束（POSIX 的 `rename(2)` 会静默覆盖同名目标，覆盖即销毁主文件原字节）。
+            //   ⚠️ 已知剩余缺口（与缺失路径同源、本轮未修，已登记）：`parseRegistryFile` 只校验首行
+            //   魔数、无行数/尾校验，若副产品是**部分写且恰停在换行处**，会得到 `OK && skipped==0`
+            //   但不完整的条目集 ⇒ 判重门放行。
+            String mainState = (snap.status == Status.CORRUPTED) ? "头损坏" : "不可读";
+            RegistrySnapshot recovered = recoverFromSidecar(dst, mainState);
+            if (recovered != null) {
                 return recovered;
             }
         }
         return snap;
+    }
+
+    /**
+     * 主文件不可用（缺失 / 不可解析）时的**自愈**：按「先 `.tmp`、后 `.bak`」顺序取**首个可解析**
+     * 的副产品，返回恢复出的快照（{@code authoritative=false}）。
+     *
+     * <p><b>顺序依据</b>：写者不变式「写 tmp + fsync → dst→bak → tmp→dst」下，只要残留 `.tmp`，
+     * 它就是三者中**最新**的一份；`.bak` 可能早于最近一次新增。这与缺失路径的既有口径一致。
+     *
+     * <p><b>何时真“提升”为注册表</b>：仅当主文件**不存在**时把副产品 {@code renameQuietly} 就位
+     * （恢复后主文件重新存在，供后续写入的阶段 1「恢复基线」与各处 {@code dst.exists()} 判据使用）。
+     * 主文件**存在**（哪怕是损坏 / 不可读的字节）时一律**只读**该副产品、绝不 rename 覆盖 ——
+     * POSIX 的 {@code rename(2)} 会静默覆盖同名目标，覆盖即销毁主文件原字节，违背「不可解析的工件
+     * 仍应保留、改名不删」的数据安全约束。
+     *
+     * @param mainState 主文件当前状态的**如实**措辞（「缺失」/「头损坏」/「不可读」），仅用于结果文案
+     * @return 恢复出的快照；无任何可解析副产品时返回 {@code null}（由调用方各自决定如何如实上报）
+     */
+    @Nullable
+    private RegistrySnapshot recoverFromSidecar(@NonNull File dst, @NonNull String mainState) {
+        boolean canPromote = !dst.exists();
+        File tmp = tmpFileFor(dst);
+        if (tmp.exists()) {
+            RegistrySnapshot fromTmp = parseRegistryFile(tmp);
+            if (fromTmp.status == Status.OK) {
+                boolean promoted = canPromote && FileStoreUtils.renameQuietly(tmp, dst);
+                // `authoritative` 置 false：这是**恢复**来的内容，保守起见不宣称权威
+                //（判重门不看它，故不影响修复效果；语义边界见 RegistrySnapshot 的 javadoc）。
+                RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromTmp.entries,
+                        fromTmp.skippedLineCount,
+                        promoted ? "已从未消费的 .tmp 恢复注册表（含最新条目）"
+                                : "注册表主文件" + mainState + "，已从 .tmp 读取（含最新条目）");
+                recovered.authoritative = false;
+                return recovered;
+            }
+        }
+        File bak = backupFileFor(dst);
+        if (bak.exists()) {
+            RegistrySnapshot fromBak = parseRegistryFile(bak);
+            if (fromBak.status == Status.OK) {
+                // 恢复返回值必须接：`renameQuietly` 只做裸 renameTo、不先删目标，改名未必成功
+                // ⇒ 不得无条件谎报「已从备份恢复」（沿用 remove 路径同口径：检查返回值再定文案）。
+                boolean promoted = canPromote && FileStoreUtils.renameQuietly(bak, dst);
+                RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
+                        fromBak.skippedLineCount,
+                        promoted ? "已从备份恢复注册表"
+                                : "注册表主文件" + mainState + "，已从备份读取");
+                recovered.authoritative = false;
+                return recovered;
+            }
+        }
+        return null;
     }
 
     /** 解析单个注册表文件；文件不存在或不可读返回 IO_ERROR（缺省语义由调用方处理）。 */
