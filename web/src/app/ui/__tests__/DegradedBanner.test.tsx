@@ -26,6 +26,12 @@ const h = vi.hoisted(() => ({
   messageError: vi.fn(),
   messageSuccess: vi.fn(),
   getModels: vi.fn(),
+  // 2026-09-28 新增：组件现在会把「最近一次健康检查的判定」回报给 store（供顶栏徽标降级，
+  // 见 AppStore 的 healthProbe）；这里用可断言的 spy。
+  setHealthProbe: vi.fn(),
+  // 可变的 prefs 持有者：供「偏好变化 ⇒ effect 重跑 ⇒ 两条 health 请求重叠」的竞态用例改写，
+  // 其余用例保持 null（回落到 defaultPrefs）。
+  prefsBox: { current: null as (typeof defaultPrefs) | null },
 }))
 
 // 只替换 getHealth，保留真实的 describeReasonCode（description 文案走真实码→中文映射）。
@@ -40,9 +46,12 @@ vi.mock('../../api/models', () => ({
   reloadModel: h.getModels,
 }))
 
-// 避免为取 prefs 去搭 AppStoreProvider：组件只用到 useAppStore().prefs。
+// 避免为取 prefs 去搭 AppStoreProvider：组件只用到 useAppStore().prefs 与 .setHealthProbe。
 vi.mock('../../state/AppStore', () => ({
-  useAppStore: () => ({ prefs: defaultPrefs }),
+  useAppStore: () => ({
+    prefs: h.prefsBox.current ?? defaultPrefs,
+    setHealthProbe: h.setHealthProbe,
+  }),
 }))
 
 vi.mock('@ant-design/icons', () => ({
@@ -158,6 +167,8 @@ beforeEach(() => {
   h.messageError.mockReset()
   h.messageSuccess.mockReset()
   h.getModels.mockReset()
+  h.setHealthProbe.mockReset()
+  h.prefsBox.current = null
 })
 
 afterEach(async () => {
@@ -239,5 +250,64 @@ describe('DegradedBanner 渲染门（Fake getHealth 驱动）', () => {
     >)
     root = await mountBanner()
     expect(h.alert, 'ok:false 信封不得渲染横幅').not.toHaveBeenCalled()
+  })
+})
+
+// ── 2026-09-28 新增（外部审查 [P2] 两条 Web 发现的判别用例）──────────────────────────────
+// 可控 promise：用于精确编排「先发出的请求**后**返回」。
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+describe('过期响应守卫与健康判定回报（2026-09-28 修复项）', () => {
+  it('★ 过期响应不得覆盖较新的结果（代次守卫）—— 修复前本条必红', async () => {
+    const r1 = deferred<ReturnType<typeof okEnvelope>>()
+    const r2 = deferred<ReturnType<typeof okEnvelope>>()
+    h.getHealth.mockReturnValueOnce(r1.promise).mockReturnValueOnce(r2.promise)
+    h.prefsBox.current = { ...defaultPrefs, apiTimeoutMs: 1000 }
+
+    root = await mountBanner() // 发出 R1（较早）
+
+    // 改 prefs ⇒ loadHealth 换身份 ⇒ effect 重跑 ⇒ 发出 R2（较新）。
+    // 这正是设置页的日常路径（该页是**逐键实时写** prefs）。
+    h.prefsBox.current = { ...defaultPrefs, apiTimeoutMs: 2000 }
+    await act(async () => {
+      root!.render(<DegradedBanner />)
+    })
+
+    // 较新的 R2 先返回：ok ⇒ 不渲染横幅，且判定回报为「健康」。
+    await act(async () => {
+      r2.resolve(okEnvelope(healthData({ status: 'ok' })))
+    })
+    expect(h.alert).not.toHaveBeenCalled()
+    expect(h.setHealthProbe).toHaveBeenCalledWith(true)
+
+    // 较旧的 R1 后返回：degraded ⇒ 代次守卫必须**丢弃**它。
+    // 修复前 `aliveRef` 会被新 effect 重新上膛为 true ⇒ 这里会点亮横幅 ⇒ 本条必红。
+    await act(async () => {
+      r1.resolve(
+        okEnvelope(
+          healthData({ status: 'degraded', reasonCode: 'missing_model', warning: '模型缺失' }),
+        ),
+      )
+    })
+    expect(
+      h.alert,
+      '过期的降级响应不得点亮横幅（修复前 aliveRef 会被新 effect 重新上膛 ⇒ 本条必红）',
+    ).not.toHaveBeenCalled()
+    expect(h.setHealthProbe).not.toHaveBeenCalledWith(false)
+  })
+
+  it('★ 健康检查失败必须回报给 store（顶栏徽标据此显示「未连接」）', async () => {
+    h.getHealth.mockRejectedValueOnce(new Error('network down'))
+    root = await mountBanner()
+    // 修复前顶栏只由 serverSettings 驱动，断线后**无限期**显示「已连接」（见 AppStore 的 healthProbe 说明）。
+    expect(h.setHealthProbe).toHaveBeenCalledWith(false)
   })
 })

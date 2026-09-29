@@ -4,21 +4,17 @@ import type { MenuProps } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { useAppStore } from '../state/AppStore'
+import { badgeFor } from './badge'
 import { DegradedBanner } from './DegradedBanner'
 
 const { Header, Sider, Content } = Layout
 
-function statusToBadge(status: 'idle' | 'loading' | 'ready' | 'error') {
-  if (status === 'ready') return { status: 'success' as const, text: '已连接' }
-  if (status === 'loading') return { status: 'processing' as const, text: '请求中' }
-  if (status === 'error') return { status: 'error' as const, text: '异常' }
-  return { status: 'default' as const, text: '未加载' }
-}
+// 徽标判据已抽到 ./badge（**不依赖 antd**，便于纯函数单测）；见该文件的说明。
 
 export function MainLayout() {
   const nav = useNavigate()
   const loc = useLocation()
-  const { serverSettings, refreshServerSettings } = useAppStore()
+  const { serverSettings, refreshServerSettings, healthProbe } = useAppStore()
 
   const selectedKey =
     loc.pathname.startsWith('/settings')
@@ -31,7 +27,11 @@ export function MainLayout() {
         ? 'home'
         : 'home'
 
-  const badge = statusToBadge(serverSettings.status)
+  // ★ 2026-09-28 修（外部审查 [P2]）：徽标此前**只**由 `serverSettings.status` 派生，而该状态
+  //   只在「挂载时一次 + 用户手动刷新」时更新 ⇒ 后端断线后徽标会**无限期**保持「已连接」，
+  //   与 `docs/windows-web-spa/feature_parity.md` 声明的「顶栏状态区 = 健康检查入口」不符。
+  //   判据已抽到 `badgeFor()`（见其注释，含单测）。
+  const badge = badgeFor(serverSettings.status, healthProbe)
 
   return (
     <Layout style={{ minHeight: '100vh' }}>

@@ -23,21 +23,35 @@ type HealthState = { data?: HealthData }
 // 属**配置装载层**的另一个量，语义不同，且 config.json 的启动期告警可能长期存在，若一并
 // 在此报警会误导成“识别不可用”。
 export function DegradedBanner() {
-  const { prefs } = useAppStore()
+  const { prefs, setHealthProbe } = useAppStore()
   const [health, setHealth] = useState<HealthState>({})
   const [retrying, setRetrying] = useState(false)
   const aliveRef = useRef(true)
+  // ★ 2026-09-28 修（外部审查 [P2]「Web 降级提示可能被过期响应覆盖」+ 独立复核）：新增**请求代次**守卫。
+  //   原有的 `aliveRef` 只表达「组件是否仍挂载」，而且它在本组件里是**跨 effect 生命周期复用、每次
+  //   effect 重跑都被重新上膛成 `true`** 的单一布尔量 ⇒ 对「响应新旧」**零判别力**：`prefs` 变化
+  //   （设置页是**逐键实时写** prefs）会重跑 effect，而旧请求 resolve 时读到的是新 effect 写回的
+  //   `true` ⇒ **较早的响应可以晚于较新的响应写入状态**，横幅错误出现或消失。
+  //   ⚠️ 仓内已有正例：`AppStore` 的 `settingsGenRef`（Q-CQ-B08-003）用代次提交修过同类竞态，
+  //   本组件此前未采用。此处照该范式补上；`aliveRef` **保留**，只继续承担「卸载后不 setState」。
+  const genRef = useRef(0)
 
   const loadHealth = useCallback(async () => {
+    const gen = ++genRef.current
     try {
       const env = await getHealth(prefs)
-      if (!aliveRef.current) return
+      if (!aliveRef.current || gen !== genRef.current) return
       setHealth({ data: env.ok ? env.data : undefined })
+      // 把「最近一次健康检查的判定」回报给 store：顶栏徽标据此降级（见 AppStore 的 healthProbe 说明）。
+      setHealthProbe(!!env.ok)
     } catch {
       // 后端不可达/超时：安静降级 —— 不渲染、不弹通知（避免轮询刷屏）
-      if (aliveRef.current) setHealth({})
+      if (aliveRef.current && gen === genRef.current) {
+        setHealth({})
+        setHealthProbe(false)
+      }
     }
-  }, [prefs])
+  }, [prefs, setHealthProbe])
 
   useEffect(() => {
     aliveRef.current = true
