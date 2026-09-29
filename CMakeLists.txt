@@ -272,6 +272,9 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     #    「（B06-014）」—— **B06-014 实为 FramePipeline 运行时所有权并发的 UAF**（模型热重载
     #    释放处理线程正在使用的对象），与本处挂起无关；本超时实为**模板式复制**。
     #    ⇒ 两处注释此前互相矛盾（windows.cmake 已改、此处未改），现已同步。
+    # ⚠️ 数值**不再与 `win_unit_tests` 同值**（2026-09-28 用户拍板）：那边因「负载下正常时长可达
+    #    ~118s」已上调 **120 → 180**；本 target 正常时长 **~1.5s**、120s 余量充足 ⇒ **保持 120 不变**。
+    #    勿再因「同策略」把两者改齐。
     set_tests_properties(face_infer_unit_tests PROPERTIES TIMEOUT 120)
 endif()
 

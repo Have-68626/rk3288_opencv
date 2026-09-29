@@ -153,10 +153,29 @@ int main(int argc, char** argv) {
         return 4;
     }
 
+    // ★ 相对路径按 **exe 目录** 解析（2026-09-28 修；与同目录的 `win_face_eval_cli` /
+    //   `win_face_bench_cli` 统一口径）。本文件原先**只有** `cascade` / `dbPath` 解析了，而
+    //   `--video` / `--out` / `--gallery` 是**裸用 argv** 的 ⇒ 同一命令在不同 cwd 下会取到
+    //   **不同的文件**（即本仓登记的「相对路径随 cwd 漂移」同族问题）。
+    //   ⚠️ **行为变化（有意的 breaking change，用户 2026-09-28 拍板）**：显式传入的**相对**路径
+    //   现在按 exe 目录解析；**绝对路径由 `resolvePathFromExeDir` 原样返回，不受影响**。
+    //   ⇒ 若某调用原本依赖「相对 cwd」（如 `--video clips/a.mp4` 且从仓库根运行），需改用绝对路径
+    //     或把文件放到 exe 旁。
+    //   ⚠️ 解析结果也用于**元数据输出**（脚本头 `source=`/`gallery=`、`REPLAY_SUMMARY`）——
+    //   这是**有意的**：排障要看到「实际使用的绝对路径」。已核实**无任何测试**断言这些文本。
+    const auto videoPath = resolvePathFromExeDir(args.video);
+    const auto outPath = resolvePathFromExeDir(args.out);
+    const auto galleryPath =
+        args.gallery.empty() ? std::filesystem::path{} : resolvePathFromExeDir(args.gallery);
+
     // ── 1. 打开视频 ──────────────────────────────────────────────────────────
-    cv::VideoCapture cap(args.video, cv::CAP_ANY);
+    // ⚠️ `Args` 的各路径字段是 `std::string`，而 `resolvePathFromExeDir` 返回 `std::filesystem::path`
+    //   ⇒ 传给接受字符串的接口（`cv::VideoCapture`、`std::ostream` 等）必须显式 `.string()`；
+    //   注意**不能**直接 `<<` 一个 `path`——`std::filesystem::path` 的 `operator<<` 会**加引号**，
+    //   与本文其余日志的裸路径格式不一致（本批构建曾因此报 C2665）。
+    cv::VideoCapture cap(videoPath.string(), cv::CAP_ANY);
     if (!cap.isOpened()) {
-        std::cerr << "REPLAY_ERROR video_open_failed path=" << args.video << "\n";
+        std::cerr << "REPLAY_ERROR video_open_failed path=" << videoPath.string() << "\n";
         return 2;
     }
     const double fps = cap.get(cv::CAP_PROP_FPS);
@@ -184,13 +203,13 @@ int main(int argc, char** argv) {
     } else {
         recognizer.clearDb();
         recognizerReady = true;
-        if (!args.gallery.empty()) {
+        if (!galleryPath.empty()) {
             std::error_code gec;
-            if (!std::filesystem::is_directory(args.gallery, gec)) {
-                std::cerr << "REPLAY_WARN gallery_unavailable path=" << args.gallery
+            if (!std::filesystem::is_directory(galleryPath, gec)) {
+                std::cerr << "REPLAY_WARN gallery_unavailable path=" << galleryPath.string()
                           << "（目录不存在或不可读）→ 不产出身份，检测仍继续\n";
             } else {
-                for (const auto& idEntry : std::filesystem::directory_iterator(args.gallery)) {
+                for (const auto& idEntry : std::filesystem::directory_iterator(galleryPath)) {
                     if (!idEntry.is_directory()) continue;
                     const std::string personId = idEntry.path().filename().string();
                     for (const auto& imgEntry :
@@ -204,7 +223,7 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-                std::cout << "REPLAY_INFO gallery=" << args.gallery
+                std::cout << "REPLAY_INFO gallery=" << galleryPath.string()
                           << " enrolled=" << enrollCount << "\n";
             }
         } else {
@@ -257,15 +276,15 @@ int main(int argc, char** argv) {
     // 注释头记录抽稀率与来源——解析器忽略 '#' 行；「首次确认耗时以回放条目步数计」，
     // 抽稀后读数会偏大，故必须把 stride 一并留痕（见 test_track_replay.cpp 顶部说明）。
     std::ostringstream header;
-    header << "source=" << args.video << "\n"
+    header << "source=" << videoPath.string() << "\n"
            << "stride=" << args.stride << " emitted=" << emitted << " decoded=" << decoded << "\n"
            << "ts_ms_per_frame=" << stepMs << " fps=" << fps << "\n"
-           << "gallery=" << (args.gallery.empty() ? std::string("(none)") : args.gallery)
+           << "gallery=" << (galleryPath.empty() ? std::string("(none)") : galleryPath.string())
            << " enrolled=" << enrollCount << "\n"
            << "recognizer_ready=" << (recognizerReady ? 1 : 0);
 
     // ── 4. 落盘：检查 open/write/flush/close 每一步 ─────────────────────────
-    const std::filesystem::path outPath(args.out);
+    // outPath 已在文件开头按 exe 目录解析（见那里的说明），此处不再重新声明。
     ensureParentDir(outPath);
     std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -295,7 +314,7 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    std::cout << "REPLAY_SUMMARY video=" << args.video << " out=" << outPath.string()
+    std::cout << "REPLAY_SUMMARY video=" << videoPath.string() << " out=" << outPath.string()
               << " decoded=" << decoded << " emitted=" << emitted << " stride=" << args.stride
               << " recognizer_ready=" << (recognizerReady ? 1 : 0) << " enrolled=" << enrollCount
               << " ts_ms_per_frame=" << stepMs << " fps=" << fps << "\n";
