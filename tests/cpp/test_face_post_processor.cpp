@@ -150,3 +150,71 @@ TEST(FacePostProcessorTest, InvalidFaceInMiddlePreservesOriginalIndexMapping) {
     EXPECT_EQ(out[1].bbox.x, 400);
     EXPECT_EQ(out[2].bbox.x, 10);
 }
+
+// ── 64 位端点/面积运算的极值判别用例 ─────────────────────────────────────
+// 背景：FacePostProcessor 的矩形端点（x+width、y+height）与 rectArea 的 w*h 此前都在 int 域
+// 计算；当端点接近 int 边界时这些加/乘会溢出（有符号溢出属 UB）。修复后端点一律在
+// long long 域算，只在写回 cv::Rect 时经 clampRectDim 收敛到 [0, INT_MAX]。
+// 下列用例注入极值矩形，钉死 64 位语义下的确定结果，使「端点/面积改回 int」必然翻红。
+
+// 端点 x+width 越过 int 边界（1000 + INT_MAX）。64 位下右端点为 2^31+999，与画面 2000 宽求交
+// 得到确定宽度 1000；int 版该加法回绕为负，交集宽度被 clampRectDim 夹成 0 ⇒ 该框被判为与画面
+// 无交集而丢弃。
+TEST(FacePostProcessorTest, ClippedExtremeWidthEndpointsComputeIn64Bit) {
+    const int kMax = std::numeric_limits<int>::max();
+    std::vector<DetectedFace> in = {makeFace(1000, 0, kMax, 100, 0.9f)};
+    std::vector<DetectedFace> out = FacePostProcessor::process(in, 2000, 100);
+    ASSERT_EQ(out.size(), 1u);
+    // 与 2000x100 画面求交：左边界 1000，右边界被画面裁到 2000 ⇒ 宽 2000-1000=1000
+    EXPECT_EQ(out[0].bbox.x, 1000);
+    EXPECT_EQ(out[0].bbox.y, 0);
+    EXPECT_EQ(out[0].bbox.width, 1000);
+    EXPECT_EQ(out[0].bbox.height, 100);
+}
+
+// 两个几何完全相同的极值矩形。64 位 IoU = 1.0 > 默认 NMS 阈值 0.40 ⇒ 抑制其一，只留高分者；
+// int 版端点回绕使交集宽高被夹成 0 ⇒ IoU = 0，两个框都留下。
+TEST(FacePostProcessorTest, IouOfIdenticalExtremeBoxesSuppressesDuplicate) {
+    const int kMax = std::numeric_limits<int>::max();
+    std::vector<DetectedFace> in = {
+        makeFace(1000, 0, kMax, 1000, 0.90f),
+        makeFace(1000, 0, kMax, 1000, 0.80f),
+    };
+    // frameWidth/Height = 0 ⇒ 跳过画面裁剪，直接暴露 iou 的端点运算
+    std::vector<DetectedFace> out = FacePostProcessor::process(in, 0, 0);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].confidence, 0.90f);
+}
+
+// 端点接近 int 边界但未越界（右端点 = INT_MAX-1000，仍在 int 域内）。此路径不触发溢出，
+// 64 位与 int 两种算法给出逐位相同的裁剪结果 —— 钉死「修复对合法输入零行为变化」这条不变量。
+TEST(FacePostProcessorTest, NearBoundaryNonOverflowingEndpointsAreUnchanged) {
+    const int kMax = std::numeric_limits<int>::max();
+    const int kX = kMax - 2000;  // 左边界；右端点 kX+1000 = kMax-1000，不越界
+    std::vector<DetectedFace> in = {makeFace(kX, kX, 1000, 1000, 0.9f)};
+    std::vector<DetectedFace> out = FacePostProcessor::process(in, kMax, kMax);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].bbox.x, kX);
+    EXPECT_EQ(out[0].bbox.y, kX);
+    EXPECT_EQ(out[0].bbox.width, 1000);
+    EXPECT_EQ(out[0].bbox.height, 1000);
+}
+
+// rectArea 的 w*h 越界会把面积算成负值（int 版 2*INT_MAX 回绕为 -2），进而翻转包含抑制里
+// 「谁是更小的框」这一判断。64 位：大框 A=(2,INT_MAX) 面积约 4.29e9 > 小框 B=(2,100) 面积 200
+// ⇒ B 被判为更小的框且被 A 完全包含（占比 1.0）⇒ 分数更低的 B 被删除，只留 A。
+// int 版 rectArea(A) = -2 ≤ 200 ⇒ A 反被判为更小的框，且 containedRatio 的 inArea ≤ 0 直接
+// 返回 0（不构成包含）⇒ 两个框都留下。
+TEST(FacePostProcessorTest, HugeAreaSignFlipDrivesContainmentDecision) {
+    const int kMax = std::numeric_limits<int>::max();
+    std::vector<DetectedFace> in = {
+        makeFace(0, 0, 2, kMax, 0.90f),  // 大框 A
+        makeFace(0, 0, 2, 100, 0.50f),   // 小框 B，完全落在 A 内
+    };
+    std::vector<DetectedFace> out = FacePostProcessor::process(in, 0, 0);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].confidence, 0.90f);
+    EXPECT_EQ(out[0].bbox.x, 0);
+    EXPECT_EQ(out[0].bbox.width, 2);
+    EXPECT_EQ(out[0].bbox.height, kMax);
+}
