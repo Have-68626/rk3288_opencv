@@ -2,32 +2,59 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace pipeline {
 
 namespace {
 
+// ★ 2026-09-28 修（外部审查 [P2]「异常检测框可触发整数转换或加法溢出」+ 独立复核）：
+//   本文件原先所有矩形端点运算都在 **int** 域进行：`a.x + a.width`（三处）、
+//   `rectArea` 的 `w * h`（int×int）。`cv::Rect` 的 x/width 是 int，而**生产者**一侧
+//   （`Engine::postProcessRealtimeBoxes` / `ScrfdDecoder`）在修复前可以把接近 int 边界的端点
+//   写进 bbox ⇒ 这些加/减/乘都是有符号溢出 UB。
+//   修法：**端点一律在 `long long` 域算**，只在写回 `cv::Rect` 时收敛回 int 域并夹取。
+//   行为变化：对合法输入**零变化**（合法输入的端点差远小于 int 域，夹取不触发）。
+//   注意：本文件被编入 `core_unit_tests`（mock OpenCV）与 `core_gtest_tests` 两侧，
+//   `long long` 算术对两者都成立（不依赖 OpenCV）。
+constexpr long long kRectMax = static_cast<long long>(std::numeric_limits<int>::max());
+
 double rectArea(const cv::Rect& r) {
-    return std::max(0, r.width) * std::max(0, r.height);
+    const long long w = std::max<long long>(0, r.width);
+    const long long h = std::max<long long>(0, r.height);
+    return static_cast<double>(w * h);  // 64 位乘 ⇒ 不再有 int×int 溢出
+}
+
+int clampRectDim(long long v) {
+    return static_cast<int>(std::min<long long>(std::max<long long>(0, v), kRectMax));
 }
 
 // 矩形交集：不用 cv::Rect operator&，因 RK_SKIP_OPENCV 的 mock Rect 未实现该运算符
 cv::Rect intersectRect(const cv::Rect& a, const cv::Rect& b) {
-    const int x1 = std::max(a.x, b.x);
-    const int y1 = std::max(a.y, b.y);
-    const int x2 = std::min(a.x + a.width, b.x + b.width);
-    const int y2 = std::min(a.y + a.height, b.y + b.height);
-    return cv::Rect(x1, y1, std::max(0, x2 - x1), std::max(0, y2 - y1));
+    const long long ax2 = static_cast<long long>(a.x) + a.width;
+    const long long ay2 = static_cast<long long>(a.y) + a.height;
+    const long long bx2 = static_cast<long long>(b.x) + b.width;
+    const long long by2 = static_cast<long long>(b.y) + b.height;
+    const long long x1 = std::max<long long>(a.x, b.x);
+    const long long y1 = std::max<long long>(a.y, b.y);
+    const long long x2 = std::min(ax2, bx2);
+    const long long y2 = std::min(ay2, by2);
+    return cv::Rect(static_cast<int>(x1), static_cast<int>(y1),
+                    clampRectDim(x2 - x1), clampRectDim(y2 - y1));
 }
 
 double iou(const cv::Rect& a, const cv::Rect& b) {
-    const int x1 = std::max(a.x, b.x);
-    const int y1 = std::max(a.y, b.y);
-    const int x2 = std::min(a.x + a.width, b.x + b.width);
-    const int y2 = std::min(a.y + a.height, b.y + b.height);
-    const int iw = std::max(0, x2 - x1);
-    const int ih = std::max(0, y2 - y1);
-    const double inter = static_cast<double>(iw) * ih;
+    const long long ax2 = static_cast<long long>(a.x) + a.width;
+    const long long ay2 = static_cast<long long>(a.y) + a.height;
+    const long long bx2 = static_cast<long long>(b.x) + b.width;
+    const long long by2 = static_cast<long long>(b.y) + b.height;
+    const long long x1 = std::max<long long>(a.x, b.x);
+    const long long y1 = std::max<long long>(a.y, b.y);
+    const long long x2 = std::min(ax2, bx2);
+    const long long y2 = std::min(ay2, by2);
+    const long long iw = std::max<long long>(0, x2 - x1);
+    const long long ih = std::max<long long>(0, y2 - y1);
+    const double inter = static_cast<double>(iw) * static_cast<double>(ih);
     const double uni = rectArea(a) + rectArea(b) - inter;
     if (uni <= 0.0) return 0.0;
     return inter / uni;
@@ -37,13 +64,17 @@ double iou(const cv::Rect& a, const cv::Rect& b) {
 double containedRatio(const cv::Rect& inner, const cv::Rect& outer) {
     const double inArea = rectArea(inner);
     if (inArea <= 0.0) return 0.0;
-    const int x1 = std::max(inner.x, outer.x);
-    const int y1 = std::max(inner.y, outer.y);
-    const int x2 = std::min(inner.x + inner.width, outer.x + outer.width);
-    const int y2 = std::min(inner.y + inner.height, outer.y + outer.height);
-    const int iw = std::max(0, x2 - x1);
-    const int ih = std::max(0, y2 - y1);
-    return (static_cast<double>(iw) * ih) / inArea;
+    const long long ix2 = static_cast<long long>(inner.x) + inner.width;
+    const long long iy2 = static_cast<long long>(inner.y) + inner.height;
+    const long long ox2 = static_cast<long long>(outer.x) + outer.width;
+    const long long oy2 = static_cast<long long>(outer.y) + outer.height;
+    const long long x1 = std::max<long long>(inner.x, outer.x);
+    const long long y1 = std::max<long long>(inner.y, outer.y);
+    const long long x2 = std::min(ix2, ox2);
+    const long long y2 = std::min(iy2, oy2);
+    const long long iw = std::max<long long>(0, x2 - x1);
+    const long long ih = std::max<long long>(0, y2 - y1);
+    return (static_cast<double>(iw) * static_cast<double>(ih)) / inArea;
 }
 
 }  // namespace

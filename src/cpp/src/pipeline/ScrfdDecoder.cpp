@@ -16,6 +16,24 @@ float mapY(float v, const ScrfdDecodeOptions& opt) {
     return (v - opt.padY) / opt.scale;
 }
 
+// ★ 2026-09-28 新增（外部审查 [P2]「异常检测框可触发整数转换或加法溢出」+ 独立复核：
+//   **本文件才是该缺陷最先命中的地方** —— `mapX/mapY` 的结果仅要求「有限」，而 SCRFD 的
+//   distance/delta 回归分量**无上界**，畸形/敌意模型可给出 ~1e9 的**有限**值）。
+//   `std::lround` 在结果超出 int 范围时**返回值由实现定义/未指定**，随后的 `static_cast<int>`
+//   更是 UB；且相邻两个端点若各自贴在 int 边界附近，「端点差」（int 减法）会溢出。
+//   ⇒ 这里把端点夹进 ±INT_MAX/2：**既**保证单点可转 int，**又**保证任意两点之差 ≤ INT_MAX。
+//   ⚠️ 夹取之后仍用 `lround`（**不是**截断）—— 见 `mapToIntClamped` 内注释。
+constexpr double kScrfdIntHalf = 1073741823.0;  // = INT_MAX / 2
+
+int mapToIntClamped(float v) {
+    const double d = std::min(std::max(static_cast<double>(v), -kScrfdIntHalf), kScrfdIntHalf);
+    // ★ 必须保留原实现的**就近取整**语义：本批初版此处写成 `static_cast<int>(d)`（向零**截断**），
+    //   等于**静默**把检测框坐标改了最多 1px —— 由验收代理查出，且当时**无任何用例可判别**
+    //   （`test_scrfd_decoder.cpp` 的断言输入全为整数，截断与取整同值）。
+    //   夹取到 ±INT_MAX/2 之后 `lround` 的结果必然落在 long 内 ⇒ 转 int 安全。
+    return static_cast<int>(std::lround(d));
+}
+
 }  // namespace
 
 std::vector<ScrfdDetection> ScrfdDecoder::decode(
@@ -172,12 +190,18 @@ std::vector<ScrfdDetection> ScrfdDecoder::decode(
                           std::isfinite(mx2) && std::isfinite(my2))) {
                         continue;
                     }
-                    const int ox1 = static_cast<int>(std::lround(mx1));
-                    const int oy1 = static_cast<int>(std::lround(my1));
-                    const int ox2 = static_cast<int>(std::lround(mx2));
-                    const int oy2 = static_cast<int>(std::lround(my2));
-                    d.bbox = cv::Rect(ox1, oy1,
-                                      std::max(1, ox2 - ox1), std::max(1, oy2 - oy1));
+                    // ★ 2026-09-28 修：原为 `static_cast<int>(std::lround(mx1))` + `ox2 - ox1`（int 减法）。
+                    //   lround 超范围为实现定义、转 int 为 UB；端点差还会 int 溢出。（详见文件上方 helper 注释）
+                    const int ox1 = mapToIntClamped(mx1);
+                    const int oy1 = mapToIntClamped(my1);
+                    const int ox2 = mapToIntClamped(mx2);
+                    const int oy2 = mapToIntClamped(my2);
+                    d.bbox = cv::Rect(
+                        ox1, oy1,
+                        static_cast<int>(std::max<long long>(
+                            1, static_cast<long long>(ox2) - static_cast<long long>(ox1))),
+                        static_cast<int>(std::max<long long>(
+                            1, static_cast<long long>(oy2) - static_cast<long long>(oy1))));
                     dets.push_back(std::move(d));
                 }
             }
@@ -204,10 +228,14 @@ std::vector<ScrfdDetection> ScrfdDecoder::decode(
     for (std::size_t k : kept) {
         ScrfdDetection d = dets[k];  // 顺序 == process 输出顺序
         // 与 FacePostProcessor::process 对齐：保留项裁剪到原图边界（关键点不变）
+        // ★ 2026-09-28 修：`d.bbox.x + d.bbox.width` 是 **int 加法**，端点接近 int 边界时溢出 UB。
+        //   改为 64 位求和后再夹到原图边界（result ≤ origWidth/Height，故回到 int 是安全的）。
+        const long long bx2 = static_cast<long long>(d.bbox.x) + d.bbox.width;
+        const long long by2 = static_cast<long long>(d.bbox.y) + d.bbox.height;
         const int x1 = std::max(d.bbox.x, 0);
         const int y1 = std::max(d.bbox.y, 0);
-        const int x2 = std::min(d.bbox.x + d.bbox.width, opt.origWidth);
-        const int y2 = std::min(d.bbox.y + d.bbox.height, opt.origHeight);
+        const int x2 = static_cast<int>(std::min<long long>(bx2, opt.origWidth));
+        const int y2 = static_cast<int>(std::min<long long>(by2, opt.origHeight));
         d.bbox = cv::Rect(x1, y1, std::max(1, x2 - x1), std::max(1, y2 - y1));
         // 关键点随检测同步（不做几何裁剪）
         out.push_back(std::move(d));
