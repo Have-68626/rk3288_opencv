@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-26
+as_of=2026-09-30
 -->
 
 ﻿# RK3288 AI Engine - 开发指南 (Development Guide)
@@ -161,10 +161,10 @@ ctest --test-dir build_win -C Release --output-on-failure
 
 | 目标 | 说明 | OpenCV |
 |:-----|:------|:------:|
-| `core_unit_tests` | 核心模块单元测试（17 项） | ❌ 不需要 |
-| `face_infer_unit_tests` | 人脸推理管线测试（23 项，含 INT8） | ✅ 需要 |
+| `core_unit_tests` | 核心模块单元测试（用例数以 `ctest` 输出为准） | ❌ 不需要 |
+| `face_infer_unit_tests` | 人脸推理管线测试（含 INT8；用例数以 `ctest` 输出为准） | ✅ 需要 |
 | `ncnn_precision_test` | ncnn 推理精度对比测试（独立目标） | ✅ 需要 |
-| `win_unit_tests` | Windows 服务单元测试（2 项） | ✅ 需要 |
+| `win_unit_tests` | Windows 服务单元测试（用例数以 `ctest` 输出为准） | ✅ 需要 |
 | `win_local_service` | Windows 本地服务（默认入口） | ✅ 需要 |
 | `win_face_eval_cli` / `win_face_bench_cli` | 测评与基准 CLI | ✅ 需要 |
 
@@ -183,7 +183,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 | Web 单元测试 | Vitest | `web/src/` | 无 |
 | Web E2E | Cypress | `web/cypress/` | 需要后端 |
 
-**自定义 `bool` 测试**的约定：测试文件声明 `bool test_xxx()`，并在对应 `*_main.cpp` 的 `TestCase` 表中注册；输出格式为 `TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`。
+**自定义 `bool` 测试**的约定：测试文件声明 `bool test_xxx()`，并在对应 `*_main.cpp` 的 `TestCase` 表中注册；输出格式为 `TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`；另有一种 `TEST_SKIP_ABSENT reason=... path=... note=...`（由 `tests/cpp/test_int8_quantization.cpp` 的 `skipIfNoModel()` 在模型缺失时打印），**出现 `TEST_SKIP_ABSENT` 时该用例仍计 PASS**——该标记只增加可见性，返回值仍是 `true`、仍计入 `pass`，勿误读为失败。
 
 > `win_unit_tests` 是混合 target：runner 为自定义 `bool` 表驱动，同时链接了 `tests/win/test_http_faces_server.cpp` 的 GoogleTest 用例。
 
@@ -284,6 +284,21 @@ INT8 量化工具链位于 `scripts/quantize_ncnn_int8.py`，使用两步流程�
 为了确保算法在目标硬件上的稳定性，需定期核对内核配置：
 - **基准配置**: `docs/bsp/defconfig/rk3288_defconfig`
 - **运行快照**: `docs/bsp/kernel-config/kernel.config`
+
+### 6.8 提交流程 (Commit & Pull Request)
+
+提交信息遵循 **Conventional Commits**：类型与 scope 用英文（如 `feat` / `fix` / `docs` / `test` / `refactor` / `chore`），描述用中文，标题 ≤ 72 字符；生成后先展示、确认后方可 `git commit`，**禁止自动 push**。
+
+PR 合并规则（权威口径见 [AGENTS.md](AGENTS.md) 的「PR 合并规则」，与 [CLAUDE.md](CLAUDE.md) 同源）：
+
+1. 逐条阅读并解决 PR 上的全部 review / issue comments。
+2. 解决所有冲突：`git merge origin/master`。
+3. 等待 CI 必需检查通过（`unit-tests` 已降级为非门禁，其失败仅作提示，需人工留意）。
+4. **仅用 squash and merge**；禁止 merge commit 与 rebase merge。
+5. 删除已合并的源分支。
+6. 不绕过分支保护规则；`--admin` 仅限紧急修复使用。
+
+提交前本地须通过文档门禁：`node scripts/docs-sync-audit.js --skip-links`（要求 high=0 且 medium=0）。
 
 ---
 
