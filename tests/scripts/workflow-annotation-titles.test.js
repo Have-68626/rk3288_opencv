@@ -45,7 +45,7 @@ const CI_YML = path.join(REPO_ROOT, ".github", "workflows", "ci.yml");
  * title 白名单（显式常量表）。ci.yml 里出现的每一个注解 title 都必须登记在此：
  *   - env-transient            —— 瞬时抖动（apt 网络等），notice 级；
  *   - env-not-ready            —— 布局级/配置级环境未就绪，warning 级；
- *   - native-lib-compile-failed —— JNI 源文件（native-lib.cpp 与 native_face_bridge.cpp）语法检查真实失败（编译期错误），warning 级；
+ *   - native-lib-compile-failed —— JNI 源文件（cmake/android.cmake 的全 8 个）语法检查真实失败（编译期错误），warning 级；
  *   - rk3288_cli build failed  —— rk3288_cli 未编过，warning 级。
  * 改动任一 title、或新增第 5 个 title，都必须在此显式登记 —— 这正是本测试要拦的事。
  */

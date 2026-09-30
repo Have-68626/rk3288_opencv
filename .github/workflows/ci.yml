@@ -307,19 +307,24 @@ jobs:
       - name: Build and Test (Skip OpenCV)
         run: ./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --no-daemon
 
-      # 两个 JNI 源文件的语法检查（非阻断）：src/cpp/native-lib.cpp +
-      # src/cpp/jni/native_face_bridge.cpp——闭合「真实 JNI 实现从未被任何 CI job 编译」的盲区。
+      # 八个 JNI 源文件的语法检查（非阻断）——闭合「真实 JNI 实现从未被任何 CI job 编译」的盲区。
+      # 清单与 cmake/android.cmake 中 `if(NOT RK_SKIP_OPENCV)` 块内 add_library(native-lib ...) 一一对应
+      # （共 8 个）：src/cpp/native-lib.cpp + src/cpp/src/JniMethodRegistry.cpp +
+      # src/cpp/jni/{camera,engine,preview,config,native_face_bridge,registry}.cpp。
+      # 此前本 step 仅喂其中 2 个（native-lib.cpp、native_face_bridge.cpp），其余 6 个在全部 CI job 中
+      # 零编译；本 step 末尾会以 checked_files=<N> 打印**本数组的元素个数**。⚠️ 该数组是硬编码字面量，
+      # 与 cmake 侧**不**自动联动 ⇒ 它只是给人看的「人工比对锚」，并不能自动发现「cmake 新增而此处漏加」。
       # 背景：`native-lib` target 只在 Android 构建（cmake/android.cmake），且本 job 传
       # -PRK_SKIP_OPENCV=true ⇒ 只编 native-lib-stub.cpp；src/cpp/native-lib.cpp 的真实实现
       # （8703e83 新增的每线程 JNIEnv 缓存 / jclass-jmethodID 缓存 / NewLocalRef-DeleteLocalRef
       # 引用管理）从未被编译过，也从未被运行过。
       # 同理 src/cpp/jni/native_face_bridge.cpp（人脸运行时/注册域 JNI 桥接）在 cmake/android.cmake
       # 中位于 `if(NOT RK_SKIP_OPENCV)` 内 ⇒ 传 -PRK_SKIP_OPENCV=true 的 CI 同样从未编到它。
-      # 为何放在本 job：这两个文件都 include <jni.h>（native-lib.cpp 另有无条件包含的
+      # 为何放在本 job：这些 JNI 源文件都 include <jni.h>（native-lib.cpp 另有无条件包含的
       # <android/native_window.h>），只有本 job 具备真实 NDK 头（native-lib-stub.cpp 同样 include
       # <jni.h>/<android/log.h>，故本 job 的 Gradle 构建必然已就位 NDK）；OpenCV 头由 libopencv-dev
       # 提供。unit-tests job 虽有真 OpenCV 却无 NDK（无 android/ 头），无法直接覆盖这些文件。
-      # 为何只做 -fsyntax-only 而不整编：这两个 JNI 源文件自身零 cv:: 代码，但其传递包含链
+      # 为何只做 -fsyntax-only 而不整编：这些 JNI 源文件自身零 cv:: 代码，但其传递包含链
       # Engine.h → VideoManager.h → <opencv2/opencv.hpp> 强制要求完整 OpenCV 头，因此只做
       # 解析/语义检查、不生成代码也不链接。
       # ⚠️ 能力边界（勿高估本 step，勿再宣称它能抓运行期回归）：
@@ -342,7 +347,7 @@ jobs:
       # 仍【打开】」写进 Step Summary、并把 skipped/skipped_reason 写入 $GITHUB_OUTPUT，否则环境长期
       # 不满足会让盲区长期静默、人更易忽略。NDK 版本改为「钉死 27.0.12077973 优先 + glob 兜底」
       # （消除 glob 猜路径的不确定性），钉死来源见 step 内注释。
-      - name: Compile-check JNI sources (native-lib.cpp + native_face_bridge.cpp) (non-blocking, closes the "never compiled" blind spot)
+      - name: Compile-check JNI sources (all 8, per cmake/android.cmake) (non-blocking, closes the "never compiled" blind spot)
         id: check_native_lib_compile
         continue-on-error: true
         run: |
@@ -369,14 +374,14 @@ jobs:
             # title 只改显示名，不改严重度（warning 仍 warning、notice 仍 notice），也不改阻断性。
             local title="env-transient"
             if [ "$level" = "warning" ]; then title="env-not-ready"; fi
-            echo "::${level} title=${title}::环境未就绪：$reason——跳过 JNI 源文件语法检查（native-lib.cpp + native_face_bridge.cpp）（非代码问题）。"
+            echo "::${level} title=${title}::环境未就绪：$reason——跳过 JNI 源文件语法检查（全部 8 个 JNI 源文件）（非代码问题）。"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             echo "skipped_reason=$reason" >> "$GITHUB_OUTPUT"
             {
-              echo ":grey_exclamation: **JNI 源文件语法检查（native-lib.cpp + native_face_bridge.cpp）本次【未执行】（环境未就绪：$reason）**"
+              echo ":grey_exclamation: **JNI 源文件语法检查（全部 8 个 JNI 源文件）本次【未执行】（环境未就绪：$reason）**"
               echo ''
               echo '> ⚠️ 这**不是「通过」**：本次没有任何编译期校验发生。'
-              echo '> **「这两个 JNI 源文件的真实实现从未被 CI 编译」这一盲区，此刻仍处于【打开】状态**，'
+              echo '> **「这些 JNI 源文件的真实实现从未被 CI 编译」这一盲区，此刻仍处于【打开】状态**，'
               echo '> 直到环境恢复、本 step 真正执行并给出信号为止都未闭合。'
               echo "> 原因：$reason（环境问题，非代码回归）；下轮 CI 环境恢复后本 step 才会产出真实信号。"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -456,15 +461,30 @@ jobs:
 
           # 用 -idirafter（而非 -I/-isystem）挂 NDK 头：仅当宿主缺失某头时（jni.h / android/*）
           # 才回落到 NDK，标准 C 头仍取宿主 glibc/libstdc++，避免 bionic 与 glibc 头相互遮蔽。
+          # 待检查的 JNI 源文件清单——必须与 cmake/android.cmake 的 `if(NOT RK_SKIP_OPENCV)` 块内
+          # add_library(native-lib ...) 列出的 8 个 JNI 源一一对应（此前本 step 仅喂 2 个；
+          # camera/engine/preview/config/registry/JniMethodRegistry 这 6 个在全部 CI job 中零编译）。
+          # 抽成数组并把 ${#JNI_SOURCES[@]} 打印为 checked_files=。⚠️ 该数组是**硬编码字面量**、与 cmake
+          # 侧不自动联动 ⇒ checked_files 只是**人工比对锚**（看它是否仍等于 8），**不能**自动发现「cmake 新增而此处漏加」。
+          JNI_SOURCES=(
+            src/cpp/native-lib.cpp
+            src/cpp/src/JniMethodRegistry.cpp
+            src/cpp/jni/camera.cpp
+            src/cpp/jni/engine.cpp
+            src/cpp/jni/preview.cpp
+            src/cpp/jni/config.cpp
+            src/cpp/jni/native_face_bridge.cpp
+            src/cpp/jni/registry.cpp
+          )
           g++ -fsyntax-only -std=c++17 \
             -Isrc/cpp/include \
             -Isrc/cpp/include/adapters \
             -Isrc/win/include \
             -idirafter "$NDK/$SYSROOT_REL" \
             $(pkg-config --cflags opencv4) \
-            src/cpp/native-lib.cpp \
-            src/cpp/jni/native_face_bridge.cpp
-          echo "JNI 源文件语法检查通过（native-lib.cpp + native_face_bridge.cpp；仅编译期：真实 OpenCV 头 + NDK jni.h/native_window.h；不覆盖 JNI 引用管理等运行期语义）。"
+            "${JNI_SOURCES[@]}"
+          echo "checked_files=${#JNI_SOURCES[@]}"
+          echo "JNI 源文件语法检查通过（${#JNI_SOURCES[@]} 个源文件；仅编译期：真实 OpenCV 头 + NDK jni.h/native_window.h；不覆盖 JNI 引用管理等运行期语义）。"
 
       # 失败可见化（对应上一 step 的 continue-on-error）。为什么单独加这一步：continue-on-error
       # 只保证「本 step 变红但不中止 job」，job 结论仍为 success，且无下游 step 消费其 outcome
@@ -484,7 +504,7 @@ jobs:
           {
             echo ':warning: **JNI 源文件语法检查失败（编译期错误）** —— 这是「JNI 真实实现从未在 CI 编译」盲区被点亮的信号，请检查而非忽略。'
             echo ''
-            echo '这些文件（src/cpp/native-lib.cpp、src/cpp/jni/native_face_bridge.cpp）是 Android JNI 真实实现（8703e83 含每线程 JNIEnv 缓存、jclass/jmethodID 缓存与'
+            echo '这些文件（cmake/android.cmake 中 native-lib 的全部 8 个 JNI 源）是 Android JNI 真实实现（8703e83 含每线程 JNIEnv 缓存、jclass/jmethodID 缓存与'
             echo 'NewLocalRef/DeleteLocalRef 引用管理）；此前仅 native-lib-stub.cpp 参与 CI，真实实现从未被任何 job 编译。'
             echo ''
             echo '**本 step 的能力边界**：失败 ⇒ 编译期问题（头文件解析 / 标识符 / 签名 / 类型 / 预处理配置）；'
@@ -497,7 +517,7 @@ jobs:
             echo ''
             echo '本告警**不阻断** job（有意取舍：先观察一轮全绿再考虑转正为门禁）。'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning title=native-lib-compile-failed::JNI sources (native-lib.cpp + native_face_bridge.cpp) failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases are reported as ::notice::/::warning:: and never reach this step); see job summary."
+          echo "::warning title=native-lib-compile-failed::JNI sources (all 8, per cmake/android.cmake) failed -fsyntax-only in CI - likely a real compile-time error (env-not-ready cases are reported as ::notice::/::warning:: and never reach this step); see job summary."
 
       # [FACE-CI-003] 给上一步（check_native_lib_compile）写出的 skipped / skipped_reason 输出加【下游消费者】
       # ——此前该输出无任何 step 读取，「连续 N 次跳过」无法被统计，跳过只剩一句 ::notice::/::warning::
@@ -519,17 +539,17 @@ jobs:
           set -uo pipefail
           if [ "${NL_SKIPPED}" = "true" ]; then
             {
-              echo ":warning: **本 job 的 JNI 源文件语法检查（native-lib.cpp + native_face_bridge.cpp）：跳过**（原因：${NL_SKIP_REASON:-未知}）"
+              echo ":warning: **本 job 的 JNI 源文件语法检查（全部 8 个 JNI 源文件）：跳过**（原因：${NL_SKIP_REASON:-未知}）"
               echo ''
               echo '> 连续跳过意味着「JNI 源文件真实实现从未被 CI 编译」这一盲区持续未闭合；'
               echo '> 请检查环境（Android NDK / libopencv-dev 头 / pkg-config）而非忽略本提示。'
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "${NL_OUTCOME}" = "success" ]; then
-            echo ':white_check_mark: 本 job 的 JNI 源文件语法检查（native-lib.cpp + native_face_bridge.cpp）：**已执行并通过**（仅编译期语义，不覆盖运行期）。' >> "$GITHUB_STEP_SUMMARY"
+            echo ':white_check_mark: 本 job 的 JNI 源文件语法检查（全部 8 个 JNI 源文件）：**已执行并通过**（仅编译期语义，不覆盖运行期）。' >> "$GITHUB_STEP_SUMMARY"
           elif [ "${NL_OUTCOME}" = "failure" ]; then
-            echo ':x: 本 job 的 JNI 源文件语法检查（native-lib.cpp + native_face_bridge.cpp）：**编译失败**（编译期错误）——见上方告警与摘要。' >> "$GITHUB_STEP_SUMMARY"
+            echo ':x: 本 job 的 JNI 源文件语法检查（全部 8 个 JNI 源文件）：**编译失败**（编译期错误）——见上方告警与摘要。' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo ":grey_question: 本 job 的 JNI 源文件语法检查（native-lib.cpp + native_face_bridge.cpp）：**本次未运行**（上游 step 未成功，outcome=${NL_OUTCOME:-空}）——盲区状态未知。" >> "$GITHUB_STEP_SUMMARY"
+            echo ":grey_question: 本 job 的 JNI 源文件语法检查（全部 8 个 JNI 源文件）：**本次未运行**（上游 step 未成功，outcome=${NL_OUTCOME:-空}）——盲区状态未知。" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit 0
 
