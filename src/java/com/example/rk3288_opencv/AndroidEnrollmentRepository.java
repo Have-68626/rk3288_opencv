@@ -106,7 +106,7 @@ public final class AndroidEnrollmentRepository {
      */
     private static final String CORRUPT_SUFFIX = ".corrupt.";
 
-    /** 合法条目字段数：hex(userId) mv sv ciphertextSize sha256hex createdAtMs
+    /** 合法条目字段数：hex(userId) mv sv templateFileSize templateFileSha256Hex createdAtMs
      *  （第 4/5 列存的是加密模板**文件**全量值，见 {@link Entry} 字段注释）。 */
     private static final int REGISTRY_FIELD_COUNT = 6;
 
@@ -144,31 +144,30 @@ public final class AndroidEnrollmentRepository {
          * 加密模板<b>文件</b>的字节数 —— 即整个 envelope（魔数+版本+IV+AAD+密文+tag）的长度，
          * <b>不是</b>纯密文（ct+tag）段的长度，两者相差 64B 头。
          *
-         * <p>⚠️ <b>字段名 {@code ciphertext*} 是历史遗留，名实不符</b>。改名会牵动
-         * {@code MainActivity} 的人员列表展示读点（{@code "  模板 " + e.ciphertextSize}），
-         * 未在本批一并实施；消费方以本注释为准。
+         * <p>历史改名记录：原名 {@code ciphertextSize}（名实不符，本字段并非纯密文长度），
+         * 已改为现名。注册表是<b>位置式六列文本、列名不落盘</b> ⇒ 改字段名不影响已写盘格式，
+         * <b>无需迁移</b>。
          */
-        public final long ciphertextSize;
+        public final long templateFileSize;
         /**
          * 加密模板<b>文件</b>（envelope 全量）的 SHA-256（小写十六进制），用于完整性来源核对；
          * 既不是模板明文摘要，也不是仅密文段的摘要。
          *
-         * <p>⚠️ <b>字段名 {@code ciphertext*} 是历史遗留，名实不符</b>：实际计算与比对的对象是
-         * 整个 envelope，比纯密文多 64B 头
+         * <p>历史改名记录：原名 {@code ciphertextSha256Hex}（名实不符），已改为现名。实际计算与
+         * 比对的对象是整个 envelope，比纯密文多 64B 头
          * （{@code MAGIC4 + VERSION1 + ivLen1 + iv12 + aadLen2 + aad40 + ctLen4}）。
-         * 改名约束同 {@link #ciphertextSize}（展示读点），本字段当前**无生产读点** ——
-         * 仅测试与 {@link #persistRegistry} 的注册表序列化在读写它。
+         * 列名不落盘，改名不影响已写盘格式（同 {@link #templateFileSize}）。
          */
-        @NonNull public final String ciphertextSha256Hex;
+        @NonNull public final String templateFileSha256Hex;
         public final long createdAtMs;
 
         Entry(@NonNull String userId, int modelVersion, int templateSchemaVersion,
-              long ciphertextSize, @NonNull String ciphertextSha256Hex, long createdAtMs) {
+              long templateFileSize, @NonNull String templateFileSha256Hex, long createdAtMs) {
             this.userId = userId;
             this.modelVersion = modelVersion;
             this.templateSchemaVersion = templateSchemaVersion;
-            this.ciphertextSize = ciphertextSize;
-            this.ciphertextSha256Hex = ciphertextSha256Hex;
+            this.templateFileSize = templateFileSize;
+            this.templateFileSha256Hex = templateFileSha256Hex;
             this.createdAtMs = createdAtMs;
         }
     }
@@ -1041,8 +1040,8 @@ public final class AndroidEnrollmentRepository {
             sb.append(toHex(e.userId.getBytes(StandardCharsets.UTF_8))).append(' ')
                     .append(e.modelVersion).append(' ')
                     .append(e.templateSchemaVersion).append(' ')
-                    .append(e.ciphertextSize).append(' ')
-                    .append(e.ciphertextSha256Hex).append(' ')
+                    .append(e.templateFileSize).append(' ')
+                    .append(e.templateFileSha256Hex).append(' ')
                     .append(e.createdAtMs).append('\n');
         }
         // 阶段 2：写 tmp 并 fsync，确保内容先落盘再谈替换。

@@ -33,19 +33,26 @@ import static org.junit.Assert.assertTrue;
  *   <li>极性反转 {@code if(!isCurrent(...))} → {@code if(isCurrent(...))}（行为完全相反）；</li>
  *   <li>保留条件但删掉 {@code return;}（空体，条件形同虚设）。</li>
  * </ul>
- * 上述两类由**行为性**用例把关：Camera2 见
- * {@link Camera2CaptureControllerTest#frameNotCommittedIfEpochStaleAtSubmitPoint}，
- * CameraX 见
- * {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochStaleAtSubmitPoint}
- * （**提交前**分支）与
- * {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochAlreadyStaleAtEntry}
- * （**入口**分支）。
+ * 上述两类由**行为性**用例把关，两侧现均有提交前与入口两个对偶：
+ * <ul>
+ *   <li>Camera2：{@link Camera2CaptureControllerTest#frameNotCommittedIfEpochStaleAtSubmitPoint}
+ *       （**提交前**分支）与
+ *       {@link Camera2CaptureControllerTest#frameNotCommittedIfEpochAlreadyStaleAtEntry}
+ *       （**入口**分支）；</li>
+ *   <li>CameraX：{@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochStaleAtSubmitPoint}
+ *       （**提交前**分支）与
+ *       {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochAlreadyStaleAtEntry}
+ *       （**入口**分支）。</li>
+ * </ul>
  *
  * <p><b>计数断言（{@code countOccurrences(text, RECHECK) >= 2}）的边界</b>：它是**文本计数**，
  * 判据为下界——只判「两处 {@code isCurrent(capturedEpoch)} 都在、且其中一处落在
  * rotation→submit 之间」，**不判极性、不判条件恒假**（写成 {@code if (x && false)}、或去掉
- * {@code !}，都照样命中）。语义判别一律由上述行为性用例承担；且**入口分支**的行为对偶目前只有
- * CameraX 有（Camera2 侧尚无对偶用例，其入口分支仅被本计数覆盖）。
+ * {@code !}，都照样命中）。语义判别一律由上述行为性用例承担；**入口分支**的行为对偶两侧
+ * 均已齐备 —— Camera2 有
+ * {@link Camera2CaptureControllerTest#frameNotCommittedIfEpochAlreadyStaleAtEntry}，
+ * CameraX 有
+ * {@link CameraXFrameEpochRecheckBehaviorTest#frameNotCommittedIfEpochAlreadyStaleAtEntry}。
  */
 public class CameraFrameEpochRecheckStructureTest {
 
