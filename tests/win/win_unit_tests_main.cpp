@@ -123,6 +123,10 @@ bool test_config_write_path_parent_ref_put_rejected();
 bool test_config_write_path_startup_warns_not_rejected();
 // ★ 2026-09-29 新增：热重载隔离竞态（项 2）与 rotate 快照竞态（项 3）——均经测试接缝确定性构造交错。
 bool test_config_reload_isolation_skips_when_put_races();
+// ★ 2026-09-29 新增（项 1）：「复核与 rename 同处一个 mu_ 临界区」的判别锚（多线程 + 有界等待，接缝在锁内）。
+bool test_config_reload_isolation_holds_mu_across_recheck_and_rename();
+// ★ 2026-09-29 新增（项 2）：「PUT 解密与提交同处一个 mu_ 临界区、以同一密钥」的判别锚（同上，接缝在锁内）。
+bool test_config_put_decrypt_shares_key_with_commit();
 bool test_config_rotate_does_not_clobber_concurrent_put();
 // ★ 2026-09-29 新增（项 A）：密钥/密文同源不变量 —— rotate 与 PUT 交错后盘上 config.json 必须能
 // 用盘上密钥文件解开（往返）；含 409 重试耗尽路径与普通 rotate 的往返。
@@ -321,6 +325,8 @@ int main(int argc, char** argv) {
         {"config_write_path_parent_ref_put_rejected", test_config_write_path_parent_ref_put_rejected},
         {"config_write_path_startup_warns_not_rejected", test_config_write_path_startup_warns_not_rejected},
         {"config_reload_isolation_skips_when_put_races", test_config_reload_isolation_skips_when_put_races},
+        {"config_reload_isolation_holds_mu_across_recheck_and_rename", test_config_reload_isolation_holds_mu_across_recheck_and_rename},
+        {"config_put_decrypt_shares_key_with_commit", test_config_put_decrypt_shares_key_with_commit},
         {"config_rotate_does_not_clobber_concurrent_put", test_config_rotate_does_not_clobber_concurrent_put},
         {"config_rotate_and_put_keep_disk_key_matched", test_config_rotate_and_put_keep_disk_key_matched},
         {"config_rotate_conflict_exhaustion_keeps_invariant", test_config_rotate_conflict_exhaustion_keeps_invariant},

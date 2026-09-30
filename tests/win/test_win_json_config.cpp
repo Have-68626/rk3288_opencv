@@ -13,6 +13,7 @@
 #include <io.h>  // MSVC: _dup/_dup2/_close/_fileno（FACE-CONFIG-012 stderr 重定向捕获）
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -1768,8 +1769,13 @@ bool test_config_write_path_startup_warns_not_rejected() {
 // 判别构造（借**测试接缝** setReloadTestHookForTesting 制造交错）：接缝位于「解析被拒之后、重新取锁
 //   复核 mtime 之前」，此刻**未持 mu_** ⇒ 钩子内可同步调 updateFromJsonBody（合法 PUT）。
 //   · 修复后：复核 mtime 发现 PUT 已改文件 ⇒ **放弃隔离**、outErr 如实说明、无 corrupt 产物、磁盘=PUT 的配置。
-//   · 变异回修复前（**去掉 mtime 复核** / 把隔离移回锁外）：隔离会把 PUT 写的合法 B 改名成
-//     config.json.corrupt.* ⇒ 本例 (b)「无 corrupt 产物」与 (c)「outErr 不谎称隔离」两条变红。
+//   · 变异①（**去掉 mtime 复核**）：隔离会把 PUT 写的合法 B 改名成 config.json.corrupt.* ⇒ 本例
+//     (b)「无 corrupt 产物」与 (c)「outErr 不谎称隔离」两条变红。
+//   · 变异②（**把复核/隔离移回锁外**，但**保留复核**）：**本例仍绿、不能判别** —— 本接缝是**同线程同步**的
+//     （钩子在锁外同步调一次 PUT，PUT 在钩子返回前**已完成**）⇒ 无论复核在锁内还是锁外，单线程都读到新
+//     mtime、都放弃隔离 ⇒ 无 corrupt、err 亦不谎称隔离。实测已确认：仅删掉复核段外的 `lock_guard<mu_>`
+//     时本例仍 TEST_PASS。⇒ **本用例只判别「有没有复核」，不判别「复核/隔离的锁归属」**；后者由
+//     test_config_reload_isolation_holds_mu_across_recheck_and_rename（异步接缝）判别。
 bool test_config_reload_isolation_skips_when_put_races() {
     const auto dir = makeTempDir("reload_isolation_race");
     const auto cfgPath = dir / "config.json";
@@ -1901,7 +1907,9 @@ bool test_config_rotate_does_not_clobber_concurrent_put() {
 // ★ 2026-09-29 新增（项 A）：**密钥/密文同源不变量** —— rotate 与 PUT 交错后，盘上的 config.json 必须
 //   能用盘上的密钥文件成功解密并解析（往返）。
 //
-// 被钉的不变量（承重，直接钉住而非实现细节）：**盘上的 config.json 恒能用盘上的密钥文件解开**。
+// 被钉的不变量（承重，直接钉住而非实现细节）：**并发交错下**盘上的 config.json 恒能用盘上的密钥文件解开
+//   （⚠️ **残余**：密钥文件与 config.json 是两个文件、无法原子同写 ⇒「写密钥之后、写 config.json 之前」
+//   若**进程崩溃**仍会错配 —— 该崩溃窗口本批不消除，详见 WinJsonConfig.h 类级注释「项 A / 残余」）。
 //   判据 = 新建一个**全新** WinJsonConfigStore 去装载盘上的文件——只有私钥能解开密文时才会成功，
 //   否则 parseAndValidateSettingsDoc 解密失败 ⇒ 被隔离 + 降级启动（configRejectedOnLoad()==true）
 //   ⇒ 断言 (b) 变红。故本用例**不**依赖任何实现细节（不提 generation_、不提锁）。
@@ -2057,3 +2065,322 @@ bool test_config_rotate_preserves_sensitive_field_roundtrip() {
     if (!reloaded.initQuarantineFileName().empty()) return false;
     return reloaded.current().poster.postUrl == realUrl;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 2026-09-29 新增（项 1）：给「复核 mtime 未变」与 `quarantineConfigFile` **同处一个 mu_ 临界区**这一
+//   性质建立**判别锚**。
+//
+// 缺口（本批自陈）：既有 test_config_reload_isolation_skips_when_put_races 的接缝是同线程**同步**的——
+//   钩子在**锁外**同步调一次 PUT，PUT 在钩子返回前就**已完成** ⇒ 无论复核在锁内还是锁外，单线程都读到新
+//   mtime ⇒ 用例都绿。故那条用例只能判别「**有没有**复核」，**不能**判别「复核与 rename 是否同处一个临界区」。
+//
+// 本用例的构造：接缝 setReloadIsolationTestHookForTesting 位于「**复核 mtime 未变之后、rename 之前**」⇒
+//   **此刻已持 mu_**。钩子只做**不加锁**的动作：唤起一个后台线程 P 去**尝试** PUT（camera.width=777），再
+//   **有界等待** P 完成（原子标志 putDone；steady_clock 截止点 + 1ms 轮询）。关键判别：
+//     · 正确实现（复核与 rename 同在 mu_ 内）：钩子持 mu_ ⇒ P 的 PUT 被 mu_ 挡在临界区外 ⇒ 持锁窗口内
+//       putDone **恒假** ⇒ 断言 (a) 绿；复核通过后 rename 掉的是**原坏文件**（逐字节保全）⇒ 断言 (c) 绿。
+//     · 变异（hook 点被移到 mu_ 之外）：P 立刻跑完 PUT（putDone 变真）⇒ 断言 (a) 红。
+//   ★ 前置锚（本轮新增，**防判据空转**）：后台线程**在调用 PUT 之前**先置 putAttempting；钩子先**限时等待**
+//      该标志为真，**观察不到即落 sceneBuilt=false**；主线程据 sceneBuilt **响亮 return false**
+//      （文案「场景未能构造：后台线程未在限时内开始尝试 PUT」），**绝不允许静默通过**。否则若后台线程根本
+//      没被调度起来，「putDone 仍为假」会**平凡成立** ⇒ 高负载下坏实现可能误绿。
+//   ⚠️ 钩子在**持 mu_** 时被调用 ⇒ 钩子内**绝不可**调用任何会取 mu_ 的公共 API（mu_ 非递归 ⇒ 自锁死，比
+//      断言失败更糟）——故钩子只置位 / 起线程 / 有界轮询原子量，**不碰** store 的任何公共方法。
+//   ⚠️ **判别力边界（本轮由变异实测**收窄到恰好等于实测面**，绝不外推）**：断言 (a) 的判据就是
+//      「**hook 点**是否持 mu_」。它在本轮实现下**恰好**钉住「hook 点持 mu_」这一条，而**不**钉住
+//      「复核整体在 mu_ 内」或「rename 整体在 mu_ 内」——后两者是**更宽**的形态，本轮**实测**为**阴性/绿**：
+//        (i) 把**复核**单独移出锁、而 hook 与 rename 仍留在锁内（hook 仍持锁 ⇒ (a) 绿）；
+//        (ii) 复核与 rename 分属**两把不同的锁**（hook 落在其中一把内 ⇒ (a) 绿）。
+//      ⇒ 本锚**只**能判别「hook 点持 mu_（即复核+rename 与 hook 同锁）」与「三者整体在锁外」两态；
+//        **不能**判别复核/rename 各自的锁归属（拆分或单侧移出）。若将来要封死 (i)(ii)，须另设**复核之前**
+//        的接缝与判据——勿据本用例误以为已覆盖。
+//   ⚠️ watchdog（有界失败，不挂死 ctest）：钩子的等待有上限；对 P 的 join 亦有界——二者任一超时都**响亮
+//      return false**，绝不无限等待。
+//   ⚠️ 单次运行代价（**本轮实测订正**）：正确实现下 P 被锁挡住、永不完成 ⇒ Phase 2 必等满 kHookWait
+//      （500ms）；Phase 1 另用**独立**的较短窗口 kAttemptWait（300ms），不占用 Phase 2 的预算 ⇒ 改用
+//      steady_clock 截止点后**名义时长 == 实耗时**，本用例实测（5 次）≈ 0.55–0.57s。（此前按「迭代次数」
+//      而非毫秒计时：500 次 sleep 的实际耗时由 Windows 默认定时器粒度与负载决定 —— 本机探针 500×
+//      sleep(1ms) 轻载实测 4.0–7.2s，重载下 5 次采样的旧实耗 ≈ 7.8s，约名义值的 15.6×。）
+//   📌 总量落点（本批，可复算）：本用例与 test_config_put_decrypt_shares_key_with_commit 的单次耗时已由
+//      各 ≈7.8s 降到各 ≈0.55–0.60s ⇒ 两条合计省 ≈14.5s，与整二进制一次运行耗时由 ≈35s 降到约 20s
+//      （本机实测 18.0–23.2s）同量级。
+bool test_config_reload_isolation_holds_mu_across_recheck_and_rename() {
+    const auto dir = makeTempDir("reload_isolation_mu");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+
+    std::atomic<bool> putAttempting{false};  // ★ 前置锚：后台线程开始尝试 PUT 前先置位
+    std::atomic<bool> putDone{false};
+    std::atomic<bool> putWasBlockedInHook{false};
+    std::atomic<bool> hookRan{false};
+    std::atomic<bool> sceneBuilt{false};  // 钩子在限时内观察到「后台已开始尝试」
+    std::thread putThread;
+
+    // 时间基（steady_clock）：钩子窗口与 join 等待都以**真实截止点**判定，名义时长 == 实耗时。
+    constexpr auto kAttemptWait = std::chrono::milliseconds(300);  // Phase 1：等「后台已开始尝试」（较短）
+    constexpr auto kHookWait = std::chrono::milliseconds(500);     // Phase 2：等「是否被挡」（完整）
+    constexpr auto kJoinWait = std::chrono::milliseconds(5000);
+
+    // 钩子：**持 mu_** 时被调用。只起线程 + 有界等待，**不调** store 的公共 API（会自锁死）。
+    store.setReloadIsolationTestHookForTesting([&]() {
+        if (hookRan.exchange(true)) return;  // 只跑一次（对 joinable thread 二次赋值会 terminate）
+        putThread = std::thread([&store, &putAttempting, &putDone]() {
+            putAttempting.store(true);  // ★ 先置位，再真正调 PUT
+            (void)store.updateFromJsonBody("{\"camera\":{\"width\":777}}");
+            putDone.store(true);
+        });
+        // Phase 1（**较短**窗口）：等后台线程**确实开始尝试**（否则「未完成」会平凡成立）。
+        const auto attemptDeadline = std::chrono::steady_clock::now() + kAttemptWait;
+        while (!putAttempting.load() && std::chrono::steady_clock::now() < attemptDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!putAttempting.load()) {
+            sceneBuilt.store(false);
+            return;  // 场景未能构造 ⇒ 交主线程**响亮**失败（绝不静默通过）
+        }
+        sceneBuilt.store(true);
+        // Phase 2（**独立**的完整窗口）：再测量「是否被挡」——从此刻**重新**计时，绝不复用 Phase 1
+        //   的截止点。否则 Phase 1 的调度延迟会吃掉本段预算、使观测窗塌缩 ⇒ 坏实现（未持锁）可能
+        //   因「窗口内没等到它完成」被判为「被锁挡住」⇒ 假绿。
+        const auto observeDeadline = std::chrono::steady_clock::now() + kHookWait;
+        while (!putDone.load() && std::chrono::steady_clock::now() < observeDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        putWasBlockedInHook.store(!putDone.load());
+    });
+
+    // 外部把 config.json 改成坏内容（JSON 可解析、schema 拒绝：minFaceSizePx 期望 number）并拨快 mtime。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["minFaceSizePx"] = rk_win::JsonValue::makeString("80");
+    const std::string bad = rk_win::toJsonString(doc, true);
+    if (!writeAllText(cfgPath, bad)) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+    store.setReloadIsolationTestHookForTesting(nullptr);  // 幂等收尾，避免污染后续用例
+
+    // 有界等待 P 完成（正确实现下 P 在 reload 释放 mu_ 后才提交）。超时 ⇒ watchdog 有界失败。
+    {
+        const auto deadline = std::chrono::steady_clock::now() + kJoinWait;
+        while (!putDone.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    if (putThread.joinable()) putThread.join();
+    // ★ 前置锚先于判别断言：场景未构造 ⇒ 响亮失败（而非让「未完成」平凡成立）。
+    if (!sceneBuilt.load()) {
+        std::cerr << "[reload_isolation_mu] 场景未能构造：后台线程未在限时内开始尝试 PUT"
+                     "（判据不成立，本用例失败而非静默通过）" << std::endl;
+        return false;
+    }
+    if (!putDone.load()) {
+        std::cerr << "[reload_isolation_mu] watchdog：后台 PUT 未在时限内完成（有界失败，不挂死）" << std::endl;
+        return false;
+    }
+
+    // 坏内容不得被应用。
+    if (applied) return false;
+    // (a) ★ 判别锚一：复核+rename 持 mu_ 期间，PUT 必被挡在临界区外（未提交）。
+    if (!putWasBlockedInHook.load()) {
+        std::cerr << "[reload_isolation_mu] 复核持锁窗口内后台 PUT 已完成 ⇒ 复核/rename 未与 PUT 互斥"
+                     "（复核或 rename 在 mu_ 之外）" << std::endl;
+        return false;
+    }
+    // (b) 磁盘最终是 PUT 写入的那份（camera.width == 777）：确认交错确实发生、且最终状态自洽。
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    rk_win::JsonValue backDoc;
+    std::string berr;
+    if (!rk_win::parseJson(back, backDoc, berr) || !backDoc.isObject()) return false;
+    const rk_win::JsonValue* cam = backDoc.find("camera");
+    if (!cam || !cam->isObject()) return false;
+    const rk_win::JsonValue* wv = cam->find("width");
+    if (!wv || !wv->isNumber() || wv->n != 777) {
+        std::cerr << "[reload_isolation_mu] 最终磁盘 camera.width 非 777（PUT 未落盘或未在 reload 后生效）"
+                  << std::endl;
+        return false;
+    }
+    // (c) ★ 判别锚二：隔离产物必须逐字节等于**原坏内容**（复核通过后才 rename ⇒ rename 掉的就是那份坏文件；
+    //     若复核与 rename 分处不同临界区，rename 掉的会是 PUT 刚写的合法配置 ⇒ 内容不符 ⇒ 红）。
+    const auto corrupts = listCorruptConfigs(dir);
+    if (corrupts.size() != 1) {
+        std::cerr << "[reload_isolation_mu] 隔离产物数 = " << corrupts.size() << "（期望 1）" << std::endl;
+        return false;
+    }
+    std::string qtext;
+    if (!readAllText(corrupts[0], qtext)) return false;
+    if (qtext != bad) {
+        std::cerr << "[reload_isolation_mu] 隔离产物内容 ≠ 原坏内容 ⇒ rename 掉的可能是并发 PUT 刚写的合法配置"
+                  << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ 2026-09-29 新增（项 2）：给「PUT 的**解密**与提交同处一个 mu_ 临界区、以同一密钥」建立判别锚。
+//
+// 缺口（修复前）：updateFromJsonBody 的加密 + 写盘 + 提交已进 mu_，但**解密**
+//   （parseAndValidateSettingsDoc → ensureOrLoadKey **每次重读密钥文件**）仍在锁外 ⇒ 存在交错：父代基底
+//   base 在锁外读、其后 rotateKeyAndReencrypt 把密钥从 K1 换成 K2 并重写盘 ⇒ 解密 base 的 postUrl 密文
+//   （K1 加密）时读到的却是 K2 ⇒ 解密失败 ⇒ 整次 PUT **响亮失败**（非静默、不损坏磁盘，但拒绝服务）。
+//
+// 本用例构造：接缝 setPutPreDecryptTestHookForTesting 位于「读 base / 合并 / schema 校验之后，解密之前」⇒
+//   **此刻已持 mu_**（项 2 修复后）。钩子只做**不加锁**的动作：唤起后台线程 R 去**尝试** rotate，再有界等待
+//   （steady_clock 截止点 + 1ms 轮询）。
+//     · 正确实现（解密与提交同在 mu_ 内）：钩子持 mu_ ⇒ R 的 rotate 被挡在临界区外 ⇒ 解密仍用 K1
+//       （= base 密文的密钥）⇒ PUT 成功 ⇒ 断言 (a)(b)(c) 绿。
+//     · 变异（把 mu_ 缩回「仅加密 + 写盘 + 提交」、解密回到锁外，hook 点随之落在锁外）：R 先换密钥 K2 并
+//       重写盘，PUT 再用 K2 解 base 的 K1 密文 ⇒ 失败 ⇒ 断言 (a) 红（(b) 亦红：R 在钩子窗口内已完成）。
+//   ★ 前置锚（本轮新增，**防判据空转**）：后台线程**在调用 rotate 之前**先置 rotAttempting；钩子先**限时等待**
+//      该标志为真，**观察不到即落 sceneBuilt=false**；主线程据 sceneBuilt **响亮 return false**
+//      （文案「场景未能构造：后台线程未在限时内开始尝试 rotate」），**绝不允许静默通过**。否则若后台线程根本
+//      没被调度起来，「rotDone 仍为假」会**平凡成立** ⇒ 高负载下坏实现可能误绿。
+//   ⚠️ 钩子在**持 mu_** 时被调用 ⇒ 钩子内**绝不可**调用会取 mu_ 的公共 API（自锁死）——只置位 / 起线程 / 轮询。
+//   ⚠️ **判别力边界（本轮由变异实测**收窄到恰好等于实测面**）**：断言 (b) 的判据就是「**hook 点**是否持
+//      mu_」，故本锚**只**钉住「**解密**与提交同临界区」这一条。它**不**判别「**读父代基底
+//      lastGoodJsonPretty_ **是否在锁内」——把**基底读取**单独移出锁、而解密仍在锁内时，hook 点仍在锁内 ⇒
+//      R 仍被挡 ⇒ 断言 (a)(b)(c) 全绿（本轮**实测**为**阴性/绿**）。⇒ 切勿据本用例声称已封死
+//      「基底锁外读取」这一交错；那需要**更靠前**（基底读取之前）的接缝，本轮未做。
+//   ⚠️ watchdog（有界失败，不挂死 ctest）：钩子等待有上限、对 R 的 join 亦有界——任一超时都**响亮 return false**。
+//   ⚠️ 单次运行代价（**本轮实测订正**）：正确实现下 R 被 mu_ 挡住、永不完成 ⇒ Phase 2 必等满 kHookWait
+//      （500ms）；Phase 1 另用**独立**的较短窗口 kAttemptWait（300ms），不占用 Phase 2 的预算 ⇒ 改用
+//      steady_clock 截止点后**名义时长 == 实耗时**，本用例实测（5 次）≈ 0.57–0.60s。（此前按「迭代次数」
+//      而非毫秒计时：500 次 sleep 的实际耗时由 Windows 默认定时器粒度与负载决定，旧实耗 ≈ 7.8s，约名义
+//      值的 15.6×。）
+bool test_config_put_decrypt_shares_key_with_commit() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("put_decrypt_key");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    store.initialize(warn);
+    // 先 PUT 一个真实 postUrl，使 base 含**以当前密钥加密**的密文（解密路径可达，非空明文退化路径）。
+    const std::string url = "https://keyatomic.example/api/faces";
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + url + "\"}}").ok) return false;
+    if (store.current().poster.postUrl != url) return false;
+
+    std::atomic<bool> rotAttempting{false};  // ★ 前置锚：后台线程开始尝试 rotate 前先置位
+    std::atomic<bool> rotDone{false};
+    std::atomic<bool> rotBlockedInHook{false};
+    std::atomic<bool> hookRan{false};
+    std::atomic<bool> sceneBuilt{false};  // 钩子在限时内观察到「后台已开始尝试」
+    std::thread rotThread;
+
+    // 时间基（steady_clock）：钩子窗口与 join 等待都以**真实截止点**判定，名义时长 == 实耗时。
+    constexpr auto kAttemptWait = std::chrono::milliseconds(300);  // Phase 1：等「后台已开始尝试」（较短）
+    constexpr auto kHookWait = std::chrono::milliseconds(500);     // Phase 2：等「是否被挡」（完整）
+    constexpr auto kJoinWait = std::chrono::milliseconds(5000);
+
+    // 钩子：**持 mu_** 时被调用。只起线程 + 有界等待，**不调** store 的公共 API（会自锁死）。
+    store.setPutPreDecryptTestHookForTesting([&]() {
+        if (hookRan.exchange(true)) return;  // 只跑一次（对 joinable thread 二次赋值会 terminate）
+        rotThread = std::thread([&store, &rotAttempting, &rotDone]() {
+            rotAttempting.store(true);  // ★ 先置位，再真正调 rotate
+            (void)store.rotateKeyAndReencrypt();
+            rotDone.store(true);
+        });
+        // Phase 1（**较短**窗口）：等后台线程**确实开始尝试**（否则「未完成」会平凡成立）。
+        const auto attemptDeadline = std::chrono::steady_clock::now() + kAttemptWait;
+        while (!rotAttempting.load() && std::chrono::steady_clock::now() < attemptDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!rotAttempting.load()) {
+            sceneBuilt.store(false);
+            return;  // 场景未能构造 ⇒ 交主线程**响亮**失败（绝不静默通过）
+        }
+        sceneBuilt.store(true);
+        // Phase 2（**独立**的完整窗口）：再测量「是否被挡」——从此刻**重新**计时，绝不复用 Phase 1
+        //   的截止点（否则 Phase 1 延迟会吃掉本段预算 ⇒ 观测窗塌缩 ⇒ 坏实现可能被误判为「被挡」）。
+        const auto observeDeadline = std::chrono::steady_clock::now() + kHookWait;
+        while (!rotDone.load() && std::chrono::steady_clock::now() < observeDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        rotBlockedInHook.store(!rotDone.load());
+    });
+
+    const auto res = store.updateFromJsonBody("{\"camera\":{\"width\":777}}");
+    store.setPutPreDecryptTestHookForTesting(nullptr);  // 幂等收尾
+
+    // 有界等待 R（正确实现下 R 在 PUT 释放 mu_ 后才轮换）。超时 ⇒ watchdog 有界失败。
+    {
+        const auto deadline = std::chrono::steady_clock::now() + kJoinWait;
+        while (!rotDone.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    if (rotThread.joinable()) rotThread.join();
+
+    // ★ 前置锚先于判别断言：场景未构造 ⇒ 响亮失败（而非让「未完成」平凡成立）。
+    if (!sceneBuilt.load()) {
+        std::cerr << "[put_decrypt_key] 场景未能构造：后台线程未在限时内开始尝试 rotate"
+                     "（判据不成立，本用例失败而非静默通过）" << std::endl;
+        return false;
+    }
+    if (!rotDone.load()) {
+        std::cerr << "[put_decrypt_key] watchdog：后台 rotate 未在时限内完成（有界失败，不挂死）" << std::endl;
+        return false;
+    }
+
+    // (a) ★ 判别锚：PUT 必须成功（解密读到的密钥 == base 密文所用的密钥）。
+    if (!res.ok) {
+        std::cerr << "[put_decrypt_key] PUT 失败（code=" << res.code << "）⇒ 解密读到的密钥 ≠ 基线密文所用的密钥"
+                     "（解密落在 mu_ 之外、被并发 rotate 换了密钥）" << std::endl;
+        return false;
+    }
+    // (b) ★ 判别锚：钩子持锁窗口内 rotate 必被挡在临界区外（未完成）。
+    if (!rotBlockedInHook.load()) {
+        std::cerr << "[put_decrypt_key] 钩子持锁窗口内后台 rotate 已完成 ⇒ 解密/提交未与 rotate 互斥"
+                  << std::endl;
+        return false;
+    }
+    // (c) PUT 的 width=777 必须落盘（且随后 rotate 以新密钥重加密 cfg_ 时保留它）。
+    if (store.current().camera.width != 777) return false;
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    rk_win::JsonValue bd;
+    std::string berr;
+    if (!rk_win::parseJson(back, bd, berr) || !bd.isObject()) return false;
+    const rk_win::JsonValue* cam = bd.find("camera");
+    if (!cam || !cam->isObject()) return false;
+    const rk_win::JsonValue* wv = cam->find("width");
+    if (!wv || !wv->isNumber() || wv->n != 777) {
+        std::cerr << "[put_decrypt_key] 磁盘 camera.width 非 777（PUT 未落盘，或未在随后 rotate 中保留）"
+                  << std::endl;
+        return false;
+    }
+    // (d) 不变量：全新 store 必须能装载盘上的 config.json（rotate 在 PUT 之后以新密钥重加密，仍同源）。
+    {
+        rk_win::WinJsonConfigStore reloaded;
+        std::string w2;
+        reloaded.initialize(w2);
+        if (reloaded.configRejectedOnLoad()) {
+            std::cerr << "[put_decrypt_key] 全新 store 无法装载（密钥/密文错配）：" << w2 << std::endl;
+            return false;
+        }
+        if (reloaded.current().camera.width != 777) return false;
+        if (reloaded.current().poster.postUrl != url) return false;
+    }
+    if (!listCorruptConfigs(dir).empty()) return false;
+    return true;
+}
+
+

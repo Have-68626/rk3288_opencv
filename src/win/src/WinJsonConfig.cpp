@@ -1279,20 +1279,29 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         return r;
     }
 
-    // 基于已知落盘的 JSON 深度合并 patch，再校验+落盘。
+    // ★ 单一原子段（项 2）：从「读父代基底」到「提交」整段持 mu_ —— 使「读密钥 → 解密 → 加密 → 写盘 →
+    //   提交」成为**单一原子段**，杜绝「解密时读到的密钥 ≠ 提交时用的密钥」这一并发交错。
+    //   为什么**基底读取也必须纳入**（而非只搬解密）：设 A = lastGoodJsonPretty_（上次写盘产物，用当时的
+    //   密钥 K1 加密）。若 A 在锁外读、而 rotate 在「读 A」与「解密 A」之间把密钥换成 K2 并重写盘，则解密
+    //   A 时读到的是 K2，却去解 K1 的密文 ⇒ poster.postUrl 解密失败 ⇒ 整次 PUT **响亮失败**（非静默、不
+    //   损坏磁盘，但拒绝服务）。把「读 A + 解密 + 加密 + 写盘 + 提交」放进同一临界区后，rotate（同样持 mu_
+    //   才写密钥文件与 config.json）便无法插入 ⇒ A 的密文密钥恒等于解密/加密密钥。
+    //   ⚠️ 代价（如实登记）：本临界区现含合并 / schema 校验 / **密钥文件读取 + DPAPI 解保护 + AES 解密** /
+    //     AES 加密 / 多次文件 I/O，持锁时长比修复前（仅加密 + 写盘）**显著变长** ⇒ 期间 current() / 热重载 /
+    //     rotate 均被阻塞 ≈ 一次完整 PUT。PUT 为低频管理操作，判为可接受。
+    //   ⚠️ 为何可直接扩大 mu_（无死锁）：本段调用的 parseJson / stripMaskedSentinels / checkConfigPath /
+    //     deepMergeObject / JsonSchemaValidator::validate / toJsonString / parseAndValidateSettingsDoc /
+    //     buildSettingsJson / writeAtomicallyWithBackup **均不取 mu_**（逐字核实）⇒ 不会递归加锁；全函数
+    //     仅此一把锁 ⇒ 无锁序问题、无死锁风险。
     // ⚠️ 该基底**含 env 覆盖值**——**不是**「解耦环境覆盖项」的纯净值（旧措辞已判定为假，就地订正）：
     //   lastGoodJsonPretty_ 由**已套用** RK_WCFR_* 覆盖（parseAndValidateSettingsDoc 末尾）的 cfg 序列化而来，
     //   故一次 PUT 会把**当时的 env 值**顺带写回 config.json。属既有性质、非本批引入，详见
     //   parseAndValidateSettingsDoc 末尾的 FACE-CONFIG-015 登记块与 docs/guides/windows-service/config.md。
-    std::string lastJson;
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        lastJson = lastGoodJsonPretty_;
-    }
+    std::lock_guard<std::mutex> lock(mu_);
 
     JsonValue baseDoc;
     std::string err;
-    if (!parseJson(lastJson, baseDoc, err)) {
+    if (!parseJson(lastGoodJsonPretty_, baseDoc, err)) {
         r.httpStatus = 500;
         r.code = "internal_error";
         r.message = "解析落盘配置失败";
@@ -1363,6 +1372,14 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     // 将 doc 序列化并解析为 AppConfig（会解密密文字段）
     const std::string mergedText = toJsonString(baseDoc, true);
     AppConfig newCfg;
+#if defined(RK_ENABLE_TEST_SEAMS)
+    // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setPutPreDecryptTestHookForTesting 声明注释）：
+    //   在「读父代基底 / 合并 / schema 校验之后，解密之前」同步触发一次由测试注入的动作。⚠️ 此刻**已持 mu_**
+    //   （本函数自上方单一原子段起即持锁）⇒ 钩子内**绝不可**调用任何会取 mu_ 的公共 API（自锁死），只允许
+    //   「置位 / 通知另一线程」这类不加锁动作（测试据此唤醒一个只**尝试** rotate 的线程并观测它是否被 mu_ 挡住）。
+    //   读取点已在 mu_ 内 ⇒ 直接读成员、不新增锁往返；语义/数据不变；默认未设置 ⇒ 恒假，生产不编译本块。
+    if (putPreDecryptTestHook_) putPreDecryptTestHook_();
+#endif
     if (!parseAndValidateSettingsDoc(mergedText, newCfg, err)) {
         r.message = "settings 应用失败";
         r.details.push_back(err);
@@ -1387,20 +1404,19 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     (void)takeNormalizeWarnings();
 
     // 落盘：敏感字段强制加密存储。
-    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
+    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持
+    //   （由本函数上方的**单一原子段**统一持有，覆盖「读基底 → 解密 → 合并 → 校验 → 加密 → 写盘 → 提交」）。
     // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘与内存提交（cfg_/generation_）必须在**同一** mu_ 临界区内，
     //   以便与 reloadFromDisk 回滚段的「取快照 → 序列化 → 写回磁盘」互斥，杜绝「回滚线程用旧快照覆盖已提交的
     //   新 PUT」这一竞态（详见 reloadFromDisk 回滚处的同因注释）。
-    // ★ 密钥/密文同源不变量（项 A）：**加密也必须在本临界区内**——buildSettingsJson 经 ensureOrLoadKey
-    //   **每次重读密钥文件**；若加密在锁外，并发的 rotateKeyAndReencrypt 可能在「读密钥」与「写盘」之间
-    //   把密钥文件换成新密钥 ⇒ 本次密文用旧密钥、盘上密钥已是新密钥（或反之）⇒ 下次启动解密失败。
-    //   故把「加密 + 写盘 + 提交」整段纳入同一 mu_ 临界区。
-    //   为何可直接扩大 mu_（而非新增专用写锁）：buildSettingsJson / writeAtomicallyWithBackup **均不取 mu_**
-    //   （逐字核实），故持 mu_ 调用它们不会递归加锁；全函数仅此一把锁 ⇒ 无锁序问题、无死锁风险。
-    //   代价（如实登记）：加密（DPAPI 解保护 + AES-256-GCM）纳入持锁时长 ⇒ 加密期间 mu_ 被持有，
-    //   current() / 热重载会被阻塞 ≈ 一次加密耗时（PUT 为低频管理操作，可接受；reloadFromDisk 回滚段早已如此）。
+    // ★ 密钥/密文同源不变量（项 A + 项 2）：**解密与加密都必须在同一临界区内**——buildSettingsJson /
+    //   parseAndValidateSettingsDoc 均经 ensureOrLoadKey **每次重读密钥文件**；若解密在锁外，并发的
+    //   rotateKeyAndReencrypt 可能在「读基底」与「解密」之间把密钥文件换成新密钥 ⇒ 用新密钥去解旧密钥的密文
+    //   ⇒ 响亮失败。故「读基底 + 解密 + 加密 + 写盘 + 提交」整段纳入同一 mu_ 临界区（见上方单一原子段的登记）。
+    //   ⚠️ 本处**不再**单独加锁：外层已有 std::lock_guard（同一把 mu_）；此处再加会**自锁死**（mu_ 非递归）。
+    //   代价（如实登记）：持锁范围由「仅加密 + 写盘」**扩大**为「读基底 + 合并 + schema 校验 + DPAPI 解保护 +
+    //     AES 解密 + AES 加密 + 写盘」（详见上方单一原子段的代价登记）。
     {
-        std::lock_guard<std::mutex> lock(mu_);
         const std::string prettyEnc = buildSettingsJson(newCfg, false, true);
         if (prettyEnc.find("\"_error\"") != std::string::npos) {
             r.httpStatus = 500;
@@ -1679,6 +1695,16 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
                 outErr += "; 配置在本次读取期间已被并发修改 ⇒ 放弃隔离（避免把新内容当作坏文件改名）";
                 return false;
             }
+#if defined(RK_ENABLE_TEST_SEAMS)
+            // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setReloadIsolationTestHookForTesting
+            //   声明注释）：在「复核 mtime 未变之后、quarantineConfigFile 之前」同步触发一次由测试注入的动作。
+            //   ⚠️ 与**锁外**的那两枚接缝（reload / rotate）的本质差异：**此刻已持 mu_** —— 故钩子内**绝不可**
+            //   调用任何会取 mu_ 的公共 API（mu_ 非递归 ⇒ 自锁死），只允许「置位 / 通知另一线程」这类不加锁
+            //   动作（测试据此唤醒一个只**尝试** PUT 的线程并观测它是否被 mu_ 挡在临界区外）。
+            //   读取点已在 mu_ 内 ⇒ 直接读成员、不新增锁往返；setter 与钩子调用点同取此锁 ⇒ 无数据竞争。
+            //   语义/数据不变；默认未设置（空 std::function）⇒ 恒假，生产构建根本不编译本块。
+            if (reloadIsolationTestHook_) reloadIsolationTestHook_();
+#endif
             if (!quarantineConfigFile(configPath_, movedTo, qerr)) {
                 // 隔离失败 ⇒ 坏文件仍在原位。记录**已观察到的 mtime**，否则 1 秒轮询会反复重读同一份
                 // 坏文件并反复失败（IO / 日志噪声）。
@@ -1849,6 +1875,16 @@ void WinJsonConfigStore::setReloadTestHookForTesting(std::function<void()> hook)
 void WinJsonConfigStore::setRotateTestHookForTesting(std::function<void()> hook) {
     std::lock_guard<std::mutex> lock(mu_);
     rotateTestHook_ = std::move(hook);
+}
+
+void WinJsonConfigStore::setReloadIsolationTestHookForTesting(std::function<void()> hook) {
+    std::lock_guard<std::mutex> lock(mu_);
+    reloadIsolationTestHook_ = std::move(hook);
+}
+
+void WinJsonConfigStore::setPutPreDecryptTestHookForTesting(std::function<void()> hook) {
+    std::lock_guard<std::mutex> lock(mu_);
+    putPreDecryptTestHook_ = std::move(hook);
 }
 #endif
 

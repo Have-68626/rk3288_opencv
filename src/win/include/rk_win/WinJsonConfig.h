@@ -118,21 +118,49 @@ public:
     bool pollReloadOnce(bool& outApplied, std::string& outErr);  // 便于测试/无线程环境
 
 #if defined(RK_ENABLE_TEST_SEAMS)
-    // ── 测试接缝（编译期开关 RK_ENABLE_TEST_SEAMS；**仅** win_unit_tests 定义该宏，见 cmake/windows.cmake
-    //    与 cmake/core.cmake 的 rk_assert_test_seam_boundary）──
-    // 这两枚钩子只服务「纯黑盒无法确定性观测并发交错」的两条竞态用例（见 tests/win/test_win_json_config.cpp）。
+    // ── 测试接缝（编译期开关 RK_ENABLE_TEST_SEAMS；**本类接缝**的宏由 win_unit_tests 定义，见
+    //    cmake/windows.cmake 与 cmake/core.cmake 的 rk_assert_test_seam_boundary。⚠️ 另一 target
+    //    `core_gtest_tests` **也**定义同一宏，但用于 Engine 的接缝（onBeforeRenderPublish，见 Engine.h），
+    //    与本类无关——故不可据此认为「全仓仅 win_unit_tests 定义该宏」）──
+    // 下列钩子只服务「纯黑盒无法确定性观测并发交错」的若干竞态用例（见 tests/win/test_win_json_config.cpp）。
     //   · setReloadTestHookForTesting：在 reloadFromDisk「解析被拒之后、重新取锁复核 mtime 之前」同步调用。
     //     此刻**未持 mu_** ⇒ 钩子内可安全调 updateFromJsonBody（否则会自锁）。
     //   · setRotateTestHookForTesting：在 rotateKeyAndReencrypt「**取快照之后、生成并替换密钥之前**」
     //     同步调用（即竞态窗口的起点）；此刻同样**未持 mu_**。刻意放在密钥替换之前——否则磁盘上的
     //     postUrl 密文仍是旧密钥加密的，钩子内的合法 PUT 会在解析/解密处失败。
+    //   · setReloadIsolationTestHookForTesting：在 reloadFromDisk「**复核 mtime 未变之后、
+    //     quarantineConfigFile 之前**」同步调用——⚠️ 与前两枚的本质差异：**此刻已持 mu_**（该读取点与
+    //     改名同在 reloadFromDisk 的那个 mu_ 临界区内）。故钩子内**绝不可**调用任何会取 mu_ 的公共 API
+    //     （mu_ 非递归 ⇒ 自锁死，比断言失败更糟）；只允许「置位 / 通知另一线程」这类**不加锁**的动作。
+    //     用途：给「hook 点（**复核与改名之间**）持 mu_」这一性质一个**可判别锚**——钩子唤醒另一线程去
+    //     **尝试** PUT，而该 PUT 会被 mu_ 挡在临界区外 ⇒「hook 持锁窗口内 PUT 未提交」可被观测。
+    //     ⚠️ 判别面**恰好**是「hook 点持 mu_」：把**复核**单独移出锁、或让复核与改名分属**两把锁**，hook 点
+    //     仍可能落在其中某把锁内 ⇒ 本锚**不**判别这两种拆分形态（阴性变异实测为**绿**，详见对应用例的登记）。
+    //   · setPutPreDecryptTestHookForTesting：在 updateFromJsonBody「**读父代基底 / 合并 / schema 校验之后，
+    //     解密（parseAndValidateSettingsDoc）之前**」同步调用——⚠️ 修复项 2 之后**此刻已持 mu_**（该读取点与
+    //     解密 / 加密 / 写盘同在这一个原子段内）。与 isolation 枚同理：钩子内**绝不可**调用任何会取 mu_ 的
+    //     公共 API（自锁死）。用途：钉住「**解密**与提交在同一临界区、以同一密钥」——钩子唤醒另一线程去
+    //     **尝试** rotate（轮换密钥），该 rotate 被 mu_ 挡在临界区外 ⇒ 解密读到的密钥恒等于基线密文所用的
+    //     密钥（若解密落在锁外，rotate 会先换密钥 ⇒ 用新密钥解旧密文 ⇒ 响亮失败；详见对应用例）。
+    //     ⚠️ 判别面**恰好**是「**解密**与提交同临界区」：把「**读父代基底** lastGoodJsonPretty_」单独移出锁、
+    //     而解密仍在锁内时，hook 点仍在锁内 ⇒ 本锚**不**判别该形态（阴性变异实测为**绿**，详见对应用例的登记）。
+    // ⚠️ **接缝回调的运行契约（承重，务必遵守）**：后两枚（reloadIsolation / putPreDecrypt）是在**持有
+    //   非递归 `mu_` 时**被调用的 `std::function` ⇒ 钩子内**绝不可**调用任何会获取 `mu_` 的公共 API
+    //   （如 store.current() / updateFromJsonBody / rotateKeyAndReencrypt / pollReloadOnce）。违反**不会**
+    //   表现为「断言失败」，而是 `mu_` 不可重入导致的**挂起**——且会被 win_unit_tests 的 TIMEOUT 吞成一个
+    //   难以定位的 Timeout（而非清晰的测试失败）。此约束**目前仅由注释约定**表达、**无结构强制** ⇒ 是已知的
+    //   脆弱点。**已知的更优形态**是**控制反转**：生产侧只在接缝处**点亮一个原子量**，由测试侧**轮询观测**，
+    //   从而彻底消除「在锁内执行任意回调」这一风险面。**本轮未改形态**，仅如实登记。
     // 语义与代价（**订正**，原措辞「生产路径行为**逐位不变**」已不准确）：**数据/语义不变**；
-    //   ⚠️ 在**定义了本宏的测试构建**中，每次调用会为「安全读取钩子」**新增一次 mu_ 获取/释放**
-    //     （rotate 因有界重试最多 3 次）⇒ 非逐位不变，而是**多一次锁往返**。
+    //   ⚠️ 在**定义了本宏的测试构建**中，前两枚读取钩子会**新增一次 mu_ 获取/释放**（rotate 因有界重试
+    //     最多 3 次）⇒ 非逐位不变，而是**多一次锁往返**；第三、四枚（isolation / putPreDecrypt）的读取点
+    //     **已在 mu_ 内** ⇒ 直接读成员、**不新增**任何锁往返。
     //   ✅ **生产构建不定义本宏 ⇒ 整个接缝块（声明、成员、读取点）不参与编译 ⇒ 生产路径确实逐位不变**。
     // 生产代码**绝不**设置它们；未设置时空 std::function ⇒ `if (hook)` 恒假 ⇒ 无任何副作用。
     void setReloadTestHookForTesting(std::function<void()> hook);
     void setRotateTestHookForTesting(std::function<void()> hook);
+    void setReloadIsolationTestHookForTesting(std::function<void()> hook);
+    void setPutPreDecryptTestHookForTesting(std::function<void()> hook);
 #endif
 
     std::filesystem::path configPath() const { return configPath_; }
@@ -184,10 +212,14 @@ private:
     std::string initQuarantineFileName_;  // 坏配置被另存的文件名；空串 = 未隔离（非降级启动）或隔离失败
 
 #if defined(RK_ENABLE_TEST_SEAMS)
-    // 测试接缝（编译期开关，仅 win_unit_tests 定义该宏；生产不编译）。语义/数据不变，但读钩子
-    // 会新增一次 mu_ 获取/释放（见上方两枚 setter 的声明注释）。
+    // 测试接缝（编译期开关；**本类接缝**的宏由 win_unit_tests 定义 —— 另一 target `core_gtest_tests`
+    // 也定义同一宏但用于 Engine 的接缝（见 Engine.h）；生产不编译）。语义/数据不变，但前两枚读钩子
+    // （reload / rotate）会新增一次 mu_ 获取/释放（见上方两枚 setter 的声明注释）；后两枚
+    // （reloadIsolation / putPreDecrypt）的读取点**已在 mu_ 内**，不新增锁往返。
     std::function<void()> reloadTestHook_;
     std::function<void()> rotateTestHook_;
+    std::function<void()> reloadIsolationTestHook_;
+    std::function<void()> putPreDecryptTestHook_;
 #endif
 };
 
