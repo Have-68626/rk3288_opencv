@@ -34,13 +34,24 @@ using Clock = std::chrono::steady_clock;
 // 把 #if 从**头文件**挪到 TU 内部，是为了让 RealtimeBenchmarkConfig 的定义在所有 TU/所有
 // 目标下逐字一致（ODR 安全）——编译期按目标预定义 __aarch64__ 本身是 ODR 安全的，但只要
 // 该分支留在头文件里，一旦将来改成人工维护的显式宏就有静默 UB 的入口。
+// 「平台默认」的判定本身收敛到头文件的纯函数 rkDefaultEnforceBudgetForArch（不含 #if）——
+// 本 TU 仅按编译期宏把目标是否 arm64 传进去。
+// ⚠️ 判别力边界（如实陈述，勿读成已闭合）：x64 CI 上可断言的只有**纯函数的映射语义**
+//   （rkDefaultEnforceBudgetForArch(true/false)，改坏那一行即翻红），以及 x64 回落分支经构造函数
+//   写入 bench_ 的实际取值（见 tests/cpp/test_engine.cpp）；而**本处 `#if defined(__aarch64__)`
+//   下的 arm64 选臂（kIsAarch64Target）在 x64 上仍不被编译**（死代码），也无测试引用它 ⇒ 把该
+//   arm64 选臂改坏，x64 下**仍不会变红**。即：本批**未**消除原缺口（FACE-TEST-002），要真正闭合
+//   需 **arm64 或交叉编译目标**（登记为未闭合）。
+#if defined(__aarch64__)
+constexpr bool kIsAarch64Target = true;
+#else
+constexpr bool kIsAarch64Target = false;
+#endif
 constexpr bool kDefaultEnforceBudget =
 #if defined(RK_BENCH_ENFORCE_BUDGET)
     RK_BENCH_ENFORCE_BUDGET != 0;
-#elif defined(__aarch64__)
-    true;
 #else
-    false;
+    rkDefaultEnforceBudgetForArch(kIsAarch64Target);
 #endif
 
 double durationMs(Clock::time_point a, Clock::time_point b) {
