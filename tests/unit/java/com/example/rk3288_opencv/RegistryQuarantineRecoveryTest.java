@@ -31,7 +31,7 @@ import static org.junit.Assert.assertTrue;
  * 注册表的自愈只剩「一次成功的 {@code add}/{@code remove} 会重写注册表、顺带清除损坏行」这一条路；
  * 而经 UI 的 {@code add} 被 {@code EnrollmentSession} 的判重门切断，{@code remove} 又需要至少一条
  * 可删条目。当注册表**整份损坏 / 全部行不合法**时 {@code list().entries} 为空 ⇒ UI 里没有任何可删
- * 条目 ⇒ 用户无法自愈。本方法为该死角提供一条**不删除任何文件**的出路。
+ * 条目 ⇒ 用户无法自愈。本方法为该死角提供一条**不删除任何注册表工件**（原文件只改名旁置）的出路。
  *
  * <h2>本文件钉住的行为契约</h2>
  * <ol>
@@ -46,11 +46,22 @@ import static org.junit.Assert.assertTrue;
  *
  * <h2>覆盖边界（如实声明，勿高估）</h2>
  * <ul>
- *   <li><b>未覆盖</b>：旁置 / 新建空表**中途失败**的回滚分支（真实文件系统上难以稳定制造
- *       {@code renameTo} 失败 —— {@link FileStoreUtils#renameQuietly} 只吞 {@code SecurityException}，
- *       且旁置路径不经过可注入的 {@code FileOps}/{@code PlatformKeyProvider} 接缝）⇒ 该分支零覆盖；
- *       其中「**回滚本身失败**」（回滚 {@code renameTo} 亦失败，文案须如实列出仍被旁置的文件）这一支
- *       **无判别锚** —— 无法构造，按代码走查保证语义。</li>
+ *   <li><b>条件覆盖</b>：「旁置成功、但新建空表（{@code persistRegistry}）失败 ⇒ 回滚已完成的改名」这一支，
+ *       由 {@link #persistFailureRollsBackQuarantineAndRestoresOriginalFiles} 用**悬空符号链接**构造钉住
+ *       （预置 {@code tmpFileFor(dst)} 为悬空链接，令空表写入必然失败且失败点**晚于**旁置）。⚠️ 该构造
+ *       **依赖符号链接支持**（Windows 需开发者模式 / 建链权限；受限 CI 亦不可）——不支持的环境下该用例以
+ *       {@code Assume} **跳过**（跳过前向 stderr 打一行 {@code [skip]}；该标记落在**上传的 HTML 报告 artifact**
+ *       （{@code app/build/reports/}，android job 上传为 {@code android-reports}）中，但 **gradle console 日志里
+ *       不可见** —— 故仅看 CI 原始日志的读者无法据此察觉跳过），
+ *       此时该回滚分支**无自动化判别锚**，仅按代码走查保证语义。</li>
+ *   <li><b>未覆盖</b>：**旁置本身失败**（{@code renameQuietly} 返回 false）那支，以及「**回滚本身也失败**」
+ *       （回滚 {@code renameTo} 亦失败，文案须如实列出仍被旁置的文件）这一支 —— 前者需要一份可稳定令
+ *       {@code renameTo} 失败的构造（真实文件系统上难以跨平台稳定制造：POSIX 看父目录可写、Windows 看句柄
+ *       占用且语义不一致），后者还需在该失败之上再叠加一次失败，故两支仍**按代码走查保证语义**。</li>
+ *   <li><b>未覆盖</b>：回滚**失败**那一支的**文案**无判别锚 —— 把「回滚未完全成功…」谎报成「已还原原注册表」
+ *       时本类用例**全绿**（无断言读取该文案在失败与成功两种结果下的分歧）。</li>
+ *   <li><b>未覆盖</b>：**逆序回滚顺序**未被断言 —— 现有回滚用例只有一个被旁置文件，回滚顺序（与旁置相反）
+ *       无差别可观测；多文件顺序反转的构造尚未加入。</li>
  *   <li><b>未覆盖</b>：UI 接线（{@code MainActivity} 是 {@code AppCompatActivity}，纯 JVM 不可构造）；
  *       UI 侧由源码结构守卫单独钉住形态，行为由本类的仓库层用例钉住。</li>
  * </ul>
@@ -321,6 +332,68 @@ public class RegistryQuarantineRecoveryTest {
         assertTrue(new File(dir, base + ".corrupt." + ts + "-1").createNewFile());
         File picked2 = AndroidEnrollmentRepository.uniqueAsideFile(dir, base, ts);
         assertEquals(base + ".corrupt." + ts + "-2", picked2.getName());
+    }
+
+    // ---------- ⑨ 旁置成功但新建空表失败 ⇒ 回滚已完成的旁置改名 ----------
+
+    /**
+     * 「旁置成功、但新建空表失败」时必须把已旁置的文件**逐个移回原名**并如实上报 —— 绝不谎报
+     * 「未做任何改动」，也绝不删除任何注册表工件。
+     *
+     * <p><b>确定性构造</b>（真实文件系统上难以稳定制造 {@code persistRegistry} 失败，故借道文件系统语义）：
+     * 空表写入是 {@code new FileOutputStream(tmpFileFor(dst))}，流程是「先写 tmp、再 tmp→dst」。把
+     * {@code tmpFileFor(dst)} 预置为**悬空符号链接**（目标指向一个**不存在**的目录）后：
+     * <ul>
+     *   <li>{@link File#exists()} **跟随**链接 ⇒ 返回 false ⇒ 旁置循环**跳过**它，主文件照常旁置成功；</li>
+     *   <li>{@code FileOutputStream} 跟随链接去**创建其目标**，而目标的父目录不存在 ⇒ 必然抛
+     *       {@code FileNotFoundException} ⇒ {@code persistRegistry} 停在第 2 阶段（**晚于**旁置）。</li>
+     * </ul>
+     * 该语义在 POSIX 与 Windows（需符号链接权限 / Developer Mode）上一致；环境不支持时以
+     * {@link org.junit.Assume} **跳过**（跳过前向 stderr 打一行 {@code [skip]}；该标记落在**上传的 HTML 报告
+     * artifact**（{@code app/build/reports/}）中，**gradle console 日志里不可见**，故 CI 日志读者无法据此
+     * 察觉跳过），而非误报失败 —— 故本条为**条件覆盖**，不支持符号链接的环境下该回滚分支无自动化判别锚
+     * （见类 javadoc 的「覆盖边界」）。
+     *
+     * <p><b>判别力</b>（实测见报告）：把回滚那段（{@code rollbackMoves} 真正改名回去）变异成「不回滚」⇒
+     * 第 (b) 组断言红；把「已还原原注册表」文案改成谎报「未做任何改动」⇒ 第 (c) 组断言红。
+     */
+    @Test
+    public void persistFailureRollsBackQuarantineAndRestoresOriginalFiles() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        File registry = repo.registryFile();
+        byte[] corruptBytes = "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8);
+        Files.write(registry.toPath(), corruptBytes);
+        assertFalse("前置条件：头损坏时 list 必须非 OK", repo.list().isOk());
+
+        File tmpPath = new File(repo.scopeDir(), AndroidEnrollmentRepository.REGISTRY_FILE_NAME + ".tmp");
+        try {
+            Files.createSymbolicLink(tmpPath.toPath(),
+                    new File(repo.scopeDir(), "no_such_dir/nowhere").toPath());
+        } catch (Exception ex) {
+            // 与 win 侧同款：跳过前显式打一行 [skip] 到 stderr。该标记落在 JUnit XML 的 <system-err>
+            //（该目录不上传）与 HTML 报告 artifact（app/build/reports/，android job 上传）中，
+            //**gradle console 日志里不可见**，故仅看 CI 原始日志的读者无法察觉此次跳过。
+            System.err.println("[skip] persistFailureRollsBackQuarantineAndRestoresOriginalFiles: "
+                    + "环境不支持符号链接，无法构造该确定性失败 —— 该回滚分支本次无自动化判别锚");
+            org.junit.Assume.assumeNoException("环境不支持符号链接，无法构造该确定性失败，跳过", ex);
+        }
+        assertFalse("构造前提：悬空链接须被判为「不存在」，否则会被旁置循环移走", tmpPath.exists());
+
+        AndroidEnrollmentRepository.Result r = repo.quarantineCorruptRegistry();
+
+        // (a) 进入回滚分支：空表写入失败 ⇒ IO_ERROR（且未生成空表 —— 主文件应回到原名，见 (b)）。
+        assertEquals("空表写入失败应报 IO_ERROR，实际=" + r.status + " / " + r.message,
+                AndroidEnrollmentRepository.Status.IO_ERROR, r.status);
+        // (c) 文案如实反映最终状态（已回滚还原），不得谎报「未做任何改动」。
+        assertTrue("文案须如实说明已回滚还原，实际=" + r.message,
+                r.message.contains("已还原原注册表"));
+        // (b) 各文件回到原名：主文件回到原名、逐字节完整；且无任何 .corrupt. 旁置残留。
+        assertEquals("回滚后不得残留任何 .corrupt. 旁置文件", 0, quarantinedFiles(repo).size());
+        assertTrue("回滚后主文件须回到原名", registry.exists());
+        // (d) 没有任何文件被删除：原损坏内容原样还在。
+        assertArrayEquals("回滚后主文件字节须逐字节保留（未删除、未改写）",
+                corruptBytes, Files.readAllBytes(registry.toPath()));
+        assertFalse("回滚后注册表仍是那份损坏内容（未被空表覆盖）", repo.list().isOk());
     }
 
     // ---------- 工具 ----------
