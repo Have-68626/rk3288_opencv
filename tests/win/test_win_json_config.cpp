@@ -1288,7 +1288,7 @@ bool test_config_cascade_migration_write_failure_degrades() {
     std::string warn;
     store.initialize(warn);
 
-    if (warn.find("级联路径迁移未持久化") == std::string::npos) return false;  // 失败不再被吞
+    if (warn.find("写入 config.json 失败") == std::string::npos) return false;  // 区分「写盘失败」与「闸门触发」，失败不再被吞
     if (store.initWarning().empty()) return false;                             // health 可见（degraded）
     if (store.configRejectedOnLoad()) return false;                            // 成功分支：不是 rejected
     // 内存已改指新路径（迁移在内存生效），只是未落盘。
