@@ -114,6 +114,24 @@ struct RealtimeBenchmarkConfig {
 };
 
 /**
+ * 「平台默认是否强制基准预算」的**唯一可测定义**（纯函数，内部不含任何 #if）。
+ *
+ * 生产侧**只**在 RealtimeFacePipeline.cpp 的 kDefaultEnforceBudget 里按编译期目标架构调用一次
+ * （`__aarch64__` ⇒ 传 true）。
+ *
+ * ⚠️ 判别力边界（如实陈述，勿读成已闭合）：把它抽成不依赖 #if 的纯函数，**钉住的只是这条映射语义
+ * 本身**——测试直接对该函数断言 true/false（见 tests/cpp/test_engine.cpp），把函数体
+ * `return isAarch64;` 改坏会令对应断言翻红，故**不是零判别力**。但这**没有**消除原缺口
+ * （FACE-TEST-002）：.cpp 里 `#if defined(__aarch64__) constexpr bool kIsAarch64Target = true;`
+ * 这一**arm64 选臂在 x64 上仍不被编译**（死代码），且无任何测试引用 kIsAarch64Target ⇒ 把该
+ * arm64 选臂改坏，x64 下**仍然不会变红** ⇒ 本批**未**消除该缺口，要真正闭合需 **arm64 或交叉
+ * 编译目标**（登记为未闭合）。
+ *
+ * ⚠️ 这不是测试专用接缝：生产构造路径（RealtimeFacePipeline 构造函数）同样经由它取值。
+ */
+constexpr bool rkDefaultEnforceBudgetForArch(bool isAarch64) { return isAarch64; }
+
+/**
  * 装配钩子：把「加载 / 自检 / 基准」从协调逻辑中解耦，测试注入假实现，
  * 生产默认实现见 makeDefaultRealtimePipelineHooks()。
  *
