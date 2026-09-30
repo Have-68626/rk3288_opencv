@@ -85,7 +85,7 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals("alice", entries.get(0).userId);
         assertEquals(MV, entries.get(0).modelVersion);
         assertEquals(TSV, entries.get(0).templateSchemaVersion);
-        assertEquals(64, entries.get(0).ciphertextSha256Hex.length());
+        assertEquals(64, entries.get(0).templateFileSha256Hex.length());
 
         // get 命中
         assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
@@ -110,7 +110,8 @@ public class AndroidEnrollmentRepositoryTest {
     // ---------- ①b 注册表存的是模板**文件**（envelope 全量）的长度与摘要（FACE-PIPE-010③ 新8） ----------
 
     /**
-     * 判别性断言：`ciphertextSize` / `ciphertextSha256Hex` 虽名为「密文」，实际算的是**整个加密
+     * 判别性断言：`templateFileSize` / `templateFileSha256Hex`（原名 `ciphertextSize` /
+     * `ciphertextSha256Hex`，名实不符已改正）实际算的是**整个加密
      * 模板文件** —— 自行回读落盘字节、自行算长度与摘要，再与字段比对，可区分「算整个 envelope」
      * 与「只算 ct+tag 段」两种实现（后者会少 64B 头）。
      *
@@ -133,14 +134,14 @@ public class AndroidEnrollmentRepositoryTest {
                 onDisk.length > template.length + 16);
 
         assertEquals("字段应是整个加密模板文件的字节数（含 envelope 头），而非纯密文段长度",
-                onDisk.length, add.entry.ciphertextSize);
+                onDisk.length, add.entry.templateFileSize);
         assertEquals("字段应是对整个加密模板文件取的 SHA-256，而非仅密文段的摘要",
-                FeatureTemplateEncryptedStore.sha256Hex(onDisk), add.entry.ciphertextSha256Hex);
+                FeatureTemplateEncryptedStore.sha256Hex(onDisk), add.entry.templateFileSha256Hex);
 
         String[] cols = registryEntryFields(repo, 0);
         assertEquals("注册表条目应为六列（位置式，无列名）", 6, cols.length);
         assertEquals("第 4 列应是模板文件字节数", onDisk.length, Long.parseLong(cols[3]));
-        assertEquals("第 5 列应是模板文件 SHA-256", add.entry.ciphertextSha256Hex, cols[4]);
+        assertEquals("第 5 列应是模板文件 SHA-256", add.entry.templateFileSha256Hex, cols[4]);
     }
 
     // ---------- ② 覆盖拒绝 ----------

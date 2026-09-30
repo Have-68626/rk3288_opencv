@@ -4711,7 +4711,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     AndroidEnrollmentRepository.Entry e = entries.get(i);
                     String name = displayNameFor(e.userId);
                     items[i] = (name.equals(e.userId) ? e.userId : (name + "（" + e.userId + "）"))
-                            + "  模板 " + e.ciphertextSize + "B";
+                            + "  模板 " + e.templateFileSize + "B";
                 }
                 AlertDialog.Builder builder = new AlertDialog.Builder(this)
                         .setTitle("人员列表（点击删除，需二次确认）")
