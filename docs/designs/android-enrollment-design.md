@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-26
+as_of=2026-09-30
 -->
 
 # Android 端人员注册设计（目标 vs 已落地）
@@ -58,7 +58,7 @@ as_of=2026-09-26
   理由：保留是**避免未经同意丢失数据**，**不是**低估历史 PII 风险——而是把它当作**兼容旧数据的明确例外**。**只要历史键存在，就不得宣称「设备上已无明文 PII」**；「注册功能在 API<23 不可用」也不能替代对其他写入路径的检查（已核查：全仓除 `PersonDisplayNameStore.save`（加密）外，**无其他显示名写入路径**）。
 - **并发**：按规范化 `scopeDir` 路径共享静态锁，串行化同目录多实例的 `add/remove/readTemplate/list/get`。
 - **容错**：单行损坏跳过并计数（`skippedLineCount`），仅文件头（魔数 `FREG1`/版本）损坏才判 `CORRUPTED`；**自愈需一次成功的 `add`/`remove`**（`persistRegistry` 只序列化**枚举到的**条目，被跳过的坏行不在其中）。
-  ⚠️ **自愈边界（如实；本批之后收窄，已在代码中登记为待办 N1，未修）**：注册路径的判重门（`EnrollmentSession.fromRepository` → `ListResult.isEnumerationComplete()`）在存在坏行时对**每一帧**样本返回 `REPO_UNAVAILABLE`，会话永远集不满 8 样本 ⇒ 经 UI 的 `add` **不可达**，**自愈实际只剩 `remove` 一条路**。而 `remove` 的 UI 入口（`MainActivity.showPersonManagementDialog`）按 `list().entries` 列条目：注册表**只剩被跳过的坏行**时 `entries` 为空 ⇒ 列表里**没有任何可删条目**（本批已改为如实弹提示而非「暂无已注册人员」，但出路未变）⇒ **用户从 UI 无法自愈**（只能清除应用数据或手工修文件）。本批已把该损坏信息补上 UI 可见性（人员列表对话框的 message / 空列表 Toast / 采集进度区提示），但**未**提供修复入口。
+  ⚠️ **自愈边界（如实；2026-09-29 更新）**：注册路径的判重门（`EnrollmentSession.fromRepository` → `ListResult.isEnumerationComplete()`）在存在坏行时对**每一帧**样本返回 `REPO_UNAVAILABLE`，会话永远集不满 8 样本 ⇒ 经 UI 的 `add` **不可达**，判重门这条自愈路**仍被切断**。`remove` 的 UI 入口（`MainActivity.showPersonManagementDialog`）按 `list().entries` 列条目：注册表**只剩被跳过的坏行**时 `entries` 为空 ⇒ 列表里**没有任何可删条目**。**但该死角已有应用内恢复出口**：`MainActivity.promptRegistryRecovery`（经 `confirmQuarantineRegistry` 二次确认 → `quarantineRegistry`）调用仓库层 `AndroidEnrollmentRepository.quarantineCorruptRegistry()`，把损坏文件**改名旁置**为 `<原名>.corrupt.<ts>`（**绝不删除**、原字节完整保留）并新建空表，结果回传旁置文件的**绝对路径**供事后手工取回。⚠️ 须区分「**有出口**」与「**自动修复**」：该入口只在注册表「整份不可枚举」（头损坏 / 全部行不合法 / 整体不可读，即 `IO_ERROR`）时触发；旁置**不还原**任何损坏条目（新表为空），`add` 路径的自愈仍被判重门切断，只能经该入口或 `remove`（有可删条目时）推进。
   ⚠️ 另：`status==OK && skipped==0` **不足以**支撑「可安全用作判重依据」——从 `.bak` 恢复时备份可能早于最近一次 `add`（新条目只存在于未被消费的 `.tmp` 里），此时枚举**确实缺行**而该判据仍为 true；该缺口未修，见 `ListResult.isEnumerationComplete()` 的 javadoc。
 - **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；主文件**缺失或不可解析**时，`loadRegistry` 按「先未消费的 `.tmp`、后 `.bak`」取首个可解析的副本作为注册表。主文件**缺失**时把副本改名就位；主文件**存在**（即便头损坏 / 不可读）时**只读**副本、绝不改名覆盖（POSIX `rename(2)` 会静默覆盖同名目标 ⇒ 覆盖即销毁主文件原字节，违背「不可解析的工件仍应保留、改名不删」）。
   ⚠️ **头损坏（`CORRUPTED`）也纳入自愈**（2026-09-29 放宽了此前「回退只含 `IO_ERROR`、不含 `CORRUPTED`」的范围）：头损坏 + 健康 `.bak`/`.tmp` 并存时先自愈读回，避免 `quarantineCorruptRegistry` 判定「无可用条目」而把健康副本也一并旁置、清空活性库。范围由 `AndroidEnrollmentRepositoryTest.corruptHeaderRecoversFromUsableBackupWithoutOverwritingMain`（只读、不覆盖主文件字节）与 `RegistryQuarantineRecoveryTest.corruptMainWithUsableBackupSelfHealsInsteadOfQuarantiningBackup`（不旁置健康副本）钉住。
@@ -110,10 +110,10 @@ APK 不内置模型，用户经 SAF 导入 ZIP；校验链、ZIP 契约与原子
 - **注册闭环的逐帧特征源（#1，已接线；真机未验收）**：注册 UI 已接线——`EnrollmentSession` 由 `MainActivity.startEnrollment` 构造，采样进度/拒绝原因由对话框轮询展示，完成时经 `AndroidEnrollmentRepository.add` 加密落盘并 `replaceGallery` 刷新运行中图库。逐帧特征源也已接线：`MainActivity.startNativeEnrollmentCapture` 调 `NativeFaceBridge.startEnrollmentCapture` → native `onEnrollmentCaptureSample` → 回调 `MainActivity.onEnrollmentFrameFromNative` → `MainActivity.feedEnrollmentSample`。因此原文「JNI 未暴露逐帧 embedding / `feedEnrollmentSample` 无生产调用方 / 会话恒停在 0/8」**均不再成立**，不再作为 Blocker 证据。
   ⚠️ **仍未落地的部分（如实）**：(a) **真机闭环验收未做**——本机/CI 只能证明接线与结构，不能证明 RK3288 上能真实采满 8 样本（真机验收见 `docs/guides/rk3288-device-acceptance.md`）；(b) 采集开启失败时（无 Engine、模型未激活、native 未接通）`startEnrollmentCapture` 返回非 ok，本类只记日志并断开监听器，进度区停在 0/8；(c) 注册表存在坏行时判重门拒收每一帧（见 §2.1 自愈边界）。故当前表述应为「**接线完成、真机闭环未验收**」，既不得宣称闭环已在设备上可用，也不得再称其因缺特征源而不可用。`NativeFaceBridge.beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` 4 个注册类原生方法**仍无生产调用方**（属实）。
 - **冷启动恢复**：已落地——`MainActivity.restoreActiveProfileOnStartup`（由 `MainActivity.onCreate` 调用）先由加密仓库重建内存图库并 `replaceGallery`，再读取 `active_profile` 回放 `activate`；后台执行、失败不阻塞启动，reason 如实展示。
-- **注册表损坏时的 UI 修复入口（待办 N1，未修）**：注册表存在坏行时 `add` 自愈被切断，而「只剩坏行」时人员列表为空、没有可删条目 ⇒ 用户从 UI 无出路（详见 §2.1 自愈边界）。本批只补了**可见性**（人员列表对话框 / 空列表 Toast / 采集进度区），**未**提供修复入口。
+- **注册表损坏时的 UI 恢复出口（2026-09-29 已提供）**：注册表存在坏行时 `add` 自愈**仍**被判重门切断（`EnrollmentSession` 返回 `REPO_UNAVAILABLE`），而「只剩坏行」时人员列表为空、没有可删条目。该死角现已提供**非破坏性**的应用内出口：`MainActivity.promptRegistryRecovery` → `confirmQuarantineRegistry`（二次确认）→ `quarantineRegistry` 调仓库层 `quarantineCorruptRegistry()`，**改名旁置 + 新建空表**（**绝不删除**、回传绝对路径）。须如实区分：解决的是「**有出口**」而非「**自动修复**」——空表不含任何已注册人员，旁置文件仅供手工取回；仅当注册表「整份不可枚举」（头损坏 / 全部行不合法 / 整体不可读，即 `IO_ERROR`）时触发，仍有可解析条目时返回 `INVALID_ARGUMENT`（宜走 `remove` 逐个自愈）。
 - **身份证件/人员域扩展**：人员域对象、权限、审计、双端同步均未实现（顶层设计目标项）。
 
-Android 端的注册能力当前应表述为“**数据层与会话可用、注册 UI 与逐帧特征源均已接线，但真机闭环尚未验收**”；同时须带上两条限定：① 注册表存在坏行时注册会被判重门拒绝且**从 UI 无修复出路**（待办 N1）；② 从 `.bak` 恢复后枚举可能缺行，判重保证不完整。
+Android 端的注册能力当前应表述为“**数据层与会话可用、注册 UI 与逐帧特征源均已接线，但真机闭环尚未验收**”；同时须带上两条限定：① 注册表存在坏行时注册会被判重门拒绝（该死角已有应用内恢复出口 `MainActivity.promptRegistryRecovery`「改名旁置 + 建空表」，**绝不删除**，2026-09-29 落地）；② 从 `.bak` 恢复后枚举可能缺行，判重保证不完整。
 
 ## 4. 安全与隐私约束（已落地部分）
 
@@ -127,6 +127,6 @@ Android 端的注册能力当前应表述为“**数据层与会话可用、注�
 
 - 注册表 userId 可逆编码（hex）是刻意取舍，若合规升级要求标识不可逆，需同步改造 `list` 展示策略。
 - 模板双端互通仍为研究项，Android 与 Windows 模板不假设可直认。
-- **注册表损坏时的 UI 修复入口缺失（待办 N1）**：见 §2.1 自愈边界与 §3；本批只补可见性，未给入口。
+- **注册表损坏时的 UI 恢复出口（2026-09-29 已提供）**：见 §2.1 自愈边界与 §3；`MainActivity.promptRegistryRecovery`（二次确认后调仓库层 `quarantineCorruptRegistry()`）提供「改名旁置 + 建空表」出口（**绝不删除**、回传绝对路径），只解决「**有出口**」、不还原损坏条目。
 - **判重保证不完整**：`ListResult.isEnumerationComplete()` 不覆盖 `.bak` 恢复路径（备份可能早于最近一次 `add` ⇒ 枚举可能真缺行而判据仍为 true）。修法需要「比对备份与主文件的时间戳/条目数」或改用不可逆随机 id，未在本批实施。
 - 低版本只读模式下注册入口的门禁已在 `MainActivity.startEnrollment`（判据 `AndroidEnrollmentRepository.isEnrollmentEnabled`）实现：点击后返回 `unsupportedReason()` 的受控失败；如要求进入前即置灰按钮，仍待 UI 层补充。

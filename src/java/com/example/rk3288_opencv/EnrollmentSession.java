@@ -139,15 +139,16 @@ public final class EnrollmentSession {
     }
 
     /*
-     * 待办 N1（本批引入的可用性收敛，如实登记、未修）：REPO_UNAVAILABLE 不是一次性拒绝，而是
+     * 可用性收敛（REPO_UNAVAILABLE 的后果，如实记录）：REPO_UNAVAILABLE 不是一次性拒绝，而是
      * **每一帧都拒绝**——失败标记在 start() 快照阶段即落定（见 existingLoadFailed），判定点在
      * feed 的 6.5) 步对每个样本前置返回 false ⇒ 会话永远集不满 8 样本、commitTo 永不执行 ⇒
-     * 注册表只要存在**一行**坏行，经 UI 的「注册」就完全不可用。而清除坏行只能靠一次成功的
-     * add/remove（persistRegistry 只序列化 entries）：add 已被本门切断，自愈实际只剩 remove；
-     * 且注册表「只剩坏行」时 list().entries 为空 ⇒ 人员列表里没有可删条目
-     * ⇒ 用户从 UI 无法自愈（只能清除应用数据或手工编辑注册表）。
-     * 修复方向：给坏行一个可删条目/显式的「重写注册表」入口，或让门只拦「枚举缺行」的那次注册
-     * 而非整场会话。改动面涉及 MainActivity 的注册与人员管理 UI，须与产品拍板后单独实施。
+     * 注册表只要存在**一行**坏行，经 UI 的「注册」就完全不可用（清除坏行只能靠一次成功的
+     * add/remove，而 add 的自愈路**仍**被本门切断）。
+     * 注册表「只剩坏行」时 list().entries 为空 ⇒ 人员列表里没有可删条目这一死角，已由仓库层
+     * AndroidEnrollmentRepository.quarantineCorruptRegistry() 提供**应用内恢复出口**
+     * （MainActivity.promptRegistryRecovery 接线：改名旁置 + 建空表）。⚠️ 须区分「**有出口**」与
+     * 「**自动修复**」：该出口只把损坏文件改名旁置（不还原任何损坏条目）、新建一张空表（不含任何
+     * 已注册人员），原文件仅供手工取回；add 的自愈仍不可达，注册只能经该出口或 remove 推进。
      */
 
     /** 人脸检测框（帧像素坐标，右/下为开区间）。 */
