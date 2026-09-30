@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=process
 status=living
-as_of=2026-09-24
+as_of=2026-09-30
 -->
 
 # RK3288 AI Engine — Agent Guide
@@ -157,11 +157,13 @@ using TestFn = bool (*)();
 struct TestCase { const char* name; TestFn fn; };
 ```
 
-输出格式：`TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`。
+输出格式：`TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`；另有一种 `TEST_SKIP_ABSENT reason=... path=... note=...`（由 `tests/cpp/test_int8_quantization.cpp` 的 `skipIfNoModel()` 在模型缺失时打印），**出现 `TEST_SKIP_ABSENT` 时该用例仍计 PASS**——该标记只增加可见性，返回值仍是 `true`、仍计入 `pass`，勿误读为失败。
 
 - `face_infer_unit_tests` —— 用例位于 `tests/cpp/`，注册于 `face_infer_unit_tests_main.cpp`
 - `win_unit_tests` —— 自定义用例注册于 `win_unit_tests_main.cpp`
 - `ncnn_precision_test` —— 独立的自定义 `bool` 测试运行器
+
+**符号链接依赖的跳过（`skipped` 恒非 0）**：`tests/win/test_http_faces_server.cpp` 有 **7 条**用例依赖创建符号链接，创建失败即 `GTEST_SKIP`（`HttpFacesServer.PathValidation` 与 `StaticFileToctou.*` 六条：`StaticFileRootRejectsReparsePointInConfiguredRoot` / `StaticFileRootRejectsReparsePointInRootAncestors` / `ValidatedPathSwappedOutsideIsReadableByRawOpen` / `ReadFileWithinRootRejectsOutsideSymlink` / `ReadFileWithinRootRejectsOutsideDirectorySymlink` / `ReadFileWithinRootRejectsInsideSymlink`），辅助函数 `tryCreateFileSymlink` / `tryCreateDirectorySymlink`，前提为 Win10 1703+ 且「开发者模式或管理员」；`core_unit_tests` 下同源 **4 条**在非 Windows 恒跳过（文案「TOCTOU 用例需要 Windows symlink API，仅在 win_unit_tests 下运行」）。⇒ 本机读数里 `skipped` **恒非 0**（实测 `win_unit_tests` GTest 段 48 跑 / 7 跳、`core_unit_tests` 209 跑 / 41 跳），**跳过不是失败**。
 
 ## Architecture notes
 
