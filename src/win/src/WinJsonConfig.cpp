@@ -1120,10 +1120,24 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
                     const std::string prettyMigrated = buildSettingsJson(cfg, false, true);
                     std::string writeErr;
-                    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
-                    //   本处是 initialize 的**迁移落盘**：启动阶段（早于 startWatching / 轮询循环）本无并发消费者，
-                    //   此处持锁是**幂等加固**：使「写盘必须持锁」在每个调用点一致可见，后人新增写盘路径时照抄该形态。
-                    {
+                    // 落盘前置闸门（与下方 INI/默认值落盘那处**同款**，见 serializedDocIsWritable 定义）：序列化
+                    //   产物必须自洽（能过 settings schema）。若**此刻**密钥变为「存在但不可读 / 损坏 / DPAPI 失败」，
+                    //   buildSettingsJson 返回 {"schemaVersion":1,"_error":...} stub；一旦落盘，下次启动必被 schema
+                    //   拒 ⇒ 再隔离一次、再写同一 stub（自持续循环）。它防的是「加载成功、写盘前密钥已失效」这一刻，
+                    //   与密钥的**加载期**校验（parseAndValidateSettingsDoc 内的 ensureOrLoadKey，此处 :639）不同层。
+                    //   ⚠️ **定位订正（勿再去改错地方）**：清单原记「INI→JSON 迁移分支缺闸门」**有误**——INI 那处
+                    //   （下方 loadConfigFromIniOrDefault 之后）**本来就有**闸门；真正缺闸门的是**本处（级联路径迁移落盘）**。
+                    std::string notWritable;
+                    const bool serializable = serializedDocIsWritable(prettyMigrated, notWritable);
+                    if (!serializable) {
+                        // 闸门不过 ⇒ **不落盘**（否则会把错误 stub 写进 config.json）。只改了内存 cascadePath；
+                        //   磁盘仍是失效的旧路径，下次启动会再次进入本分支；原因经既有 migrateWarn 降级告警出口暴露
+                        //   （不新造日志通道，与「写入 config.json 失败」那条走同一出口）。
+                        migrateWarn = "级联路径迁移未持久化（序列化未通过 schema，密钥不可用或加密失败）: " + notWritable;
+                    } else {
+                        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
+                        //   本处是 initialize 的**迁移落盘**：启动阶段（早于 startWatching / 轮询循环）本无并发消费者，
+                        //   此处持锁是**幂等加固**：使「写盘必须持锁」在每个调用点一致可见，后人新增写盘路径时照抄该形态。
                         std::lock_guard<std::mutex> lock(mu_);
                         if (!writeAtomicallyWithBackup(prettyMigrated, writeErr)) {
                             // 只改了内存 cascadePath；写盘失败 ⇒ 磁盘仍是失效的旧路径，下次启动会再次进入本分支。
@@ -1138,7 +1152,8 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                 //   它不把 cfg（含被钳后的值）回写 config.json，磁盘上的越界原值 / 含 `..` 的路径**原封
                 //   不动** ⇒ 同一份「功能完全正常」的配置在**每次启动都复现同一条**告警：重启不收敛，
                 //   只有一次 PUT 或手工编辑磁盘值才会消失。health 的 configStatus 也随之**长期**停在
-                //   degraded（成因清单见 docs/windows-web-spa/openapi.yaml，该文档需补充本条，见报告）。
+                //   degraded（成因清单见 docs/windows-web-spa/openapi.yaml 的 `/api/v1/health`
+                //   → `configStatus` 说明，其「越界值钳制 / 不安全路径」两小节正对应本条）。
                 //   与之对照：上方级联路径迁移分支在**写盘失败**时告警，那条告警带自愈路径（下次启动
                 //   重试写盘），两者的「持续性」不同类。
                 if (!normWarn.empty()) {
@@ -1172,12 +1187,22 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
 
         std::filesystem::path movedTo;
         std::string qerr;
-        if (quarantineConfigFile(configPath_, movedTo, qerr)) {
-            quarantineName = movedTo.filename().string();
-            warnOut += "; 原配置已隔离为 " + quarantineName;
-        } else {
-            // 隔离失败 ⇒ 原坏文件仍在，绝不能落盘默认值（那会覆盖销毁它）
-            warnOut += "; 隔离失败（" + qerr + "），已保留原文件、本次不落盘默认值";
+        // 持 mu_（FACE-CONFIG-014 口径补全）：使「对配置目录的变更统一在 mu_ 下」这条口径对 initialize 的
+        //   **隔离改名**也成立（此前只有残留清扫持 mu_，隔离这段不持 ⇒ 该口径对 initialize 的 quarantine 为**假**）。
+        //   死锁核实（逐字）：被调的 quarantineConfigFile 是**自由函数**（std::filesystem::exists / rename），
+        //   **不取 mu_、不回调本类任何成员** ⇒ 无递归加锁；且 initialize 处于启动阶段（两个生产入口均在
+        //   initialize 之后才 startWatching / 进入轮询循环）⇒ 本处无并发消费者、不引入新的锁竞争。故补锁安全。
+        //   （成功分支里 `return true` 之前那处 `lock(mu_)` 在 `return true` 前即随作用域析构，
+        //   失败路径走到本处时**未持锁** ⇒ 非递归。）
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (quarantineConfigFile(configPath_, movedTo, qerr)) {
+                quarantineName = movedTo.filename().string();
+                warnOut += "; 原配置已隔离为 " + quarantineName;
+            } else {
+                // 隔离失败 ⇒ 原坏文件仍在，绝不能落盘默认值（那会覆盖销毁它）
+                warnOut += "; 隔离失败（" + qerr + "），已保留原文件、本次不落盘默认值";
+            }
         }
     }
 
