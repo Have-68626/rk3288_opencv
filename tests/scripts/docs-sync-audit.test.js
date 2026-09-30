@@ -26,13 +26,20 @@ const {
   findDefconfigPath,
   findKernelConfigSnapshotPath,
   findRequiredSections,
+  sectionKeyHit,
   fixMarkdown,
   classifyLinkResult,
   linkDefectMessage,
   parseDocMeta,
   auditDocMeta,
+  analyzeDocMetaMarkers,
+  isCalendarDate,
+  auditDocMetaExemptList,
+  DOC_META_HEAD_LINES,
   requiresDocMeta,
   isLivingDoc,
+  DOC_META_EXEMPT_PATTERNS,
+  DOC_META_EXEMPT_UNLESS,
   VERSION_LAG_THRESHOLD_DAYS,
 } = require("../../scripts/docs-sync-audit.js");
 
@@ -436,11 +443,54 @@ test("findRequiredSections 命中 anyOf 中任一关键字即视为存在", () =
   assert.deepEqual(r.headings, ["T", "项目简介", "Quick Start", "Dependencies"]);
 });
 
-test("findRequiredSections 的关键字是子串正则，会被无关标题误放行（记录现状）", () => {
-  // anyOf 含 "test" 时 `## Contest` 也会通过「测试命令」检查 —— 这是已知的过宽匹配。
-  // 此处锁定现状，避免日后误以为该检查是严格的。
-  const r = findRequiredSections("# T\n## Contest\n", [{ name: "测试", anyOf: ["test"] }]);
-  assert.deepEqual(r.missing, []);
+test("findRequiredSections 英文键按双侧词边界匹配：`## Contest` 不再顶替「测试命令」", () => {
+  // 修复前 anyOf 里的 "test" 是无锚定子串正则，`## Contest` 被当成「测试命令」，
+  // 于是 README 根本没有测试章节也能过门禁。
+  const readmeReq = [{ name: "测试命令", anyOf: ["测试", "ctest", "test"] }];
+  assert.deepEqual(findRequiredSections("# T\n## Contest\n", readmeReq).missing, ["测试命令"]);
+  assert.deepEqual(findRequiredSections("# T\n## Rebuild\n", [{ name: "构建命令", anyOf: ["构建", "build"] }]).missing, ["构建命令"]);
+  // 真正的 Test 章节（双侧词边界成立）仍命中
+  assert.deepEqual(findRequiredSections("# T\n## Test\n", readmeReq).missing, []);
+});
+
+test("findRequiredSections 前缀误匹配：`PR` 不被 `Process` / `Project` 满足", () => {
+  // 与 `## Contest` 同类的「半边」bug：`PR` 是 "Process" / "Project" 的前缀，
+  // 无锚定子串或仅左词边界都会让它蒙混过关。双侧边界下必须判「提交流程」缺失。
+  const req = [{ name: "提交流程", anyOf: ["提交", "commit", "pull request", "PR"] }];
+  const md = "# T\n## 发布流程 (Release Process)\n## 项目地图 (Project Map)\n";
+  assert.deepEqual(findRequiredSections(md, req).missing, ["提交流程"]);
+  // 真正的提交小节（中文键子串 / 英文单词）仍命中
+  assert.deepEqual(findRequiredSections("# T\n## 6.8 提交流程 (Commit & Pull Request)\n", req).missing, []);
+});
+
+test("findRequiredSections 中文键保持子串包含", () => {
+  // 中文没有词边界概念：`## 项目简介与运行模式` 仍应满足「项目简介」
+  assert.deepEqual(findRequiredSections("# T\n## 项目简介与运行模式\n", [{ name: "简介", anyOf: ["项目简介"] }]).missing, []);
+});
+
+test("sectionKeyHit 双侧边界：真实标题里的 CONFIG_ / Quick Start / Release 仍命中", () => {
+  // 改坏即回归：这些键在仓库真实标题上必须仍命中
+  assert.equal(sectionKeyHit("3.1 内核配置（Kernel config）最小关注清单（CONFIG_）", "CONFIG_"), true);
+  // 下划线结尾的前缀键只要求左边界：必须命中真实标题 ## CONFIG_FOO（同一键，不再靠
+  // 「恰好成边界的构造（CONFIG_）」冒充证据——那种构造双侧边界也能过，证不出判别力）
+  assert.equal(sectionKeyHit("3.1 内核配置（Kernel config）最小关注清单（CONFIG_FOO）", "CONFIG_"), true, "前缀键 CONFIG_ 应命中 CONFIG_FOO");
+  assert.equal(sectionKeyHit("MYCONFIG_X", "CONFIG_"), false, "前缀键仍须左边界，MYCONFIG_X 不得命中");
+  assert.equal(sectionKeyHit("4.1 快速开始 (Quick Start)", "Quick Start"), true);
+  assert.equal(sectionKeyHit("6.3 发布流程 (Release Process)", "Release"), true);
+  assert.equal(sectionKeyHit("T\nTest", "test"), true);
+  // 后缀/内嵌/前缀三类误匹配一律不命中
+  assert.equal(sectionKeyHit("Contest", "test"), false);
+  assert.equal(sectionKeyHit("Rebuild", "build"), false);
+  assert.equal(sectionKeyHit("6.3 发布流程 (Release Process)", "PR"), false, "前缀 `Pr`ocess 不得命中 `PR`");
+  assert.equal(sectionKeyHit("3. 项目地图 (Project Map)", "PR"), false);
+  // 双侧边界不接受词形变化：这些组靠中文键兜底（`调试`/`代码规范`）
+  assert.equal(sectionKeyHit("6.6 调试与排障 (Debugging)", "debug"), false, "debug 不匹配 Debugging");
+  assert.equal(sectionKeyHit("6.2 代码规范 (Code Style)", "format"), false);
+  // `style` 命中的是「完整单词」，不是词形变化反例：Code Style 里 Style 双侧成界 → true
+  assert.equal(sectionKeyHit("6.2 代码规范 (Code Style)", "style"), true, "Style 是完整单词，双侧成界应命中");
+  assert.equal(sectionKeyHit("6.2 Code Styling", "style"), false, "词形变化 Styling 才不命中 style");
+  assert.equal(sectionKeyHit("6.6 调试与排障 (Debugging)", "调试"), true, "中文键子串兜底");
+  assert.equal(sectionKeyHit("6.2 代码规范 (Code Style)", "代码规范"), true);
 });
 
 // ── --fix：Markdown 自动修复的 4 条规则（此前无测试覆盖） ──────────────────
@@ -542,6 +592,105 @@ test("auditDocMeta 报告缺失与非法取值", () => {
   const bad = auditDocMeta("a.md", "<!-- DOCSYNC_DOC\ntype=nope\nstatus=zzz\nas_of=2026/01/01\n-->");
   assert.equal(bad.length, 3, "type / status / as_of 三项都应报错");
   assert.equal(auditDocMeta("a.md", "<!-- DOCSYNC_DOC\ntype=design\nstatus=living\nas_of=2026-01-01\n-->").length, 0);
+});
+
+// ── 元数据块位置 / 唯一性 / 日历日期（docs/DOC_STANDARD.md §1.3） ─────────────
+
+const META_BLOCK = (asOf = "2026-01-01") => `<!-- DOCSYNC_DOC\ntype=design\nstatus=living\nas_of=${asOf}\n-->`;
+
+test("parseDocMeta 只在前 20 行内查找元数据块", () => {
+  // 块在第 1 行内 → 命中
+  assert.notEqual(parseDocMeta(META_BLOCK()), null);
+  // 块被埋到第 22 行（前 20 行之后）→ 视为不存在
+  const buried = Array.from({ length: 21 }, (_, i) => `第 ${i + 1} 行`).join("\n") + "\n" + META_BLOCK() + "\n";
+  assert.equal(parseDocMeta(buried), null);
+});
+
+test("auditDocMeta 对「元数据块不在前 20 行内」报 high", () => {
+  const buried = Array.from({ length: DOC_META_HEAD_LINES + 1 }, (_, i) => `第 ${i + 1} 行`).join("\n") + "\n" + META_BLOCK() + "\n";
+  const defects = auditDocMeta("a.md", buried);
+  assert.equal(defects.length, 1);
+  assert.equal(defects[0].severity, "high");
+  assert.match(defects[0].message, /前 20 行内/);
+});
+
+test("auditDocMeta 对「出现多于一个元数据块」报 high", () => {
+  const md = `${META_BLOCK()}\n\n正文\n\n${META_BLOCK()}\n`;
+  const defects = auditDocMeta("a.md", md);
+  assert.equal(defects.length, 1);
+  assert.equal(defects[0].severity, "high");
+  assert.match(defects[0].message, /只能有一个/);
+});
+
+test("analyzeDocMetaMarkers 忽略代码围栏里的示例块", () => {
+  // docs/DOC_STANDARD.md §1 自身会在围栏里展示一个示例块；若把它算作第二个块，规格文档会误报
+  const md = `${META_BLOCK()}\n\n\`\`\`\n${META_BLOCK()}\n\`\`\`\n`;
+  assert.deepEqual(analyzeDocMetaMarkers(md), { count: 1, firstLine: 1 });
+  assert.equal(auditDocMeta("a.md", md).length, 0, "围栏示例不得触发「多个块」");
+});
+
+test("isCalendarDate 拒绝日历上不存在的日期（rollover 陷阱）", () => {
+  // new Date("2026-02-31") 在本机 node 会 rollover 成 3-03 而非 Invalid Date，
+  // 单看 Date.parse 是否 NaN 不够 —— 必须回写比对。
+  assert.equal(isCalendarDate("2026-02-31"), false);
+  assert.equal(isCalendarDate("2026-02-29"), false, "2026 非闰年");
+  assert.equal(isCalendarDate("2024-02-29"), true, "2024 是闰年");
+  assert.equal(isCalendarDate("2026-02-28"), true);
+  assert.equal(isCalendarDate("2026/01/01"), false, "形状不对");
+  assert.equal(isCalendarDate(""), false);
+});
+
+test("auditDocMeta 把 as_of=2026-02-31 判为 high，2026-02-28 放行", () => {
+  assert.equal(auditDocMeta("a.md", META_BLOCK("2026-02-31")).length, 1);
+  assert.equal(auditDocMeta("a.md", META_BLOCK("2026-02-28")).length, 0);
+  assert.equal(auditDocMeta("a.md", META_BLOCK("2024-02-29")).length, 0);
+});
+
+// ── 元数据豁免清单与 docs/DOC_STANDARD.md §1.4 对齐 ─────────────────────────
+
+test("DOC_META_EXEMPT_PATTERNS 与 §1.4 对齐且不含死条目", () => {
+  assert.ok(DOC_META_EXEMPT_PATTERNS.includes("deps/"), "deps/** 整树");
+  assert.ok(DOC_META_EXEMPT_PATTERNS.includes("src/win/third_party/"), "third_party/** 整树（旧实现只豁免 LICENSE.md 一个文件）");
+  assert.ok(DOC_META_EXEMPT_PATTERNS.includes(".claude/agents/"));
+  // 两条根级工作台账当前不存在，是死条目，必须删除
+  assert.ok(!DOC_META_EXEMPT_PATTERNS.includes("FULL_PROJECT_AUDIT_2026-07-22.md"));
+  assert.ok(!DOC_META_EXEMPT_PATTERNS.includes("CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md"));
+  // 例外优先清单保留 LEDGER.md
+  assert.ok(DOC_META_EXEMPT_UNLESS.includes("src/win/third_party/civetweb/LEDGER.md"));
+});
+
+test("requiresDocMeta 对 third_party 整树豁免但保留 LEDGER.md 例外", () => {
+  assert.equal(requiresDocMeta("src/win/third_party/civetweb/LICENSE.md"), false);
+  assert.equal(requiresDocMeta("src/win/third_party/other/LIB.md"), false, "整树豁免");
+  assert.equal(requiresDocMeta("src/win/third_party/civetweb/LEDGER.md"), true, "例外优先，仍需元数据");
+});
+
+test("auditDocMetaExemptList 对文件级死条目报 low、目录前缀不检查、默认清单纳入 UNLESS 文件级项", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "docs-sync-exempt-"));
+  try {
+    write(root, "docs/exists.md", "x");
+    // 目录前缀条目不检查存在性 → 无缺陷
+    assert.equal(auditDocMetaExemptList(root, ["deps/", "src/win/third_party/"]).length, 0);
+    // 文件级条目存在 → 无缺陷
+    assert.equal(auditDocMetaExemptList(root, ["docs/exists.md"]).length, 0);
+    // 文件级条目不存在 → 一条 low
+    const dead = auditDocMetaExemptList(root, ["docs/gone.md"]);
+    assert.equal(dead.length, 1);
+    assert.equal(dead[0].severity, "low");
+    assert.match(dead[0].message, /docs\/gone\.md/);
+    // 默认清单把 DOC_META_EXEMPT_UNLESS 的文件级条目并入自检：空夹具目录下唯一会报的
+    // 就是 LEDGER.md（DOC_META_EXEMPT_PATTERNS 三项全为目录前缀 → 全跳过；若 UNLESS
+    // 未被纳入，则默认调用会返回 []，此处即红）
+    const defaultHits = auditDocMetaExemptList(root);
+    assert.equal(defaultHits.length, 1, "默认清单应只报 UNLESS 的文件级死条目");
+    assert.equal(defaultHits[0].severity, "low");
+    assert.match(defaultHits[0].message, /civetweb\/LEDGER\.md/);
+    // 真实仓库下 UNLESS 的文件级条目（LEDGER.md）存在 → 如实断言无缺陷
+    const real = path.join(__dirname, "..", "..");
+    assert.equal(auditDocMetaExemptList(real).length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("豁免不再由目录决定：目录不产生豁免，声明才产生", () => {

@@ -101,15 +101,21 @@ const REPO_REF_PREFIXES = [
   "cmake/", ".github/", "config/", "models/", "deps/", "patterns/",
 ];
 
-// 不要求文档元数据的「非项目文档」：第三方内容、工具配置，以及两份自述不入库的工作台账。
+// 不要求文档元数据的「非项目文档」：第三方内容与工具配置（规范见 docs/DOC_STANDARD.md §1.4）。
 // 这是唯一保留的按路径豁免概念 —— 一份文档是否豁免「跟随代码更新」的检查，不再由它
 // 放在哪个目录决定，而由它头部的 status 自述决定（见 isLivingDoc）。
+// 目录前缀条目以 `/` 结尾；文件级条目（不以 `/` 结尾）由 auditDocMetaExemptList 自检存在性，
+// 防止清单里再长出指向已删除文件的死条目（历史上有两条根级工作台账已不存在）。
 const DOC_META_EXEMPT_PATTERNS = [
   "deps/",
-  "src/win/third_party/civetweb/LICENSE.md",
+  "src/win/third_party/",
   ".claude/agents/",
-  "FULL_PROJECT_AUDIT_2026-07-22.md",
-  "CLAUDECODE_DEEPSEEKV4FLASH_GOVERNANCE_TASKS_2026-07-22.md",
+];
+
+// 「例外优先」于整树豁免：`src/win/third_party/**` 整树豁免，但本仓自撰的台账
+// `civetweb/LEDGER.md` 仍需元数据块（docs/DOC_STANDARD.md §1.4 明确点名，type=security）。
+const DOC_META_EXEMPT_UNLESS = [
+  "src/win/third_party/civetweb/LEDGER.md",
 ];
 
 // 文档元数据块（规范见 docs/DOC_STANDARD.md §1）。
@@ -131,8 +137,27 @@ const DOC_META_TYPES = new Set([
 ]);
 const DOC_META_STATUSES = new Set(["living", "snapshot", "frozen", "placeholder"]);
 
+// 元数据块必须位于文件前 DOC_META_HEAD_LINES 行内（docs/DOC_STANDARD.md §1.3）。
+const DOC_META_HEAD_LINES = 20;
+
+// 取全文前 n 行的原始前缀（保留原换行），使 indexOf 偏移与全文对齐
+// （若按换行符分割再拼接会归一化 CRLF，使偏移错位）。
+function headLinesPrefix(md, n) {
+  let end = 0;
+  for (let i = 0; i < n; i += 1) {
+    const nl = md.indexOf("\n", end);
+    if (nl < 0) return md;
+    end = nl + 1;
+  }
+  return md.slice(0, end);
+}
+
+// 只在前 DOC_META_HEAD_LINES 行内查找起始标记（此前是全文 indexOf，把块藏在正文
+// 任意位置也算通过，与 §1.3「必须在文件最顶部、前 20 行内」不符）。闭合符仍在全文
+// 查找，容忍块尾越过第 20 行。
 function parseDocMeta(md) {
-  const start = md.indexOf(DOC_META_START);
+  const head = headLinesPrefix(md, DOC_META_HEAD_LINES);
+  const start = head.indexOf(DOC_META_START);
   if (start < 0) return null;
   const end = md.indexOf("-->", start);
   if (end < 0) return null;
@@ -145,8 +170,45 @@ function parseDocMeta(md) {
   return meta;
 }
 
-// 该文件是否属于「需要文档元数据守卫」的项目文档
+// 非围栏文本内 DOCSYNC_DOC 起始标记的数量与首个所在行号（1-based，未出现为 -1）。
+// 围栏内的示例块（如 docs/DOC_STANDARD.md §1 自身的示范）不计入，否则规格文档会误报「多个块」。
+function analyzeDocMetaMarkers(md) {
+  let count = 0;
+  let firstLine = -1;
+  let lineNo = 1;
+  for (const block of splitMarkdownBlocks(md)) {
+    if (block.type !== "text") {
+      lineNo += block.lines.length;
+      continue;
+    }
+    for (const line of block.lines) {
+      if (line.includes(DOC_META_START)) {
+        count += 1;
+        if (firstLine < 0) firstLine = lineNo;
+      }
+      lineNo += 1;
+    }
+  }
+  return { count, firstLine };
+}
+
+// 回写比对校验日历日期：本机 node 下 `new Date(Date.UTC(2026,1,31))` 会 rollover 成
+// 3-03 而非 Invalid Date，单看 Date.parse 是否 NaN 会把 2026-02-31 当成合法 —— 必须
+// 逐项回写年月日比对。
+function isCalendarDate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
+// 该文件是否属于「需要文档元数据守卫」的项目文档。
+// 例外优先：整树豁免里被 §1.4 点名的自撰台账仍要求元数据。
 function requiresDocMeta(rel) {
+  if (shouldSkipVersionPath(rel, DOC_META_EXEMPT_UNLESS)) return true;
   return !shouldSkipVersionPath(rel, DOC_META_EXEMPT_PATTERNS);
 }
 
@@ -158,13 +220,27 @@ function isLivingDoc(md) {
   return (meta.status || "living") === "living";
 }
 
-// 元数据块校验：存在、type/status 在闭集内、as_of 为合法日期。
+// 元数据块校验：存在、唯一、位于前 20 行、type/status 在闭集内、as_of 为合法日历日期。
 function auditDocMeta(rel, md) {
-  const meta = parseDocMeta(md);
   const defects = [];
   const push = (message) => defects.push({ type: "doc-meta", severity: "high", file: rel, message });
-  if (!meta) {
+  const { count: markerCount, firstLine } = analyzeDocMetaMarkers(md);
+  if (markerCount === 0) {
     push("缺少 DOCSYNC_DOC 元数据块（规范见 docs/DOC_STANDARD.md）");
+    return defects;
+  }
+  if (markerCount > 1) {
+    push(`DOCSYNC_DOC 元数据块出现 ${markerCount} 次，只能有一个（规范见 docs/DOC_STANDARD.md §1.3）`);
+  }
+  if (firstLine > DOC_META_HEAD_LINES) {
+    push(`DOCSYNC_DOC 元数据块位于第 ${firstLine} 行，须在前 ${DOC_META_HEAD_LINES} 行内（规范见 docs/DOC_STANDARD.md §1.3）`);
+  }
+  const meta = parseDocMeta(md);
+  if (!meta) {
+    // 标记存在却解析不出块：只可能是块未闭合（起始行在前 20 行内时）。
+    if (firstLine > 0 && firstLine <= DOC_META_HEAD_LINES) {
+      push("DOCSYNC_DOC 元数据块未闭合（规范见 docs/DOC_STANDARD.md §1.3）");
+    }
     return defects;
   }
   if (!DOC_META_TYPES.has(meta.type)) {
@@ -173,8 +249,32 @@ function auditDocMeta(rel, md) {
   if (!DOC_META_STATUSES.has(meta.status)) {
     push(`元数据 status 非法：${meta.status || "缺失"}（合法值：${[...DOC_META_STATUSES].join(" / ")}）`);
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(meta.as_of || "")) {
-    push(`元数据 as_of 非法：${meta.as_of || "缺失"}（需 YYYY-MM-DD）`);
+  if (!isCalendarDate(meta.as_of)) {
+    push(`元数据 as_of 非法：${meta.as_of || "缺失"}（需 YYYY-MM-DD 且为日历上存在的日期）`);
+  }
+  return defects;
+}
+
+// 豁免清单自检：文件级条目（不以 `/` 结尾者）必须真实存在，否则是死条目。
+// 目录前缀条目（以 `/` 结尾）不检查存在性（目录可能按需创建）。
+//
+// 默认入参含 DOC_META_EXEMPT_UNLESS 的文件级条目（如 civetweb/LEDGER.md）——它们才是
+// 文件级的、真正需要防「指向已删文件」的那批。按当前清单，DOC_META_EXEMPT_PATTERNS
+// 的项全部以 `/` 结尾（前瞻性守卫，不参与存在性自检），故实际被检的是 UNLESS 的文件级项。
+function auditDocMetaExemptList(repoRoot, patterns = [...DOC_META_EXEMPT_PATTERNS, ...DOC_META_EXEMPT_UNLESS]) {
+  const defects = [];
+  for (const raw of patterns) {
+    const pattern = String(raw || "");
+    if (!pattern || pattern.endsWith("/")) continue;
+    const rel = toPosix(pattern);
+    if (!fs.existsSync(path.resolve(repoRoot, rel))) {
+      defects.push({
+        type: "doc-meta-exempt",
+        severity: "low",
+        file: "scripts/docs-sync-audit.js",
+        message: `元数据豁免清单的文件级条目不存在（死条目）：${pattern}`,
+      });
+    }
   }
   return defects;
 }
@@ -782,6 +882,26 @@ function runMarkdownlintCli2(files, repoRoot) {
   }
 }
 
+// 章节关键字命中判定。英文键按「双侧词边界」匹配（被匹配项两侧须分别是行首/非字母数字
+// 与行尾/非字母数字）：此前用无锚定子串正则（`new RegExp(k,"i").test(hay)`），README 写一个
+// `## Contest` 就能顶替「测试命令」、`## Rebuild` 顶替「构建命令」，`PR` 也能被 "Process" 顶替。
+// 中文键（不含 ASCII 字母）不存在词边界概念，保持子串包含。
+//
+// 副作用需知：双侧边界下英文键只命中「完整单词」，词形变化不再命中——`debug` 不匹配
+// "Debugging"、`style` 不匹配 "Styling"、`test` 不匹配 "Testing"。注意 `style` 对标题
+// "Code Style" 是命中的（Style 是完整单词、双侧成界），并非词形变化反例。这些必填组
+// 另有中文键兜底（`调试` / `代码规范` / `测试`），真实文档不受影响。
+function sectionKeyHit(hay, key) {
+  const k = String(key || "");
+  if (!/[A-Za-z]/.test(k)) return hay.toLowerCase().includes(k.toLowerCase());
+  const esc = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 以 `_` 结尾的键（如 `CONFIG_`）表示「部分标识符 / 前缀」——右侧 `_` 后常直接接字母
+  // （`CONFIG_FOO`），严格的右边界会让它对真实标题失效（`CONFIG_` 命中不了 `## CONFIG_FOO`）。
+  // 故这类键只要求左边界；其余英文键仍走双侧边界。左边界保留，防止 `MYCONFIG_X` 被顶替。
+  if (/_$/.test(k)) return new RegExp(`(^|[^A-Za-z0-9])${esc}`, "i").test(hay);
+  return new RegExp(`(^|[^A-Za-z0-9])${esc}([^A-Za-z0-9]|$)`, "i").test(hay);
+}
+
 function findRequiredSections(md, required) {
   const headings = [];
   const lines = md.split(/\r?\n/);
@@ -792,7 +912,7 @@ function findRequiredSections(md, required) {
   const hay = headings.join("\n");
   const missing = [];
   for (const group of required) {
-    const ok = group.anyOf.some((k) => new RegExp(k, "i").test(hay));
+    const ok = group.anyOf.some((k) => sectionKeyHit(hay, k));
     if (!ok) missing.push(group.name);
   }
   return { headings, missing };
@@ -1250,6 +1370,9 @@ async function main() {
     report.defects.push(...auditDocIndex(mdCache["docs/index.md"], repoRoot, Object.keys(mdCache)));
   }
 
+  // 元数据豁免清单自检（文件级条目存在性）——防止清单里再长出指向已删除文件的死条目
+  report.defects.push(...auditDocMetaExemptList(repoRoot));
+
   const readme = await fsp.readFile(rootFiles[0], "utf8");
   const develop = await fsp.readFile(rootFiles[1], "utf8");
   const constraints = await fsp.readFile(rootFiles[2], "utf8");
@@ -1676,8 +1799,13 @@ module.exports = {
   auditRefPaths,
   fixMarkdown,
   findRequiredSections,
+  sectionKeyHit,
   parseDocMeta,
   auditDocMeta,
+  analyzeDocMetaMarkers,
+  isCalendarDate,
+  auditDocMetaExemptList,
+  DOC_META_HEAD_LINES,
   auditDocIndex,
   collectIndexEntries,
   requiresDocMeta,
@@ -1685,6 +1813,7 @@ module.exports = {
   DOC_META_TYPES,
   DOC_META_STATUSES,
   DOC_META_EXEMPT_PATTERNS,
+  DOC_META_EXEMPT_UNLESS,
   classifyLinkResult,
   linkDefectMessage,
   parseKernelConfigMap,
