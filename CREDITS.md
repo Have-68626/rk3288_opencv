@@ -193,7 +193,7 @@ CameraX 的传递依赖（已解析）：
 >
 > **处置**：本轮**不单方面下调**该安全标记，故此处如实记为"未对齐"。无论最终归为哪一方，**该模型都不得按可商用处理**——若确为 insightface 来源则继承非商用限制，若来源未定则缺少合规依据。对齐后须同步更新本表与 `docs/security/supply-chain-ledger.md`。
 
-> **² 待修项：`ModelRegistry` 对 `yunet` / `sface` 的描述有误**（本轮仅记录，不改代码）。`src/cpp/src/ModelRegistry.cpp` 中 `yunet` 的备注写"OpenCV 内置，无需额外模型依赖"、`sface` 写"OpenCV contrib face 模块内置"，但 `src/cpp/src/adapters/YuNetAdapter.cpp` 与 `src/cpp/src/adapters/SFaceAdapter.cpp` **均要求传入 `modelPath`**（外部 ONNX，来自 OpenCV Zoo），**并非 OpenCV 内置**。上表已按实际行为登记其部署路径为"外部模型（经配置 `modelPath` 加载，不随仓库分发）"。（已登记为独立待修项：修正属代码改动，见 `src/cpp/src/ModelRegistry.cpp` 的 `yunet` / `sface` 描述条目）。
+> **² 已订正（2026-09-30）：`ModelRegistry` 对 `yunet` / `sface` 的描述曾与事实不符**。原备注 `yunet` 写"OpenCV 内置，无需额外模型依赖"、`sface` 写"OpenCV contrib face 模块内置"，二者**已改为**与事实一致的表述——OpenCV 提供的是 **API**（`cv::FaceDetectorYN` / `cv::FaceRecognizerSF`），权重需**外部 ONNX**（来自 OpenCV Zoo），经配置 `modelPath` 加载，仓内不随附。事实依据：`src/cpp/src/adapters/YuNetAdapter.cpp` 与 `src/cpp/src/adapters/SFaceAdapter.cpp` **均要求传入 `modelPath`**（外部 ONNX，来自 OpenCV Zoo），**并非 OpenCV 内置**。上表已按实际行为登记其部署路径为"外部模型（经配置 `modelPath` 加载，不随仓库分发）"。
 
 > **提示**：启动时程序将自动进行自检，并会在日志中打印所有加载模型的 SHA-256。请确保与上述台账保持一致。
 
