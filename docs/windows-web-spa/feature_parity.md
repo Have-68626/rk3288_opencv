@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-07-21
+as_of=2026-09-30
 -->
 
 ﻿# 功能对照清单（Win32 UI → 浏览器 SPA）
@@ -26,7 +26,7 @@ as_of=2026-07-21
 | 相机选择/切换 | 相机下拉 + “应用相机”按钮 | 预览页 → 摄像头设备 | `GET /api/v1/cameras` + `PUT /api/v1/settings` | 已迁移 | 通过写入 `camera.preferredDeviceId` 与采集规格触发后端应用 |
 | 分辨率/FPS 切换与能力校验 | 分辨率/帧率下拉 + “应用相机” | 预览页 → 分辨率/FPS | `GET /api/v1/cameras` + `PUT /api/v1/settings` | 已迁移 | 后端保留“失败回滚/错误原因”口径 |
 | 翻转 X/Y | 复选框 | 预览页 → 翻转 X/Y | `PUT /api/v1/camera/flip` | 已迁移 | 运行时生效（当前未持久化到配置） |
-| 人脸识别结果 JSON | 无独立页（在日志/叠加绘制体现） |（待补：结果页/调试页） | `GET /api/faces` / `GET /api/faces/stream` | 后端已迁移，前端待补 | SSE 另兼容 `/api/v1/faces/stream`；OpenAPI 当前未描述这些兼容接口 |
+| 人脸识别结果 JSON | 无独立页（在日志/叠加绘制体现） | 结果页（顶栏「人脸结果」，`#/faces`） | `GET /api/faces` / `GET /api/faces/stream` | 已迁移 | SSE 另兼容 `/api/v1/faces/stream`；OpenAPI 已描述 `/api/faces`、`/api/v1/faces` 及其 stream 变体 |
 | 预览画面 | 预览子窗口（D3D11） | 预览页 | `GET /api/v1/preview.mjpeg` / `GET /api/v1/preview.jpg` | 已迁移 | 通过 MJPEG 输出预览（浏览器直接显示） |
 | 注册（Enroll personId） | personId 输入框 + “注册”按钮 | 预览页 → 注册 personId | `POST /api/v1/actions/enroll` | 已迁移 | API 成功只表示注册请求已受理，实际采样在帧管线异步完成 |
 | 清空人脸库 | “清空库”按钮 | 预览页 → 清空库 | `POST /api/v1/actions/db/clear` | 已迁移 | API 成功只表示清库命令已受理 |

@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-07-21
+as_of=2026-09-30
 -->
 
 ﻿# 架构迁移说明（Win32 UI → 本地服务 + Web SPA）
@@ -31,5 +31,5 @@ as_of=2026-07-21
 1) SPA 通过 `GET /api/v1/settings` 拉取后端配置（敏感字段脱敏）。
 2) 用户在 Web UI 修改设置后，通过 `PUT /api/v1/settings` 提交局部更新。
 3) 后端对更新进行 Schema 校验 → 写入 `%APPDATA%\rk_wcfr\config.json` → 触发热重载。
-4) 识别结果可通过 JSON/SSE 输出，预览通过 JPEG/MJPEG 输出；当前 SPA 主要消费 MJPEG 预览，尚无独立识别结果页。
+4) 识别结果可通过 JSON/SSE 输出，预览通过 JPEG/MJPEG 输出；当前 SPA 主要消费 MJPEG 预览，已提供 `/faces` 结果页（消费 `GET /api/v1/faces` 当前帧快照）。
 

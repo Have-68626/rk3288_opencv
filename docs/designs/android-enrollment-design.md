@@ -40,8 +40,8 @@ as_of=2026-09-30
 
 存储布局（默认作用域 `files/face_templates/`，与 `FeatureTemplateEncryptedStore.defaultDir` 一致）：
 
-- `face_registry_v1.dat` —— gallery 级单表注册表，记录**元数据**：`hex(userId) mv sv ciphertextSize sha256hex createdAtMs`，**不含任何生物特征向量**。
-  ⚠️ 第 4/5 列（`ciphertextSize`/`sha256hex`）名实不符属历史遗留：实际存的是**整个加密模板文件**（envelope 全量 = 头 64B + 密文 + tag）的字节数与 SHA-256，**不是**纯密文段。改名会牵动 `MainActivity` 的**展示读点**（该处只读 `e.ciphertextSize`，不读摘要列），未随本批实施，读代码时以 `AndroidEnrollmentRepository.Entry` 的字段注释为准。
+- `face_registry_v1.dat` —— gallery 级单表注册表，记录**元数据**：`hex(userId) mv sv templateFileSize templateFileSha256Hex createdAtMs`，**不含任何生物特征向量**。
+  ⚠️ 第 4/5 列的字段原名 `ciphertextSize`/`ciphertextSha256Hex` 名实不符：实际存的是**整个加密模板文件**（envelope 全量 = 头 64B + 密文 + tag）的字节数与 SHA-256，**不是**纯密文段。该改名**已实施**——`AndroidEnrollmentRepository.Entry` 字段及读点（含 `MainActivity` 的**展示读点**，只读 `e.templateFileSize`、不读摘要列）均已改用现名 `templateFileSize`/`templateFileSha256Hex`，且**不需要数据迁移**（注册表是**位置式六列文本、列名不落盘**）。字段语义以 `AndroidEnrollmentRepository.Entry` 的注释为准。
 - `u_<sha256(userId)>.bin` —— 每人加密模板，由 `FeatureTemplateEncryptedStore` 以 AndroidKeyStore + AES-GCM 落盘。
 
 关键设计取舍：

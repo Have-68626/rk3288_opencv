@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-18
+as_of=2026-09-30
 -->
 
 # 终端能力矩阵（Android / Windows / Web / CLI）
@@ -57,9 +57,9 @@ as_of=2026-09-18
 
 - **产物 / 构建**：`source → ../src/win/app/webroot`（Vite `emptyOutDir: true`、`base: './'`），构建产物入库供 Windows 服务托管；`pnpm -C web install && pnpm -C web build`（`tsc -b && vite build`）。
 - **开发**：`pnpm -C web dev`（Vite），`/api` 代理到 `http://127.0.0.1:8080`，可用 `VITE_DEV_PROXY_TARGET` 覆盖。
-- **页面**：`HomePage`、`SplashPage`、`PreviewPage`、`SettingsPage`（含 `LocalSettingsTab`/`ServerSettingsTab`）；栈为 React 18 + TypeScript 5.9 + Ant Design 5 + react-router 6。
+- **页面**：`HomePage`、`SplashPage`、`PreviewPage`、`FacesPage`、`SettingsPage`（含 `LocalSettingsTab`/`ServerSettingsTab`）；栈为 React 18 + TypeScript 5.9 + Ant Design 5 + react-router 6。
 - **能力**：MJPEG 预览、相机/分辨率/FPS、翻转 X/Y、注册 `personId`、清空库、模型状态/重载、设置读写（写 `%APPDATA%\rk_wcfr\config.json` 并热生效）、打开隐私设置、主题/语言/启动页本地偏好。
-- **限制**：**没有独立的人脸识别结果页**（`GET /api/faces`、`/api/faces/stream` 后端已就绪，前端待补，见 `docs/windows-web-spa/feature_parity.md`）；主题/语言/API 超时/缓存策略仅存浏览器本地，不写后端；不接触硬件与密钥；E2E 需要运行中的后端。
+- **限制**：主题/语言/API 超时/缓存策略仅存浏览器本地，不写后端；不接触硬件与密钥；E2E 需要运行中的后端。
 
 ### 2.4 旧 Win32 UI（回滚保留）
 
