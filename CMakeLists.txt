@@ -355,6 +355,12 @@ if(NOT ANDROID)
         target_compile_definitions(core_gtest_tests PRIVATE
             "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
     endif()
+    # test_arcface_contract.cpp::LoadEmbedderConsumesManifestEmbedderBinWiring 的接线守卫需读仓内
+    # 源码文本（src/cpp/src/pipeline/RealtimeFacePipeline.cpp）⇒ 必须定义源码根（与 core_unit_tests
+    # 同口径，见 cmake/core.cmake:116）。该守卫不依赖模型/OpenCV/ncnn，故 CI 恒跑（windows job 的
+    # `ctest -R "unit_tests|core_gtest_tests"`）。缺此定义时该文件的 `#else #error` 会让构建**响亮失败**
+    # （而非让守卫静默消失）——范式同 test_log_rate_limiter.cpp / test_track_coordinator.cpp。
+    target_compile_definitions(core_gtest_tests PRIVATE RK_TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(core_gtest_tests GTest::gtest_main ${RK_OPENCV_FULL_LIBS})
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})

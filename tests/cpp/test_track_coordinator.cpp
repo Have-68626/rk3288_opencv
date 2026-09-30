@@ -411,9 +411,9 @@ TEST(TrackCoordinator, TtlBoundaryIsEnforced) {
 
 // ── 结构式守卫（读源码文本）：引擎入口的跨文件不变量 ────────────────────────────
 //
-// ⚠️ **为什么放在本文件而不是 test_engine.cpp**：读源码文本需要 `RK_TEST_SOURCE_ROOT`，该宏**只对
-//    `core_unit_tests` 定义**（cmake/core.cmake），而 test_engine.cpp 编进 `core_gtest_tests`
-//    （不定义该宏）。本文件（test_track_coordinator.cpp）正是 core_unit_tests 的源之一。
+// ⚠️ **为什么放在本文件**：读源码文本需要 `RK_TEST_SOURCE_ROOT`；该宏现对 `core_unit_tests`、
+//    `core_gtest_tests`、`win_unit_tests` 三个 target 定义（分别见 cmake/core.cmake、CMakeLists.txt
+//    与 cmake/windows.cmake 的注入块）。本文件（test_track_coordinator.cpp）正是 core_unit_tests 的源之一。
 //    范式与 test_event_manager.cpp 的「生产头文件不得依赖 gtest」守卫一致：**先剥离注释**再匹配，
 //    故源码中讨论这些符号的说明性注释不会造成误报。
 //

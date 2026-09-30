@@ -50,7 +50,10 @@ TEST(LogRateLimiter, FirstCallAlwaysAllowedRegardlessOfTimestamp) {
 //
 // 判别点：把判据改回「文本相同才抑制」——在**当前接口下无法编译**（无文本形参可比较）；
 //        等价地，若在**调用方**（Engine）重新引入文本比较，则由文件末的
-//        LogRateLimiterStructuralGuard 结构用例兜住（这是本轮唯一能覆盖到调用点的判据）。
+//        LogRateLimiterStructuralGuard 结构用例兜住；调用点另有**行为级**承重用例
+//        `EngineTest.NoteEmbedErrorLimiterSuppressesSecondDistinctTextWithinWindow`
+//        （tests/cpp/test_engine.cpp，编入 `core_gtest_tests` target）：同一 processFrameOnce 内
+//        两张脸各产出一条**文本不同**的 err，断言只放行一条（total==1），回退即确定 RED。
 TEST(LogRateLimiter, SuppressesWithinWindowRegardlessOfText) {
     pipeline::LogRateLimiter r(pipeline::kEmbedErrorLogWindowMs);
     EXPECT_TRUE(r.tryAcquire(1000));   // 首次：放行
@@ -190,8 +193,9 @@ TEST(LogRateLimiter, MirrorsNaiveReferenceOverLongSequence) {
 
 // ── 结构不变量（读源码文本）：调用点不得重新引入「文本比较」形态 ─────────────────
 //
-// ⚠️ **为什么放在本文件**：读源码文本需要 RK_TEST_SOURCE_ROOT，该宏**只对 core_unit_tests
-//    定义**（cmake/core.cmake），而 behavior 用例覆盖不到「Engine 的**调用点**是否又引入了
+// ⚠️ **为什么放在本文件**：读源码文本需要 RK_TEST_SOURCE_ROOT；该宏现对 core_unit_tests、
+//    core_gtest_tests、win_unit_tests 三个 target 定义（分别见 cmake/core.cmake、CMakeLists.txt
+//    与 cmake/windows.cmake 的注入块）。而 behavior 用例覆盖不到「Engine 的**调用点**是否又引入了
 //    文本比较」——Engine.cpp 不在 core_unit_tests 的编译面内（不被本 target 编译）。
 //
 // ⚠️ **判据的局限（如实登记，勿读成强保证）**：本段是**形态判据**（对去注释、去空白后的源码
