@@ -113,12 +113,12 @@ void ModelRegistry::ensureBuiltinRegistered() {
 
     reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
         {"yunet", "YuNet Face Detector", "detect",
-         "OpenCV FaceDetectorYN，320x320 输入。多尺度 FPN+SSH，WiderFace 91.5%。OpenCV 内置，无需额外模型依赖。",
+         "OpenCV FaceDetectorYN（cv::FaceDetectorYN API），320x320 输入。多尺度 FPN+SSH，WiderFace 91.5%。权重需外部 ONNX（OpenCV Zoo face_detection_yunet），经配置 modelPath 加载，仓内不随附。",
          "balanced", 3});
 
     reg.registerEmbedder("sface", []() { return std::make_unique<SFaceAdapter>(); },
         {"sface", "SFace 128D", "recognize",
-         "SFace 128 维特征提取，CPU 上最快的识别模型。OpenCV contrib face 模块内置。",
+         "SFace 128 维特征提取（cv::FaceRecognizerSF API），CPU 上最快的识别模型。权重需外部 ONNX（OpenCV Zoo face_recognition_sface），经配置 modelPath 加载，仓内不随附。",
          "high_speed", 2});
 
     // INT8 量化模型注册 — 需要 INT8 模型文件存在才注册
