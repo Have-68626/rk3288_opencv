@@ -363,7 +363,11 @@ function(rk_assert_test_seam_boundary)
         elseif(${t} IN_LIST RK_TEST_SEAM_TARGETS)
             message(FATAL_ERROR
                 "CONTRACT_ASSERT_FAIL: 测试 target ${t} 未携带 RK_ENABLE_TEST_SEAMS "
-                "(测试接缝会静默失效：BarrierEngine 将覆写一个非虚函数且不报错)")
+                "(缺该宏时两个白名单 target 都**响亮编译失败**，不存在静默失效：core_gtest_tests 的 "
+                "BarrierEngine 无条件声明该类并以 override 覆写 Engine 的 onBeforeRenderPublish / "
+                "onBeforePublishLocked，宏缺失即基类无此虚函数 ⇒ 编译错误；win_unit_tests 的测试代码引用了"
+                "仅在该宏下存在的 WinJsonConfigStore 接缝 API ⇒ 同样编译错误。故本方向②是**冗余防线**，防的"
+                "是「将来去掉 override 或把虚函数挪到宏外」这类形态变化，而非当前主要风险的拦截者)")
         endif()
     endforeach()
 endfunction()
