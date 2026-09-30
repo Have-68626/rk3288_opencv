@@ -350,8 +350,10 @@ protected:
      * WHY（第四轮审查 M3）：此前用公有 setRenderPublishBarrier 注入 std::function 成员充当该窗口的
      * 同步点；该成员由引擎线程无锁读、setter 写，任何运行期调用即构成数据竞争 UB，且是公有的误用面。
      * 改为 protected virtual 空钩子后：仅测试子类可覆写以确定性钉住该窗口（取代 sleep 竞态）。
-     * 编译期开关：本宏由 CMake 仅对 core_gtest_tests 定义（该 target 编译 test_engine.cpp 的
-     * BarrierEngine 与 Engine.cpp，宏一致无 ODR 问题）；生产构建不定义 → 无虚函数、无 vptr。
+     * 编译期开关：本宏由 CMake 对 `core_gtest_tests` 与 `win_unit_tests` **两个** target 定义 —— **本条
+     * Engine 接缝**的消费者是 `core_gtest_tests`（该 target 编译 test_engine.cpp 的 BarrierEngine 与
+     * Engine.cpp，宏一致无 ODR 问题）；`win_unit_tests` 也定义同一宏，但用于 WinJsonConfigStore 的接缝
+     *（见 WinJsonConfig.h），与本条无关。生产构建不定义 → 无虚函数、无 vptr。
      * 调用时**不持任何锁**，覆写实现内可安全调用 applyGalleryUpdate 等会取 tracksMu_ 的公共 API。
      */
     virtual void onBeforeRenderPublish() {}
