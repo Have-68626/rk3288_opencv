@@ -124,7 +124,7 @@ struct RealtimeBenchmarkConfig {
  * `return isAarch64;` 改坏会令对应断言翻红，故**不是零判别力**。但这**没有**消除原缺口
  * （FACE-TEST-002）：.cpp 里 `#if defined(__aarch64__) constexpr bool kIsAarch64Target = true;`
  * 这一**arm64 选臂在 x64 上仍不被编译**（死代码），且无任何测试引用 kIsAarch64Target ⇒ 把该
- * arm64 选臂改坏，x64 下**仍然不会变红** ⇒ 本批**未**消除该缺口，要真正闭合需 **arm64 或交叉
+ * arm64 选臂改坏，x64 下**仍然不会变红** ⇒ **该缺口仍未消除**，要真正闭合需 **arm64 或交叉
  * 编译目标**（登记为未闭合）。
  *
  * ⚠️ 这不是测试专用接缝：生产构造路径（RealtimeFacePipeline 构造函数）同样经由它取值。
