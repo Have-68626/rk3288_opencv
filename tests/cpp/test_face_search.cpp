@@ -263,7 +263,7 @@ TEST(FaceSearch, BridgeResetFailurePathErasesTemplate) {
 //   · 改后绿：~FaceSearchEntry 先就地清零再销毁成员 ⇒ 明文消失。
 // ⚠️ 本用例只覆盖 **对象内联存储**（id）。`embedding` 的堆缓冲在析构内清零后即被
 //    `std::vector` 释放，套件内无安全观察手段 ⇒ 该部分由带外分配器探针给出内存级证据
-//    （见报告「探针」一节）。
+//    （一次性带外验证手段，不随仓内测试保留）。
 TEST(FaceSearch, EntryDestructorZeroizesInPlaceTemplateBytes) {
     // 全相同字符，保证即使在实现里被写掉首字节（终止符）也仍能定位残留游程。
     const std::string idSecret = "SSSSSSSSSSSS";  // 12 × 'S'
