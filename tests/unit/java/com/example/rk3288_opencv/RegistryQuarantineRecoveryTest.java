@@ -354,7 +354,7 @@ public class RegistryQuarantineRecoveryTest {
      * 察觉跳过），而非误报失败 —— 故本条为**条件覆盖**，不支持符号链接的环境下该回滚分支无自动化判别锚
      * （见类 javadoc 的「覆盖边界」）。
      *
-     * <p><b>判别力</b>（实测见报告）：把回滚那段（{@code rollbackMoves} 真正改名回去）变异成「不回滚」⇒
+     * <p><b>判别力</b>：把回滚那段（{@code rollbackMoves} 真正改名回去）变异成「不回滚」⇒
      * 第 (b) 组断言红；把「已还原原注册表」文案改成谎报「未做任何改动」⇒ 第 (c) 组断言红。
      */
     @Test
