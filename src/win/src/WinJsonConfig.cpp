@@ -1804,7 +1804,7 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
             } else {
                 // ② 订正：进入本臂的**现实**原因**不是**「密钥不可用」。.bak 臂先经 parseAndValidateSettingsDoc，
                 //   而该函数**成功路径必经** ensureOrLoadKey ⇒ 密钥不可用时 .bak 会被同判「也无效」⇒ 落到下面
-                //   「无可用 .bak」臂。故「密钥不可用」下**两臂皆不可用 ⇒ 不写盘**。本臂真正可达的场景是
+                //   「.bak 也无效」臂。故「密钥不可用」下**两臂皆不可用 ⇒ 不写盘**。本臂真正可达的场景是
                 //   「密钥可用但加密失败」——即 buildSettingsJson 因 aes256gcmEncrypt 失败返回
                 //   {"_error":"encrypt_error"} stub，此时 .bak 用同一把**可用**密钥仍能解析成功 ⇒ 才真正回退
                 //   .bak。属极罕见分支。
