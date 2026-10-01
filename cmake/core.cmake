@@ -130,7 +130,9 @@ if(NOT ANDROID AND RK_BUILD_CORE_UNIT_TESTS)
     # 默认相反，从而对**构造写入**产生判别力（删掉构造函数那行赋值即令用例翻红）。生产 target 不受影响。
     # 全局选项非空时由其经 rk_core INTERFACE 统一注入，此处不再定义（避免宏重定义）。
     # ⚠️ 代价（如实登记，勿当作已封死）：注入使 `#if defined(RK_BENCH_ENFORCE_BUDGET)` 在本 target
-    #    **恒成立** ⇒ .cpp 的 `#elif defined(__aarch64__)` / `#else` 两个**平台回落分支在此不被编译**，
+    #    **恒成立** ⇒ .cpp 中 `kDefaultEnforceBudget` 的 `#else` 分支（即调
+    #    `rkDefaultEnforceBudgetForArch(kIsAarch64Target)` 那条）**在此不被编译**；而
+    #    `kIsAarch64Target` 的 `#if/#else` 属**另一段**宏块、仍照常编译，只是其值在本 target 被弃用，
     #    即「非 arm64 平台默认 = false」这条语义在 core_unit_tests 内**无任何断言**。该覆盖由
     #    core_gtest_tests 的 RealtimeFacePipelinePlatformDefault 用例承担（该 target 不定义此宏，
     #    真走 #else 分支，见 tests/cpp/test_engine.cpp）。故本注入**只**服务于构造写入判别力。
