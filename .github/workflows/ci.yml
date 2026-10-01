@@ -309,7 +309,10 @@ jobs:
 
       # 八个 JNI 源文件的语法检查（非阻断）——闭合「真实 JNI 实现从未被任何 CI job 编译」的盲区。
       # 清单对应 cmake/android.cmake 中 `if(NOT RK_SKIP_OPENCV)` 块内 add_library(native-lib ...) 所列的
-      # **8 个 JNI 源**（该 add_library 另列 4 个 `src/win/src/*.cpp`，不属 JNI、故不在本清单内）：
+      # **8 个 JNI 源**（该 add_library 另列 4 个 `src/win/src/*.cpp`，不属 JNI、故不在本清单内）。
+      # ⚠️ 勿据此以为该 add_library「除 8 个 JNI 源外只有 4 个 win 源」——其条目实为 **4 个 CMake 变量组**
+      # （`${RK_CORE_LITE_SOURCES}` `${RK_FACE_INFER_CORE_SOURCES}` `${RK_ADAPTER_SOURCES}` `${RK_PIPELINE_SOURCES}`）
+      # **+ 12 个字面 `.cpp`**（上述 8 个 JNI 源 + 4 个 win 源）：
       # src/cpp/native-lib.cpp + src/cpp/src/JniMethodRegistry.cpp +
       # src/cpp/jni/{camera,engine,preview,config,native_face_bridge,registry}.cpp。
       # 此前本 step 仅喂其中 2 个（native-lib.cpp、native_face_bridge.cpp），其余 6 个在全部 CI job 中
