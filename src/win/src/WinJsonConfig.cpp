@@ -921,7 +921,7 @@ static void normalizeRecognitionKeys(JsonValue& doc) {
 //   1 GiB × 1001（四份最坏约 4 TiB）⇒ 只靠 schema 拦不住磁盘耗尽。此处把两者钳进 512 MiB 总预算的
 //   **均分额**（kLogPerSetBudgetBytes = 512 MiB / 4 = 134217728 字节）内，schema 校验随后照常执行
 //   （**不动** schema 的 log 段上下界——收紧会让既有合法配置突然失效，即红线；故本项只做运行时
-//   钳制，schema 仍允许大值 ⇒ 「配置声明值 ≠ 生效值」是本项刻意保留的残留，见报告）。
+//   钳制，schema 仍允许大值 ⇒ 「配置声明值 ≠ 生效值」是本项刻意保留的残留）。
 // 为什么在此**不做**「钳后仍不合法」的兜底：钳制只往下压，从不抬升下界；区间外的值（负数 / 0 /
 //   超 schema 上界 / 非有限值）一律不动，交回既有 schema 判据 ⇒ 「既有非法值仍被拒」的语义不变。
 static void normalizeLogBudgetKeys(JsonValue& doc) {
@@ -1124,12 +1124,20 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                     //   产物必须自洽（能过 settings schema）。若**此刻**密钥变为「存在但不可读 / 损坏 / DPAPI 失败」，
                     //   buildSettingsJson 返回 {"schemaVersion":1,"_error":...} stub；一旦落盘，下次启动必被 schema
                     //   拒 ⇒ 再隔离一次、再写同一 stub（自持续循环）。它防的是「加载成功、写盘前密钥已失效」这一刻，
-                    //   与密钥的**加载期**校验（parseAndValidateSettingsDoc 内的 ensureOrLoadKey，此处 :639）不同层。
+                    //   与密钥的**加载期**校验（parseAndValidateSettingsDoc 内的 ensureOrLoadKey 调用）不同层。
                     //   ⚠️ **定位订正（勿再去改错地方）**：清单原记「INI→JSON 迁移分支缺闸门」**有误**——INI 那处
                     //   （下方 loadConfigFromIniOrDefault 之后）**本来就有**闸门；真正缺闸门的是**本处（级联路径迁移落盘）**。
                     std::string notWritable;
                     const bool serializable = serializedDocIsWritable(prettyMigrated, notWritable);
                     if (!serializable) {
+                        // ⚠️ **判别力边界（如实登记，勿高估）**：本 `serializable == false` 分支是**竞态防御**，
+                        //   防的是「配置装载成功、写盘前密钥才失效」这一 TOCTOU 窗口。该窗口**不可确定性构造**：
+                        //   迁移分支仅在 `parseAndValidateSettingsDoc` **成功**后可达，而该函数**无条件**
+                        //   `ensureOrLoadKey`（密钥缺失即生成）⇒ 装载成功蕴含「密钥刚可用」；要在迁移落盘处令密钥
+                        //   失效，只能靠并发改盘 / DPAPI 失败等外部时序 ⇒ **单线程确定性测试构造不出**本分支，故**故意不测**。
+                        //   （口径订正：本 if-块**并非零覆盖**——其**写盘失败**分支由
+                        //   `test_config_cascade_migration_write_failure_degrades` 覆盖且实跑 PASS；真正无判别用例的
+                        //   只是上面这条 false 分支，且类内 4 个测试钩子都不落在 initialize 迁移路径上 ⇒ 无接缝可注入。）
                         // 闸门不过 ⇒ **不落盘**（否则会把错误 stub 写进 config.json）。只改了内存 cascadePath；
                         //   磁盘仍是失效的旧路径，下次启动会再次进入本分支；原因经既有 migrateWarn 降级告警出口暴露
                         //   （不新造日志通道，与「写入 config.json 失败」那条走同一出口）。
