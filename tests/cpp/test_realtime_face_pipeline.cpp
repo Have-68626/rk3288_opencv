@@ -463,7 +463,8 @@ TEST(RealtimeFacePipeline, DestructorWaitsForPendingAsyncReload) {
 //    本 target（core_unit_tests）被 CMake 注入 RK_BENCH_ENFORCE_BUDGET=1（cmake/core.cmake 中
 //    core_unit_tests 的 RK_BENCH_ENFORCE_BUDGET 注入），
 //    使 `#if defined(RK_BENCH_ENFORCE_BUDGET)` 在本 target **恒成立** ⇒ .cpp 的
-//    `#elif defined(__aarch64__)` 与 `#else` 两个**平台回落分支在这里根本不被编译**。
+//    `kDefaultEnforceBudget` 的 `#else` 分支（即调 `rkDefaultEnforceBudgetForArch` 那条）**在这里不被编译**；
+//    而 `kIsAarch64Target` 的 `#if/#else` 属**另一段**宏块、仍照常编译，只是其值在本 target 被弃用。
 //    ⇒ 「非 arm64 平台默认 = false」这条语义**不由本用例覆盖**：它由 core_gtest_tests 的
 //      `RealtimeFacePipelinePlatformDefault.DefaultEnforceBudgetMatchesPlatform`
 //      （tests/cpp/test_engine.cpp）承担——该 target 不定义此宏，故真走 `#else` 分支。
@@ -501,7 +502,7 @@ TEST(RealtimeFacePipeline, ConstructorWritesDefaultEnforceBudgetIntoBench) {
     } else {
         EXPECT_TRUE(r.ok) << r.evidence;
     }
-    // ★ 残余（如实）：本 target 因注入而**不覆盖** .cpp 的 #elif/#else 平台回落分支（见用例头注释）；
+    // ★ 残余（如实）：本 target 因注入而**不覆盖** .cpp 中 `kDefaultEnforceBudget` 的 `#else` 平台回落分支（见用例头注释）；
     //    该覆盖由 core_gtest_tests 的 RealtimeFacePipelinePlatformDefault 用例承担。头文件若重新引入
     //    __aarch64__ 分支，x64 上其 #else 值(false)与平台中立判定同值 ⇒ 该复发仅在 arm64 上可判别。
 }
