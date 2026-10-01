@@ -72,8 +72,8 @@ const LEVEL_BY_TITLE = {
  * 消费端接线：这四个 key 必须**在非注释行上**同时存在，才算 title 分桶的下游依赖没被拆掉。
  *
  * ⚠️ 判据强度（如实，本批订正）：旧写法是 `src.includes(needle)` 的**子串存在性**，有两处假绿——
- *   · `id: check_native_lib_compile` 也命中**注释**里提到该 id 的那一行（ci.yml 第 356 行的
- *     step 内注释即提到它）；即 step 的 id 声明被删、只剩注释，旧判据仍绿；
+ *   · `id: check_native_lib_compile` 也命中**注释**里提到该 id 的那一行（对应 step 内的
+ *     注释即提到它）；即 step 的 id 声明被删、只剩注释，旧判据仍绿；
  *   · `…outputs.skipped` 也命中 `…outputs.skipped_reason`（前者是后者的**前缀**）⇒
  *     只保留 skipped_reason 而删掉 skipped，旧判据仍绿。
  * 现在两条防线：① `stripCommentLines` 先删掉整行注释；② 每个输出键的判据要求出现在**同一个
