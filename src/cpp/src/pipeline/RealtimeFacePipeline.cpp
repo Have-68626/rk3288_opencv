@@ -40,7 +40,7 @@ using Clock = std::chrono::steady_clock;
 //   （rkDefaultEnforceBudgetForArch(true/false)，改坏那一行即翻红），以及 x64 回落分支经构造函数
 //   写入 bench_ 的实际取值（见 tests/cpp/test_engine.cpp）；而**本处 `#if defined(__aarch64__)`
 //   下的 arm64 选臂（kIsAarch64Target）在 x64 上仍不被编译**（死代码），也无测试引用它 ⇒ 把该
-//   arm64 选臂改坏，x64 下**仍不会变红**。即：本批**未**消除原缺口（FACE-TEST-002），要真正闭合
+//   arm64 选臂改坏，x64 下**仍不会变红**。即：**该缺口仍未消除**（FACE-TEST-002），要真正闭合
 //   需 **arm64 或交叉编译目标**（登记为未闭合）。
 #if defined(__aarch64__)
 constexpr bool kIsAarch64Target = true;
