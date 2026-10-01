@@ -308,8 +308,9 @@ jobs:
         run: ./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --no-daemon
 
       # 八个 JNI 源文件的语法检查（非阻断）——闭合「真实 JNI 实现从未被任何 CI job 编译」的盲区。
-      # 清单与 cmake/android.cmake 中 `if(NOT RK_SKIP_OPENCV)` 块内 add_library(native-lib ...) 一一对应
-      # （共 8 个）：src/cpp/native-lib.cpp + src/cpp/src/JniMethodRegistry.cpp +
+      # 清单对应 cmake/android.cmake 中 `if(NOT RK_SKIP_OPENCV)` 块内 add_library(native-lib ...) 所列的
+      # **8 个 JNI 源**（该 add_library 另列 4 个 `src/win/src/*.cpp`，不属 JNI、故不在本清单内）：
+      # src/cpp/native-lib.cpp + src/cpp/src/JniMethodRegistry.cpp +
       # src/cpp/jni/{camera,engine,preview,config,native_face_bridge,registry}.cpp。
       # 此前本 step 仅喂其中 2 个（native-lib.cpp、native_face_bridge.cpp），其余 6 个在全部 CI job 中
       # 零编译；本 step 末尾会以 checked_files=<N> 打印**本数组的元素个数**。⚠️ 该数组是硬编码字面量，
