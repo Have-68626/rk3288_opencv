@@ -1132,7 +1132,7 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                     if (!serializable) {
                         // ⚠️ **判别力边界（如实登记，勿高估）**：本 `serializable == false` 分支是**竞态防御**，
                         //   防的是「配置装载成功、写盘前密钥才失效」这一 TOCTOU 窗口。该窗口**不可确定性构造**：
-                        //   迁移分支仅在 `parseAndValidateSettingsDoc` **成功**后可达，而该函数**无条件**
+                        //   迁移分支仅在 `parseAndValidateSettingsDoc` **成功**后可达，而该函数**成功路径必经**
                         //   `ensureOrLoadKey`（密钥缺失即生成）⇒ 装载成功蕴含「密钥刚可用」；要在迁移落盘处令密钥
                         //   失效，只能靠并发改盘 / DPAPI 失败等外部时序 ⇒ **单线程确定性测试构造不出**本分支，故**故意不测**。
                         //   （口径订正：本 if-块**并非零覆盖**——其**写盘失败**分支由
