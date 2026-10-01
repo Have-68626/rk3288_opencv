@@ -1148,7 +1148,7 @@ bool test_config_reload_rejected_quarantines_and_not_applied() {
 }
 
 // ②（对抗审查收口）：**密钥不可用**时热重载被拒 ⇒ 内存与 .bak **两臂皆不可用** ⇒ 不写盘。
-// 判据：.bak 臂先经 parseAndValidateSettingsDoc，而该函数**无条件**先调 ensureOrLoadKey；密钥不可用
+// 判据：.bak 臂先经 parseAndValidateSettingsDoc，而该函数**成功路径必经** ensureOrLoadKey；密钥不可用
 //   时 .bak 会被同判「也无效」⇒ 落到「无可用 .bak」臂。故「密钥不可用」**不会**回退 .bak、也不会把内存
 //   stub 写回——而是两者都不写。修复前的注释/文档把「密钥不可用」当作回退 .bak 的场景，属失实（本用例
 //   给出可判别证据：outErr 必须含「.bak 也无效」，且不得发生写回）。
