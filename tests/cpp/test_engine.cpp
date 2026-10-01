@@ -1718,10 +1718,11 @@ TEST(EngineTest, EmitGateReentryRejectedOnAllFourRemainingEntryPoints) {
 // 却**不定义** RK_BENCH_ENFORCE_BUDGET（该宏仅当全局选项显式设置时才注入——见 CMakeLists.txt 中
 // core_gtest_tests 的 `if(NOT RK_BENCH_ENFORCE_BUDGET STREQUAL "")` 注入块；
 // 本仓选项默认留空 ⇒ 零行为变化）⇒ .cpp 的 kDefaultEnforceBudget 走**平台回落分支**
-// （`#elif defined(__aarch64__)` → x64 取 `#else` = false），即生产 x64 的真实默认。
+// （无该宏 ⇒ 取该常量的 `#else` 分支 = `rkDefaultEnforceBudgetForArch(kIsAarch64Target)`；x64 下
+// `kIsAarch64Target=false`），即生产 x64 的真实默认。
 //
 // 这正是 core_unit_tests 那条用例**覆盖不到**的：core_unit_tests 被注入了该宏，其 .cpp 走 `#if`
-// 分支，`#elif`/`#else` 根本不被编译。故「非 arm64 平台默认 = false」这条语义的唯一断言点在此。
+// 分支，`#else` 根本不被编译。故「非 arm64 平台默认 = false」这条语义的唯一断言点在此。
 TEST(RealtimeFacePipelinePlatformDefault, DefaultEnforceBudgetMatchesPlatform) {
     // FACE-TEST-002（如实口径）：把「平台默认」判定收敛为**不依赖 #if 的纯函数**后，其**映射语义**
     // 在本 x64 target 上可断言——**本用例内共 3 条断言**会随该函数变异而翻红：下面的两条映射断言
@@ -1733,8 +1734,7 @@ TEST(RealtimeFacePipelinePlatformDefault, DefaultEnforceBudgetMatchesPlatform) {
     // ⚠️ 但 .cpp 里 `#if defined(__aarch64__)` 的 **arm64 选臂在 x64 上仍是死代码**（无测试可及）——
     // 该缺口仍未消除；要真正闭合需 arm64 或交叉编译目标。
     // 生产侧的 kDefaultEnforceBudget 经 rkDefaultEnforceBudgetForArch(isAarch64) 取值，
-    // 故把该函数改坏即令相应断言翻红——注意 `benchmarkConfig().enforceBudget` 亦经它耦合，
-    // 故整用例内共 3 条断言可翻红（计数见上：`return true;` → 2、`return !isAarch64;` → 3、`return false;` → 1）。
+    // 故把该函数改坏亦会令 `benchmarkConfig().enforceBudget` 随之变（耦合链见上方注释）。
     EXPECT_TRUE(rkDefaultEnforceBudgetForArch(true))
         << "arm64（RK3288）平台默认必须为 true（强制预算）；把该分支改坏即令本断言红";
     EXPECT_FALSE(rkDefaultEnforceBudgetForArch(false))
