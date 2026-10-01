@@ -5,8 +5,12 @@
 # ── 冲突标记门禁（tracked conflict-marker gate）──
 # 未解析的 Git 冲突标记会阻断完整 Android native 构建（RK_SKIP_OPENCV=OFF），
 # 且在 RK_SKIP_OPENCV=ON 时被 stub 变体遮蔽。此处在配置期拦截。
+# 清单 = native-lib 全量构建所编的 **8 个 JNI 源**（与下方 `add_library(native-lib ...)` 的 JNI
+# 源一致，含 src/cpp/src/JniMethodRegistry.cpp）：任一含冲突标记都会阻断该构建，故逐一同扫。
+# add_library 另列的 4 个 `src/win/src/*.cpp` 与 JNI 无关（Windows/Android 共享），不属本门禁范围。
 set(RK_JNI_GATE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/native-lib.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/JniMethodRegistry.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/camera.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/jni/engine.cpp"
