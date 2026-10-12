@@ -105,6 +105,13 @@ bool test_config_quarantine_timestamp_collision_preserves_original();
 bool test_config_quarantine_retry_succeeds_after_collisions();
 bool test_config_reload_rejected_no_bak_rewrites_from_memory();
 bool test_config_reload_rejected_rewrites_memory_not_stale_bak();
+// FACE-CONFIG-017：落盘（PUT / 回滚写回）必须用 env-free 快照，不得把 RK_WCFR_* 覆盖值烤进 config.json。
+bool test_config_disk_write_excludes_env_overrides();
+bool test_config_rollback_write_excludes_env_overrides();
+bool test_config_rotate_write_excludes_env_overrides();
+bool test_config_migration_write_excludes_env_overrides();
+bool test_config_initialize_lastgood_excludes_env_overrides();
+bool test_config_reload_lastgood_excludes_env_overrides();
 bool test_config_reload_rejected_quarantines_and_not_applied();
 bool test_config_reload_rejected_key_unavailable_bak_unusable();
 bool test_config_reload_rejected_key_unavailable_no_bak_no_selfheal();
@@ -310,6 +317,12 @@ int main(int argc, char** argv) {
         {"config_quarantine_retry_succeeds_after_collisions", test_config_quarantine_retry_succeeds_after_collisions},
         {"config_reload_rejected_no_bak_rewrites_from_memory", test_config_reload_rejected_no_bak_rewrites_from_memory},
         {"config_reload_rejected_rewrites_memory_not_stale_bak", test_config_reload_rejected_rewrites_memory_not_stale_bak},
+        {"config_disk_write_excludes_env_overrides", test_config_disk_write_excludes_env_overrides},
+        {"config_rollback_write_excludes_env_overrides", test_config_rollback_write_excludes_env_overrides},
+        {"config_rotate_write_excludes_env_overrides", test_config_rotate_write_excludes_env_overrides},
+        {"config_migration_write_excludes_env_overrides", test_config_migration_write_excludes_env_overrides},
+        {"config_initialize_lastgood_excludes_env_overrides", test_config_initialize_lastgood_excludes_env_overrides},
+        {"config_reload_lastgood_excludes_env_overrides", test_config_reload_lastgood_excludes_env_overrides},
         {"config_reload_rejected_quarantines_and_not_applied", test_config_reload_rejected_quarantines_and_not_applied},
         {"config_reload_rejected_key_unavailable_bak_unusable", test_config_reload_rejected_key_unavailable_bak_unusable},
         {"config_reload_rejected_key_unavailable_no_bak_no_selfheal", test_config_reload_rejected_key_unavailable_no_bak_no_selfheal},
