@@ -26,7 +26,7 @@ as_of=2026-08-13
 | **LBP 级联模型** | https://github.com/opencv/opencv/tree/master/data/lbpcascades | 随 OpenCV 4.10.0 | 3-Clause BSD | git blob `529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d`（见下方「可复算摘要」） | OpenCV 官方 data 目录 | 已入库：`app/src/main/assets/lbpcascade_frontalface.xml` |
 | **SCRFD 检测模型** | https://github.com/deepinsight/insightface（`det_10g.onnx` 经 PNNX optlevel=2 转换） | `[未定]` 未固定（随上游 det_10g） | 代码 Apache-2.0（Open-MMLab）/ 模型权重：insightface 非商用（仅限非商业研究，见 `CREDITS.md`「⚠️ 商用限制结论（必读）」） | `[部署时生成]` 运行 `scripts/quantize_ncnn_int8.py` 产出后，对 `models/scrfd_face_detect_ncnn/` 与 `models/int8/` 下 `.param`/`.bin` 执行 `sha256sum`（启动自检日志亦打印模型 hash） | InsightFace 上游发布 / 本仓库 PNNX 转换产物 | gitignored，本地生成（`models/`，仅 `.gitkeep` 入库） |
 | **ArcFace 识别模型** | https://github.com/deepinsight/insightface（LResNet100E-IR 风格，经 PNNX 转换） | `[未定]` 未固定 | 代码 MIT / 模型权重：insightface 非商用（仅限非商业研究，见 `CREDITS.md`「⚠️ 商用限制结论（必读）」） | `[部署时生成]` 同 SCRFD，对 `models/arcface_ncnn/`、`models/arcface_int8_ncnn/` 执行 `sha256sum` | InsightFace 上游发布 / 本仓库转换产物 | gitignored，本地生成 |
-| **MobileFaceNet 模型** | `[未定]` 仓库标注「自训练/转换」，无上游 URL 可取证（BLOCKED_DATA） | `[未定]` | `[未定]` | `[部署时生成]` 同 SCRFD，对 `models/mobilefacenet_ncnn/`、`models/mobilefacenet_int8_ncnn/` 执行 `sha256sum` | `[未定]` 需人工确认 FP32 来源 | gitignored，本地生成 |
+| **MobileFaceNet 模型** | `[未定]` 仓库标注「自训练/转换」，无上游 URL 可取证（BLOCKED_DATA） | `[未定]` | `[未定]`（**来源未定 / 开发兼容 / 未验收**，不猜权重许可） | `[部署时生成]` 同 SCRFD，对 `models/mobilefacenet_ncnn/`、`models/mobilefacenet_int8_ncnn/` 执行 `sha256sum` | `[未定]` 需人工确认 FP32 来源 | gitignored，本地生成（**开发兼容适配器**：仅显式调用、非默认、无自动回落） |
 | **YOLO Face 模型** | `[未定]` 仓库标注「自训练/转换」，无上游 URL 可取证（BLOCKED_DATA） | `[未定]` | `[未定]` | `[部署时生成]` 同 SCRFD，对 `models/yolo_face_int8_ncnn/` 执行 `sha256sum` | `[未定]` 需人工确认 FP32 来源 | gitignored，本地生成 |
 | **FFmpegKit AAR** | https://github.com/arthenica/ffmpeg-kit | `[未集成]` 未固定 | LGPL 3.0 / GPL 3.0 | `[未集成]` 集成时对 `app/libs/ffmpeg-kit.aar` 执行 `sha256sum` 并记录版本 | GitHub Release | 未集成：`app/libs/` 不存在，RTMP 推流禁用（build.gradle 可选分支） |
 | **RK MPP** | https://github.com/rockchip-linux/mpp | `[未随附]`（已知本地路径 `D:/ProgramData/rkmpp/mpp-1.0.11`） | Apache 2.0 | `[未随附]` 引入时按 `deps/rk_mpp/README.md` 记录包校验值 | Rockchip GitHub Release / 官方 SDK | 可选：头文件未随附，CMake 缺失时 CPU 解码回退 |
@@ -56,7 +56,7 @@ ncnn 官方资产（3 个 zip）SHA-256 与 CivetWeb 各文件 git blob SHA-256 
 
 ## BLOCKED_DATA（来源无法从仓库取证）
 
-- **MobileFaceNet 模型**：仓库仅标注「自训练/转换」，无上游 URL、训练脚本或校验值记录，无法从仓库取证 FP32 权重来源。**不编造来源**。部署前需人工确认并回填来源/版本/许可证。
+- **MobileFaceNet 模型**：仓库仅标注「自训练/转换」，无上游 URL、训练脚本或校验值记录，无法从仓库取证 FP32 权重来源。**不编造来源**。**处置口径：来源未定 / 开发兼容 / 未验收**——保留为开发兼容适配器（仅显式调用、非默认、无自动回落），**不作为已合规验收模型**，**不猜权重许可**（用户用途声明不构成权重许可证明）。部署前需人工确认并回填来源/版本/许可证。
 - **YOLO Face 模型**：同上，来源未定。
 
 ## 维护说明

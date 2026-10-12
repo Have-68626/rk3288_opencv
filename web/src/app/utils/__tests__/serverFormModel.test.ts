@@ -331,15 +331,16 @@ describe('isSettingsDocComplete：缺段文档必须被挡住', () => {
 })
 
 // ===========================================================================
-// 本批新增：脱敏 POST URL 的**行为收紧**
-//   （占位符识别 / URL 形状判据 / 保存结果文案 / 提交处理器工厂的行为级覆盖 / 接线形态守卫）
+// POST URL 的**行为收紧**（本批扩展到所有提交路径）
+//   （字面哨兵识别 / URL 形状判据 / 保存结果文案 / 提交处理器工厂的行为级覆盖 / 接线形态守卫）
 //
 // 事故面（本批判据要挡的东西）：poster.postUrl 的**字段初值是脱敏占位符 "***"**（见
 //   buildServerFormModelFromDoc）。用户手误（把 "***" 敲成 "*x" / "xx"）若被当作合法值提交：
 //   后端 stripMaskedSentinels 只剔**精确** "***"（不剔 "*x"），而 schema 的串分支**无 pattern**
 //   ⇒ 落盘生效、**静默覆盖真实 URL**；更糟的是 GET 恒脱敏 ⇒ 用户**再也拿不回**被覆盖的 URL。
-//   ⇒ 对「脱敏分支」（baseline 自身是占位符）而言，非空且非占位符的值**必须**是形如 `<scheme>://`
-//   的合法 URL，否则拒绝提交。该收紧**只作用于脱敏分支**，非脱敏路径行为与修复前一致。
+//   ⇒ 非空且非字面哨兵 "***" 的值**必须**是 http/https URL，否则拒绝提交。
+// ⚠️ 本批把收紧从「仅脱敏分支」扩到**所有提交路径**：任何 baseline 下都只接受 http/https
+//   （空串 = 清空、字面哨兵 "***" = 不改，二者除外）；只由 `*` 组成的误删残留（"*" / "**"）也判非法。
 // ===========================================================================
 
 describe('isMaskedPlaceholder：全 `*` 占位符识别（trim 后判据）', () => {
@@ -361,34 +362,49 @@ describe('isMaskedPlaceholder：全 `*` 占位符识别（trim 后判据）', ()
   })
 })
 
-describe('isValidMaskedPostUrl：占位符/空 ⇒ 合法；否则须匹配 `<scheme>://`', () => {
-  it('空串 / 纯空白 / 占位符 ⇒ true（分别代表"清空"与"未改动"，都不该报校验错）', () => {
+describe('isValidMaskedPostUrl：空串/字面哨兵 ⇒ 合法；否则须为 http(s) URL', () => {
+  it('空串 / 纯空白 / 字面哨兵 "***" ⇒ true（分别代表"清空"与"未改动"，都不该报校验错）', () => {
     expect(isValidMaskedPostUrl(''), '空串 ⇒ 合法（= 显式清空）').toBe(true)
     expect(isValidMaskedPostUrl('   '), '纯空白 ⇒ 合法').toBe(true)
-    expect(isValidMaskedPostUrl('***'), '占位符 ⇒ 合法（未改动）').toBe(true)
+    expect(isValidMaskedPostUrl('***'), '字面哨兵 ⇒ 合法（未改动）').toBe(true)
   })
 
-  it('合法 scheme URL ⇒ true（首尾空白经 trim 后判定）', () => {
+  it('http/https URL ⇒ true（大小写 scheme 经 new URL 归一化后判定；首尾空白经 trim）', () => {
     expect(isValidMaskedPostUrl('http://a/b')).toBe(true)
     expect(isValidMaskedPostUrl('https://a')).toBe(true)
-    expect(isValidMaskedPostUrl('rtmp://h/x')).toBe(true)
+    // new URL 把 scheme 归一化为小写 ⇒ 大写/混合写法同样合法。
+    expect(isValidMaskedPostUrl('HTTP://a/b'), '大写 scheme 归一化后合法').toBe(true)
+    expect(isValidMaskedPostUrl('HtTpS://a'), '混合大小写 scheme 归一化后合法').toBe(true)
     expect(isValidMaskedPostUrl('  http://a/b  '), 'trim 后合法').toBe(true)
   })
 
-  it('★ 非 URL 垃圾串 ⇒ false（本批"行为收紧"的落点）', () => {
-    expect(isValidMaskedPostUrl('xx'), '"xx" 非 URL').toBe(false)
-    expect(isValidMaskedPostUrl('*x'), '"*x" 是误删占位符的残串、非 URL').toBe(false)
-    expect(isValidMaskedPostUrl('example.com/api'), '缺 scheme').toBe(false)
-    expect(isValidMaskedPostUrl('://a'), '缺 scheme 名').toBe(false)
-    // ⚠️ `://` 之后必须**有非空白内容**：`http://`（空 host）是垃圾串，必须拒（否则会落盘覆盖真实 URL）。
-    expect(isValidMaskedPostUrl('http://'), '"http://" 空 host ⇒ 非法').toBe(false)
-    expect(isValidMaskedPostUrl('http://   '), '"http://   " trim 后仍空 host ⇒ 非法').toBe(false)
+  it('★ 仅接受 http/https：其它 scheme ⇒ false（本批收紧的落点）', () => {
+    // 旧判据只要求 `<scheme>://`（不限定 scheme），rtmp/javascript/ftp/data 都能通过；现收紧为仅 http/https。
+    expect(isValidMaskedPostUrl('rtmp://h/x'), 'rtmp 不再放行').toBe(false)
+    expect(isValidMaskedPostUrl('javascript://h/x')).toBe(false)
+    expect(isValidMaskedPostUrl('ftp://x')).toBe(false)
+    expect(isValidMaskedPostUrl('data://x')).toBe(false)
   })
 
-  it('undefined ⇒ true（按实现语义：String(undefined ?? "") 得空串 ⇒ 合法）', () => {
-    // ⚠️ 本条的期望值来自**接口语义推断**而非运行期实测（写用例时实现尚未落地）：按 String(v ?? '')
-    //   推得空串 ⇒ 合法。若实现以别的方式处理 undefined，本条会变红并揭示语义分歧（届时以实现为准）。
+  it('★ 非 URL 垃圾串 / 缺 host / 内嵌空白 ⇒ false', () => {
+    expect(isValidMaskedPostUrl('xx'), '"xx" 非 URL').toBe(false)
+    expect(isValidMaskedPostUrl('*x'), '"*x" 是误删占位符的残串、非 URL').toBe(false)
+    // 误删到只剩 `*`（"*" / "**"）：不是**字面哨兵** "***"，也不是合法 URL ⇒ 拒（本批收紧，见上方组说明）。
+    expect(isValidMaskedPostUrl('*'), '"*" 非字面哨兵、非 URL ⇒ 拒').toBe(false)
+    expect(isValidMaskedPostUrl('**'), '"**" 非字面哨兵、非 URL ⇒ 拒').toBe(false)
+    expect(isValidMaskedPostUrl('example.com/api'), '缺 scheme').toBe(false)
+    expect(isValidMaskedPostUrl('://a'), '缺 scheme 名').toBe(false)
+    // ⚠️ hostname 必须非空：`http://`（空 host）经 new URL 解析失败 ⇒ 拒。
+    expect(isValidMaskedPostUrl('http://'), '"http://" 空 host ⇒ 非法').toBe(false)
+    expect(isValidMaskedPostUrl('http://   '), '"http://   " trim 后仍空 host ⇒ 非法').toBe(false)
+    // ⚠️ 内嵌空白（trim 只去首尾）⇒ 拒。
+    expect(isValidMaskedPostUrl('http://a b/c'), '内嵌空白 ⇒ 拒').toBe(false)
+  })
+
+  it('undefined / null ⇒ true（字段缺失不是编辑；实现按 value == null 直接放行）', () => {
+    // ⚠️ 期望值来自实现语义：null/undefined 直接 true（字段缺失时提交前已被 normalizePostUrlField 折回 baseline，永不外送）。
     expect(isValidMaskedPostUrl(undefined)).toBe(true)
+    expect(isValidMaskedPostUrl(null)).toBe(true)
   })
 })
 
@@ -522,22 +538,22 @@ describe('makeSettingsSubmitHandler：提交流程的行为级覆盖（本批核
     expect(effects.commitBaseline, '被拒的提交不得更新 baseline').not.toHaveBeenCalled()
   })
 
-  it('6) 非脱敏 baseline（持真值）+ 同一条 "xx" ⇒ 不被拦（行为收紧仅作用于脱敏分支，如实登记）', async () => {
+  it('6) ★ 非脱敏 baseline（持真值）+ "xx"（非 URL）⇒ 同样被拦（收紧已扩到所有提交路径，不再只限脱敏分支）', async () => {
     const baseline = realFormModel()
     const effects = makeSubmitEffects({ values: setPostUrl(baseline, 'xx') })
     await makeSettingsSubmitHandler(() => baseline, effects)()
-    expect(effects.notifyInvalid, '非脱敏分支不做 URL 形状校验（修复前既有行为）').not.toHaveBeenCalled()
-    expect(effects.apply, '非脱敏分支照常提交').toHaveBeenCalledTimes(1)
-    expect(effects.apply.mock.calls[0][0]).toEqual({ poster: { postUrl: 'xx' } })
+    expect(effects.notifyInvalid, '所有提交路径都做 URL 形状校验').toHaveBeenCalledTimes(1)
+    expect(effects.apply, '非法值在任何分支都不得提交').not.toHaveBeenCalled()
+    expect(effects.commitBaseline, '被拒的提交不得更新 baseline').not.toHaveBeenCalled()
   })
 
-  it('7) 占位符误删（值 "*" / "**"）⇒ 既非校验失败、也判无变更 ⇒ notifyNoChange、不提交', async () => {
+  it('7) ★ 占位符误删（值 "*" / "**"）⇒ 判非法并拒绝提交（只认字面哨兵 "***"；旧实现按"未变更"放行）', async () => {
     const baseline = maskedFormModel()
     for (const typed of ['*', '**']) {
       const effects = makeSubmitEffects({ values: setPostUrl(baseline, typed) })
       await makeSettingsSubmitHandler(() => baseline, effects)()
-      expect(effects.notifyInvalid, `值 ${typed} 是占位符残留，不得报校验错`).not.toHaveBeenCalled()
-      expect(effects.notifyNoChange, `值 ${typed} 应判无变更`).toHaveBeenCalledTimes(1)
+      expect(effects.notifyInvalid, `值 ${typed} 非字面哨兵、非合法 URL ⇒ 报校验错`).toHaveBeenCalledTimes(1)
+      expect(effects.notifyNoChange, `值 ${typed} 不是"未改动"，不得提示无变更`).not.toHaveBeenCalled()
       expect(effects.apply, `值 ${typed} 不得提交`).not.toHaveBeenCalled()
     }
   })
