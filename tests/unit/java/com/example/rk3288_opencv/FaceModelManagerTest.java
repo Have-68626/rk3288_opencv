@@ -2949,19 +2949,21 @@ public class FaceModelManagerTest {
      * （{@code FileOps}）字段。
      *
      * <p>⚠️ <b>与 {@code PersonDisplayNameStoreTest} 对 {@code FileStoreUtils} 的守卫之关系</b>：
-     * 两者的**类型判据同源**（同为 {@code mentionsSeamType} 递归下探），但那条守卫的**方法判据更宽**
-     * ——它只要求「静态 + 恰一个接缝参数」，**不限方法名、不限返回类型**（见其 javadoc 的
-     * 「与本仓其余四处守卫的关系」一节）。故**不得**把两者写成「同口径」：本类的覆盖是那两条
-     * 收窄后的形态，{@code FileStoreUtils} 那条比它更严。
+     * 两者的**类型判据同源**（同为 {@code mentionsSeamType} 递归下探），且**方法判据亦同口径**——
+     * 判据①「{@code set*} + 任一接缝参数」、判据②「静态 + 恰一个接缝参数」（**不限方法名、不限
+     * 返回类型**）与本条一致。本条判据②于 2026-10-12 去掉 {@code void} 要求后与那条对齐（此前本条
+     * 判据②更窄，旧文曾提醒「不得并称同口径」——该提醒已随本次对齐失效）。
      *
      * <p>反例原理：只要类上还能「一次注入、全局生效」，本仓的 JVM 内串行测试模型就可能被跨类污染。
      * 故用反射把「没有静态接缝」钉成可执行断言。
      *
-     * <p><b>判据（含 FACE-TEST-003 收紧，与本仓其余三处守卫对齐）</b>：
+     * <p><b>判据（含 FACE-TEST-003 收紧；判据②于 2026-10-12 对齐至 {@code
+     * fileStoreUtilsExposesNoStaticInjectionSeam} 守卫的宽度）</b>：
      * <ul>
      *   <li><b>方法①（收紧）</b>：不存在「名为 {@code set*} 且带接缝类型参数」的**静态**方法 ——
      *       **不限返回类型**、**不限参数个数**；</li>
-     *   <li><b>方法②</b>：不存在「返回 {@code void} 且参数恰为一个接缝类型」的**静态**方法；</li>
+     *   <li><b>方法②（2026-10-12 补口）</b>：不存在「**静态**、恰一个提及接缝类型的参数」的方法
+     *       （**不限返回类型、不限方法名**，即 {@code void} 要求已去除）；</li>
      *   <li><b>字段③</b>：静态接缝字段必须 {@code final}，且唯一允许的常量名是
      *       {@code DEFAULT_FILE_OPS}（与 {@code FeatureTemplateEncryptedStore.DEFAULT_KEY_PROVIDER} 同构）。</li>
      * </ul>
@@ -2972,7 +2974,8 @@ public class FaceModelManagerTest {
      * <p><b>打红方式</b>（改任一处即红）：
      * <ul>
      *   <li>把 {@code setFileOpsForTesting} 改为 {@code static}（不限返回类型/参数个数）⇒ 判据①红；</li>
-     *   <li>新增「返回 void 且参数恰为一个接缝类型」的静态方法 ⇒ 判据②红；</li>
+     *   <li>新增「静态、恰一个接缝类型参数」的方法（**不限返回类型、不限名**，含返回非 void 的
+     *       {@code static FileOps installForTesting(FileOps)}）⇒ 判据②红（旧判据需 {@code void}，会漏过）；</li>
      *   <li>新增**任意**静态接缝字段（含把 {@code fileOps} 改回 {@code private static volatile}）
      *       —— 仅放行唯一合法常量 {@code DEFAULT_FILE_OPS} ⇒ 字段判据红；</li>
      *   <li>以**其它类型**承载接缝（静态 {@code Consumer<FileOps>} / {@code Map<String, FileOps>} 等）
@@ -2982,9 +2985,15 @@ public class FaceModelManagerTest {
      * <p><b>边界（如实声明，收紧后）</b>：类型判据已**递归下探泛型实参**（见 {@link #mentionsSeamType(Type)}）
      * —— 静态 {@code Consumer<FileOps>} / {@code Map<String, FileOps>} / {@code Optional<FileOps>} /
      * {@code FileOps[]} / {@code ? extends FileOps} 等「以其它类型承载」的静态注入**已被覆盖**；
-     * **非 setter 命名**承载（{@code static void install(FileOps)}）由判据②覆盖。仍**不覆盖**的只有：
+     * **非 setter 命名**承载（{@code static FileOps install(FileOps)}，**任意返回类型**）由判据②覆盖。仍**不覆盖**的只有：
      * 把接缝藏进**自定义 Holder 类内部**（如 {@code static final Holder H} 而 {@code Holder} 内才有
      * {@code FileOps} 字段）—— 判据只作用于成员自身声明的（泛型）类型，**不反射进任意 Holder 类的内部**。
+     *
+     * <p><b>已闭合的净缺口（2026-10-12）</b>：此前登记「静态、非 {@code set*} 命名、返回非 void、恰一个
+     * 接缝类型参数」的注入（如 {@code static FileOps installForTesting(FileOps)}）会被**旧**判据静默放过
+     * ——判据①需 {@code set} 前缀（不命中）、②需 {@code void} 返回（不命中）。本轮**去掉判据②的
+     * {@code void} 要求**即闭合，口径与 {@code PersonDisplayNameStoreTest} 同名守卫及 {@code
+     * fileStoreUtilsExposesNoStaticInjectionSeam} 一致。
      *
      * <p><b>已知代价（如实声明，不得隐瞒）</b>：递归判据会命中一批**合法**的静态常量 —— 若将来合法
      * 新增 {@code private static final Map<String, FileOps> DEFAULTS}，本条**会真红**。那不是假红，是
@@ -3008,12 +3017,14 @@ public class FaceModelManagerTest {
             assertFalse("FaceModelManager 不应暴露静态注入入口（名为 set* 且带接缝类型参数的静态方法，"
                             + "不限返回类型/参数个数）：" + method.getName(),
                     method.getName().startsWith("set") && hasSeamParam);
-            // 判据②：返回 void 且参数恰为一个接缝类型的静态方法。
-            boolean voidSingleSeam = method.getReturnType() == void.class
-                    && method.getParameterCount() == 1
+            // 判据②（2026-10-12 补口）：**任意名**静态方法，恰一个「提及接缝类型」的参数 —— 此前要求
+            //   「返回 void」，会**静默放过**「非 set* 命名 + 返回非 void + 单接缝参数」的注入
+            //   （如 `static FileOps installForTesting(FileOps)`）；现**不限返回类型、不限方法名**，
+            //   与 PersonDisplayNameStoreTest / fileStoreUtilsExposesNoStaticInjectionSeam 的判据②同口径。
+            boolean singleSeamParam = method.getParameterCount() == 1
                     && mentionsSeamType(method.getGenericParameterTypes()[0]);
-            assertFalse("FaceModelManager 不应暴露静态注入入口（返回 void 且参数恰为一个接缝类型）："
-                    + method.getName(), voidSingleSeam);
+            assertFalse("FaceModelManager 不应暴露静态注入入口（静态方法、恰一个接缝类型参数，"
+                    + "不限名/返回类型）：" + method.getName(), singleSeamParam);
         }
         for (Field f : FaceModelManager.class.getDeclaredFields()) {
             boolean staticSeam = Modifier.isStatic(f.getModifiers())
