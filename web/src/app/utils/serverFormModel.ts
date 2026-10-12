@@ -202,8 +202,8 @@ export function buildServerFormModelFromDoc(doc: ServerSettingsDoc): {
 // ⚠️ 为什么取「全 `*`」而不是「等于 "***"」：合法 URL 不可能只由 `*` 组成（必先有 scheme 名）⇒
 //   「全 `*`」不会误伤任何真 URL；而「等于哨兵」会漏掉误删残留、把它当普通值送出（事故链见下方
 //   normalizePostUrlField 与 isValidMaskedPostUrl 的 doc）。
-// 为什么要单列成函数：normalizePostUrlField（折回 baseline）与 isValidMaskedPostUrl /
-//   makeSettingsSubmitHandler（脱敏分支的形状校验）都复用它，避免"等于哨兵"与"全 `*`"两处判据分散漂移。
+// 为什么要单列成函数：normalizePostUrlField（折回 baseline）复用它，避免"等于哨兵"与"全 `*`"两处判据
+//   分散漂移。（isValidMaskedPostUrl 只单独识别**字面**哨兵 "***"、不再复用本函数——见该函数 doc。）
 export function isMaskedPlaceholder(value: unknown): boolean {
   return /^\*+$/.test(String(value ?? '').trim())
 }
@@ -223,8 +223,8 @@ export function isMaskedPlaceholder(value: unknown): boolean {
 //     （占位符判据不在此重复定义，只调 isMaskedPlaceholder。）
 //   · ★ 不变量二：非脱敏场景（baseline 持真值）下行为与修复前**逐字一致**（trim 后原样送出）。
 //   · 已知边界（如实登记）：值既非空、又非全 `*`、又非合法 URL 的垃圾串（例如 "xx"）在本函数里仍被
-//     原样返回。**脱敏分支**下的这类值已由 isValidMaskedPostUrl 在提交流程入口拦截（**行为收紧**，
-//     见该函数 doc）；**非脱敏分支**仍不校验 URL 形状（HTTP 契约层也不校验），是本批未闭合的残余边界。
+//     原样返回 —— 本函数**只做归一化、不做 URL 形状校验**。形状校验由 isValidMaskedPostUrl 在提交流程
+//     入口统一承担（**所有提交路径**，不再限于脱敏分支，见该函数 doc）⇒ 该边界在提交流程内已闭合。
 export function normalizePostUrlField(value: unknown, baseline: string): string {
   // ⚠️ null / undefined 按「**未改动**」处理（返回 baseline），**不**当成"清空"：字段值为空是 store 异常或
   //   面板未播种的信号，把它解释成"用户清空了 URL"会**静默毁掉真实 URL**（GET 恒脱敏 ⇒ 拿不回）。
@@ -237,33 +237,37 @@ export function normalizePostUrlField(value: unknown, baseline: string): string 
   return t
 }
 
-// 脱敏分支的 URL 形状判据（true = 允许提交）。**本批新增，属行为收紧**：在此之前任何字符串都会被提交
-//   ——后端 stripMaskedSentinels 只剔**精确** "***"、schema 的串分支无 pattern ⇒ 落盘覆盖真实 URL。
-// 判据（对入参先 trim，与 normalizePostUrlField 一致）：
-//   · 空串 ⇒ true —— 显式清空（提交时会成为 ''，后端接受，等价于停发）；
-//   · 占位符（isMaskedPlaceholder）⇒ true —— 未改动，提交时由 normalizePostUrlField 折回 baseline；
-//   · 其余必须匹配 `^[A-Za-z][A-Za-z0-9+.-]*://`（scheme 名 + "://"）⇒ 否则 false（拒绝提交）。
-//   ⚠️ 对纯空白输入先 trim 再判空：把该框清成空格 = 显式清空，故放行；若不做这一步，用户把该框清成
-//   空格就会被判非法、无法清空（与 normalizePostUrlField 把纯空白归一的语义保持一致）。
-// 事故链（要收紧的就是它）：字段初值是占位符 ⇒ 用户误删/手误得到 "*x" / "xx" ⇒ 后端 stripMaskedSentinels
-//   只剔**精确** "***"、schema 的串分支无 pattern ⇒ 落盘**覆盖真实 URL** ⇒ 且 GET 恒脱敏 ⇒ 用户
-//   **再也拿不回**。合法 URL 必含 "scheme://"，故本判据不会误伤真 URL。
-// ⚠️ 只应在**脱敏分支**（baseline 是占位符）调用：非脱敏分支 baseline 持真值，对其一并收紧会改掉当前
-//   可提交的垃圾串行为，超出本批范围。调用点即 makeSettingsSubmitHandler（判据取 baseline 是否占位符）。
-// ⚠️ 判据边界（**如实登记，勿高估**）：只要求「`<scheme>://` + **至少一个非空白字符**」，**不限定 scheme**
-//   ⇒ `rtmp://h/x` / `javascript://x` / `ftp://x` 都会通过。故它的作用是「**挡住不像 URL 的垃圾串**」，
-//   **不是**「保证该 URL 能被后端推送」——后端 `HttpFacesPoster` 走 `WinHttpCrackUrl`，认不出的 scheme
-//   会**静默失效**；而那类值在本批之前**同样**会被提交 ⇒ 属**既有**风险，本判据**不承诺**闭合它。
-//   不限定 scheme 是刻意的：前端不替后端收紧合法 scheme 面（要收紧须先拍板）。
-// ⚠️ `://` 之后必须是**非空白内容**：`http://`（空 host）属垃圾串，必须拒。
+// 提交前 POST URL 的形状判据（true = 允许提交）。**本批收紧，且不再限于脱敏分支**：
+//   在任何提交路径上都只接受 http/https URL（空串 = 显式清空、字面哨兵 "***" = 未改动除外）。
+// 判据（对入参先 trim）：
+//   · 空串（含纯空白）⇒ true —— 显式清空（提交时会成为 ''，后端接受，等价于停发）；
+//   · 字面哨兵 "***"（MASKED_SENTINEL）⇒ true —— 未改动，提交时由 normalizePostUrlField 折回 baseline；
+//   · 含内嵌空白 ⇒ false；
+//   · 其余用 `new URL()` 解析，**仅** `http:` / `https:` 且 hostname 非空 ⇒ true；解析异常或其它 scheme
+//     （rtmp / javascript / ftp / data …）⇒ false（拒绝提交）。
+// 为什么只认 http/https：后端 `HttpFacesPoster` 走 `WinHttpCrackUrl` 推送，认不出的 scheme 会**静默失效**
+//   ——此前 `rtmp://x` / `javascript://h/x` 这类值也能通过（旧判据只要求 `<scheme>://` + 一个非空白字符），
+//   落盘后既不能推送、又（因 GET 恒脱敏）拿不回。收紧到 http/https 与后端实际支持的推送面一致。
+//   ⚠️ 后端 PUT 另有**独立**校验（不在本文件范围）；本函数只是前端这一层，不得据此认为后端已同样收紧。
+// ⚠️ 只由 `*` 组成的**误删残留**（"*" / "**"）**不再**被本函数放行——它们不是合法 URL，会走到 false 分支
+//   （拒绝提交）。normalizePostUrlField 的「全 `*` 折回 baseline」不变量仍在，但**校验先于归一化**，故这类
+//   值在提交流程里表现为"非法"而非"未变更"。判据仍是"它不可能是合法 URL"，不会误伤真 URL（合法 URL 不可能
+//   只由 `*` 组成）。
+// ⚠️ 对纯空白输入先 trim 再判空：把该框清成空格 = 显式清空，故放行（与 normalizePostUrlField 把纯空白
+//   归一的语义保持一致）。
 // ⚠️ null / undefined ⇒ true：字段缺失不是用户的编辑，且提交前已被 normalizePostUrlField 折回 baseline
 //   ⇒ 永不外送，无需在此拦。
 export function isValidMaskedPostUrl(value: unknown): boolean {
   if (value == null) return true
   const t = String(value).trim()
-  if (t === '') return true
-  if (isMaskedPlaceholder(t)) return true
-  return /^[A-Za-z][A-Za-z0-9+.-]*:\/\/\S/.test(t)
+  if (t === '' || t === MASKED_SENTINEL) return true
+  if (/\s/.test(t)) return false
+  try {
+    const url = new URL(t)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.length > 0
+  } catch {
+    return false
+  }
 }
 
 // 提交流程里的**整份归一化 + 最小 patch** 一步，由 makeSettingsSubmitHandler 在第 4 步调用。
@@ -328,10 +332,9 @@ export function describeSettingsSaveOutcome(patch: unknown): string | null {
 //      ⚠️ 用 warning 而非 error：它是「还不能做这个操作」的前置条件提示，不是失败（旧 onFinish 这里正是
 //      message.warning 黄色提示）；此分支**不**进入 loading，故也不调 notifyLoadingStart。文案逐字保持原样。
 //   2) 取 values = effects.getValues()。
-//   3) 脱敏分支形状校验：baseline 是占位符（isMaskedPlaceholder）且 values.poster.postUrl 形状非法
-//      （!isValidMaskedPostUrl）⇒ notifyInvalid('POST URL 需填写以 scheme:// 开头的完整地址（如 http:// 或
-//      https://），或留空以清空该字段') 并 return（**不提交**）。判据取「baseline 是占位符」而**不引入新形参**
-//      postUrlMasked——那会多一个可能与 baseline 不一致的入参，反而制造漂移面。
+//   3) POST URL 形状校验（**所有提交路径**，不再限于脱敏分支）：values.poster.postUrl 形状非法
+//      （!isValidMaskedPostUrl，只接受 http/https 或空串/字面哨兵）⇒ notifyInvalid('POST URL 需填写以
+//      scheme:// 开头的完整地址（如 http:// 或 https://），或留空以清空该字段') 并 return（**不提交**）。
 //   4) buildSettingsSubmission(baseline, values) ⇒ { normalized, patch }。
 //   5) 无 patch（未变更）⇒ notifyNoChange() 并 return（不发请求）。
 //   6) 否则 `const finish = effects.notifyLoadingStart()`（拿到**本次调用专属**的收尾句柄）→
@@ -372,8 +375,8 @@ export function makeSettingsSubmitHandler(
       return
     }
     const values = effects.getValues()
-    // 只对脱敏分支收紧（判据 = baseline 是占位符）；非脱敏分支保持原行为，见 isValidMaskedPostUrl 的 doc。
-    if (isMaskedPlaceholder(baseline.poster.postUrl) && !isValidMaskedPostUrl(values.poster.postUrl)) {
+    // 对所有提交路径收紧（不再只看脱敏分支）：见 isValidMaskedPostUrl 的 doc。
+    if (!isValidMaskedPostUrl(values.poster.postUrl)) {
       effects.notifyInvalid(
         'POST URL 需填写以 scheme:// 开头的完整地址（如 http:// 或 https://），或留空以清空该字段',
       )

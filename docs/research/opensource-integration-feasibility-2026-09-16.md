@@ -21,6 +21,15 @@ as_of=2026-09-16
 > 第三方性能数字均为**对方自述口径**，与本项目真机口径不同，**不可直接套用**。
 > 核查方法与逐条来源见 §10，未能核实项集中列于 §9。
 
+> **2026-10-12 决策落地（外部决策，权威；与下方 2026-09-16 快照正文并存时以本节点为准）**：
+> 本文件候选方向经决策后**收口**如下——
+>
+> - **活体检测**（§4.4 / §7.5）**列入待办，未实现**：须先核实权重来源与许可，再做自转原型、RK3288 性能与误判验证；**不并入当前 INT8 主线，不宣称已有防伪能力**。
+> - **TurboJPEG（`libjpeg-turbo`，§4.3）** **搁置**：先测现有 JPEG 耗时、确认瓶颈与 ARMv7 实测收益后再启动替换。
+> - **`ShiqiYu/libfacedetection`（§4.3 / §7.2）** **裁决=不采纳**：保持「APK 不内置模型」策略与 SCRFD 主线（其模型以 C 数组内嵌 `.so`，与该策略冲突）。
+>
+> 「搁置」与「不采纳」的区别：搁置=暂不做但保留为将来候选，不采纳=结论性排除（除非有新的实测数据）。
+
 ---
 
 ## 1. 可行性分级方法
@@ -117,19 +126,21 @@ as_of=2026-09-16
 
 | 能力域 | 候选 | 语言 | 许可证 | armv7 | 落在哪个接缝 |
 |---|---|---|---|---|---|
-| **活体检测** | `minivision-ai/Silent-Face-Anti-Spoofing-APK` | **C++ (ncnn + OpenCV)** | **Apache-2.0** | ✅ 官方 `abiFilters 'armeabi-v7a','arm64-v8a'` + `-DANDROID_ARM_NEON=TRUE` | 接缝 2 |
+| **活体检测** | `minivision-ai/Silent-Face-Anti-Spoofing-APK` | **C++ (ncnn + OpenCV)** | **Apache-2.0** | ✅ 官方 `abiFilters 'armeabi-v7a','arm64-v8a'` + `-DANDROID_ARM_NEON=TRUE` | 接缝 2（**2026-10-12 决策：列入待办，未实现**） |
 | 检测（许可证纠偏） | OpenCV Zoo `face_detection_yunet` | C++/ONNX | **MIT** | ✅ | 接缝 1/3（**已注册为 `yunet`**） |
 | 识别（许可证纠偏） | OpenCV Zoo `face_recognition_sface` | C++/ONNX | **Apache-2.0** | ✅ | 接缝 1/3（**已注册为 `sface`**） |
-| 检测备选 | `ShiqiYu/libfacedetection` | 纯 C/C++，无第三方依赖 | **3-clause BSD** | ⚠️ 无官方 armv7 基准 | ⚠️ 见下 |
+| 检测备选 | `ShiqiYu/libfacedetection` | 纯 C/C++，无第三方依赖 | **3-clause BSD** | ⚠️ 无官方 armv7 基准 | ⚠️ 见下（**2026-10-12 决策：不采纳**） |
 | 人脸质量评估 | `BSI-OFIQ/OFIQ-Project` | C/C++ | **MIT** | ✅ 自带 `mobile/build_for_android.sh` | 接缝 2 |
-| JPEG 编码 | `libjpeg-turbo`（TurboJPEG API） | C + 汇编 | **IJG + BSD-3** | ✅ 有 32 位 NEON，但**缺慢速整数正向 DCT 与降采样加速** | 接缝外 |
+| JPEG 编码 | `libjpeg-turbo`（TurboJPEG API） | C + 汇编 | **IJG + BSD-3** | ✅ 有 32 位 NEON，但**缺慢速整数正向 DCT 与降采样加速** | 接缝外（**2026-10-12 决策：搁置**） |
 | 构建体积 | `nihui/opencv-mobile` | C++ | **Apache-2.0** | ✅ 官方构建 | ⚠️ 见下 |
 
-**`libfacedetection` 与"APK 不内置模型"策略冲突**：它的模型以 **C 数组内嵌**于 `src/facedetectcnn-data.cpp`，编进 `.so` 就绕过了 ZIP 导入流程与 `checkApkFaceModels` 断言。另需注意其**官方从未公布 ARMv7 基准**——README 的"1000FPS"是 AVX512 多线程 @128×96 的极端数字，ARM 部分只测了 Raspberry Pi 4 的 Cortex-A72（ARMv8 64 位）：320×240 @4 线程为 32.98ms。**RK3288 必须自行实测。**
+**`libfacedetection` 与"APK 不内置模型"策略冲突**：它的模型以 **C 数组内嵌**于 `src/facedetectcnn-data.cpp`，编进 `.so` 就绕过了 ZIP 导入流程与 `checkApkFaceModels` 断言。另需注意其**官方从未公布 ARMv7 基准**——README 的"1000FPS"是 AVX512 多线程 @128×96 的极端数字，ARM 部分只测了 Raspberry Pi 4 的 Cortex-A72（ARMv8 64 位）：320×240 @4 线程为 32.98ms。**RK3288 必须自行实测。**（**2026-10-12 决策：不采纳**——保持「APK 不内置模型」策略与 SCRFD 主线。）
 
 **opencv-mobile 的完整模块账**：本项目 `cmake/opencv.cmake` 的 `BUILD_LIST` 共 **15 个模块**，opencv-mobile 只保留 5 个、**恰好裁掉本项目需要的 10 个**；且 `objdetect` 自 OpenCV 4.5.4 起依赖 `dnn`（[opencv/opencv#22544](https://github.com/opencv/opencv/issues/22544)），而本项目的 `yunet` 与 `sface` 适配器正是用 `cv::FaceDetectorYN` 与 `cv::FaceRecognizerSF`。体积差距确实存在（opencv-mobile 4.13.0 Android 包 **18.9MB** vs 官方 OpenCV 5.0.0 Android 包 **303MB**），但本项目用不上那条裁剪路径。可行做法是"**借配方不借包**"（借 `no-rtti` / `no-zlib` 补丁与选项矩阵，保留自己的模块清单）。
 
 ### 4.4 活体检测：唯一能补上真实能力缺口的候选
+
+> **2026-10-12 决策：列入待办，未实现。** 本节与 §7.5 的路线比较作为**未来实施参考**；须先核实权重来源与许可，再做自转原型与 RK3288 性能/误判验证，**不并入当前 INT8 主线，不宣称已有防伪能力**。
 
 | 项 | 事实 |
 |---|---|
@@ -241,8 +252,8 @@ as_of=2026-09-16
 | `FaceAISDK` | AAR 内含 `jni/armeabi-v7a/libFaceAIModel.so` | (e) 闭源但已交付 | **0 小时** + 数小时验证 | ⚠️ 许可证专有；自述支持下限 Android 8，API 25 未核实 |
 | `nmslib/hnswlib` | 无 NEON，纯标量零改动可移植 | (d) | **0 小时** / 几小时移植 PR #657 | ✅ 但本项目不该用 ANN（见 §5） |
 | `seetafaceengine/SeetaFace2` | `-DANDROID_ABI="armeabi-v7a with NEON"` **即其默认**；缺的是 arm64 | (d) | **几小时** | ⚠️ 可移植性无问题，**性能致命**（issue #82 称 >10s） |
-| `ShiqiYu/libfacedetection` | demo 双 ABI + `ENABLE_NEON`；官方脚本仅 arm64 | (d) + 少量 (a) 编译标志 | **几小时 – 1 天** | ✅（但见 §4.3 的策略冲突） |
-| MiniFASNet 静默活体 | 路线 A 有 armv7 预编译 `.so`；路线 B 需自转 | (e) 路线 A / (d) 路线 B | 几小时（A）/ **几天**（B） | ✅ 推荐路线 B |
+| `ShiqiYu/libfacedetection` | demo 双 ABI + `ENABLE_NEON`；官方脚本仅 arm64 | (d) + 少量 (a) 编译标志 | **几小时 – 1 天** | ❌ 不采纳（2026-10-12 决策；见 §4.3） |
+| MiniFASNet 静默活体 | 路线 A 有 armv7 预编译 `.so`；路线 B 需自转 | (e) 路线 A / (d) 路线 B | 几小时（A）/ **几天**（B） | ⏸ 待办（2026-10-12 决策：未实现；路线 B 为推荐实施方案） |
 | `facebookresearch/faiss` | 无 NEON；SIMD 分支仅 aarch64；32 位数据模型需改 | (d) + **LP64 数据模型** | **几周** | ❌ **不值得**，改用 hnswlib |
 
 ### 7.3 三条跨候选结论
@@ -262,6 +273,8 @@ as_of=2026-09-16
 **必须记住的坑**：**ncnn 在 armv7 + INT8 上有历史正确性缺陷**——issue [#547](https://github.com/Tencent/ncnn/issues/547)（arm 开 int8 检测不到目标）、[#1793](https://github.com/Tencent/ncnn/issues/1793)（ARM 上量化模型输出与 x86 差异巨大，`opt.use_packing_layout = false` 解决）、[#2936](https://github.com/Tencent/ncnn/issues/2936)（armv7 INT8 与 x86 不一致，定位到 `split` 之后）、[#2952](https://github.com/Tencent/ncnn/issues/2952)（**RK3288 上 retinaface INT8 无任何人脸框输出**，FP32 正常 60ms、INT8 33ms 但空结果）、[#3224](https://github.com/Tencent/ncnn/issues/3224)。**走 FP16/FP32，不要 INT8。**
 
 ### 7.5 活体检测的两条实现路线
+
+> **2026-10-12 决策：列入待办，未实现。** 下面的路线比较作为**未来实施参考**；**不并入当前 INT8 主线，不宣称已有防伪能力**。路线 B（自转，拥有代码）仍是推荐方向，但须先完成权重来源与许可核实。
 
 | 路线 | 做法 | 代价 | 风险 |
 |---|---|---|---|
