@@ -619,6 +619,49 @@ TEST(EngineTest, RealtimeFlipKeepsEdgeBoxesInDisplayCoordinates) {
     }
 }
 
+// P9/A1：生产预处理路径的镜像接线 = input XOR target。setInputMirroredX 表示**输入源已镜像**
+//（相机元数据），setFlip 表示**目标镜像**（用户偏好）；二者 XOR 决定实际水平翻转。
+// 既有 RealtimeFlipKeepsEdgeBoxesInDisplayCoordinates 只覆盖 (input=F,target=T) 一格；本用例补
+// (input=T,target=F)→翻 与 (input=T,target=T)→不翻 两格，端到端走 preprocessFrame（生产接线）。
+// 判别点：若 preprocessFrame 忽略 inputMirroredX_（把 input 恒置 false），则 (T,F) 格不再翻转，
+//        marker 不镜像 ⇒ 与 mapRect 期望不符 ⇒ 本断言翻红。
+TEST(EngineTest, InputMirroredXProductionWiringFollowsXor) {
+    const int W = rk_core::config::FRAME_WIDTH;
+    const int H = rk_core::config::FRAME_HEIGHT;
+    const cv::Rect marker(0, 0, 20, 20);  // 左上角（靠左、非对称）标记
+
+    struct Case { bool inputMirrored; bool targetFlip; };
+    const Case cases[] = {
+        {true, false},  // 10：源已镜像、目标不镜像 → 翻
+        {true, true },  // 11：源已镜像 + 目标镜像 → XOR 抵消，不翻
+    };
+    for (const auto& c : cases) {
+        cv::Mat input(H, W, CV_8UC3, cv::Scalar(0, 0, 0));
+        input(marker).setTo(cv::Scalar(255, 255, 255));
+
+        Engine engine;
+        engine.setInputMirroredX(c.inputMirrored);
+        engine.setFlip(c.targetFlip, false);
+        engine.setRealtimePipeline(makeRtPipeline(std::make_shared<EdgeMarkerDetector>()));
+        for (int i = 0; i < 3; ++i) {  // stableFrames=3 达成确认
+            engine.processFrameOnce(input);
+        }
+
+        const auto tracks = engine.getTrackViews();
+        ASSERT_EQ(tracks.size(), 1u)
+            << "input=" << c.inputMirrored << " target=" << c.targetFlip;
+        // 期望由**契约本身**（input XOR target）与半开区间镜像公式独立算出，**刻意不复用**
+        // FrameTransform::mapRect/effectiveFlipX——否则「生产接线被写坏」会与期望一起漂移、互相抵消
+        //（判别力归零）。水平镜像：最左输出像素 = W − (x + width)。
+        const bool expectFlip = (c.inputMirrored != c.targetFlip);
+        const cv::Rect expected = expectFlip
+            ? cv::Rect(W - marker.x - marker.width, marker.y, marker.width, marker.height)
+            : marker;
+        EXPECT_EQ(tracks[0].bbox, expected)
+            << "input=" << c.inputMirrored << " target=" << c.targetFlip;
+    }
+}
+
 // 实际空检测后旧框按新规则消失：已确认轨迹在真实空检测下，缺失 1 次仍在，
 // 连续缺失 2 次删除（任务5 规则；空检测 detectionRan 必须为 true）。
 TEST(EngineTest, RealtimeEmptyDetectionRemovesTrackPerRule) {
@@ -1710,6 +1753,61 @@ TEST(EngineTest, EmitGateReentryRejectedOnAllFourRemainingEntryPoints) {
     EXPECT_EQ(post[0].stableId, "alice");
 
     delete engine;
+}
+
+// ── P8/D8：run() 同线程重入拒绝的**行为**测试 ──────────────────────────────────
+// 此前 run() 只有**源文本结构断言**（test_track_coordinator.cpp 的
+// EngineStructuralGuard.AllTracksMuEntryPointsCallEmitGateReentryGuard）而无行为用例；原因是
+// 失败形态不可诊断（守卫缺失 ⇒ 进入阻塞主循环/同线程自锁 ⇒ 挂死，CI 表现为超时）。
+// 本用例补上行为面，并用**独立 CTest + 超时**兜住失败形态：核心套件默认不跑它（DISABLED_ 前缀），
+// 仅由 CTest `engine_run_reentry_behavior`（--gtest_also_run_disabled_tests + 单项过滤）启用；
+// 超时只终止**子进程**，**不给生产加看门狗**。
+//
+// 机制：run() 顶部有 `if (reenteredFromIdentityEmitGate(__func__)) return;`；而
+// onBeforePublishLocked 本身就跑在引擎线程、且**已持 identityEmitMu_**（renderResults 发射临界区内）。
+// 故在同一线程内、发射门内同步调用 run()，守卫生效时应**立即返回**；守卫缺失时会进入阻塞主循环
+//（帧源无帧 ⇒ 恒 sleep）⇒ 由 CTest TIMEOUT 判失败。
+class RunReentryProbeEngine : public Engine {
+public:
+    std::atomic<bool> armed{false};     // 仅对受测帧启用
+    std::atomic<bool> entered{false};   // 钩子已在发射门内执行
+    std::atomic<bool> returned{false};  // run() 已返回（守卫生效）
+
+protected:
+    void onBeforePublishLocked() override {
+        if (!armed.load()) return;      // 其余帧走等价空钩子
+        armed.store(false);             // 先解除武装：即便 run() 真进入循环，也不会再触发本钩子
+        entered.store(true);
+        run();                          // 同线程、已持 identityEmitMu_：应被守卫立即拒绝并返回
+        returned.store(true);
+    }
+};
+
+// 注意：本用例**故意禁用**（DISABLED_ 前缀），只在独立 CTest 下运行（见上方说明与 CMakeLists.txt）。
+TEST(EngineTest, DISABLED_RunReentryFromEmitGateReturnsImmediately) {
+    // 堆分配：RED（守卫缺失）时会进入阻塞主循环，由 CTest TIMEOUT 终止整个子进程；
+    // 走不到 delete，避免“等待一个永不返回的线程”把失败形态从超时变成别的东西。
+    // 静态类型须为派生类（探针成员在派生类上）。
+    RunReentryProbeEngine* engine = new RunReentryProbeEngine();
+    auto det = std::make_shared<ScriptedDetector>();
+    det->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    ASSERT_TRUE(engine->setRealtimePipeline(makeRtPipeline(det)));
+
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(50, 50, 50));
+    engine->armed.store(true);  // 武装：下一帧的发射临界区内将同步调用 run()
+    // 驱动足够合法帧，确保发布路径确实进入发射临界区（钩子只在发射门内被调用）。
+    for (int i = 0; i < 3 && !engine->entered.load(); ++i) {
+        engine->processFrameOnce(frame);
+    }
+
+    // 前置锚：钩子必须真的被执行——否则本用例在“没进钩子”时空转假绿。
+    EXPECT_TRUE(engine->entered.load())
+            << "钩子未被执行：发布路径未进入发射临界区，本用例未覆盖任何东西";
+    EXPECT_TRUE(engine->returned.load())
+            << "run() 未被守卫拒绝：从发射门内同线程重入 run() 应立即可返回（RED 时会进入阻塞循环）";
+
+    delete engine;  // 守卫生效时安全析构（run() 未置 isRunning_、未进入循环）
 }
 
 // ── §10.11 D4b：平台默认值的正向覆盖（本 target **无** RK_BENCH_ENFORCE_BUDGET）──

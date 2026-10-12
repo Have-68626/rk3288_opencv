@@ -27,6 +27,40 @@ bool TrackCoordinator::centerSizeMatched(const cv::Rect& ref, const cv::Rect& de
 
 TrackCoordinator::TrackCoordinator(const TrackConfig& cfg) : config_(cfg) {}
 
+// A2 身份撤销：把稳定身份与候选一并清掉。用于「换人 / 未识别 / 识别失败 / 实际漏检」四类事件——
+// 它们都意味着本轨迹当前掌握的认证结论不再成立，必须立即撤销而非「保持 Unknown 不动」，
+// 否则候选身份会带着旧计数跨过这些事件继续累计，第 3 次时「确认」出一个已经中断过的结论。
+void TrackCoordinator::clearIdentity(InternalTrack& t) {
+    t.view.stableId = "Unknown";
+    t.view.stableConfidence = 0.0f;
+    t.candidateId.clear();
+    t.candidateHits = 0;
+}
+
+// A2 三次实际识别：仅当**连续**观察到同一真实身份达到固定门槛（3 次）时才置 stableId。
+// 未认证 / 空身份 / "Unknown" 一律撤销（不参与累计）；换人先撤销再以新身份重新从 1 计。
+// 门槛刻意写死为 3（不受 TrackConfig::stableFrames 影响）——stableFrames 管的是**框**的确认。
+void TrackCoordinator::observeIdentity(InternalTrack& t, const DetectedFace& face) {
+    if (!face.isAuthenticated || face.identityId.empty() || face.identityId == "Unknown") {
+        clearIdentity(t);
+        return;
+    }
+    if (t.candidateId != face.identityId) {
+        clearIdentity(t);
+        t.candidateId = face.identityId;
+        t.candidateHits = 1;
+    } else {
+        t.candidateHits = std::min(3, t.candidateHits + 1);
+    }
+    if (t.candidateHits == 3) {
+        t.view.stableId = face.identityId;
+        t.view.stableConfidence = face.confidence;
+    } else {
+        t.view.stableId = "Unknown";
+        t.view.stableConfidence = 0.0f;
+    }
+}
+
 float TrackCoordinator::iou(const cv::Rect& a, const cv::Rect& b) {
     int x1 = std::max(a.x, b.x);
     int y1 = std::max(a.y, b.y);
@@ -117,19 +151,14 @@ std::vector<TrackView> TrackCoordinator::update(
             t.missedActual = 0;
             t.view.bbox = faces[matchedDet].bbox;
             t.view.lastSeenMs = timestampMs;
-            const auto& df = faces[matchedDet];
-            if (df.isAuthenticated) {
-                if (t.view.stableId == "Unknown") {
-                    t.view.stableId = df.identityId;
-                    t.view.stableConfidence = df.confidence;
-                }
-                // 不同身份不覆盖
-            }
-            // 非认证检测不覆盖身份
+            // A2：逐帧按实际识别结果更新身份候选（未识别/换人即撤销，连续 3 次同身份才 VERIFIED）。
+            observeIdentity(t, faces[matchedDet]);
             after.push_back(t);
         } else {
-            // 实际检测运行但本 track 无命中
+            // 实际检测运行但本 track 无命中：实际漏检 ⇒ **立即撤销**身份与候选（A2），
+            // 再走旧的框消失规则（未确认：下次缺失即删；已确认：连续 2 次缺失删除）。
             InternalTrack t = tracks_[ti];
+            clearIdentity(t);
             t.missedActual += 1;
             const bool confirmed = t.confirmFrames >= config_.stableFrames;
             if (!confirmed) continue;          // 未确认：下一次实际检测缺失即删
@@ -138,16 +167,17 @@ std::vector<TrackView> TrackCoordinator::update(
         }
     }
 
-    // 3. 未匹配的检测 → 新建 track（首次命中即计一次确认帧）
+    // 3. 未匹配的检测 → 新建 track（首次命中即计一次框确认帧、一次身份识别）
     for (int i = 0; i < static_cast<int>(faces.size()); i++) {
         if (detToTrack[i] >= 0) continue;
         InternalTrack t;
         t.view.trackId = nextTrackId_++;
         t.view.bbox = faces[i].bbox;
-        t.view.stableId = faces[i].isAuthenticated ? faces[i].identityId : "Unknown";
-        t.view.stableConfidence = faces[i].confidence;
         t.view.lastSeenMs = timestampMs;
         t.confirmFrames = 1;  // 首帧即首次实际检测命中
+        // A2：首帧即第 1 次身份识别；未满 3 次前 stableId 保持 "Unknown"
+        //（因此签名里的「首帧即透传身份」不再成立——身份须另行连续累计 3 次）。
+        observeIdentity(t, faces[i]);
         after.push_back(t);
     }
 
@@ -167,20 +197,25 @@ void TrackCoordinator::reset() {
 
 void TrackCoordinator::resetIdentitiesExcept(const std::vector<std::string>& keepIds) {
     // 第三波审查 #1：reset() 过宽——多人场景下删除/注册一人会瞬时抹掉其他人身份。
-    // 本方法仅撤销「已不在本次图库有效集（keepIds）」中的稳定身份：把 stableId 清为
-    // "Unknown" 并清零 stableConfidence，但**保留轨迹本体/bbox/确认计数**（不丢框、
-    // 不需重新累计 stableFrames）。keepIds 中的身份原样保留。空 keepIds → 全部清为
-    // "Unknown"（与 reset() 全清等价，但不丢框）。
-    for (auto& t : tracks_) {
-        // 未认证轨迹（"Unknown"）本就不持有有效身份，跳过（避免无谓重置 confidence）。
-        if (t.view.stableId == "Unknown") continue;
-        bool keep = false;
-        for (const auto& id : keepIds) {
-            if (t.view.stableId == id) { keep = true; break; }
+    // 本方法仅撤销「已不在本次图库有效集（keepIds）」中的身份：清为 "Unknown" 并清零
+    // stableConfidence，但**保留轨迹本体/bbox/确认计数**（不丢框、不需重新累计 stableFrames）。
+    // A2：候选身份（candidateId）是「正在累计、尚未确认」的另一半身份真相，同样按 keepIds 撤销——
+    // 只按 stableId 保留会让被删除者的候选继续累计、在第 3 次「确认」出已不在图库的身份。
+    auto kept = [&keepIds](const std::string& id) {
+        if (id.empty() || id == "Unknown") return false;
+        for (const auto& k : keepIds) {
+            if (k == id) return true;
         }
-        if (!keep) {
+        return false;
+    };
+    for (auto& t : tracks_) {
+        if (t.view.stableId != "Unknown" && !kept(t.view.stableId)) {
             t.view.stableId = "Unknown";
             t.view.stableConfidence = 0.0f;
+        }
+        if (!t.candidateId.empty() && !kept(t.candidateId)) {
+            t.candidateId.clear();
+            t.candidateHits = 0;
         }
     }
 }
