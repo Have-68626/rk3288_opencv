@@ -18,6 +18,11 @@ public:
     int embeddingDim() const override;
     const char* name() const override;
 
+    // §I3 显式配置入口：一次提交完整 ArcFaceEmbedderConfig（后端/路径/节点/尺寸/线程/版本）。
+    // 调用后 load() 遵守该 backend 与路径，不再按扩展名自动选后端；未调用时保持历史行为
+    // （load 按扩展名选后端，setNodeNames/setModelBinPath 增量注入仍可用）。
+    void configure(const ArcFaceEmbedderConfig& cfg);
+
     // P1-1：注入 manifest 指定的输入/输出节点名（真实模型如 in0/out0）。
     // ncnn 后端用节点名（历史默认 data/output）；OpenCV DNN 后端用 blob 名（历史默认空=自动），
     // 两者同源对齐。空串忽略以保留原默认；未调用时行为与历史完全一致，旧调用方不受影响。
@@ -48,6 +53,8 @@ private:
     ArcFaceEmbedderConfig cfg_;
     bool loaded_ = false;
     std::string currentName_;
+    // §I3：configure() 一旦调用即置真 ⇒ load() 遵守 cfg_ 的后端/路径，不按扩展名重选。
+    bool configured_ = false;
     // 期望嵌入维度（缺口3）。默认 kDim；仅经 setExpectedEmbeddingDim 修改。
     int expectedDim_ = ArcFaceEmbedding::kDim;
     // 注入的 .bin 路径（缺口2）。空串 ⇒ load() 回落到按 param stem 推导。

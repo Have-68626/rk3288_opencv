@@ -359,7 +359,11 @@ std::string buildOutcomeJson(const FaceInferOutcomeJsonInput& in) {
     j.key("dir");
     j.string(in.req.galleryDir);
     j.key("size");
-    j.number(static_cast<std::uint64_t>((in.ctx->hasFace && in.ctx->embeddingOk) ? in.ctx->index.size() : 0));
+    // §I3：绑定内存快照时，图库规模取该不可变索引的条目数（ctx.index 未被重建）。
+    j.number(static_cast<std::uint64_t>(
+        (in.ctx->hasFace && in.ctx->embeddingOk)
+            ? (in.ctx->gallerySnapshot ? in.ctx->gallerySnapshot->size() : in.ctx->index.size())
+            : 0));
     if (!in.ctx->galleryWarnings.empty()) {
         j.key("warnings");
         j.beginArray();

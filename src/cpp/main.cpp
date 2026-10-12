@@ -384,6 +384,7 @@ static int runFaceInferCli(int argc, char** argv) {
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
                      "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive N] "
                      "[--face-select score_area|score|area|first] "
+                     "[--detector-id yolo_face|scrfd_0.5gf] [--embedder-id arcface|mobilefacenet] [--face-profile-dir <dir>] "
                      "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"
                   << std::endl;
         return 2;
@@ -391,6 +392,8 @@ static int runFaceInferCli(int argc, char** argv) {
 
     FaceInferCliArgs a;
     a.req.imagePath = argv[2];
+    // §I3：profile 模式与显式模型/后端参数互斥（冲突明确拒绝，不按参数顺序悄悄覆盖）。
+    bool explicitModelArg = false;
 
     for (int i = 3; i < argc; i++) {
         const std::string k = argv[i];
@@ -410,8 +413,11 @@ static int runFaceInferCli(int argc, char** argv) {
             if (i + 1 < argc) v = isFlagTrue(argv[++i]);
         };
 
-        if (k == "--yolo-backend") nextStr(a.req.yoloBackend);
-        else if (k == "--yolo-model") nextStr(a.req.yoloModelPath);
+        if (k == "--detector-id") { nextStr(a.req.detectorId); explicitModelArg = true; }
+        else if (k == "--embedder-id") { nextStr(a.req.embedderId); explicitModelArg = true; }
+        else if (k == "--face-profile-dir") nextStr(a.req.faceProfileDir);
+        else if (k == "--yolo-backend") { nextStr(a.req.yoloBackend); explicitModelArg = true; }
+        else if (k == "--yolo-model") { nextStr(a.req.yoloModelPath); explicitModelArg = true; }
         else if (k == "--yolo-config") nextStr(a.req.yoloConfigPath);
         else if (k == "--yolo-framework") nextStr(a.req.yoloFramework);
         else if (k == "--yolo-output-name") nextStr(a.req.yoloOutputName);
@@ -436,8 +442,8 @@ static int runFaceInferCli(int argc, char** argv) {
         else if (k == "--yolo-ncnn-threads") nextInt(a.req.yoloNcnnThreads);
         else if (k == "--yolo-ncnn-lightmode") nextBool(a.req.yoloNcnnLightmode);
 
-        else if (k == "--arc-backend") nextStr(a.req.arcBackend);
-        else if (k == "--arc-model") nextStr(a.req.arcModelPath);
+        else if (k == "--arc-backend") { nextStr(a.req.arcBackend); explicitModelArg = true; }
+        else if (k == "--arc-model") { nextStr(a.req.arcModelPath); explicitModelArg = true; }
         else if (k == "--arc-config") nextStr(a.req.arcConfigPath);
         else if (k == "--arc-framework") nextStr(a.req.arcFramework);
         else if (k == "--arc-output-name") nextStr(a.req.arcOutputName);
@@ -473,19 +479,22 @@ static int runFaceInferCli(int argc, char** argv) {
         else if (k == "--fake-detect") nextBool(a.req.fakeDetect);
         else if (k == "--fake-embedding") nextBool(a.req.fakeEmbedding);
 
-        // `--int8 1|0`：FaceInferRequest::int8Enabled 的**生产者**（原全仓无任何调用点置真）。
-        // 语义：开启后，检测/嵌入的**回落分支**（上游实例注入失败时才可达）会先试 ncnn INT8 条目
-        // （`yolo_face_int8` / `arcface_int8` → `mobilefacenet_int8`），失败再回落 FP32。
-        // 前置：模型文件须真实存在——注册表按 `models/*_int8_ncnn/*.param` 是否存在**条件注册**。
-        // 缺文件时本开关**无功能副作用**（回落 FP32），但日志行数并非「只多一行」（原措辞失真，
-        // 详见 FaceInferencePipeline.h 的 int8Enabled 字段注释）：检测支会无条件打 1 行 warn
-        // （条目缺失时 `createDetector` 静默返回 nullptr，warn 仍执行）；嵌入支**0 行**
-        // （`createEmbedder(eId)` 未传 err，条目缺失时静默返回 nullptr 后循环跳过）。
-        // 条目已注册但 load/embed 失败时：检测支 1 行、嵌入支每支一行（共 2 行）。
-        // `int8Enabled` 无 I/O 或 JSON 序列化面。
+        // `--int8 1|0`：显式设置 FaceInferRequest::int8Enabled（「期望精度」标志）。
+        // §I3 起语义已变：**不再是**「先试 INT8 条目、失败再回落 FP32」的回落开关——装配集中在
+        // runFaceInferOnce，检测/嵌入各由 --detector-id/--embedder-id 唯一选定（无盲试式回落）。
+        // 本标志只作为期望精度参与装配缓存 key 与一致性判据（int8=true 只允许 ncnn 且量化资产），
+        // 不改变所选 ID。profile 模式会由 manifest 双 precision 自动派生该值。
         // 与 `--fake-embedding` 同形（`1|true|yes|on` 为真，见 isFlagTrue），不是裸开关。
-        // 默认 false ⇒ 不传该参数时与历史行为逐位一致。
+        // 默认 false。
         else if (k == "--int8") nextBool(a.req.int8Enabled);
+    }
+
+    // §I3：--face-profile-dir 与显式模型/后端参数互斥——profile 会派生这些字段，
+    // 同给会构成「按参数顺序悄悄覆盖」的歧义，故明确拒绝。
+    if (!a.req.faceProfileDir.empty() && explicitModelArg) {
+        std::cerr << "--face-profile-dir 不能与 --detector-id/--embedder-id/--yolo-backend/--yolo-model/"
+                     "--arc-backend/--arc-model 同时使用（模型/后端由 profile 派生）" << std::endl;
+        return 2;
     }
 
     const auto o = runFaceInferOnce(a.req);

@@ -8,6 +8,7 @@ set(RK_FACE_INFER_CORE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/BioAuth.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceAlign.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferencePipeline.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceProfileRequest.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferOutcomeJson.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/FaceInferStages.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src/MotionDetector.cpp
