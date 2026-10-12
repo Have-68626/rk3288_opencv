@@ -94,13 +94,22 @@ bool test_gallery_cache_repeated_call();
 bool test_publisher_emits_no_face_on_empty_tracks();
 bool test_publisher_throttles_repeated_calls();
 bool test_publisher_concurrent_set_and_publish();
-// INT8 回落链：int8Enabled 生产者 + arcface_int8 节点名注入（见 test_face_infer_pipeline.cpp）。
-// 判别点：去掉「捕获节点名」的替身所观察到的 in0/out0 注入即红。
-bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names();
+// §I3 单次管线统一装配的判别用例（见 test_face_infer_pipeline.cpp）。
+bool test_face_infer_routes_embedder_id_and_configures_arcface();
+bool test_face_infer_routes_detector_id_and_calls_load();
+bool test_face_infer_unknown_ids_fail_without_load();
+bool test_face_infer_arcface_failure_does_not_try_mobilefacenet();
+bool test_face_infer_detector_cache_reinstalls_on_spec_change();
+// 缓存 key 完整性：仅「OpenCV-spec/预处理/ncnn 运行时」字段变化也必须重装。
+bool test_face_infer_detector_cache_reinstalls_on_option_change();
+bool test_face_infer_embedder_cache_reinstalls_on_option_change();
+bool test_face_infer_wrong_backend_for_filetype_fails();
+bool test_face_infer_profile_apply_derives_and_reaches_config();
+bool test_face_infer_profile_failure_leaves_request_unchanged();
 // FACE-TEST-005①：embed 失败的 err 必须带出差异化文本（不得回落成固定文案）。
 bool test_face_infer_embed_failure_carries_differential_err();
-// FACE-PIPE-INT8-DIM：INT8 分支不得把「输出维度不符」当成功（失败静默）。
-bool test_face_infer_int8_dim_mismatch_is_not_silent();
+// 统一 Embedder 接口不得把「输出维度不符」当成功（失败静默）。
+bool test_face_infer_embedder_dim_mismatch_is_not_silent();
 
 int main() {
     using namespace rk_face_infer_test;
@@ -163,12 +172,30 @@ int main() {
         {"video_manager_sanitize_uri_non_url_passthrough", test_video_manager_sanitize_uri_non_url_passthrough},
         {"video_manager_sanitize_uri_no_userinfo", test_video_manager_sanitize_uri_no_userinfo},
         {"video_manager_uri_log_sink_no_userinfo", test_video_manager_uri_log_sink_no_userinfo},
-        {"face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names",
-         test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names},
+        {"face_infer_routes_embedder_id_and_configures_arcface",
+         test_face_infer_routes_embedder_id_and_configures_arcface},
+        {"face_infer_routes_detector_id_and_calls_load",
+         test_face_infer_routes_detector_id_and_calls_load},
+        {"face_infer_unknown_ids_fail_without_load",
+         test_face_infer_unknown_ids_fail_without_load},
+        {"face_infer_arcface_failure_does_not_try_mobilefacenet",
+         test_face_infer_arcface_failure_does_not_try_mobilefacenet},
+        {"face_infer_detector_cache_reinstalls_on_spec_change",
+         test_face_infer_detector_cache_reinstalls_on_spec_change},
+        {"face_infer_detector_cache_reinstalls_on_option_change",
+         test_face_infer_detector_cache_reinstalls_on_option_change},
+        {"face_infer_embedder_cache_reinstalls_on_option_change",
+         test_face_infer_embedder_cache_reinstalls_on_option_change},
+        {"face_infer_wrong_backend_for_filetype_fails",
+         test_face_infer_wrong_backend_for_filetype_fails},
+        {"face_infer_profile_apply_derives_and_reaches_config",
+         test_face_infer_profile_apply_derives_and_reaches_config},
+        {"face_infer_profile_failure_leaves_request_unchanged",
+         test_face_infer_profile_failure_leaves_request_unchanged},
         {"face_infer_embed_failure_carries_differential_err",
          test_face_infer_embed_failure_carries_differential_err},
-        {"face_infer_int8_dim_mismatch_is_not_silent",
-         test_face_infer_int8_dim_mismatch_is_not_silent},
+        {"face_infer_embedder_dim_mismatch_is_not_silent",
+         test_face_infer_embedder_dim_mismatch_is_not_silent},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

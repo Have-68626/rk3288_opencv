@@ -4,9 +4,13 @@ using namespace rk_core;
 
 #include "FaceDetector.h"
 #include "FaceInferStages.h"
+#include "FaceProfileRequest.h"
+#include "FaceRuntimeProfile.h"
 #include "FaceTemplate.h"
 #include "ModelRegistry.h"
 #include "adapters/ArcFaceAdapter.h"
+#include "adapters/ScrfdNcnnAdapter.h"
+#include "adapters/YoloFaceAdapter.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -221,7 +225,7 @@ bool test_face_infer_concurrent_key_switch_keeps_in_use_detector() {
         req.imagePath = imgPath.string();
         req.fakeDetect = false;
         req.fakeEmbedding = true;
-        req.yoloBackend = "fake_det";
+        req.detectorId = "fake_det";  // §I3：装配按 detectorId 路由（不再用 yoloBackend 当注册表 key）
         req.yoloModelPath = "/fake/K1.onnx";
         runFaceInferOnce(req);
     });
@@ -238,7 +242,7 @@ bool test_face_infer_concurrent_key_switch_keeps_in_use_detector() {
         req.imagePath = imgPath.string();
         req.fakeDetect = false;
         req.fakeEmbedding = true;
-        req.yoloBackend = "fake_det";
+        req.detectorId = "fake_det";  // §I3：装配按 detectorId 路由
         req.yoloModelPath = "/fake/K2.onnx";
         runFaceInferOnce(req);
     });
@@ -309,40 +313,21 @@ bool test_face_infer_done_hit() {
     return true;
 }
 
-// §INT8 链：`int8Enabled` 的消费可达性 + `arcface_int8` 分支的节点名注入（详见文件上方替身类注释）。
-bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names() {
-    const auto dir = makeTempDir("int8_chain");
+// §I3：装配按 embedderId 路由到对应适配器，并把请求节点名经 configure() 透传到适配器。
+// 判别点（捕获发生在**替身适配器的 load() 内**）：
+//   · 若装配未按 embedderId 路由 / 未调用 configure() ⇒ 读到 ArcFaceAdapter 默认节点名
+//     `data`/`output`，断言红；
+//   · 若 configure() 未透传节点名 ⇒ 同上，红。
+bool test_face_infer_routes_embedder_id_and_configures_arcface() {
+    const auto dir = makeTempDir("embedder_route");
     const auto imgPath = writeTestImage(dir, "img.jpg");
 
-    // ⚠️ 必须先让内建条目注册完，再用替身**覆盖** `arcface_int8`：`ensureBuiltinRegistered()` 是一次性的，
-    //    若顺序反过来，首次进入 computeEmbedding 时内建注册会把替身覆盖掉（本机存在
-    //    `models/arcface_int8_ncnn/arcface_int8.param` 时尤其如此）⇒ 用例随机失效。
+    // 先用内建条目注册完，再用替身覆盖 `arcface`（ensureBuiltinRegistered 是一次性的）。
     ModelRegistry::ensureBuiltinRegistered();
     ModelRegistry::instance().registerEmbedder(
-        "arcface_int8",
+        "arcface",
         []() -> std::unique_ptr<Embedder> { return std::make_unique<NodeNameCapturingArcFaceAdapter>(); },
-        ModelEntry{"arcface_int8", "Capturing ArcFace INT8", "recognize", "INT8 链替身（测试用）", "high_speed", 2});
-    // 注：本覆盖在**进程内持续**（注册表无「恢复内建条目」的公开入口）。后续用例都不走 INT8 路径
-    //     （INT8 分支只在 `int8Enabled == true` 且上游注入失败时才可达），故无交叉影响。
-
-    const auto makeReq = [&](bool int8) {
-        FaceInferRequest req;
-        req.imagePath = imgPath.string();
-        req.fakeDetect = true;      // 走假检测：本用例只关心嵌入段，避免依赖检测模型
-        req.fakeEmbedding = false;  // 关键：必须走真实嵌入路径，否则 computeEmbedding 在开头直接返回
-        req.int8Enabled = int8;
-        req.arcBackend = "opencv";
-        // 「开」侧路径取 **`.param`**（而非 `.onnx`）：INT8 回落段只在**本次 load 会选到 ncnn 后端**
-        // 时才注入节点名（判据 = 扩展名 `.param`/`.bin` → ncnn，其余 → OpenCvDnn；闸门见
-        // src/cpp/src/FaceInferStages.cpp 的 `arcModelIsNcnn`，理由是该处的 `setNodeNames` 会
-        // **同时**改写 opencv 侧节点名，对 `.onnx` 强制 "in0" 会把 opencv 侧默认的「空串 = 自动推断」
-        // 改坏）。故用 `.onnx` 作「开」侧路径时本用例的注入断言**不再成立**；改用 `.param` 后既踩到
-        // 闸门内的真实生产路径，也与 `rk3288_cli --int8 1` 的文档前置条件（ncnn 模型）一致。
-        // 路径不存在 ⇒ 上游 ArcFaceEmbedder 注入失败（ctx.embedder 被赋 nullptr）⇒ 才可达 INT8 回落段。
-        // 两侧取不同路径，避免命中 FaceInferencePipeline 的静态嵌入器缓存。
-        req.arcModelPath = (dir / (int8 ? "int8_chain_on.param" : "int8_chain_off.onnx")).string();
-        return req;
-    };
+        ModelEntry{"arcface", "Capturing ArcFace", "recognize", "装配路由替身（测试用）", "high_speed", 2});
 
     {
         std::lock_guard<std::mutex> lk(g_int8Mu);
@@ -351,24 +336,28 @@ bool test_face_infer_int8_chain_consumes_flag_and_injects_arcface_node_names() {
         g_int8OutputName.clear();
     }
 
-    // 对照（int8Enabled=false）：不得触碰 INT8 条目 —— 没有这一半，下面的断言即使实现退化成
-    // 「永远尝试 INT8」也照样绿，断言将失去判别力。
-    const auto offOut = runFaceInferOnce(makeReq(false));
-    {
-        std::lock_guard<std::mutex> lk(g_int8Mu);
-        if (g_int8LoadCalls != 0) return false;
-    }
-    // 无真实嵌入模型 ⇒ 应停在 arc_init（不强制具体 stage：构建未启 ncnn / OpenCV 版本差异都不影响本断言）。
-    if (offOut.ok) return false;
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = true;       // 只关心嵌入段
+    req.fakeEmbedding = false;   // 必须走真实嵌入装配
+    req.embedderId = "arcface";
+    req.arcBackend = "ncnn";                 // 节点名经 configure 透传（ncnn 侧字段）
+    req.arcNcnnInput = "in0";
+    req.arcNcnnOutput = "out0";
+    req.arcModelPath = (dir / "embedder_route.param").string();  // 路径不存在 ⇒ 适配器 load 失败
 
-    // 实验（int8Enabled=true）：INT8 条目必须被加载，且节点名必须是注入后的 in0/out0。
-    runFaceInferOnce(makeReq(true));
+    runFaceInferOnce(req);
     {
         std::lock_guard<std::mutex> lk(g_int8Mu);
-        if (g_int8LoadCalls == 0) return false;
-        if (g_int8InputName != "in0") return false;
+        if (g_int8LoadCalls != 1) return false;      // 装配必须调用一次 load
+        if (g_int8InputName != "in0") return false;  // configure 透传了请求节点名
         if (g_int8OutputName != "out0") return false;
     }
+
+    // 还原内建 arcface 工厂（本覆盖在进程内持续；不还原会污染后续用例）。
+    ModelRegistry::instance().reloadEmbedder(
+        "arcface",
+        []() -> std::unique_ptr<Embedder> { return std::make_unique<ArcFaceAdapter>(); });
     return true;
 }
 
@@ -437,54 +426,445 @@ bool test_face_infer_embed_failure_carries_differential_err() {
     return true;
 }
 
-// FACE-PIPE-INT8-DIM（2026-09-26 二次审计登记的 **High**）：INT8 分支**不得**把「输出维度不符」当成功。
-//
-// 背景：该分支原在 `e.has_value()` 时**无条件** `return okStatus()`，而 `ctx.embeddingOk` 已被置 false
-// ⇒ 下游 `searchTopK` 因 `!embeddingOk` 早退 ⇒ 表现为「**无搜索结果**」而不是失败（失败静默）。
-// ⚠️ 该分支是**唯一能把「维度不符」变成静默成功的活路径**（★ 措辞已按验收 A1/A2 订正：**不要**写成
-//    「唯一能产出 512 契约违例的路径」——两个**生产** INT8 适配器自带维度校验，错维输出在那里已被拒，
-//    能走到该行的错维结果只来自**替身**；也**不要**引用「FP32 死代码」那一说法，它说的是 FP32 回落段
-//    **整段**不可达，与本分支不是同一处）。
-//
-// 判别点（用注册表替身让 INT8 候选「加载成功但输出 256 维」）：
-//   修复前：整体 outcome **ok=true**（静默成功）⇒ 本用例红；
-//   修复后：该候选**视作失败** ⇒ 继续尝试其余 INT8 候选 ⇒ 最终 FP32 回落（`arcModelPath` 不存在，必失败）
-//           ⇒ 整体 **ok=false** ⇒ 本用例绿。
-// 前置锚 `g_wrongDimEmbedCalls >= 1`：证明本用例**真的**走到了那条分支（防「路径没走到也绿」）。
-// ⚠️ 刻意用**不存在**的 `arcModelPath`：让其余 INT8 候选与 FP32 回落都必然失败 ⇒ 结果与本机是否存有
-//    真实模型**无关**（否则若本机正好存在可用 INT8 模型，修复后也会（正当地）成功，判据就飘了）。
-bool test_face_infer_int8_dim_mismatch_is_not_silent() {
-    const auto dir = makeTempDir("int8_dim_mismatch");
+// §I3（由原 FACE-PIPE-INT8-DIM 用例改造）：统一 Embedder 接口**不得**把「输出维度不符」当成功。
+// 背景：装配集中后 ctx.embedder 类型改为 rk_core::Embedder*，旧 ArcFaceEmbedder 的
+//「has_value() 蕴含 512 维」静态保证对派生实现不再成立 ⇒ computeEmbedding 必须**显式校验维度**，
+// 不符即失败（不静默）、返回不含身份。
+// 判别点：注册表替身「加载成功但输出 256 维」——
+//   去掉 computeEmbedding 的维度校验 ⇒ 整体 outcome ok=true（静默成功）⇒ 本用例红；
+//   保留校验 ⇒ 失败（stage=arc_embed）⇒ 整体 ok=false ⇒ 绿。
+// 前置锚 `g_wrongDimEmbedCalls >= 1`：证明真的走到了 embed 分支（防「路径没走到也绿」）。
+bool test_face_infer_embedder_dim_mismatch_is_not_silent() {
+    const auto dir = makeTempDir("embedder_dim_mismatch");
     const auto imgPath = writeTestImage(dir, "img.jpg");
 
-    // 顺序同 `test_face_infer_int8_chain_…` 的既有告诫：必须先让内建条目注册完，再用替身覆盖它。
     ModelRegistry::ensureBuiltinRegistered();
     ModelRegistry::instance().registerEmbedder(
-        "arcface_int8",
+        "arcface",
         []() -> std::unique_ptr<Embedder> { return std::make_unique<WrongDimInt8Adapter>(); },
-        ModelEntry{"arcface_int8", "Wrong-dim INT8 stub", "recognize", "维度不符替身（测试用）", "high_speed", 2});
+        ModelEntry{"arcface", "Wrong-dim stub", "recognize", "维度不符替身（测试用）", "high_speed", 2});
     g_wrongDimEmbedCalls.store(0);
 
     FaceInferRequest req;
     req.imagePath = imgPath.string();
     req.fakeDetect = true;      // 只关心嵌入段
-    req.fakeEmbedding = false;  // 必须走真实嵌入路径
-    req.int8Enabled = true;     // 踩 INT8 支
+    req.fakeEmbedding = false;  // 必须走真实嵌入装配
+    req.embedderId = "arcface";
     req.arcBackend = "opencv";
-    req.arcModelPath = (dir / "no_such_int8_model.onnx").string();  // 见上：保证结果确定
+    req.arcModelPath = (dir / "dim_stub.onnx").string();
 
     const auto out = runFaceInferOnce(req);
 
+    ModelRegistry::instance().reloadEmbedder(
+        "arcface",
+        []() -> std::unique_ptr<Embedder> { return std::make_unique<ArcFaceAdapter>(); });
+
     if (g_wrongDimEmbedCalls.load() < 1) {
-        std::cerr << "[face_infer_int8_dim] 替身未被调用 ⇒ 本用例没走到 INT8 的 embed 分支，判据不在射程内"
-                  << std::endl;
+        std::cerr << "[embedder_dim] 替身未被调用 ⇒ 本用例没走到 embed 分支，判据不在射程内" << std::endl;
         return false;
     }
     if (out.ok) {
-        std::cerr << "[face_infer_int8_dim] INT8 候选输出 256 维（≠512）却被判**成功** ⇒ 失败被静默吞掉"
-                     "（下游会表现为「无搜索结果」而不是失败）" << std::endl;
+        std::cerr << "[embedder_dim] 嵌入输出 256 维（≠512）却被判成功 ⇒ 失败被静默吞掉" << std::endl;
+        return false;
+    }
+    if (out.stage != "arc_embed") {
+        std::cerr << "[embedder_dim] 期望 stage=arc_embed，实际=" << out.stage << std::endl;
         return false;
     }
     return true;
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §3.3 判别测试（A16/A4/D4：单次管线统一装配）
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// §3.3 核心探针：覆盖 YoloFaceAdapter::load，证明「装配真的调用了被路由到的适配器的 load()」。
+// 判别点：把 runFaceInferOnce 里对组装实例的 load 调用删掉/挪位 ⇒ calls 恒 0 ⇒ 红。
+class LoadProbeYoloAdapter final : public YoloFaceAdapter {
+public:
+    explicit LoadProbeYoloAdapter(int& calls) : calls_(calls) {}
+    bool load(const std::string&, std::string& err) override {
+        ++calls_;
+        err = "test_load_was_called";
+        return false;
+    }
+private:
+    int& calls_;
+};
+
+// 计数检测器：load 成功、detect 返回空（配 fakeEmbedding 时整体 ok=true），用于验证缓存复用/重装。
+struct CountingDet final : public FaceDetector {
+    bool load(const std::string&, std::string&) override { return true; }
+    FaceDetections detect(const cv::Mat&, std::string&) override { return {}; }
+    const char* name() const override { return "CountingDet"; }
+};
+
+bool test_face_infer_routes_detector_id_and_calls_load() {
+    const auto dir = makeTempDir("det_load_probe");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::ensureBuiltinRegistered();
+    int calls = 0;
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        [&calls]() -> std::unique_ptr<FaceDetector> { return std::make_unique<LoadProbeYoloAdapter>(calls); });
+
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = false;
+    req.fakeEmbedding = true;
+    req.detectorId = "yolo_face";  // 默认 ID；旧后端名仍保留（A4：区分后端名与模型 ID）
+    req.yoloBackend = "opencv";
+    req.yoloModelPath = (dir / "probe_unique.onnx").string();  // 唯一路径 ⇒ 缓存未命中
+
+    const auto out = runFaceInferOnce(req);
+    // 同 spec 再跑一次：失败 load 不得进缓存 ⇒ 再次调用 load（calls 递增）。
+    const auto out2 = runFaceInferOnce(req);
+
+    // 还原内建工厂（探针覆盖了内建条目；不还原会污染后续用例）。
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        []() -> std::unique_ptr<FaceDetector> { return std::make_unique<YoloFaceAdapter>(); });
+
+    if (calls != 2) { std::cerr << "[det_probe] load calls=" << calls << "（期望 2：首装 + 失败不缓存后再装）" << std::endl; return false; }
+    if (out.ok || out2.ok) return false;
+    if (out.stage != "yolo_load") { std::cerr << "[det_probe] stage=" << out.stage << std::endl; return false; }
+    if (!contains(out.json, "test_load_was_called")) return false;
+    return true;
+}
+
+bool test_face_infer_unknown_ids_fail_without_load() {
+    const auto dir = makeTempDir("unknown_ids");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::ensureBuiltinRegistered();
+    int calls = 0;
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        [&calls]() -> std::unique_ptr<FaceDetector> { return std::make_unique<LoadProbeYoloAdapter>(calls); });
+
+    // unknown detector id ⇒ 失败且不触达已注册的 yolo_face 工厂
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = false;
+    req.fakeEmbedding = true;
+    req.detectorId = "no_such_detector_id";
+    req.yoloModelPath = (dir / "m.onnx").string();
+    const auto out = runFaceInferOnce(req);
+
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        []() -> std::unique_ptr<FaceDetector> { return std::make_unique<YoloFaceAdapter>(); });
+
+    if (calls != 0) { std::cerr << "[unknown_id] 未知检测 ID 竟触达 yolo_face 工厂" << std::endl; return false; }
+    if (out.ok) return false;
+    if (out.stage != "yolo_load") return false;
+
+    // unknown embedder id ⇒ 失败（stage=arc_init）
+    FaceInferRequest req2;
+    req2.imagePath = imgPath.string();
+    req2.fakeDetect = true;
+    req2.fakeEmbedding = false;
+    req2.embedderId = "no_such_embedder_id";
+    const auto out2 = runFaceInferOnce(req2);
+    if (out2.ok) return false;
+    if (out2.stage != "arc_init") return false;
+    return true;
+}
+
+bool test_face_infer_arcface_failure_does_not_try_mobilefacenet() {
+    const auto dir = makeTempDir("no_mobile_fallback");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::ensureBuiltinRegistered();
+    int mobileCreates = 0;
+    // 计数器只在工厂被调用时递增；返回任意 Embedder 即可（本用例只验证「是否被调用」）。
+    ModelRegistry::instance().reloadEmbedder(
+        "mobilefacenet",
+        [&mobileCreates]() -> std::unique_ptr<Embedder> {
+            ++mobileCreates;
+            return std::make_unique<ArcFaceAdapter>();
+        });
+
+    // embedderId=arcface（模型不存在 ⇒ ArcFace 装配失败）⇒ 绝不能尝试 mobilefacenet 工厂
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = true;
+    req.fakeEmbedding = false;
+    req.embedderId = "arcface";
+    req.arcBackend = "opencv";
+    req.arcModelPath = (dir / "no_arcface.onnx").string();
+    const auto out = runFaceInferOnce(req);
+    if (mobileCreates != 0) {
+        std::cerr << "[no_mobile_fallback] ArcFace 失败却调用了 mobilefacenet 工厂（禁止盲试式回落）" << std::endl;
+        return false;
+    }
+    if (out.ok) return false;
+
+    // 显式 embedderId=mobilefacenet ⇒ 工厂才被调用
+    FaceInferRequest req2;
+    req2.imagePath = imgPath.string();
+    req2.fakeDetect = true;
+    req2.fakeEmbedding = false;
+    req2.embedderId = "mobilefacenet";
+    req2.arcModelPath = (dir / "no_mobile.onnx").string();
+    runFaceInferOnce(req2);
+
+    ModelRegistry::instance().reloadEmbedder(
+        "mobilefacenet",
+        []() -> std::unique_ptr<Embedder> { return std::make_unique<ArcFaceAdapter>(); });
+
+    if (mobileCreates < 1) { std::cerr << "[no_mobile_fallback] 显式 mobilefacenet 未调用工厂" << std::endl; return false; }
+    return true;
+}
+
+bool test_face_infer_detector_cache_reinstalls_on_spec_change() {
+    const auto dir = makeTempDir("det_cache_reinstall");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::ensureBuiltinRegistered();
+    int creates = 0;
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        [&creates]() -> std::unique_ptr<FaceDetector> { ++creates; return std::make_unique<CountingDet>(); });
+
+    const auto run = [&](const std::string& node) {
+        FaceInferRequest req;
+        req.imagePath = imgPath.string();
+        req.fakeDetect = false;
+        req.fakeEmbedding = true;
+        req.detectorId = "yolo_face";
+        req.yoloBackend = "opencv";
+        req.yoloModelPath = (dir / "cache_probe.onnx").string();
+        req.yoloNcnnInput = node;  // 参与缓存 key：改变 node 必须重装
+        return runFaceInferOnce(req);
+    };
+
+    const auto o1 = run("inA");  // 首次装配
+    const auto o2 = run("inA");  // 同 spec ⇒ 缓存复用（不再装配）
+    const auto o3 = run("inB");  // spec 变（节点名）⇒ 必须重装
+
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        []() -> std::unique_ptr<FaceDetector> { return std::make_unique<YoloFaceAdapter>(); });
+
+    if (creates != 2) { std::cerr << "[det_cache] creates=" << creates << "（期望 2：首装 + spec 变化重装）" << std::endl; return false; }
+    if (!o1.ok || !o2.ok || !o3.ok) return false;
+    return true;
+}
+
+// §3.3 缓存 key 完整性（detKey）：装配缓存 key 曾漏掉「OpenCV-DNN spec / 预处理 / ncnn 运行时」
+// 一类字段，仅它们不同的两次请求会静默复用首个装配实例（错配）。本用例以「证明会重装」判别。
+// 判别点：把 detKey 里新增的任一字段（此处取 yoloLetterbox）去掉 ⇒ 仅该字段变化的第二次请求
+//        复用缓存、装配工厂不再被调用 ⇒ creates==1 ⇒ 红；字段在 key 内 ⇒ creates==2 ⇒ 绿。
+bool test_face_infer_detector_cache_reinstalls_on_option_change() {
+    const auto dir = makeTempDir("det_cache_option");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::ensureBuiltinRegistered();
+    int creates = 0;
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        [&creates]() -> std::unique_ptr<FaceDetector> { ++creates; return std::make_unique<CountingDet>(); });
+
+    const auto run = [&](bool letterbox) {
+        FaceInferRequest req;
+        req.imagePath = imgPath.string();
+        req.fakeDetect = false;
+        req.fakeEmbedding = true;
+        req.detectorId = "yolo_face";
+        req.yoloBackend = "opencv";
+        req.yoloModelPath = (dir / "cache_option.onnx").string();
+        req.yoloLetterbox = letterbox;  // 仅预处理选项不同（此前不在缓存 key 内）
+        return runFaceInferOnce(req);
+    };
+
+    const auto o1 = run(true);   // 首次装配
+    const auto o2 = run(true);   // 同 spec ⇒ 缓存复用（不再装配）
+    const auto o3 = run(false);  // 仅 letterbox 变 ⇒ 必须重装
+
+    ModelRegistry::instance().reloadDetector(
+        "yolo_face",
+        []() -> std::unique_ptr<FaceDetector> { return std::make_unique<YoloFaceAdapter>(); });
+
+    if (creates != 2) { std::cerr << "[det_cache_option] creates=" << creates
+                                  << "（期望 2：首装 + 选项变化重装）" << std::endl; return false; }
+    if (!o1.ok || !o2.ok || !o3.ok) return false;
+    return true;
+}
+
+// 计数嵌入器：load 成功、embed 返回合法 512 维，用于验证嵌入缓存复用/重装。
+struct CountingEmb final : public Embedder {
+    bool load(const std::string&, std::string&) override { return true; }
+    std::optional<std::vector<float>> embed(const cv::Mat&, std::string&) override {
+        return std::vector<float>(512, 0.1f);
+    }
+    int embeddingDim() const override { return 512; }
+    const char* name() const override { return "CountingEmb"; }
+};
+
+// §3.3 缓存 key 完整性（embKey）：同 detKey，embKey 曾漏掉「OpenCV-DNN spec / 预处理版本 /
+// ncnn 运行时」字段，仅它们不同的两次请求会静默复用首个嵌入实例（错配）。
+// 判别点：把 embKey 里新增的任一字段（此处取 arcPreprocessVersion）去掉 ⇒ 仅该字段变化的
+//        第二次请求复用缓存 ⇒ creates==1 ⇒ 红；字段在 key 内 ⇒ creates==2 ⇒ 绿。
+bool test_face_infer_embedder_cache_reinstalls_on_option_change() {
+    const auto dir = makeTempDir("emb_cache_option");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+
+    ModelRegistry::ensureBuiltinRegistered();
+    int creates = 0;
+    ModelRegistry::instance().reloadEmbedder(
+        "arcface",
+        [&creates]() -> std::unique_ptr<Embedder> { ++creates; return std::make_unique<CountingEmb>(); });
+
+    const auto run = [&](std::uint32_t preprocessVersion) {
+        FaceInferRequest req;
+        req.imagePath = imgPath.string();
+        req.fakeDetect = true;
+        req.fakeEmbedding = false;
+        req.embedderId = "arcface";
+        req.arcBackend = "opencv";
+        req.arcModelPath = (dir / "cache_emb.onnx").string();
+        req.arcPreprocessVersion = preprocessVersion;  // 仅预处理版本不同（此前不在缓存 key 内）
+        return runFaceInferOnce(req);
+    };
+
+    run(1);  // 首次装配
+    run(1);  // 同 spec ⇒ 缓存复用（不再装配）
+    run(2);  // 仅 preprocessVersion 变 ⇒ 必须重装
+
+    ModelRegistry::instance().reloadEmbedder(
+        "arcface",
+        []() -> std::unique_ptr<Embedder> { return std::make_unique<ArcFaceAdapter>(); });
+
+    if (creates != 2) { std::cerr << "[emb_cache_option] creates=" << creates
+                                  << "（期望 2：首装 + 选项变化重装）" << std::endl; return false; }
+    return true;
+}
+
+bool test_face_infer_wrong_backend_for_filetype_fails() {
+    const auto dir = makeTempDir("wrong_backend");
+    const auto imgPath = writeTestImage(dir, "img.jpg");
+    ModelRegistry::ensureBuiltinRegistered();
+
+    // backend=ncnn（本机未编译 ncnn）⇒ 明确失败，不静默换 opencv
+    FaceInferRequest req;
+    req.imagePath = imgPath.string();
+    req.fakeDetect = false;
+    req.fakeEmbedding = true;
+    req.detectorId = "yolo_face";
+    req.yoloBackend = "ncnn";
+    req.yoloModelPath = (dir / "wb.onnx").string();
+    const auto out = runFaceInferOnce(req);
+    if (out.ok) return false;
+    if (out.stage != "yolo_load") { std::cerr << "[wrong_backend] ncnn stage=" << out.stage << std::endl; return false; }
+
+    // backend=opencv，但给了 .param（ncnn 文件）⇒ 显式后端不匹配 ⇒ 失败（不按后缀静默换后端）
+    FaceInferRequest req2;
+    req2.imagePath = imgPath.string();
+    req2.fakeDetect = false;
+    req2.fakeEmbedding = true;
+    req2.detectorId = "yolo_face";
+    req2.yoloBackend = "opencv";
+    req2.yoloModelPath = (dir / "wb.param").string();
+    const auto out2 = runFaceInferOnce(req2);
+    if (out2.ok) return false;
+    if (out2.stage != "yolo_load") { std::cerr << "[wrong_backend] opencv/.param stage=" << out2.stage << std::endl; return false; }
+    return true;
+}
+
+// 写合成 profile 目录：manifest + 4 个 dummy 模型文件（不带 sha256 ⇒ verifyFiles 只校验存在性）。
+static bool writeProfileDir(const std::filesystem::path& dir, const std::string& abi,
+                            const std::string& detPrec, const std::string& embPrec) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    auto wr = [&](const char* n, const char* c) {
+        std::ofstream f(dir / n, std::ios::binary);
+        f << c;
+    };
+    wr("scrfd.param", "dummy");
+    wr("scrfd.bin", "dummy");
+    wr("arcface.param", "dummy");
+    wr("arcface.bin", "dummy");
+    std::ofstream m(dir / "manifest.json", std::ios::binary);
+    m << "{\n"
+      << "  \"schemaVersion\": 1,\n"
+      << "  \"profileId\": \"test_profile\",\n"
+      << "  \"displayName\": \"Test Profile\",\n"
+      << "  \"supportedAbis\": [\"" << abi << "\"],\n"
+      << "  \"detector\": {\"param\": {\"path\": \"scrfd.param\"}, \"bin\": {\"path\": \"scrfd.bin\"},"
+         " \"input\": \"input.1\", \"outputs\": [\"s8\",\"s16\",\"s32\",\"b8\",\"b16\",\"b32\",\"k8\",\"k16\",\"k32\"],"
+         " \"inputWidth\": 640, \"inputHeight\": 640, \"decodeMode\": \"distance\","
+         " \"anchorsPerPos\": [2,2,2], \"outputLayout\": \"nchw\", \"precision\": \"" << detPrec << "\"},\n"
+      << "  \"embedder\": {\"param\": {\"path\": \"arcface.param\"}, \"bin\": {\"path\": \"arcface.bin\"},"
+         " \"input\": \"in0\", \"output\": \"out0\", \"inputWidth\": 112, \"inputHeight\": 112,"
+         " \"embeddingDim\": 512, \"precision\": \"" << embPrec << "\"},\n"
+      << "  \"detectionConfidence\": 0.5, \"nmsIou\": 0.4, \"identitySimilarity\": 0.45, \"modelVersion\": \"2\"\n"
+      << "}\n";
+    return m.good();
+}
+
+// §3.3：applyFaceProfileToRequest 一次性派生请求字段 + profile 九节点/distance/2anchors/layout
+// 实际到达 configFromProfile（供解码消费）。
+bool test_face_infer_profile_apply_derives_and_reaches_config() {
+    const auto dir = makeTempDir("profile_apply") / "prof";
+    if (!writeProfileDir(dir, "windows-x64", "int8", "int8")) return false;
+
+    FaceInferRequest req;
+    FaceRuntimeProfile prof;
+    std::string err;
+    if (!applyFaceProfileToRequest(dir.string(), "windows-x64", req, prof, err)) {
+        std::cerr << "[profile_apply] apply failed: " << err << std::endl;
+        return false;
+    }
+    if (req.detectorId != "scrfd_0.5gf") return false;
+    if (req.embedderId != "arcface") return false;
+    if (req.yoloBackend != "ncnn" || req.arcBackend != "ncnn") return false;
+    if (!req.int8Enabled) return false;  // 双 precision=int8 ⇒ true
+    if (req.yoloInputW != 640 || req.yoloInputH != 640) return false;
+    if (req.arcModelVersion != 2) return false;
+    if (req.yoloNcnnParam.find("scrfd.param") == std::string::npos) return false;
+
+    std::string cerr;
+    ScrfdNcnnConfig cfg = ScrfdNcnnAdapter::configFromProfile(prof, req.yoloNcnnParam, req.yoloNcnnBin, cerr);
+    if (!cerr.empty()) { std::cerr << "[profile_apply] config err=" << cerr << std::endl; return false; }
+    if (cfg.decodeMode != pipeline::DecodeMode::kDistance) return false;
+    if (cfg.anchorsPerPos[0] != 2 || cfg.anchorsPerPos[1] != 2 || cfg.anchorsPerPos[2] != 2) return false;
+    if (cfg.outputLayout != ScrfdNcnnConfig::OutputLayout::kNChw) return false;
+    if (cfg.inputName != "input.1") return false;
+    if (cfg.scoreNames[0] != "s8" || cfg.bboxNames[0] != "b8" || cfg.kpsNames[2] != "k32") return false;
+    if (cfg.inputW != 640 || cfg.inputH != 640) return false;
+    if (!(cfg.confThreshold == 0.5f)) return false;
+    return true;
+}
+
+// §3.1：applyFaceProfileToRequest **失败不改 req**；runFaceInferOnce 在 profile 不可用时 stage=face_profile。
+bool test_face_infer_profile_failure_leaves_request_unchanged() {
+    const auto dir = makeTempDir("profile_fail") / "prof";
+    // manifest 只列 armeabi-v7a：本机编译 ABI（windows-x64）与显式传入的 ABI 都不匹配 ⇒ 必失败。
+    if (!writeProfileDir(dir, "armeabi-v7a", "fp32", "fp32")) return false;
+
+    FaceInferRequest req;
+    req.detectorId = "keep_me";
+    req.yoloBackend = "keep_backend";
+    FaceRuntimeProfile prof;
+    std::string err;
+    // ABI 不匹配（manifest 仅列 armeabi-v7a，这里传 windows-x64）⇒ 失败且不改 req
+    const bool ok = applyFaceProfileToRequest(dir.string(), "windows-x64", req, prof, err);
+    if (ok) return false;
+    if (req.detectorId != "keep_me") return false;
+    if (req.yoloBackend != "keep_backend") return false;
+
+    const auto imgDir = makeTempDir("profile_fail_img");
+    const auto imgPath = writeTestImage(imgDir, "img.jpg");
+    FaceInferRequest req2;
+    req2.imagePath = imgPath.string();
+    req2.faceProfileDir = dir.string();
+    req2.fakeDetect = true;
+    req2.fakeEmbedding = true;
+    const auto out = runFaceInferOnce(req2);
+    if (out.ok) return false;
+    if (out.stage != "face_profile") { std::cerr << "[profile_fail] stage=" << out.stage << std::endl; return false; }
+    return true;
+}

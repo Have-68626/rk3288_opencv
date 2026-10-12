@@ -20,8 +20,45 @@ ArcFaceAdapter::ArcFaceAdapter() {
 
 ArcFaceAdapter::~ArcFaceAdapter() = default;
 
+void ArcFaceAdapter::configure(const ArcFaceEmbedderConfig& cfg) {
+    cfg_ = cfg;
+    configured_ = true;
+}
+
 bool ArcFaceAdapter::load(const std::string& modelPath, std::string& err) {
     loaded_ = false;
+
+    // §I3：显式配置后遵守 cfg_ 的 backend 与路径，不按扩展名重选后端；仅在对应路径为空时
+    // 用传入的 modelPath 兜底填充（装配方通常会填全，此处只为兼容直接传 path 的调用）。
+    if (configured_) {
+        if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) {
+            if (cfg_.ncnnParam.empty() && !modelPath.empty()) {
+                cfg_.ncnnParam = modelPath;
+            }
+            if (cfg_.ncnnBin.empty() && !cfg_.ncnnParam.empty()) {
+                cfg_.ncnnBin =
+                    (std::filesystem::path(cfg_.ncnnParam).parent_path() /
+                     std::filesystem::path(cfg_.ncnnParam).stem().replace_extension(".bin"))
+                        .string();
+            }
+        } else if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) {
+            if (cfg_.opencvModel.empty() && !modelPath.empty()) {
+                cfg_.opencvModel = modelPath;
+            }
+        } else if (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Qualcomm) {
+            if (cfg_.qualcommModel.empty() && !modelPath.empty()) {
+                cfg_.qualcommModel = modelPath;
+            }
+        }
+        if (!inner_.initialize(cfg_, &err)) {
+            rklog::logWarn("ArcFaceAdapter", "load", "initialize failed (configured): " + err);
+            return false;
+        }
+        currentName_ = (cfg_.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) ? "ncnn" : "opencv_dnn";
+        loaded_ = true;
+        return true;
+    }
+
     std::string ext = std::filesystem::path(modelPath).extension().string();
     if (ext == ".param" || ext == ".bin") {
         cfg_.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
