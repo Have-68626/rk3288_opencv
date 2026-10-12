@@ -1,6 +1,7 @@
 #include "rk_win/WinJsonConfig.h"
 #include "rk_win/JsonLite.h"
 #include "rk_win/JsonSchemaValidator.h"
+#include "rk_win/WinCrypto.h"  // A6：按既有加密格式构造 postUrl 加密对象（验证「先解密再校验」）
 
 #include <windows.h>
 
@@ -168,6 +169,30 @@ bool fileIdOf(const std::filesystem::path& p, FileId& idOut) {
 
 bool sameFileId(const FileId& a, const FileId& b) {
     return a.volume == b.volume && a.indexHigh == b.indexHigh && a.indexLow == b.indexLow;
+}
+
+// A6：按 WinJsonConfig 的既有加密格式，用 store 的密钥文件构造一个 postUrl 加密对象 JSON 片段。
+// 目的：验证后端对**加密对象**先解密出候选明文再校验 scheme（不能对 ciphertext 做 scheme 匹配或放行）。
+// 密钥文件为 DPAPI 保护的 base64(32B AES 主密钥)（与 defaultKeyPath 同布局）。
+bool buildEncryptedPostUrlObject(const std::filesystem::path& keyPath, const std::string& plaintext,
+                                 const std::string& aad, std::string& outJsonFragment) {
+    std::string b64;
+    if (!readAllText(keyPath, b64)) return false;
+    std::vector<std::uint8_t> prot, key;
+    if (!rk_win::base64Decode(b64, prot)) return false;
+    std::string err;
+    if (!rk_win::dpapiUnprotect(prot, key, err)) return false;
+    if (key.size() != 32) return false;
+    std::vector<std::uint8_t> plain(plaintext.begin(), plaintext.end());
+    rk_win::AesGcmCiphertext ct;
+    if (!rk_win::aes256gcmEncrypt(key, plain, ct, err, aad)) return false;
+    std::string n, c, t;
+    if (!rk_win::base64Encode(ct.nonce, n)) return false;
+    if (!rk_win::base64Encode(ct.ciphertext, c)) return false;
+    if (!rk_win::base64Encode(ct.tag, t)) return false;
+    outJsonFragment = "{\"v\":1,\"alg\":\"AES-256-GCM\",\"nonce\":\"" + n +
+                      "\",\"ciphertext\":\"" + c + "\",\"tag\":\"" + t + "\"}";
+    return true;
 }
 
 }  // namespace
@@ -2734,6 +2759,259 @@ bool test_config_put_decrypt_shares_key_with_commit() {
         if (reloaded.current().poster.postUrl != url) return false;
     }
     if (!listCorruptConfigs(dir).empty()) return false;
+    return true;
+}
+
+// ── A18：INI 来源快照（env-free）──────────────────────────────────────
+
+// A18（**加载器直接判别**）：loadConfigFromIniOrDefault 的 envFreeOut 必须回填「套用 RK_WCFR_* 取值
+//   覆盖**之前**」的来源快照（INI + 默认值 + 路径解析），而返回值仍为 env-applied。
+// 构造：把 RK_WCFR_CONFIG 指向一个真实 INI（含非默认 port / dnn 两路径 / post_url）⇒ 同时注入同名
+//   RK_WCFR_* 取值覆盖 ⇒ 直接调 loadConfigFromIniOrDefault(&envFree)。断言两者分离。
+// 判别点：把快照取在 env 覆盖**之后**（或干脆不回填）⇒ envFree 带上 env 值（或为空串）⇒ 红。
+bool test_load_config_ini_env_free_snapshot() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("ini_env_free_snapshot");
+    const auto iniPath = dir / "cfg.ini";
+    {
+        std::ofstream f(iniPath, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << "[http]\nport=12345\n"
+          << "[dnn]\nmodel_path=storage/models/ini_only.pb\nconfig_path=storage/models/ini_only.pbtxt\n"
+          << "[poster]\npost_url=https://example.invalid/face-event-ini\n";
+    }
+    ConfigEnvGuard env(iniPath);  // RK_WCFR_CONFIG：来源选择（对快照与运行值同源、一并生效）
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", L"storage/models/env_only.pb");
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", L"storage/models/env_only.pbtxt");
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", L"https://example.invalid/face-event-env");
+
+    rk_win::AppConfig envFree;
+    const rk_win::AppConfig applied = rk_win::loadConfigFromIniOrDefault(&envFree);
+    // 立即清理 env，避免断言失败时污染后续用例。
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    // 返回值 = env-applied。
+    if (applied.http.port != 39999) return false;
+    if (applied.dnn.modelPath != rk_win::resolvePathFromExeDir(L"storage/models/env_only.pb")) return false;
+    if (applied.dnn.configPath != rk_win::resolvePathFromExeDir(L"storage/models/env_only.pbtxt")) return false;
+    if (applied.poster.postUrl != "https://example.invalid/face-event-env") return false;
+
+    // 快照 = INI 值（未受 env 影响，且路径经 resolvePathFromExeDir 解析）。
+    if (envFree.http.port != 12345) return false;
+    if (envFree.dnn.modelPath != rk_win::resolvePathFromExeDir(L"storage/models/ini_only.pb")) return false;
+    if (envFree.dnn.configPath != rk_win::resolvePathFromExeDir(L"storage/models/ini_only.pbtxt")) return false;
+    if (envFree.poster.postUrl != "https://example.invalid/face-event-ini") return false;
+
+    // 向后兼容：无参调用仍可用（默认 nullptr）；env 已清 ⇒ 取 INI 值（RK_WCFR_CONFIG 仍在作用域内）。
+    const rk_win::AppConfig noArg = rk_win::loadConfigFromIniOrDefault();
+    if (noArg.http.port != 12345) return false;
+    return true;
+}
+
+// A18（**initialize INI 分支接线判别**）：首装（config.json 不存在）走 loadConfigFromIniOrDefault
+//   那一支时，落盘与 envFreeCfg_/lastGoodJsonPretty_ 必须取 **env-free 来源快照**，而内存 current() 保留
+//   env 值。此前该支取不到快照、只能落盘 env-applied ⇒ 首装即把 env 覆盖值烤进 config.json。
+// 判别锚（避开「快照未填充 ⇒ 回落默认构造值」的误绿）：env-free 的 dnn.modelPath 由 loadConfigFromIniOrDefault
+//   经 resolvePathFromExeDir 落成 `<exeDir>/storage/models/opencv_face_detector_uint8.pb`（**非空**）；
+//   而「未填充」的默认构造 AppConfig 其 modelPath 为**空串**、env-applied 则为 env 值 ⇒ 三者互异、可判别。
+// 判别点：initialize 的 `buildSettingsJson(cfg, …)`/`envFreeCfg_ = cfg` 若沿用 env-applied ⇒ 磁盘 modelPath
+//   为 env 值（或未填充时空串）⇒ 红。
+bool test_initialize_ini_branch_writes_env_free() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("ini_branch_env_free");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);  // 首装：config.json 与 INI 均不存在 ⇒ 走 INI/默认分支
+
+    const std::wstring envModel = L"storage/models/from_env.pb";
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", envModel.c_str());
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", L"https://example.invalid/face-event-env");
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    if (store.configRejectedOnLoad()) return false;
+    // 内存 = env-applied。
+    if (store.current().http.port != 39999) return false;
+    if (store.current().dnn.modelPath != rk_win::resolvePathFromExeDir(envModel)) return false;
+
+    // 磁盘 = env-free：dnn.modelPath 为非空默认解析路径（判别锚见函数头注释）。
+    const std::string expectedFree =
+        rk_win::resolvePathFromExeDir(L"storage/models/opencv_face_detector_uint8.pb").string();
+    {
+        std::string disk;
+        if (!readAllText(cfgPath, disk)) return false;
+        rk_win::JsonValue doc;
+        std::string perr;
+        if (!rk_win::parseJson(disk, doc, perr) || !doc.isObject()) return false;
+        const rk_win::JsonValue* dnn = doc.find("dnn");
+        if (!dnn || !dnn->isObject()) return false;
+        const rk_win::JsonValue* mp = dnn->find("modelPath");
+        if (!mp || !mp->isString()) return false;
+        if (mp->s != expectedFree) {
+            std::cerr << "[ini_branch_env_free] 磁盘 dnn.modelPath 非 env-free 默认路径（env 覆盖被烤进磁盘？）"
+                      << std::endl;
+            return false;
+        }
+        const rk_win::JsonValue* http = doc.find("http");
+        if (!http || !http->isObject()) return false;
+        const rk_win::JsonValue* pv = http->find("port");
+        if (!pv || !pv->isNumber() || static_cast<int>(pv->n) != 8080) return false;
+    }
+
+    // 「轮换」仍 env-free：rotate 落盘用 envFreeCfg_。
+    const auto rr = store.rotateKeyAndReencrypt();
+    if (!rr.ok) return false;
+
+    // 「撤环境后重载」：新 store（无 env）读磁盘 ⇒ 必须看到 env-free 值（env 未被烤进磁盘）。
+    rk_win::WinJsonConfigStore reloaded;
+    std::string w2;
+    if (!reloaded.initialize(w2)) return false;
+    if (reloaded.current().http.port != 8080) return false;
+    if (reloaded.current().poster.postUrl != "http://localhost:8080/api/faces") return false;
+    if (reloaded.current().dnn.modelPath != rk_win::resolvePathFromExeDir(L"storage/models/opencv_face_detector_uint8.pb")) {
+        return false;
+    }
+    return true;
+}
+
+// ── A6：POST URL 独立校验（后端）─────────────────────────────────────
+
+// A6（**后端独立校验判别**）：PUT 的 poster.postUrl 只接受 http/https（空串=清空、缺字段/"***"=保持来源值）。
+//   非法新值返回既有错误结构/HTTP 400，不落盘、不回显 URL。
+// 判别点：删掉 updateFromJsonBody 里的独立校验 ⇒ 非法值经 schema（串分支无 pattern）落盘并被接受 ⇒ 红。
+bool test_config_put_post_url_scheme_rejected() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("post_url_scheme");
+    ConfigEnvGuard env(dir / "config.json");
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+
+    const std::string baseUrl = "https://good.example/x";
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + baseUrl + "\"}}").ok) return false;
+    if (store.current().poster.postUrl != baseUrl) return false;
+
+    const char* bad[] = {
+        "ftp://evil.example/x", "javascript://h/x", "rtmp://x/y", "data:text/plain,x",
+        "http://", "https:///nohost", "ht tp://x", "//no-scheme.example/x",
+    };
+    for (const char* b : bad) {
+        const auto res = store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + std::string(b) + "\"}}");
+        if (res.ok) {
+            std::cerr << "[post_url_scheme] 非法 postUrl 被接受（未独立校验）" << std::endl;
+            return false;
+        }
+        if (res.httpStatus != 400) return false;
+        // 不落盘：内存基线不变。
+        if (store.current().poster.postUrl != baseUrl) return false;
+        // 不回显 URL：错误消息/详情不得含该值。
+        if (res.message.find(b) != std::string::npos) return false;
+        for (const auto& d : res.details) {
+            if (d.find(b) != std::string::npos) return false;
+        }
+    }
+    // 合法 http/https 仍可提交（大小写 scheme）。
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"HTTP://OK.example/y\"}}").ok) return false;
+    if (store.current().poster.postUrl != "HTTP://OK.example/y") return false;
+    return true;
+}
+
+// A6：缺字段/"***" 保持来源值、空串清空、改其他字段仍可用（不得因历史非法值锁死整个 PUT）。
+bool test_config_put_post_url_masked_and_empty() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("post_url_masked_empty");
+    ConfigEnvGuard env(dir / "config.json");
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+
+    const std::string baseUrl = "https://good.example/x";
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + baseUrl + "\"}}").ok) return false;
+
+    // "***" ⇒ 保持来源值。
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"***\",\"enable\":true}}").ok) return false;
+    if (store.current().poster.postUrl != baseUrl) return false;
+    if (!store.current().poster.enable) return false;
+
+    // 空串 ⇒ 清空。
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"\"}}").ok) return false;
+    if (!store.current().poster.postUrl.empty()) return false;
+
+    // 清空后新合法值仍可设，且改其他字段不受影响。
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"https://after.example/z\"}}").ok) return false;
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+    if (store.current().poster.postUrl != "https://after.example/z") return false;
+    if (store.current().camera.width != 800) return false;
+    return true;
+}
+
+// A6（**加密对象须先解密候选明文再校验**）：patch 里的 postUrl 若为加密对象，后端必须解密出候选明文
+//   再判 scheme——不得对 ciphertext 做 scheme 匹配或直接放行。
+// 判别点：若校验只对**明文串**生效、对**加密对象**放行 ⇒ 携带非法明文的加密对象被接受 ⇒ 红。
+bool test_config_put_post_url_encrypted_object_checked_after_decrypt() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("post_url_encrypted");
+    ConfigEnvGuard env(dir / "config.json");
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+
+    const std::string baseUrl = "https://good.example/x";
+    if (!store.updateFromJsonBody("{\"poster\":{\"postUrl\":\"" + baseUrl + "\"}}").ok) return false;
+
+    const auto keyPath = dir / "config.key.dpapi";  // defaultKeyPath(config.json)
+    const std::string aad = "poster.postUrl";       // 与 WinJsonConfig 的加密 AAD 一致
+
+    // 加密对象携带**非法**明文 ⇒ 必须解密后拒绝。
+    std::string frag;
+    if (!buildEncryptedPostUrlObject(keyPath, "ftp://evil.example/x", aad, frag)) return false;
+    const auto res = store.updateFromJsonBody("{\"poster\":{\"postUrl\":" + frag + "}}");
+    if (res.ok) {
+        std::cerr << "[post_url_encrypted] 非法明文的加密对象被接受（未解密后再校验）" << std::endl;
+        return false;
+    }
+    if (res.httpStatus != 400) return false;
+    if (store.current().poster.postUrl != baseUrl) return false;  // 不落盘
+    if (res.message.find("ftp://evil.example/x") != std::string::npos) return false;  // 不回显
+    for (const auto& d : res.details) {
+        if (d.find("ftp://evil.example/x") != std::string::npos) return false;
+    }
+
+    // 对照：加密对象携带**合法**明文应被接受（证明不是「一律拒绝对象」）。
+    std::string frag2;
+    if (!buildEncryptedPostUrlObject(keyPath, "https://enc.example/ok", aad, frag2)) return false;
+    const auto res2 = store.updateFromJsonBody("{\"poster\":{\"postUrl\":" + frag2 + "}}");
+    if (!res2.ok) return false;
+    if (store.current().poster.postUrl != "https://enc.example/ok") return false;
     return true;
 }
 

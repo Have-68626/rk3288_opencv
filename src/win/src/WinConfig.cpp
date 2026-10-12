@@ -282,7 +282,7 @@ std::filesystem::path resolvePathFromExeDir(const std::filesystem::path& p) {
     return getExeDir() / p;
 }
 
-AppConfig loadConfigFromIniOrDefault() {
+AppConfig loadConfigFromIniOrDefault(AppConfig* envFreeOut) {
     AppConfig cfg;
 
     std::filesystem::path iniPath = L"config/windows_camera_face_recognition.ini";
@@ -320,12 +320,10 @@ AppConfig loadConfigFromIniOrDefault() {
 
     cfg.dnn.enable = readIniBool(cfg.configPath, L"dnn", L"enable", cfg.dnn.enable);
     {
+        // A18：dnn 两路径此处**只读 INI**（不再内联套用 env）——env 覆盖统一移到函数末尾，
+        //   以使中途可取到「套用 env 之前」的 env-free 来源快照。
         std::filesystem::path mp = toPath(readIniW(cfg.configPath, L"dnn", L"model_path", L"storage/models/opencv_face_detector_uint8.pb"));
         std::filesystem::path cp = toPath(readIniW(cfg.configPath, L"dnn", L"config_path", L"storage/models/opencv_face_detector.pbtxt"));
-        const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
-        const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
-        if (!envModel.empty()) mp = envModel;
-        if (!envConfig.empty()) cp = envConfig;
         cfg.dnn.modelPath = resolvePathFromExeDir(mp);
         cfg.dnn.configPath = resolvePathFromExeDir(cp);
     }
@@ -342,26 +340,14 @@ AppConfig loadConfigFromIniOrDefault() {
 
     cfg.http.enable = readIniBool(cfg.configPath, L"http", L"enable", cfg.http.enable);
     cfg.http.port = readIniInt(cfg.configPath, L"http", L"port", cfg.http.port);
-    {
-        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
-        if (!envPort.empty()) {
-            try {
-                const int p = std::stoi(envPort);
-                if (p >= 1 && p <= 65535) cfg.http.port = p;
-            } catch (...) {
-            }
-        }
-    }
+    // A18：http 端口的 env 覆盖移到函数末尾（见末尾统一覆盖块）。
 
     cfg.poster.enable = readIniBool(cfg.configPath, L"poster", L"enable", cfg.poster.enable);
     cfg.poster.postUrl = utf8FromWide(readIniW(cfg.configPath, L"poster", L"post_url", L"http://localhost:8080/api/faces"));
     cfg.poster.throttleMs = readIniInt(cfg.configPath, L"poster", L"throttle_ms", cfg.poster.throttleMs);
     cfg.poster.backoffMinMs = readIniInt(cfg.configPath, L"poster", L"backoff_min_ms", cfg.poster.backoffMinMs);
     cfg.poster.backoffMaxMs = readIniInt(cfg.configPath, L"poster", L"backoff_max_ms", cfg.poster.backoffMaxMs);
-    {
-        const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
-        if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
-    }
+    // A18：postUrl 的 env 覆盖移到函数末尾（见末尾统一覆盖块）。
 
     cfg.log.logDir = resolvePathFromExeDir(toPath(readIniW(cfg.configPath, L"log", L"log_dir", L"storage/win_logs")));
     // INI 读入点（FACE-CONFIG-017）：先钳 maxFileBytes，再用**钳后值**反推 maxRollFiles 的上界
@@ -411,6 +397,33 @@ AppConfig loadConfigFromIniOrDefault() {
         cfg.model.backend);
     cfg.model.autoFallback = readIniBool(cfg.configPath, L"model", L"auto_fallback", cfg.model.autoFallback);
     cfg.model.int8Enabled = readIniBool(cfg.configPath, L"model", L"int8_enabled", cfg.model.int8Enabled);
+
+    // A18 ★来源快照：在套用下方 RK_WCFR_* **取值覆盖之前**，把此时（纯由 INI + 默认值 + 路径解析而得、
+    //   未受任何取值覆盖影响）的 cfg 留存一份到 envFreeOut。落盘侧（WinJsonConfigStore::initialize 的
+    //   INI 首装/回落分支）一律用该 env-free 快照序列化，故环境覆盖值不会被静默烤进 config.json；
+    //   返回的运行 cfg 仍是 env-applied（load 时 env 照旧重放）。
+    //   注：RK_WCFR_CONFIG 是**来源选择**（决定读哪个 INI），非取值覆盖 ⇒ 上面已生效、对快照与运行值同源。
+    if (envFreeOut) *envFreeOut = cfg;
+
+    // ── RK_WCFR_* 取值覆盖（唯一取值点；只改写返回的 cfg，不动上面的 env-free 快照）──
+    {
+        const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
+        const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
+        if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(std::filesystem::path(envModel));
+        if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(std::filesystem::path(envConfig));
+
+        const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
+        if (!envPort.empty()) {
+            try {
+                const int p = std::stoi(envPort);
+                if (p >= 1 && p <= 65535) cfg.http.port = p;
+            } catch (...) {
+            }
+        }
+
+        const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
+        if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
+    }
 
     return cfg;
 }

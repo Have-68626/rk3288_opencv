@@ -194,6 +194,8 @@ const char* const kSensitiveKeySubstrings[] = {
     "password", "passwd", "pwd", "token",
     "authorization", "bearer", "secret",
     "api_key", "api-key", "apikey",
+    // A10：人脸身份键 —— 通用日志须覆盖 personId / person_id（裸键与 JSON 键都含子串 "personid"/"person_id"）。
+    "personid", "person_id",
 };
 constexpr size_t kSensitiveKeySubstringsCount =
     sizeof(kSensitiveKeySubstrings) / sizeof(kSensitiveKeySubstrings[0]);
@@ -248,7 +250,8 @@ std::string maskSensitiveData(const std::string& msg) {
     //   静态局部正则编译一次、跨调用复用；C++11 保证线程安全初始化。
     static const std::regex kSensitiveKvPattern(
         R"(\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|)"
-        R"(authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key)\b)"
+        R"(authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key|person[_-]?id)\b)"     // A10：补身份键
+        R"("?)"                                                                                            // JSON 键的尾引号（可选，裸键时不匹配）
         R"([ \t\r\n]*[:=][ \t\r\n]*)"
         R"((?:Bearer[ \t\r\n]+)?([^ \t\r\n,;&]+))",
         std::regex_constants::icase);

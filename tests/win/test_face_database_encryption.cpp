@@ -128,8 +128,9 @@ bool test_face_db_wrong_key_controlled_failure() {
     return true;
 }
 
-// 旧明文库迁移：load 后数据完整、新库为加密容器（magic 头 + 无明文 id）、.pre-encrypt 备份可回滚。
-// （RED：修复前无迁移，文件仍为明文 → magic/无明文/备份断言失败。）
+// 旧明文库迁移（A11 新契约）：load 后数据完整、新库为加密容器（magic 头 + 无明文 id），且
+//   **本次**生成的 .pre-encrypt 明文副本在回读逐项等价验证通过后被**删除**（MigrationOutcome::Success）。
+// （RED：修复前无验证/删除，文件仍为明文 + 备份恒留存 ⇒ magic/无明文/副本消失/outcome 四条断言失败。）
 bool test_face_db_migration_encrypts_legacy() {
     const auto dir = makeTempDir("migrate");
     const auto dbPath = dir / "db.yml";
@@ -144,9 +145,74 @@ bool test_face_db_migration_encrypts_legacy() {
     if (file.find("carol-003") != std::string::npos) return false;  // 无明文身份标签
     if (file.find("%YAML") != std::string::npos) return false;      // 无明文 YAML 头
 
+    // A11：迁移成功并经**回读逐项等价**验证后，**本次**生成的明文副本必须被删除（不再留作回滚点）。
     const auto bak = dbPath.string() + ".pre-encrypt";
-    if (!std::filesystem::exists(bak)) return false;               // 备份存在 = 可回滚
-    if (readFileBytes(bak).find("carol-003") == std::string::npos) return false;  // 备份为明文
+    if (std::filesystem::exists(bak)) {
+        std::cerr << "[migrate] 迁移成功后本次 .pre-encrypt 副本仍在（应验证通过后删除）" << std::endl;
+        return false;
+    }
+    if (db.lastMigrationOutcome() != rk_win::MigrationOutcome::Success) {
+        std::cerr << "[migrate] lastMigrationOutcome 非 Success" << std::endl;
+        return false;
+    }
+
+    // 密文自足：删除副本后重新装载同一文件仍能读回同一人员（证明验证删副本未损数据）。
+    rk_win::FaceDatabase re;
+    if (!re.load(dbPath)) return false;
+    if (!re.hasPerson("carol-003")) return false;
+    const auto persons = re.persons();
+    const auto& e = persons.at("carol-003");
+    if (e.count != 2 || e.mean.size() != 4) return false;  // count/dim 逐项保留
+    if (e.mean[0] != 0.1f || e.mean[1] != -0.2f || e.mean[2] != 0.3f || e.mean[3] != 0.4f) return false;
+    return true;
+}
+
+// A11（历史同名副本）：迁移前若已存在 .pre-encrypt（可能是人工恢复的最后凭据），必须**明确报错停止**，
+//   不覆写、不删历史副本，且不动主库（保持原明文）。
+// 判别点：删掉「存在即中止」的判据（回到 copy_file(overwrite_existing)）⇒ 历史副本被覆盖、主库被
+//   替换成密文 ⇒ 红。
+//
+// ⚠️ A11 的四态中 VerifyFailed / CleanupFailed **无确定性构造用例**（如实登记，与本仓既有「无判别锚」
+//   惯例一致，如 StructuredLogger 的磁盘满写入失败）：
+//   · VerifyFailed 要求「replaceFile 之后、回读校验之前」磁盘密文与迁移源不等价——本迁移在一步内
+//     完成 write→copy→replace→verify，其间**无非接缝可注入**；且 serialize/deserialize 为无损 hex
+//     往返 ⇒ 正常路径**恒**等价。
+//   · CleanupFailed 要求 `std::filesystem::remove(bak)` 失败——bak 由本迁移**当次创建并随即删除**，
+//     测试无法在其存续窗口内加锁/改权限。
+//   两态仍由 MigrationOutcome 枚举**如实表达**并在实现中可达（防御性），只是不经公开 API 注入。
+bool test_face_db_migration_historical_backup_aborts() {
+    const auto dir = makeTempDir("migrate_hist_backup");
+    const auto dbPath = dir / "db.yml";
+    writeLegacyYaml(dbPath, "ivan-009", {0.1f, 0.2f}, 1);
+
+    const auto bak = dbPath.string() + ".pre-encrypt";
+    const std::string sentinel = "HISTORICAL-BACKUP-DO-NOT-TOUCH";
+    {
+        std::ofstream ofs(bak, std::ios::binary | std::ios::trunc);
+        if (!ofs) return false;
+        ofs << sentinel;
+    }
+
+    rk_win::FaceDatabase db;
+    if (!db.load(dbPath)) return false;               // 明文仍可读
+    if (!db.hasPerson("ivan-009")) return false;
+
+    // 主库必须仍为明文（迁移被中止，未替换）。
+    const std::string file = readFileBytes(dbPath);
+    if (file.rfind("RKFDBCRY", 0) == 0) {
+        std::cerr << "[migrate_hist_backup] 主库被错误迁移为密文" << std::endl;
+        return false;
+    }
+    if (file.find("ivan-009") == std::string::npos) return false;
+    // 历史副本必须原样未动（不覆写、不删）。
+    if (readFileBytes(bak) != sentinel) {
+        std::cerr << "[migrate_hist_backup] 历史 .pre-encrypt 副本被改动" << std::endl;
+        return false;
+    }
+    if (db.lastMigrationOutcome() != rk_win::MigrationOutcome::HistoricalBackupPresent) {
+        std::cerr << "[migrate_hist_backup] lastMigrationOutcome 非 HistoricalBackupPresent" << std::endl;
+        return false;
+    }
     return true;
 }
 
@@ -170,6 +236,8 @@ bool test_face_db_migration_failure_preserves_legacy() {
     const std::string file = readFileBytes(dbPath);
     if (file.find("dave-004") == std::string::npos) return false;   // 旧明文未被破坏
     if (file.rfind("RKFDBCRY", 0) == 0) return false;               // 未错误迁移成加密
+    // A11：密钥不可用 ⇒ 迁移中止（Aborted），而非任何「成功/清理」态。
+    if (db.lastMigrationOutcome() != rk_win::MigrationOutcome::Aborted) return false;
     return true;
 }
 

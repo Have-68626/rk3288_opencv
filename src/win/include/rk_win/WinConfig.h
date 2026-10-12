@@ -163,7 +163,14 @@ struct AppConfig {
     ModelConfig model;
 };
 
-AppConfig loadConfigFromIniOrDefault();
+// A18（FACE-CONFIG-017 补口）：从 INI/默认值装载配置。
+// 为什么带可选出参：INI 首装 → JSON 落盘这条路径（WinJsonConfigStore::initialize 的 INI 分支）
+//   此前**取不到** env-free 来源快照，只能把已套用 RK_WCFR_* 覆盖的 cfg 落盘 ⇒ 首装即把环境覆盖值
+//   烤进 config.json（与 JSON 侧 FACE-CONFIG-017 的修法不对称）。补出参后，调用方可在**套用取值覆盖
+//   之前**取到「纯 INI + 默认值 + 路径解析」的来源快照，供落盘侧使用；运行 current() 仍用 env-applied 值。
+//   envFreeOut 非空时回填该来源快照；为 nullptr 时行为与旧签名逐字一致（向后兼容既有调用点）。
+//   ⚠️ RK_WCFR_CONFIG 是**来源选择**（决定读哪个 INI/配置文件），不是取值覆盖 ⇒ 对快照与运行值同源、一并生效。
+AppConfig loadConfigFromIniOrDefault(AppConfig* envFreeOut = nullptr);
 bool saveConfigToIni(const AppConfig& cfg);
 
 std::filesystem::path resolvePathFromExeDir(const std::filesystem::path& p);
