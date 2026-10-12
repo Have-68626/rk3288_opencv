@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-06-23
+as_of=2026-10-12
 -->
 
 ﻿# 配置说明（config.json）
@@ -22,7 +22,9 @@ as_of=2026-06-23
 - `RK_WCFR_HTTP_PORT`：覆盖 `http.port`
 - `RK_WCFR_POST_URL`：覆盖 `poster.postUrl`
 
-⚠️ **已知不对称（FACE-CONFIG-015，本轮如实登记、不修）**：这些覆盖在**解析时**直接写入内存配置，而**落盘时**（PUT / 热重载回滚写回）只看到覆盖后的值、无法分辨来源 ⇒ 一次 PUT 或热重载回滚会把**当时的 env 值**顺带写进 `config.json`；此后**不带**该 env 启动时行为随之改变（用户原本的值被静默替换）。PUT 路径**一直如此**（属既有性质）；其一条**触达路径**「热重载被拒后**无需用户动作**即写回」（FACE-CONFIG-010，由**上一提交**引入、非本批新增）使该不对称更易被触发。若需避免，请仅在确需覆盖的进程内使用这些变量（覆盖值写入磁盘后即成为新的持久值）。**后续可选修法**（非本轮）：解析时保留一份「应用 env **之前**的 cfg」快照、落盘一律用它（内存仍用 env-applied 值），可消除该不对称；代价是需贯穿初始化 / PUT / 回滚三处写盘路径。
+⚠️ **env 覆盖与落盘的来源不对称（FACE-CONFIG-015 → 已由 FACE-CONFIG-017 闭合）**：这些覆盖在**解析时**直接写入**内存**配置（`cfg_`）。FACE-CONFIG-015 登记的缺口是「**落盘时**（PUT / 热重载回滚写回）只看到覆盖后的值、无法分辨来源 ⇒ 一次 PUT 或热重载回滚会把**当时的 env 值**顺带写进 `config.json`，此后**不带**该 env 启动时行为随之改变（用户原本的值被静默替换）」。**该缺口已由 FACE-CONFIG-017 的「env-free 来源快照」闭合**：解析时在套用 `RK_WCFR_*` 覆盖**之前**留存一份纯由 JSON 解析而得的快照，**落盘侧一律序列化该快照**（内存 `cfg_` 仍用 env-applied 值，load 时 env 照旧重放、GET 可见）。此后，对**经 JSON 解析路径装载**的 store，以下写盘路径**不再**把 env 值写进 `config.json`：PUT（`updateFromJsonBody`）、热重载回滚写回（`reloadFromDisk`）、`initialize` 的级联迁移落盘、密钥轮换重加密落盘，以及各处 `lastGoodJsonPretty_`（**经 INI 支装载的 store 是例外**，见下一条）。
+⚠️ **仍未覆盖的边界（如实登记）**：**INI→JSON 首装/回落落盘**（`initialize` 走 `loadConfigFromIniOrDefault()` 那一支）**不经**该快照路径，而 `loadConfigFromIniOrDefault()`（`src/win/src/WinConfig.cpp`）自身也套用同名 env 覆盖 ⇒ 该**首次落盘**的 `config.json` 仍带 env；且该支**取不到** env-free 版本，只能令 `envFreeCfg_ = cfg`（env-applied）⇒ **该 store 之后的密钥轮换重加密落盘与热重载回滚写回亦同样带 env**，直至**首次 PUT** 刷新 `envFreeCfg_` 为止（属已知残留，已在代码注释登记）。
+若需避免影响，请仅在确需覆盖的进程内使用这些变量（覆盖值仍会改写该进程内存配置的取值与 GET 可见性）。
 
 ## 校验（JSON Schema）
 - Schema 文件：`docs/windows-web-spa/config.schema.json`
