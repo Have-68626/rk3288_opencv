@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-30
+as_of=2026-10-12
 -->
 
 # Android 端人员注册设计（目标 vs 已落地）
@@ -100,6 +100,7 @@ as_of=2026-09-30
 - `loadProfile`/`activateRuntime` 复用同一套严格 `FaceRuntimeManifest::parseV1` 校验（schemaVersion==1、ABI、路径、SHA-256 格式）。
 - 是否“已就绪”只看 `effective` 与 `reason`；`profileLoaded` 仅为旧消费方保留的同值别名，语义等于 `profileValidated`。
 - 尚无模型/未跑帧时 `reason` 缺省为 `missing_model`，UI 不再误报就绪。
+- **已知限制：加速器 JSON 死路径（非缺陷）**。`getRuntimeStatus()`（`src/cpp/jni/native_face_bridge.cpp` 的 `bridge_getRuntimeStatus`）**只输出上表列出的顶层键，从不输出 `accelerators`，也不输出任何 cap 对象**。Java 侧 `MainActivity.JsonText.capObject` 虽实现了「优先 `accelerators.<cap>`、回退顶层 `<cap>`」的取值，但该 `accelerators` 分支在现行生产数据上**恒返回 null**，`jsonGetCapString`/`jsonGetCapBool` 一律回落到默认值 ⇒ `buildRuntimeCapabilityText()` 的 per-cap 字段（`compiled`/`installed`/`requested`/`effective`/`reason`/`evidence`）当前取不到值。这是**已知限制而非缺陷**：该结构是为 native 后续暴露该形态而预留的**前向兼容**路径，**不是**已生效的生产路径（Java 单测 `MainActivityJsonTextTest.capObjectReturnsNullOnCurrentProductionJsonShape` 固定了这一现状）。
 
 ### 2.4 模型管理器 `FaceModelManager`
 
