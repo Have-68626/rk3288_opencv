@@ -214,6 +214,53 @@ TEST(TrackCoordinator, TwoDetectionsCompeteForOneTrackInFallback) {
     EXPECT_EQ(yMoved, 1) << "应恰有一条轨迹落在 +y 位移的 (0,60)";
 }
 
+// 任务 A（FACE-TRACK-* 补缺）：`TrackCoordinator` 回退匹配循环里那个 `break` 的**判别负载**。
+//
+// 既有 TwoDetectionsCompeteForOneTrackInFallback 只构造了「两个 det 争抢同一条 track」，
+// 并自陈「删掉 break 不红」——此刻 tracks_ 仅 1 条，(删 break 后)多绕的一圈被回退循环开头的
+// `trackUsed` 检查挡掉、又没有第二条可命中，结果不变。本用例**反过来**：让**一条 det 同时落在两条 track 的
+// 回退半径内**（tracks_ ≥ 2），使 `break` 成为「取**第一个**命中的 track」与「取**最后一个**
+// 命中的 track」之别：
+//   · 保留 break：该 det 挂到第一个未占用的命中 track（ti 最小者，此处 T1 / trackId=1）；
+//   · 删掉 break：登记 `trackUsed` 后循环继续，后续**另一条**同样命中并覆写 `detToTrack[idx]`
+//     ⇒ 该 det 改挂到**最后**命中的 track（此处 T2 / trackId=2）。
+// ⇒ 可观测差异：该 det 的 bbox 落到不同 trackId 上（一条被更新、另一条记一次缺失）。
+//   断言「trackId==1 的轨迹拿到该 det 的 bbox」⇒ 删 break 后 trackId 1 保持旧 bbox ⇒ 红。
+TEST(TrackCoordinator, OneDetectionMatchingTwoTracksFallbackBreakIsLoadBearing) {
+    pipeline::TrackCoordinator tc;
+    // 帧 1000/1100/1200：两条互不相交（仅共享边界 x=100、IoU=0）的已确认轨迹
+    // T1(0,0,100,100)（中心 50,50）、T2(100,0,100,100)（中心 150,50），两中心相距 100。
+    // 每帧两脸各自 IoU 恰好命中本人的 track（不经回退循环），3 帧后均达 stableFrames 而确认。
+    for (int i = 0; i < 3; ++i) {
+        tc.update({face(0, 0, 100, 100), face(100, 0, 100, 100)}, 1000 + i * 100, true);
+    }
+    ASSERT_EQ(tc.trackCount(), 2) << "应建立两条独立轨迹";
+    // 第 4 帧仍喂两脸，确认对外输出两条（trackId 1/2 各一）。
+    auto built = tc.update({face(0, 0, 100, 100), face(100, 0, 100, 100)}, 1300, true);
+    ASSERT_EQ(built.size(), 2u);
+
+    // 帧 1400：单个 det D(70,20,60,60)，中心 (100,50)——恰在 T1、T2 中心连线的中点上。
+    //   · 与 T1(中心 50,50)：中心距 50 ≤ 0.8×100=80；交 30×60=1800，并 10000+3600-1800=11800
+    //     ⇒ IoU≈0.153 < 0.3（走不进 IoU 路径）；尺寸比 60/100=0.6 ∈ [0.5,2.0] ⇒ **回退命中**。
+    //   · 与 T2(中心 150,50)：中心距 50 ≤ 80；IoU 同为 ≈0.153 < 0.3；尺寸比 0.6 ∈ 界内 ⇒ **亦命中**。
+    // 故 D 同时落在两条 track 的回退半径内，唯一变量就是 break 取哪一个。
+    auto after = tc.update({face(70, 20, 60, 60)}, 1400, true);
+    ASSERT_EQ(after.size(), 2u) << "两条已确认轨迹单次缺失 1 次仍应各自输出";
+
+    int t1x = -1, t2x = -1;
+    for (const auto& v : after) {
+        if (v.trackId == 1) t1x = v.bbox.x;
+        if (v.trackId == 2) t2x = v.bbox.x;
+    }
+    ASSERT_NE(t1x, -1) << "应输出 trackId=1";
+    ASSERT_NE(t2x, -1) << "应输出 trackId=2";
+    // 保留 break ⇒ D 挂到第一个命中的 T1（T1.bbox.x 变为 70、T2 保持 100）；
+    // 删 break ⇒ 覆写到 T2（T1 保持 x=0、T2.x 变为 70）。
+    EXPECT_EQ(t1x, 70)
+            << "回退循环未取第一个命中的 track：break 早退失效（det 被挂到了最后一条命中轨迹）";
+    EXPECT_EQ(t2x, 100) << "trackId=2 应保持原 bbox.x=100（未被 det 覆写）";
+}
+
 // TTL 仍作长期无帧的兜底清理
 TEST(TrackCoordinator, TtlStillCullsTracksAsFallback) {
     pipeline::TrackCoordinator tc;

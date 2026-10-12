@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <new>
 #include <string>
 #include <type_traits>
@@ -372,5 +374,119 @@ TEST(FaceSearch, IndexSnapshotCopySupportedAndIndependent) {
     EXPECT_EQ(idx.size(), 1u);  // 原索引不受影响
     ASSERT_EQ(idx.entries().size(), 1u);
     EXPECT_EQ(idx.entries()[0].id, "alice");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FACE-ENROLL-009（任务 B 补缺）：**成功替换路径**旧模板堆缓冲的清零——套件内直测
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// 缺口（本文件上方已自陈）：reset() 成功替换（`FaceSearchLinearIndex::reset` 对 `entries_` 的整体替换）
+// 时，旧 entries_ 的元素被析构 —— `~FaceSearchEntry` 先**就地清零** embedding/id、再释放各自堆缓冲。该
+// 「旧 embedding 堆缓冲已清零」此前**只在套件外**由一次性分配器探针给出内存级证据；套件内既有析构用例
+// （`EntryDestructorZeroizesInPlaceTemplateBytes`）只钉「析构就地清零」这一**类型级**性质，**并不**覆盖
+// 「**成功替换路径**会析构旧元素」这一调用路径 ⇒ 本用例补的正是后者（套件内此前**无成功替换路径**的观察手段）。
+//
+// 本用例把该观测**收回套件内**：通过一个进程级 `operator new/delete` 拦截器，在**被测嵌入缓冲
+// 即将被 free 的那一刻**把它的字节 memcpy 到测试自有缓冲（快照后照常 free ⇒ **绝不读取已释放内存**，
+// 与上方析构用例「不触碰已释放内存」的口径一致），随后只对**快照**做断言。
+//   · 控制组：一条**不经过任何清零路径**的对照缓冲，其在 free 时应被快照到明文（非全零）⇒ 证明
+//     拦截器确实能观察到「未清零」的缓冲（否则本用例的判据形同虚设）。
+//   · 判别组：被测旧模板缓冲在 free 时的快照必须**全零**。
+//
+// 判别力：短路该清零（把 `~FaceSearchEntry` 里的 `eraseFaceSearchEntrySecrets(*this)` 注释掉，
+// 或把成功路径改成不析构旧元素）⇒ 快照保留明文 ⇒ 本用例翻红；还原 ⇒ 绿。
+//
+// ⚠️ 代价与边界（如实登记）：
+//   ① 该 `operator new/delete` 是**进程级替换**，会对整个 core_unit_tests 二进制生效；实现为
+//      malloc/free 透传 + 一个「单指针观察窗」，未命中时零额外行为（新增/删除行为与默认一致）。
+//      over-aligned 分配走默认的对齐版 new/delete（未替换），与本次标量替换互不交叉。
+//   ② 观察窗恒定在测试作用域内 arm/disarm，gtest 默认顺序执行 ⇒ 无并发交错。
+//   ③ 它证明「旧模板缓冲在成功替换语义下被清零」，判据落在**释放那一刻的字节**上；不依赖分配器
+//      是否复用该块、也不读已释放内存。
+namespace {
+void* g_faceSearchWatchPtr = nullptr;      // 待观测的旧 embedding 缓冲起始地址
+std::size_t g_faceSearchWatchBytes = 0;    // 其字节数（须 ≤ 快照容量）
+bool g_faceSearchArmed = false;            // 观察窗开关（未命中时拦截器零副作用）
+bool g_faceSearchCaptured = false;         // 是否已捕获到该缓冲的释放
+unsigned char g_faceSearchSnapshot[128]{}; // 快照（embedding 维很小，缓冲远小于此）
+
+bool allZeroBytes(const unsigned char* p, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        if (p[i] != 0u) return false;
+    }
+    return true;
+}
+}  // namespace
+
+// 进程级替换：malloc/free 透传；命中观察窗时先把字节快照下来再照常释放。
+void* operator new(std::size_t n) {
+    void* p = std::malloc(n ? n : 1u);
+    if (!p) throw std::bad_alloc();
+    return p;
+}
+void operator delete(void* p) noexcept {
+    if (p != nullptr && g_faceSearchArmed && p == g_faceSearchWatchPtr) {
+        std::memcpy(g_faceSearchSnapshot, p, g_faceSearchWatchBytes);
+        g_faceSearchCaptured = true;
+    }
+    std::free(p);
+}
+void operator delete(void* p, std::size_t) noexcept { ::operator delete(p); }
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete[](void* p) noexcept { ::operator delete(p); }
+void operator delete[](void* p, std::size_t) noexcept { ::operator delete(p); }
+
+TEST(FaceSearch, SuccessfulReplaceZeroizesOldEmbeddingHeapBuffer) {
+    FaceSearchLinearIndex idx;
+    std::string err;
+
+    // 装入一条旧模板（embedding 恒非零）。
+    std::vector<FaceSearchEntry> oldEntries;
+    oldEntries.push_back(makeEntry("alice", 8, 1.0f));
+    ASSERT_TRUE(idx.reset(std::move(oldEntries), 8, err)) << err;
+    ASSERT_EQ(idx.size(), 1u);
+
+    // 取旧 embedding 堆缓冲（其所属元素即将被下一次成功替换析构）。
+    const float* oldBuf = idx.entries()[0].embedding.data();
+    ASSERT_NE(oldBuf, nullptr);
+    const std::size_t oldBytes = idx.entries()[0].embedding.size() * sizeof(float);
+    ASSERT_GT(oldBytes, 0u);
+    ASSERT_LE(oldBytes, sizeof(g_faceSearchSnapshot));
+
+    // 控制组：拦截器对「未清零」缓冲确有判别力——一条不经过任何清零路径的对照缓冲，
+    // 在释放时快照应保留明文（非全零），否则本用例的判据不可信。
+    {
+        auto* plain = new std::vector<float>(8, 7.0f);
+        const float* plainBuf = plain->data();
+        g_faceSearchWatchPtr = const_cast<void*>(static_cast<const void*>(plainBuf));
+        g_faceSearchWatchBytes = plain->size() * sizeof(float);
+        g_faceSearchArmed = true;
+        g_faceSearchCaptured = false;
+        delete plain;  // 释放对照缓冲（无清零路径）
+        g_faceSearchArmed = false;
+        ASSERT_TRUE(g_faceSearchCaptured) << "控制组：未捕获到对照缓冲的释放";
+        EXPECT_FALSE(allZeroBytes(g_faceSearchSnapshot, g_faceSearchWatchBytes))
+                << "控制组失败：未清零的对照缓冲快照却是全零 ⇒ 拦截器不可信，本用例无判别力";
+    }
+
+    // 判别组：成功替换（install 一条新模板）。观察窗覆盖 reset 调用**及其后调用方容器的析构**——
+    // 以防实现把旧缓冲 swap 回调用方容器、留到作用域末才释放（两臂都会经 ~FaceSearchEntry 清零）。
+    g_faceSearchWatchPtr = const_cast<void*>(static_cast<const void*>(oldBuf));
+    g_faceSearchWatchBytes = oldBytes;
+    g_faceSearchArmed = true;
+    g_faceSearchCaptured = false;
+    {
+        std::vector<FaceSearchEntry> newEntries;
+        newEntries.push_back(makeEntry("bob", 8, 5.0f));
+        ASSERT_TRUE(idx.reset(std::move(newEntries), 8, err)) << err;
+        ASSERT_EQ(idx.size(), 1u);          // 成功替换：新模板就位
+        EXPECT_EQ(idx.entries()[0].id, "bob");
+    }  // newEntries 在此析构（若上面那次替换以 swap 承载旧缓冲，旧缓冲会于此释放）
+    g_faceSearchArmed = false;
+
+    ASSERT_TRUE(g_faceSearchCaptured)
+            << "未捕获到旧模板缓冲的释放：成功替换未析构旧 entries_（或旧缓冲未按预期释放）";
+    EXPECT_TRUE(allZeroBytes(g_faceSearchSnapshot, oldBytes))
+            << "成功替换后旧模板堆缓冲未被清零（FACE-ENROLL-009 析构路径未生效）";
 }
 
