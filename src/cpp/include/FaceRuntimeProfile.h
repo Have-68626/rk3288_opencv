@@ -50,6 +50,18 @@ struct FaceRuntimeProfile {
     int embedderInputH = 112;
     int embeddingDim = 512;
 
+    // 精度（§I2 独立图库契约）：仅 "fp32"/"int8"；缺省 "fp32" 保持旧 manifest 读取兼容。
+    // 检测与识别精度必须一致——新 INT8 profile 要求两者皆为 int8（见 parseV1 的一致性判据）。
+    std::string detectorPrecision = "fp32";
+    std::string embedderPrecision = "fp32";
+
+    // 独立图库空间 ID（§I2）：64 位**小写** hex；旧 manifest 缺省为空 ⇒ 继续走旧图库路径，
+    // 不自动升级、不搬库、不导入旧模板。发行方按 SHA256(composeTemplateSpaceHashInput(四个
+    // FP32 文件 sha256)) 计算：FP32 与其量化版**共用同一值**（INT8 文件哈希**不**参与，
+    // 否则对照版本无法共享空间）。仅当其为已校验 hex 时才可拼入图库目录，禁止
+    // displayName/profileId 或未校验路径直接拼入。
+    std::string templateSpaceId;
+
     // 阈值（计划固定值；均为 (0,1] 合法）
     float detectionConfidence = 0.55f;
     float nmsIou = 0.40f;
@@ -74,6 +86,23 @@ public:
 
     // 是否为 Git LFS pointer 文本（行首 "version https://git-lfs.github.com/spec/v1"）
     static bool fileIsLfsPointer(const std::string& path);
+
+    // §I2 独立图库契约串（固定；改动会使所有既有 templateSpaceId 失效，故为常量）。
+    static const char* templateSpaceContract();
+
+    // §I2 空间 ID 的哈希输入：四个**父 FP32** 文件 sha256 按 det_param/det_bin/emb_param/emb_bin
+    // 顺序以 '\n' 连接、再接契约串（同样以 '\n' 分隔），整体 UTF-8 编码。
+    // 发行方对该串取 SHA256 的小写 hex 即得 templateSpaceId。
+    // 注意：传入的应是 FP32 文件哈希；INT8 文件哈希**不**参与（FP32 与其量化版共用同一空间）。
+    static std::string composeTemplateSpaceHashInput(const std::string& detParamSha,
+                                                     const std::string& detBinSha,
+                                                     const std::string& embParamSha,
+                                                     const std::string& embBinSha);
+
+    // templateSpaceId 合法性：恰 64 位**小写** hex（[0-9a-f]）。
+    // 与 sha256 的大小写不敏感校验**不同**：空间 ID 会被直接拼进图库目录名，收紧为小写可避免
+    // 同一逻辑空间出现大小写两份目录；拼接图库路径前必须过此校验。
+    static bool isValidTemplateSpaceId(const std::string& s);
 };
 
 }  // namespace rk_core

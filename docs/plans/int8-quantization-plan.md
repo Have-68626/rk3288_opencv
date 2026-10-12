@@ -144,3 +144,35 @@ as_of=2026-06-23
 
 - [x] **Step 1: 在 AGENTS.md 中添加 INT8 相关说明**（已在 `AGENTS.md` Architecture notes 中包含）
 - [x] **Step 2: Commit**（随 Task 6+7 一起提交）
+
+---
+
+## I2：profile 与独立图库契约（活体记录，2026-10-12）
+
+> 本节为**活体**记录（与上方冻结快照性质不同），描述 manifest v1 的可选字段扩展与独立图库空间契约；不引用任何行号。
+
+**可选字段（沿用 `schemaVersion=1`，旧 manifest 读取兼容）**
+
+- `detector.precision` / `embedder.precision`：仅 `fp32`/`int8`，缺省 `fp32`。
+- `templateSpaceId`（顶层）：64 位**小写** hex，缺省为空 ⇒ 走旧图库路径，**不自动升级、不搬库、不导入旧模板**。
+- 检测与识别精度**必须一致**：新 INT8 profile 要求两者皆为 `int8`；不允许一 `int8` 一 `fp32` 的混合。
+- `profileId` 约定：`rk3288_light_fp32_v2` / `rk3288_light_int8_v2`（示例名，以实际资产为准）。
+- C++（`rk_core::FaceRuntimeManifest`）与 Java（`FaceModelManifest`）对上述字段的**接受/拒绝行为一致**。
+
+**空间 ID 算法（资产发行时由发行方计算）**
+
+- `templateSpaceId = SHA256( composeTemplateSpaceHashInput(四个 FP32 文件 sha256) )` 的小写 hex。
+- 哈希输入固定为：`det_param \n det_bin \n emb_param \n emb_bin \n <契约串>`（按此顺序、LF 分隔、UTF-8）。
+- 契约串固定：`scrfd_rgb_127.5_1over128_letterbox0__arcface_rgb_127.5_1over127.5_align112_5pt_v2`。
+- **FP32 与其量化版共用同一 templateSpaceId**——空间 ID 只由 **FP32** 四文件哈希决定；**不得**把 INT8 文件哈希混入。
+- `.param`/`.bin` 各自的 SHA 仍按**各自实际版本**写入 manifest（四个文件不得为空 hash，不得把 FP32 hash 沿用给 INT8 文件）。
+
+**图库固定布局契约（⚠️ 已定义并校验；图库空间路由尚未接线）**
+
+> ⚠️ **落地状态（如实）**：以下布局是**已定义并校验的契约**，**尚未接线**。截至本记录（2026-10-12），`templateSpaceId` 在 C++（`rk_core::FaceRuntimeManifest`）与 Java（`FaceModelManifest`）中**只有字段解析与合法性校验**（恰 64 位小写 hex）；全仓**没有任何生产代码**据它路由图库路径——`face_spaces/`、`spaces/` 的目录拼装在生产代码中**尚不存在**（`templateSpaceId` 目前的消费方**只有测试**）。故下文布局是**目标约定**，**不得**读作已生效；图库空间路由留待后续 **I4/I5** 落地。
+
+- Windows：`<databasePath 父目录>/face_spaces/<templateSpaceId>/<原文件名>`。
+- Android：`<私有 gallery 根>/spaces/<templateSpaceId>/`。
+- 旧契约使用原路径；新空间不自动导入旧模板、不删除旧库；沙盘目录名必须是**已校验 hex**，不得把 `displayName`/`profileId` 或未校验路径拼入图库路径。
+- 注册、人员管理、判重、识别重建**必须绑定同一空间**（此为目标约束；路由未接线前无法验证）。所有“空新库”展示须明确提示需要重新注册，不得把旧库读空谎报为丢失。
+

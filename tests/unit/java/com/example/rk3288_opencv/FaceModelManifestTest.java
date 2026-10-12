@@ -283,6 +283,105 @@ public class FaceModelManifestTest {
         assertEquals("in0", r.profile.embedderInput);
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // §I2 profile 与独立图库契约：detector.precision / embedder.precision / templateSpaceId
+    // 的接受/拒绝必须与 C++ FaceRuntimeManifest::parseV1 一致（同一契约的两语言镜像）。
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** §I2 示例空间 ID：64 位小写 hex。 */
+    private static final String SPACE_ID =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /** 在合法 manifest 上按需注入 precision/templateSpaceId；null 表示不注入该字段。 */
+    private static String manifestWithPrecisionSpace(String detPrec, String embPrec, String spaceId) {
+        String det = (detPrec == null) ? "" : ", \"precision\": \"" + detPrec + "\"";
+        String emb = (embPrec == null) ? "" : ", \"precision\": \"" + embPrec + "\"";
+        String space = (spaceId == null) ? "" : ", \"templateSpaceId\": \"" + spaceId + "\"";
+        return "{"
+                + "\"schemaVersion\": 1, \"profileId\": \"p1\", \"displayName\": \"Profile One\""
+                + space + ","
+                + "\"supportedAbis\": [\"arm64-v8a\"],"
+                + "\"detector\": {"
+                + "  \"param\": {\"path\": \"scrfd.param\"}, \"bin\": {\"path\": \"scrfd.bin\"},"
+                + "  \"input\": \"in0\","
+                + "  \"outputs\": [\"score_8\",\"score_16\",\"score_32\",\"bbox_8\",\"bbox_16\",\"bbox_32\",\"kps_8\",\"kps_16\",\"kps_32\"],"
+                + "  \"inputWidth\": 640, \"inputHeight\": 640,"
+                + "  \"decodeMode\": \"distance\", \"anchorsPerPos\": [2,2,2], \"outputLayout\": \"nchw\""
+                + det + "},"
+                + "\"embedder\": {"
+                + "  \"param\": {\"path\": \"arcface.param\"}, \"bin\": {\"path\": \"arcface.bin\"},"
+                + "  \"input\": \"in0\", \"output\": \"out0\","
+                + "  \"inputWidth\": 112, \"inputHeight\": 112, \"embeddingDim\": 512"
+                + emb + "},"
+                + "\"detectionConfidence\": 0.55, \"nmsIou\": 0.40, \"identitySimilarity\": 0.45,"
+                + "\"modelVersion\": \"1\", \"licenseId\": \"insightface-noncommercial\""
+                + "}";
+    }
+
+    /** 旧 manifest（无新字段）⇒ 双 fp32 + 空 templateSpaceId（走旧图库，不自动升级/搬库）。 */
+    @Test
+    public void precisionSpaceDefaultsBackwardCompatible() {
+        FaceModelManifest.ParseResult r =
+                FaceModelManifest.parse(manifestWithPrecisionSpace(null, null, null), ABI);
+        assertTrue(r.message, r.isOk());
+        assertEquals("fp32", r.profile.detectorPrecision);
+        assertEquals("fp32", r.profile.embedderPrecision);
+        assertTrue(r.profile.templateSpaceId.isEmpty());
+    }
+
+    /** 新合法：检测与识别都 int8 + 合法 64 位小写 hex 空间 ID。 */
+    @Test
+    public void acceptsInt8PrecisionAndValidTemplateSpaceId() {
+        FaceModelManifest.ParseResult r =
+                FaceModelManifest.parse(manifestWithPrecisionSpace("int8", "int8", SPACE_ID), ABI);
+        assertTrue(r.message, r.isOk());
+        assertEquals("int8", r.profile.detectorPrecision);
+        assertEquals("int8", r.profile.embedderPrecision);
+        assertEquals(SPACE_ID, r.profile.templateSpaceId);
+    }
+
+    /** 非法 precision（仅 fp32/int8）⇒ BAD_VALUE。 */
+    @Test
+    public void rejectsIllegalPrecision() {
+        assertEquals(FaceModelManifest.Status.BAD_VALUE,
+                FaceModelManifest.parse(manifestWithPrecisionSpace("int4", "int4", null), ABI).status);
+    }
+
+    /** 混合精度（一 int8 一 fp32）⇒ 拒绝：新 INT8 必须检测与识别都 int8。 */
+    @Test
+    public void rejectsMixedPrecision() {
+        assertEquals(FaceModelManifest.Status.BAD_VALUE,
+                FaceModelManifest.parse(manifestWithPrecisionSpace("int8", "fp32", null), ABI).status);
+        assertEquals(FaceModelManifest.Status.BAD_VALUE,
+                FaceModelManifest.parse(manifestWithPrecisionSpace("fp32", "int8", null), ABI).status);
+    }
+
+    /** 非法 templateSpaceId（大写 hex / 长度不足 / 非 hex）⇒ 拒绝。 */
+    @Test
+    public void rejectsIllegalTemplateSpaceId() {
+        assertEquals(FaceModelManifest.Status.BAD_VALUE,
+                FaceModelManifest.parse(manifestWithPrecisionSpace(null, null, SPACE_ID.toUpperCase()), ABI).status);
+        assertEquals(FaceModelManifest.Status.BAD_VALUE,
+                FaceModelManifest.parse(manifestWithPrecisionSpace(null, null, SPACE_ID.substring(0, 63)), ABI).status);
+        assertEquals(FaceModelManifest.Status.BAD_VALUE,
+                FaceModelManifest.parse(manifestWithPrecisionSpace(null, null, "g" + SPACE_ID.substring(1)), ABI).status);
+    }
+
+    /** 契约串固定；validator 只认 64 位小写 hex；哈希输入与 C++ 逐字一致。 */
+    @Test
+    public void templateSpaceContractAndHelpers() {
+        assertTrue(FaceModelManifest.isValidTemplateSpaceId(SPACE_ID));
+        assertFalse(FaceModelManifest.isValidTemplateSpaceId(SPACE_ID.toUpperCase()));
+        assertFalse(FaceModelManifest.isValidTemplateSpaceId(SPACE_ID.substring(0, 63)));
+        assertFalse(FaceModelManifest.isValidTemplateSpaceId("g" + SPACE_ID.substring(1)));
+        assertEquals(
+                "scrfd_rgb_127.5_1over128_letterbox0__arcface_rgb_127.5_1over127.5_align112_5pt_v2",
+                FaceModelManifest.TEMPLATE_SPACE_CONTRACT);
+        String a = repeat('a'), b = repeat('b'), c = repeat('c'), d = repeat('d');
+        assertEquals(a + "\n" + b + "\n" + c + "\n" + d + "\n" + FaceModelManifest.TEMPLATE_SPACE_CONTRACT,
+                FaceModelManifest.composeTemplateSpaceHashInput(a, b, c, d));
+    }
+
     @Test
     public void relativePathSafetyMatchesCppSemantics() {
         assertTrue(FaceModelManifest.isSafeRelativePath("scrfd.param"));

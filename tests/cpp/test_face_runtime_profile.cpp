@@ -393,3 +393,122 @@ TEST_F(FaceRuntimeManifestTest, DetectorOutputLayoutInvalidRejected) {
     EXPECT_FALSE(FaceRuntimeManifest::parseV1(bad, "arm64-v8a", p, err));
     EXPECT_NE(err.find("outputLayout"), std::string::npos);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §I2 profile 与独立图库契约：detector.precision / embedder.precision / templateSpaceId
+// 与 Java FaceModelManifest 的接受/拒绝行为必须一致（同一份契约的两语言镜像）。
+// ══════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// 64 位小写 hex（示例空间 ID）。
+const char* const kSpaceId =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+// 在合法 manifest 上按需注入 precision/templateSpaceId；空串表示不注入该字段。
+std::string manifestPrecisionSpace(const std::string& detPrec, const std::string& embPrec,
+                                   const std::string& spaceId) {
+    const std::string det = detPrec.empty() ? "" : ",\"precision\":\"" + detPrec + "\"";
+    const std::string emb = embPrec.empty() ? "" : ",\"precision\":\"" + embPrec + "\"";
+    const std::string space = spaceId.empty() ? "" : ",\"templateSpaceId\":\"" + spaceId + "\"";
+    return
+        "{\"schemaVersion\":1,"
+        "\"profileId\":\"rk3288_light\",\"displayName\":\"RK3288 Light\"" + space + ","
+        "\"supportedAbis\":[\"armeabi-v7a\",\"arm64-v8a\"],"
+        "\"detector\":{\"param\":{\"path\":\"scrfd/scrfd.param\"},\"bin\":{\"path\":\"scrfd/scrfd.bin\"},"
+        " \"input\":\"in0\"," + makeOutputs9() + ",\"inputWidth\":640,\"inputHeight\":640" + det + "},"
+        "\"embedder\":{\"param\":{\"path\":\"arc/arc.param\"},\"bin\":{\"path\":\"arc/arc.bin\"},"
+        " \"input\":\"in0\",\"output\":\"out0\",\"inputWidth\":112,\"inputHeight\":112,"
+        "\"embeddingDim\":512" + emb + "},"
+        "\"detectionConfidence\":0.55,\"nmsIou\":0.40,\"identitySimilarity\":0.45,"
+        "\"modelVersion\":\"1\",\"licenseId\":\"apache-2.0\"}";
+}
+
+}  // namespace
+
+// 旧 manifest（无新字段）⇒ 双 fp32 + 空 templateSpaceId（走旧图库，不自动升级/搬库）。
+TEST_F(FaceRuntimeManifestTest, PrecisionSpaceDefaultsBackwardCompatible) {
+    FaceRuntimeProfile p;
+    std::string err;
+    ASSERT_TRUE(FaceRuntimeManifest::parseV1(validManifest(), "arm64-v8a", p, err)) << err;
+    EXPECT_EQ(p.detectorPrecision, "fp32");
+    EXPECT_EQ(p.embedderPrecision, "fp32");
+    EXPECT_TRUE(p.templateSpaceId.empty());
+}
+
+// 新合法：检测与识别都 int8 + 合法 64 位小写 hex 空间 ID。
+TEST_F(FaceRuntimeManifestTest, AcceptsInt8PrecisionAndValidTemplateSpaceId) {
+    FaceRuntimeProfile p;
+    std::string err;
+    ASSERT_TRUE(FaceRuntimeManifest::parseV1(
+                    manifestPrecisionSpace("int8", "int8", kSpaceId), "arm64-v8a", p, err))
+        << err;
+    EXPECT_EQ(p.detectorPrecision, "int8");
+    EXPECT_EQ(p.embedderPrecision, "int8");
+    EXPECT_EQ(p.templateSpaceId, kSpaceId);
+}
+
+// 显式 fp32 亦合法（对照 profile）。
+TEST_F(FaceRuntimeManifestTest, AcceptsExplicitFp32Precision) {
+    FaceRuntimeProfile p;
+    std::string err;
+    ASSERT_TRUE(FaceRuntimeManifest::parseV1(
+                    manifestPrecisionSpace("fp32", "fp32", kSpaceId), "arm64-v8a", p, err))
+        << err;
+    EXPECT_EQ(p.detectorPrecision, "fp32");
+    EXPECT_EQ(p.embedderPrecision, "fp32");
+}
+
+// 非法 precision（仅 fp32/int8）⇒ 拒绝。
+TEST_F(FaceRuntimeManifestTest, RejectsIllegalPrecision) {
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(
+        manifestPrecisionSpace("int4", "int4", ""), "arm64-v8a", p, err));
+    EXPECT_NE(err.find("precision"), std::string::npos);
+}
+
+// 混合精度（一 int8 一 fp32）⇒ 拒绝：新 INT8 必须检测与识别都 int8（与 Java 一致）。
+TEST_F(FaceRuntimeManifestTest, RejectsMixedPrecision) {
+    FaceRuntimeProfile p;
+    std::string err;
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(
+        manifestPrecisionSpace("int8", "fp32", ""), "arm64-v8a", p, err));
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(
+        manifestPrecisionSpace("fp32", "int8", ""), "arm64-v8a", p, err));
+}
+
+// 非法 templateSpaceId（大写 hex / 长度不足 / 非 hex）⇒ 拒绝。
+TEST_F(FaceRuntimeManifestTest, RejectsIllegalTemplateSpaceId) {
+    FaceRuntimeProfile p;
+    std::string err;
+    const std::string upper = "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef";
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(
+        manifestPrecisionSpace("fp32", "fp32", upper), "arm64-v8a", p, err));
+    EXPECT_NE(err.find("templateSpaceId"), std::string::npos);
+    // 63 位（长度不足）与含非 hex 字符亦拒。
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(
+        manifestPrecisionSpace("fp32", "fp32", std::string(63, 'a')), "arm64-v8a", p, err));
+    EXPECT_FALSE(FaceRuntimeManifest::parseV1(
+        manifestPrecisionSpace("fp32", "fp32", "g" + std::string(63, 'a')), "arm64-v8a", p,
+        err));
+}
+
+// 空间 ID 契约：validator 只认 64 位小写 hex；契约串与哈希输入固定。
+TEST_F(FaceRuntimeManifestTest, TemplateSpaceContractAndHelpers) {
+    EXPECT_TRUE(FaceRuntimeManifest::isValidTemplateSpaceId(kSpaceId));
+    EXPECT_FALSE(FaceRuntimeManifest::isValidTemplateSpaceId(
+        "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"));  // 大写
+    EXPECT_FALSE(FaceRuntimeManifest::isValidTemplateSpaceId(std::string(63, 'a')));
+    EXPECT_FALSE(FaceRuntimeManifest::isValidTemplateSpaceId("g" + std::string(63, 'a')));
+
+    // 契约串固定值（改动会让既有空间 ID 全部失效，故钉死）。
+    EXPECT_STREQ(FaceRuntimeManifest::templateSpaceContract(),
+                 "scrfd_rgb_127.5_1over128_letterbox0__arcface_rgb_127.5_1over127.5_align112_5pt_v2");
+
+    // 哈希输入：四文件哈希按 det_param/det_bin/emb_param/emb_bin 顺序 '\n' 分隔，再接契约串。
+    const std::string a(64, 'a'), b(64, 'b'), c(64, 'c'), d(64, 'd');
+    const std::string expect =
+        a + "\n" + b + "\n" + c + "\n" + d + "\n" + FaceRuntimeManifest::templateSpaceContract();
+    EXPECT_EQ(FaceRuntimeManifest::composeTemplateSpaceHashInput(a, b, c, d), expect);
+}
