@@ -169,14 +169,53 @@ public final class FeatureTemplateEncryptedStore {
         return fileForUserIdInDir(defaultDir(ctx), userId);
     }
 
+    /** 模板文件名前缀（与 {@link #fileForUserIdInDir} 一致）；孤儿模板扫描据此识别模板文件。 */
+    public static final String TEMPLATE_FILE_PREFIX = "u_";
+
+    /** 模板文件名后缀。 */
+    public static final String TEMPLATE_FILE_SUFFIX = ".bin";
+
+    /**
+     * 孤儿模板旁置目录名（相对 gallery 目录）。**旁置而非删除**，供用户手工取回；
+     * 该目录是 gallery 的**子目录**，故不参与「只扫直属普通文件」的活模板扫描。
+     */
+    public static final String ORPHAN_RECOVERY_DIR_NAME = ".orphan-recovery";
+
     /**
      * 通用作用域版本：在调用方指定的目录内计算某 userId 的模板文件名。
      * 命名语义与 {@link #fileForUserId(Context, String)} 完全一致（userId 的 SHA-256 十六进制）。
      */
     @NonNull
     public static File fileForUserIdInDir(@NonNull File dir, @NonNull String userId) {
-        String name = "u_" + toHex(sha256(userId.getBytes(StandardCharsets.UTF_8))) + ".bin";
+        String name = TEMPLATE_FILE_PREFIX + toHex(sha256(userId.getBytes(StandardCharsets.UTF_8)))
+                + TEMPLATE_FILE_SUFFIX;
         return new File(dir, name);
+    }
+
+    /**
+     * 文件名是否为**模板文件名**：{@code u_} + 64 位小写十六进制 + {@code .bin}。
+     *
+     * <p><b>只按命名判定</b>（不涉及 userId 反推）—— 孤儿扫描时用它排除非模板文件与子目录。
+     * 文件名是 userId 的 SHA-256（单向），无法由它反推人员身份。
+     */
+    static boolean isTemplateFileName(@Nullable String name) {
+        if (name == null
+                || !name.startsWith(TEMPLATE_FILE_PREFIX)
+                || !name.endsWith(TEMPLATE_FILE_SUFFIX)) {
+            return false;
+        }
+        int core = name.length() - TEMPLATE_FILE_PREFIX.length() - TEMPLATE_FILE_SUFFIX.length();
+        if (core != 64) {
+            return false;
+        }
+        for (int i = TEMPLATE_FILE_PREFIX.length(); i < TEMPLATE_FILE_PREFIX.length() + core; i++) {
+            char c = name.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!hex) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ── 显示名加密存储（任务 B）────────────────────────────────────────────────

@@ -422,12 +422,12 @@ public class AndroidEnrollmentRepositoryTest {
     // ---------- ⑨ 单行损坏跳过/隔离（#7） ----------
 
     @Test
-    public void corruptRowIsSkippedAndValidEntriesRetained() throws Exception {
+    public void corruptRowMakesEnumerationIncompleteAndDirectAddRejects() throws Exception {
         AndroidEnrollmentRepository repo = newRepo();
         assertEquals(AndroidEnrollmentRepository.Status.OK,
                 repo.add("alice", templateBytes(16, 31), MV, TSV).status);
 
-        // 合法头部与条目之后追加一行损坏数据。
+        // 合法 FREG2 表之后追加一行多余数据（END 后额外记录）：枚举不再完整。
         try (FileOutputStream fos = new FileOutputStream(repo.registryFile(), true)) {
             fos.write("this-is-a-corrupt-row\n".getBytes(StandardCharsets.UTF_8));
         }
@@ -437,17 +437,20 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(1, list.entries.size());
         assertEquals("alice", list.entries.get(0).userId);
         assertEquals("应报告跳过的损坏行数", 1, list.skippedLineCount);
+        assertFalse("有额外/损坏行 ⇒ 枚举不完整", list.isEnumerationComplete());
         assertEquals(AndroidEnrollmentRepository.Status.OK, repo.get("alice").status);
 
-        // 一次成功写入会自愈：损坏行被清除，且不影响后续新增。
-        // ⚠️ 这里走的是**仓库 API 直调**。经注册 UI 的 add 在本批之后**不可达**（EnrollmentSession
-        // 的判重门对有损坏行的会话拒收每一帧 ⇒ 会话永远集不满 8 样本），故 UI 侧的自愈只剩 remove
-        // 一条路；详见 ListResult#isEnumerationComplete 的 javadoc 与待办 N1。
-        assertEquals(AndroidEnrollmentRepository.Status.OK,
+        // A8：直接 add 以**枚举完整性**为前置 ⇒ 不完整时拒绝新增（不再「顺带清除坏行」）。
+        assertEquals("枚举不完整时直接 add 必须拒绝", AndroidEnrollmentRepository.Status.CORRUPTED,
                 repo.add("bob", templateBytes(16, 32), MV, TSV).status);
+        assertEquals("被拒后注册表不得被改写", 1, repo.list().skippedLineCount);
+
+        // 自愈只剩 remove 一条路：删除在册人员会重写注册表（升级为完整 FREG2 表）。
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.remove("alice").status);
         AndroidEnrollmentRepository.ListResult healed = repo.list();
-        assertEquals(2, healed.entries.size());
+        assertEquals(0, healed.entries.size());
         assertEquals(0, healed.skippedLineCount);
+        assertTrue("remove 重写后应恢复完整", healed.isEnumerationComplete());
     }
 
     // ---------- ⑨b 条目集权威性（A2 审计 H2：破坏性对账的门禁） ----------
@@ -471,11 +474,9 @@ public class AndroidEnrollmentRepositoryTest {
         assertEquals(1, list.skippedLineCount);
         assertFalse("有损坏行 ⇒ 条目集不权威（不得据此删除派生数据）", list.authoritative);
 
-        // 一次成功写入自愈后，重新变为权威。（同为仓库 API 直调；经 UI 的 add 被判重门挡住，
-        // 自愈只剩 remove 一条路 —— 见 ListResult#isEnumerationComplete 的 javadoc。）
-        assertEquals(AndroidEnrollmentRepository.Status.OK,
-                repo.add("bob", templateBytes(16, 32), MV, TSV).status);
-        assertTrue("自愈后应恢复权威", repo.list().authoritative);
+        // 自愈（A8 起只剩 remove 一途；add 已被完整性前置拒绝）后重新变为权威。
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.remove("alice").status);
+        assertTrue("重写后应恢复权威", repo.list().authoritative);
     }
 
     /** 无注册表文件 ⇒ 非权威（无法区分「全新安装」与「索引丢失」）。 */
@@ -991,6 +992,255 @@ public class AndroidEnrollmentRepositoryTest {
         }
     }
 
+    // ---------- ⑮ FREG2 注册表格式与完整性（A8） ----------
+
+    /** 新写入基准：首行 FREG2、第二行 COUNT N、末行 END N。 */
+    @Test
+    public void persistWritesFreg2HeaderCountAndEnd() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 101), MV, TSV).status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 102), MV, TSV).status);
+
+        List<String> lines = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        assertEquals("首行应为 FREG2", "FREG2", lines.get(0).trim());
+        assertEquals("第二行应为 COUNT 2", "COUNT 2", lines.get(1).trim());
+        assertEquals("末行应为 END 2", "END 2", lines.get(lines.size() - 1).trim());
+        assertTrue("完整 FREG2 的枚举应完整", repo.list().isEnumerationComplete());
+        assertEquals("格式版本应为 2", 2, repo.list().formatVersion);
+    }
+
+    /** 空表（add 后 remove）写为 FREG2/COUNT 0/END 0，且仍判完整。 */
+    @Test
+    public void emptyFreg2TableIsComplete() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 103), MV, TSV).status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK, repo.remove("alice").status);
+
+        String content = new String(Files.readAllBytes(repo.registryFile().toPath()), StandardCharsets.UTF_8);
+        assertEquals("空表真实内容应为 FREG2/COUNT 0/END 0", "FREG2\nCOUNT 0\nEND 0\n", content);
+        assertTrue(repo.list().entries.isEmpty());
+        assertTrue("空 FREG2 仍判完整", repo.list().isEnumerationComplete());
+    }
+
+    /** N=0 与 N=2 两种合法形态均可被完整枚举。 */
+    @Test
+    public void freg2ZeroAndTwoRowTablesAreComplete() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        // N=0：手写空表。
+        Files.write(repo.registryFile().toPath(), "FREG2\nCOUNT 0\nEND 0\n".getBytes(StandardCharsets.UTF_8));
+        AndroidEnrollmentRepository.ListResult zero = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, zero.status);
+        assertEquals(0, zero.entries.size());
+        assertTrue("N=0 合法", zero.isEnumerationComplete());
+
+        // N=2：通过真实写入。
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 104), MV, TSV).status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 105), MV, TSV).status);
+        AndroidEnrollmentRepository.ListResult two = repo.list();
+        assertEquals(2, two.entries.size());
+        assertTrue("N=2 合法", two.isEnumerationComplete());
+    }
+
+    /** 每条记录换行后截断（始终丢末行 END）⇒ 一律不完整。 */
+    @Test
+    public void freg2TruncatedAfterEachRecordIsIncomplete() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 106), MV, TSV).status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 107), MV, TSV).status);
+
+        List<String> lines = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        for (int k = 1; k < lines.size(); k++) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < k; i++) {
+                sb.append(lines.get(i)).append('\n');
+            }
+            Files.write(repo.registryFile().toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+            AndroidEnrollmentRepository.ListResult r = repo.list();
+            assertEquals("截断到 " + k + " 行仍应可读（不仅 CORRUPTED）",
+                    AndroidEnrollmentRepository.Status.OK, r.status);
+            assertFalse("截断到 " + k + " 行不得判完整", r.isEnumerationComplete());
+        }
+    }
+
+    /** 缺 END / 尾数错 / 负数 / 溢出 / 重复 userId / 额外记录 / 坏行 均不得判完整。 */
+    @Test
+    public void freg2StructuralViolationsAreIncomplete() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 108), MV, TSV).status);
+        List<String> good = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        String dataRow = good.get(2);
+
+        String[] bad = new String[]{
+                "FREG2\nCOUNT 1\n" + dataRow + "\n",                         // 缺 END
+                "FREG2\nCOUNT 1\n" + dataRow + "\nEND 2\n",                  // 尾数错（COUNT≠END）
+                "FREG2\nCOUNT -1\nEND -1\n",                                 // 负数
+                "FREG2\nCOUNT 99999999999999999999\nEND 0\n",               // 溢出
+                "FREG2\nCOUNT 2\n" + dataRow + "\n" + dataRow + "\nEND 2\n", // 重复 userId
+                "FREG2\nCOUNT 1\n" + dataRow + "\nEND 1\nEXTRA\n",           // END 后额外记录
+                "FREG2\nCOUNT 2\n" + dataRow + "\nBAD-ROW\nEND 2\n",         // 坏数据行
+                "FREG2\nCOUNT 2\n" + dataRow + "\nEND 2\n",                  // 数据行数少于 COUNT
+        };
+        for (String content : bad) {
+            Files.write(repo.registryFile().toPath(), content.getBytes(StandardCharsets.UTF_8));
+            AndroidEnrollmentRepository.ListResult r = repo.list();
+            assertEquals("应为 OK 但枚举不完整：" + content, AndroidEnrollmentRepository.Status.OK, r.status);
+            assertFalse("不得判完整：" + content.replace("\n", "\\n"), r.isEnumerationComplete());
+        }
+    }
+
+    /** 枚举不完整时直接 add 拒绝，且**原件逐字节保留**（失败留件）。 */
+    @Test
+    public void directAddRejectsIncompleteAndKeepsOriginal() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 109), MV, TSV).status);
+        List<String> good = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        byte[] truncated = ("FREG2\nCOUNT 1\n" + good.get(2) + "\n").getBytes(StandardCharsets.UTF_8);
+        Files.write(repo.registryFile().toPath(), truncated);
+
+        AndroidEnrollmentRepository.Result add = repo.add("bob", templateBytes(16, 110), MV, TSV);
+        assertFalse("不完整注册表必须拒绝直接 add", add.isOk());
+        assertArrayEquals("失败时注册表原件必须逐字节保留", truncated,
+                Files.readAllBytes(repo.registryFile().toPath()));
+        assertFalse("被拒后不得写入 bob 模板", repo.templateFileFor("bob").exists());
+    }
+
+    /** 旧版 FREG1 主文件读取兼容，且下次写入升级为 FREG2。 */
+    @Test
+    public void legacyFreg1MainIsReadableAndUpgradesToFreg2OnWrite() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        // 手写旧版主文件（含一行合法 alice 条目，userId "alice" 的 hex = 616c696365）。
+        String legacy = "FREG1\n"
+                + "616c696365 7 2 100 " + repeat('a', 64) + " 1234567890\n";
+        Files.write(repo.registryFile().toPath(), legacy.getBytes(StandardCharsets.UTF_8));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals(1, list.formatVersion);
+        assertEquals("alice", list.entries.get(0).userId);
+        assertTrue("旧版主文件读取兼容：无坏行时判完整、允许升级", list.isEnumerationComplete());
+
+        assertEquals("旧版主文件应可继续注册", AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 111), MV, TSV).status);
+        List<String> after = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        assertEquals("写入后应升级为 FREG2", "FREG2", after.get(0).trim());
+        assertEquals("写入后应有 2 条", 2, repo.list().entries.size());
+        assertTrue(repo.list().isEnumerationComplete());
+    }
+
+    /** 旧版 FREG1 **副本**在主文件缺失时不得自动判重。 */
+    @Test
+    public void legacyFreg1SidecarWithMissingMainIsNotTrustedForDedup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        String legacy = "FREG1\n616c696365 7 2 100 " + repeat('a', 64) + " 1234567890\n";
+        Files.write(bakFor(repo).toPath(), legacy.getBytes(StandardCharsets.UTF_8));
+        assertFalse(repo.registryFile().exists());
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("旧版副本可查看", 1, list.entries.size());
+        assertFalse("旧版副本不得判完整（不自动作为判重依据）", list.isEnumerationComplete());
+        assertFalse("旧版副本不得被提升为主文件", repo.registryFile().exists());
+        assertFalse("副本不得宣称权威", list.authoritative);
+        assertTrue("旧版副本必须原样保留", bakFor(repo).exists());
+
+        assertEquals("旧版副本存在时不得放行直接 add", AndroidEnrollmentRepository.Status.CORRUPTED,
+                repo.add("bob", templateBytes(16, 112), MV, TSV).status);
+    }
+
+    /** 旧版 FREG1 副本在主文件头损坏时不得被自动提升，主文件字节必须保留。 */
+    @Test
+    public void legacyFreg1SidecarWithCorruptMainIsNotPromoted() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        byte[] corruptMain = "NOT_A_REGISTRY\n".getBytes(StandardCharsets.UTF_8);
+        Files.write(repo.registryFile().toPath(), corruptMain);
+        String legacy = "FREG1\n616c696365 7 2 100 " + repeat('a', 64) + " 1234567890\n";
+        Files.write(bakFor(repo).toPath(), legacy.getBytes(StandardCharsets.UTF_8));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals(1, list.entries.size());
+        assertFalse("旧版副本不得判完整", list.isEnumerationComplete());
+        assertArrayEquals("主文件字节必须原样保留（不提升）", corruptMain,
+                Files.readAllBytes(repo.registryFile().toPath()));
+        assertTrue("旧版副本必须原样保留", bakFor(repo).exists());
+    }
+
+    /** 完整 FREG2 的 .tmp 优先于不完整副本被采用（主文件缺失）。 */
+    @Test
+    public void completeFreg2TmpPreferredOverIncompleteSidecar() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 113), MV, TSV).status);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 114), MV, TSV).status);
+        String withBob = new String(Files.readAllBytes(repo.registryFile().toPath()), StandardCharsets.UTF_8);
+
+        File dst = repo.registryFile();
+        File tmp = new File(dst.getParentFile(), dst.getName() + ".tmp");
+        File bak = bakFor(repo);
+        Files.write(tmp.toPath(), withBob.getBytes(StandardCharsets.UTF_8));   // 完整 FREG2（含 bob）
+        // bak 为旧版 FREG1（不可自动采用）。
+        Files.write(bak.toPath(), ("FREG1\n616c696365 7 2 100 " + repeat('a', 64) + " 1\n")
+                .getBytes(StandardCharsets.UTF_8));
+        assertTrue(dst.delete());
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("应采用完整 FREG2 tmp（含 bob）", 2, list.entries.size());
+        assertTrue("采用完整 FREG2 后枚举完整", list.isEnumerationComplete());
+        assertTrue("提升后主文件应存在", dst.exists());
+    }
+
+    /** tmp 被截断（不完整）而 bak 完整时可从 bak 恢复。 */
+    @Test
+    public void truncatedTmpWithCompleteBakRecoversFromBak() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("alice", templateBytes(16, 115), MV, TSV).status);
+        String aliceOnly = new String(Files.readAllBytes(repo.registryFile().toPath()), StandardCharsets.UTF_8);
+        assertEquals(AndroidEnrollmentRepository.Status.OK,
+                repo.add("bob", templateBytes(16, 116), MV, TSV).status);
+        List<String> withBob = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+
+        File dst = repo.registryFile();
+        File tmp = new File(dst.getParentFile(), dst.getName() + ".tmp");
+        File bak = bakFor(repo);
+        // tmp 截断（缺 END）；bak 为完整 FREG2（含 alice）。
+        String truncatedTmp = "FREG2\nCOUNT 2\n" + withBob.get(2) + "\n" + withBob.get(3) + "\n";
+        Files.write(tmp.toPath(), truncatedTmp.getBytes(StandardCharsets.UTF_8));
+        Files.write(bak.toPath(), aliceOnly.getBytes(StandardCharsets.UTF_8));
+        assertTrue(dst.delete());
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertEquals("应从完整 bak 恢复 alice", 1, list.entries.size());
+        assertEquals("alice", list.entries.get(0).userId);
+        assertTrue("从完整 FREG2 bak 恢复应判完整", list.isEnumerationComplete());
+    }
+
+    /** 存在不可用副本（无完整 FREG2）时不得伪装成首次空库。 */
+    @Test
+    public void unusableCopyDoesNotMasqueradeAsFreshInstall() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        // 主文件缺失；仅有截断的 FREG2 备份（无 END）。
+        Files.write(bakFor(repo).toPath(), "FREG2\nCOUNT 1\n".getBytes(StandardCharsets.UTF_8));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertEquals(AndroidEnrollmentRepository.Status.OK, list.status);
+        assertFalse("存在不可用副本时不得判完整（否则会以「库为空」放行注册）", list.isEnumerationComplete());
+        assertEquals("不可用副本存在时不得放行直接 add", AndroidEnrollmentRepository.Status.CORRUPTED,
+                repo.add("bob", templateBytes(16, 117), MV, TSV).status);
+    }
+
     // ---------- 工具 ----------
 
     /**
@@ -1022,13 +1272,15 @@ public class AndroidEnrollmentRepositoryTest {
     }
 
     /**
-     * 读注册表第 {@code index} 条条目的空格分隔字段（跳过首行魔数）。
+     * 读注册表第 {@code index} 条条目的空格分隔字段。
      *
-     * <p>注册表是**位置式**六列文本、无列名 ⇒ 改错列只会静默丢元数据，故按列位断言而不是只看字段。
+     * <p>FREG2 文件结构：第 0 行魔数 {@code FREG2}、第 1 行 {@code COUNT N}、第 2 行起为数据行，
+     * 故第 {@code index} 条数据行在行号 {@code 2 + index}。注册表是**位置式**六列文本、无列名
+     * ⇒ 改错列只会静默丢元数据，故按列位断言而不是只看字段。
      */
     private static String[] registryEntryFields(AndroidEnrollmentRepository repo, int index) throws Exception {
         List<String> lines = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
-        return lines.get(1 + index).trim().split("\\s+");
+        return lines.get(2 + index).trim().split("\\s+");
     }
 
     private static String repeat(char c, int count) {

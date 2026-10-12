@@ -50,17 +50,29 @@ import java.util.List;
  * 每次都会 {@code new}，同目录多实例并发读改写注册表会丢更新。改为按<b>规范化 scopeDir 路径</b>
  * 共享静态锁（{@link FileStoreUtils#dirLockFor}），使同目录的所有实例串行化 add/remove/readTemplate/list/get。
  *
+ * <h2>注册表格式（A8 起升级为 FREG2）</h2>
+ * 首行魔数标识版本：新版 {@code FREG2}＝「首行 {@code FREG2} / 第二行 {@code COUNT N} / N 行六字段 /
+ * 末行 {@code END N}」，旧版 {@code FREG1}＝「首行 {@code FREG1} / 若干六字段行」（无条目数与结束标记）。
+ * 空表真实内容为 {@code FREG2\nCOUNT 0\nEND 0\n}。首行既非 FREG1 也非 FREG2 时判 {@link Status#CORRUPTED}。
+ *
  * <h2>注册表容错</h2>
  * 单行条目损坏时<b>跳过并隔离该行</b>，保留其余可解析条目，{@link ListResult#skippedLineCount}
- * 报告跳过数；只有文件头（魔数 {@code FREG1}，版本随魔数一同编码）损坏才判定为
- * {@link Status#CORRUPTED}，而<b>整体不可读判 {@link Status#IO_ERROR}</b>（两者都不可被当作空库）。
+ * 报告跳过数；只有文件头（魔数）损坏才判定为 {@link Status#CORRUPTED}，而<b>整体不可读判
+ * {@link Status#IO_ERROR}</b>（两者都不可被当作空库）。
+ * <b>但「可解析」不等于「完整」</b>：新版 FREG2 且 COUNT/END 一致、数据行数严格为 N、无重复
+ * userId、END 后无额外记录时才判 {@link ListResult#isEnumerationComplete()}；被截断/缺尾/有坏行的
+ * FREG2 一律<b>不完整</b>（可解析子集仅供查看，绝不被「跳过坏行」提升为完整）。旧版 FREG1
+ * <b>主文件</b>无坏行时刻意判<b>完整</b>（兼容其原有正常使用，下次写入即升级为 FREG2），
+ * 但旧版 FREG1 <b>副本</b>（{@code .tmp}/{@code .bak}）一律<b>不完整</b>、不自动提升、不参与判重。
  *
  * <p><b>自愈（如实边界，勿夸大）</b>：{@link #persistRegistry} 只序列化本次传进去的 {@code entries}
- * （被跳过的坏行不在其中），故一次成功的 {@link #add}/{@link #remove} 会重写注册表、顺带清除
+ * （被跳过的坏行不在其中），故一次成功的 {@link #remove} 会重写注册表（升级为 FREG2）、顺带清除
  * 已跳过的损坏行。但自愈的前提是**能走到那次写**：
  * <ul>
- *   <li>注册 UI 路径下 {@link EnrollmentSession#fromRepository} 以
- *       {@link ListResult#isEnumerationComplete()} 为判重门，存在损坏行时对**每一帧**样本返回
+ *   <li>A8 起 {@link #add} <b>自身</b>就以枚举完整性为前置（{@code !complete} 即拒），故<b>直接 add
+ *       也已不再是自愈路径</b>——它只会返回错误，不再「顺带清除坏行」；</li>
+ *   <li>注册 UI 路径下 {@link EnrollmentSession#fromRepository} 亦以
+ *       {@link ListResult#isEnumerationComplete()} 为判重门，不完整时对**每一帧**样本返回
  *       {@link EnrollmentSession.Reason#REPO_UNAVAILABLE} ⇒ 会话永远集不满 8 样本 ⇒ 经 UI 的
  *       {@code add} 不可达。即**自愈实际只剩 {@code remove} 一条路**。</li>
  *   <li>{@code remove} 的 UI 入口按 {@code list().entries} 列条目：若注册表**只剩被跳过的坏行**
@@ -96,8 +108,23 @@ public final class AndroidEnrollmentRepository {
     /** gallery 级注册表文件名（单表）。 */
     public static final String REGISTRY_FILE_NAME = "face_registry_v1.dat";
 
-    /** 注册表首行魔数/版本：文件头损坏或版本不符时判定为 CORRUPTED。 */
-    private static final String REGISTRY_MAGIC = "FREG1";
+    /**
+     * 注册表**新版**首行魔数（A8）：第二行为 {@code COUNT N}，其后 N 行六字段记录，末行 {@code END N}。
+     * 首行既非 {@code FREG1} 也非 {@code FREG2} 时判定为 CORRUPTED。
+     */
+    private static final String REGISTRY_MAGIC_V2 = "FREG2";
+
+    /**
+     * 注册表**旧版**首行魔数：仅有魔数 + 若干六字段行、**无条目数与结束标记**，故无法证明其自身完整。
+     * 仅作**主文件读取兼容**；作为**副本**（{@code .tmp}/{@code .bak}）时不得自动用作判重依据。
+     */
+    private static final String REGISTRY_MAGIC_V1 = "FREG1";
+
+    /** FREG2 第二行前缀：{@code COUNT <N>}，声明数据行条数。 */
+    private static final String COUNT_PREFIX = "COUNT";
+
+    /** FREG2 末行前缀：{@code END <N>}，与 COUNT 相同，作为结束标记与尾数校验。 */
+    private static final String END_PREFIX = "END";
 
     /**
      * 旁置文件后缀：把不可用的注册表工件改名保留为 {@code <原名>.corrupt.<毫秒时间戳>}，
@@ -216,40 +243,52 @@ public final class AndroidEnrollmentRepository {
         public boolean authoritative = true;
 
         /**
-         * 条目集是否**可安全用作「是否已存在此人」的判重依据**
-         * （= {@link #status} 为 {@link Status#OK} 且无被跳过的损坏行）。
+         * 注册表**格式版本**：2 = 新版（{@code FREG2} + {@code COUNT/END}，完整性可证），
+         * 1 = 旧版（{@code FREG1}，仅读取兼容），0 = 无表 / 头损坏 / 不可读（版本未知）。
          *
-         * <p><b>与 {@link #authoritative} 的分工（勿混用）</b>：{@code authoritative} 是**破坏性对账**
-         * （差集删除）的前提，从严 —— 无注册表文件时也算 false（刻意兼容「全新安装」与「索引丢失」
-         * 两种情况，见 {@code loadRegistry}）。本判据服务**非破坏性**的判重：判重漏一个在册者
-         * 会让同一张脸被重复注册。无注册表文件时 {@link #skippedLineCount} == 0 恒成立，此时
-         * 「同名 userId 重复注册」由 {@code add()} 的 {@code tpl.exists()} 门独立拦截，不需要在此
-         * 拒收 —— 否则全新安装将永远无法注册。
+         * <p>仅 {@link #status} == {@link Status#OK} 时有意义。
+         */
+        public int formatVersion = 0;
+
+        /**
+         * 枚举**完整性**标记（见 {@link #isEnumerationComplete()}）。由仓库层按格式与结构校验置位；
+         * {@code status != OK} 时恒为 false。
+         */
+        public boolean complete = true;
+
+        /**
+         * 条目集是否**可证明完整**（枚举未缺行、未被截断），即「能被安全用作判重依据」。
          *
-         * <p>⚠️ <b>本判据是「必要条件」而非「充分条件」，与 {@code .bak} 恢复不是「等价口径」</b>：
-         * 它只排除**行级**跳过与整体不可读。从 {@code .bak} 恢复这条路径**仍是缺口**：
-         * 崩溃窗口「模板已落盘 → 注册表 dst→bak 已完成 → tmp→dst 未完成」下，新条目只存在于
-         * 未被消费的 {@code .tmp} 里，{@code loadRegistry} 从 {@code .bak} 恢复得到的是**缺该行**的
-         * 条目集，而该人的模板文件已在磁盘 ⇒ 对判重而言**就是缺行**，本判据却因
-         * {@code status == OK && skipped == 0} 报 true。故 {@code .bak} 恢复路径下「库中是否已有此人」
-         * 的判定仍不可靠；该副作用**未被本判据覆盖**，如实登记为待办（未修）。
-         *
-         * <p>等价于 {@code isOk() && skippedLineCount == 0}。在 {@code status == OK} 的前提下，
-         * 本判据与 {@code authoritative} 的分歧出现在两处，**性质不同**：
+         * <p><b>判据（A8 起）</b>：
          * <ul>
-         *   <li><b>无注册表文件</b>（本判据 true、{@code authoritative} false）—— 刻意如此：
-         *       必须放行全新安装的注册，见上；</li>
-         *   <li><b>从 {@code .bak} 恢复</b>（备份自身无坏行时本判据 true、{@code authoritative} false）
-         *       —— <b>真缺口</b>，理由同上段。故本判据不能用于为该路径的枚举完整性背书。</li>
+         *   <li>**新版 FREG2 主文件**结构通过严格校验（{@code COUNT N} 与 {@code END N} 一致、
+         *       实际数据行数严格为 N、每条合法且 userId 不重复、END 后无额外记录）且无跳过坏行时为 true；</li>
+         *   <li>**旧版 FREG1 主文件**在无跳过坏行时亦为 true —— 它没有条目数/尾标记，行边界截断无法被
+         *       察觉，故此处置 true 是刻意**兼容 FREG1 主文件的原有正常使用**（读取兼容 ⇒ 允许升级，
+         *       下次写入即升级为 FREG2），与 FREG2 的强校验口径不同；</li>
+         *   <li>**FREG1 副本**（{@code .tmp}/{@code .bak}）一律不置 true —— 副本须经人工恢复、
+         *       不自动提升、不参与判重。</li>
          * </ul>
-         * 无论哪种情况，本判据都不能替代 {@code authoritative} 去门禁**破坏性对账**；
-         * {@code status != OK} 时 {@code authoritative} 本身无定义（见上），不构成可比较的分歧。
          *
-         * <p><b>接线现状</b>：{@link EnrollmentSession#fromRepository} 的判重门即以本方法为判据
-         * （此前是同义的内联表达式），故本方法是**生产接线**、非纯工具方法。
+         * <p>⚠️ <b>语义边界（如实登记，勿夸大）</b>：本判据只证**结构性自洽**（枚举未缺行、未被截断），
+         * <b>不构成内容真实性证明</b> —— FREG2 无校验和，{@code COUNT}/{@code END} 均为**自声明**值，
+         * 手写 {@code COUNT 2} + 2 行 + {@code END 2} 即可全过（磁盘上仍可能另有未列入的模板）；
+         * FREG1 主文件更无尾标记。故 true 只表示「文件内自洽、可安全用作判重前提」，
+         * <b>不等价于</b>「已等于已注册全集」。
+         *
+         * <p>⚠️ 与 {@link #authoritative} 分工不同、**不可互相替代**：
+         * <ul>
+         *   <li>{@code authoritative} 门禁**破坏性对账**（差集删除），无注册表文件时为 false
+         *       （刻意兼容「全新安装」与「索引丢失」两种情况）；</li>
+         *   <li>本判据服务**非破坏性判重**：判重漏一个在册者会让同一张脸被重复注册。全新安装
+         *       （无表无副产物）时本判据为 true（否则全新安装永远无法注册）。</li>
+         * </ul>
+         *
+         * <p><b>接线现状</b>：{@link EnrollmentSession#fromRepository} 的判重门以本方法为判据
+         * （生产接线、非纯工具方法）；仓库侧 {@link #add} 亦以完整性为前置。
          */
         public boolean isEnumerationComplete() {
-            return status == Status.OK && skippedLineCount == 0;
+            return status == Status.OK && complete;
         }
 
         ListResult(@NonNull Status status, @NonNull List<Entry> entries,
@@ -394,6 +433,14 @@ public final class AndroidEnrollmentRepository {
             if (snap.status != Status.OK) {
                 return new Result(snap.status, null, snap.message);
             }
+            // A8：直接 add 也必须以**枚举完整性**为前置 —— 若注册表被截断 / 缺尾 / 有跳过坏行，
+            // 「库中是否已有此人」的判断就不可靠（漏一个在册者会让同一张脸被重复注册）。
+            // 此处与 EnrollmentSession 的判重门同口径，不能只封会话入口。
+            if (!snap.complete) {
+                return new Result(Status.CORRUPTED, null,
+                        "注册表枚举不完整（" + snap.message + "），已拒绝新增以免重复注册；"
+                                + "请删除任一在册人员以重写注册表，或经「旁置损坏注册表」恢复");
+            }
             Entry existing = find(snap.entries, userId);
             if (existing != null) {
                 return new Result(Status.DUPLICATE_USER, existing, "该人员已注册，仓库拒绝覆盖");
@@ -452,6 +499,8 @@ public final class AndroidEnrollmentRepository {
             RegistrySnapshot snap = loadRegistry();
             ListResult result = new ListResult(snap.status, snap.entries, snap.skippedLineCount, snap.message);
             result.authoritative = snap.authoritative;
+            result.formatVersion = snap.formatVersion;
+            result.complete = snap.complete;
             return result;
         }
     }
@@ -611,8 +660,11 @@ public final class AndroidEnrollmentRepository {
                 return new Result(Status.UNSUPPORTED_PLATFORM, null, unsupportedReason());
             }
             RegistrySnapshot snap = loadRegistry();
+            // 无可用条目：整份不可读（头损坏 / IO），或条目为空且**枚举不完整**
+            //（全部行被跳过、或 FREG2 被截断/缺尾而无任何可解析条目）。
+            // ⚠️「全新安装（无表无副产物）」的 complete 为 true，故不会被误判为损坏。
             boolean noUsableEntries = snap.status != Status.OK
-                    || (snap.entries.isEmpty() && snap.skippedLineCount > 0);
+                    || (snap.entries.isEmpty() && !snap.complete);
             if (!noUsableEntries) {
                 return new Result(Status.INVALID_ARGUMENT, null,
                         "注册表当前可用，未做任何改动；如需清除个别损坏行，请在人员列表删除任意一位人员");
@@ -717,6 +769,159 @@ public final class AndroidEnrollmentRepository {
         return (parent == null) ? new File(name) : new File(parent, name);
     }
 
+    // ---------------- 孤儿模板旁置（A15） ----------------
+
+    /**
+     * 孤儿模板列表结果。{@code fileNames} 永不为 null；出错时为空列表。
+     *
+     * <p>{@link #fileNames} 只含**文件名**（{@code u_<64hex>.bin}）—— 不含目录、不可反推 userId，
+     * 也不代表任何具体人员，UI 据此展示数量与摘要即可。
+     */
+    public static final class OrphanListResult {
+        @NonNull public final Status status;
+        @NonNull public final List<String> fileNames;
+        /** 是否允许旁置：仅「完整 FREG2 主表 + 平台支持」时为 true；否则只能查看。 */
+        public final boolean quarantineAllowed;
+        @NonNull public final String message;
+
+        OrphanListResult(@NonNull Status status, @NonNull List<String> fileNames,
+                         boolean quarantineAllowed, @NonNull String message) {
+            this.status = status;
+            this.fileNames = fileNames;
+            this.quarantineAllowed = quarantineAllowed;
+            this.message = message;
+        }
+
+        public boolean isOk() {
+            return status == Status.OK;
+        }
+    }
+
+    /**
+     * 列出当前图库中的**孤儿模板**：模板文件名（{@code u_<sha256(userId)>.bin}）在注册表中没有任何
+     * 条目引用 —— 通常是**注册表缺失/损坏**造成（模板仍在磁盘而索引丢了），故只旁置、不删除。
+     *
+     * <h2>只读语义与门禁</h2>
+     * 本方法**只读**：仅扫描 gallery 目录的**直属普通文件**（不含子目录，含旁置目录
+     * {@code .orphan-recovery/}）。缺主表 / 旧版 FREG1 / 不完整 FREG2 时
+     * {@link OrphanListResult#quarantineAllowed} 为 false —— 此时枚举不可信，孤儿判定仅供参考，
+     * 只可查看、不可旁置。
+     *
+     * <p><b>不反推人员、不展示明文</b>：文件名是 userId 的 SHA-256（单向），无法反推 userId；
+     * 结果只回传文件名。注册表不可读时返回空列表（无法确认谁在册，不臆测孤儿）。
+     */
+    @NonNull
+    public OrphanListResult listOrphanTemplates() {
+        synchronized (dirLock()) {
+            RegistrySnapshot snap = loadRegistry();
+            if (snap.status != Status.OK) {
+                return new OrphanListResult(snap.status, new ArrayList<String>(), false,
+                        "注册表不可读（" + snap.message + "），无法确认孤儿模板");
+            }
+            java.util.Set<String> referenced = new java.util.HashSet<>();
+            for (Entry e : snap.entries) {
+                referenced.add(templateFileFor(e.userId).getName());
+            }
+            List<String> orphans = new ArrayList<>();
+            File[] children = scopeDir.listFiles();
+            if (children != null) {
+                for (File f : children) {
+                    // 只处理**直属普通文件**：子目录（含旁置目录）不计；非模板命名不计。
+                    if (f.isFile()
+                            && FeatureTemplateEncryptedStore.isTemplateFileName(f.getName())
+                            && !referenced.contains(f.getName())) {
+                        orphans.add(f.getName());
+                    }
+                }
+            }
+            java.util.Collections.sort(orphans);
+
+            boolean platformOk = isEnrollmentEnabled();
+            boolean regProvable = snap.formatVersion == 2 && snap.complete;
+            boolean allowed = platformOk && regProvable;
+            String msg;
+            if (!regProvable) {
+                msg = "注册表非完整 FREG2（版本 " + snap.formatVersion + "、条目 " + snap.entries.size()
+                        + "）：仅可查看孤儿模板，暂不可旁置";
+            } else if (!platformOk) {
+                msg = "当前系统不支持加密存储（API < 23）：仅可查看孤儿模板，暂不可旁置";
+            } else {
+                msg = "";
+            }
+            return new OrphanListResult(Status.OK, orphans, allowed, msg);
+        }
+    }
+
+    /**
+     * 把**单个**孤儿模板旁置到同图库的 {@code .orphan-recovery/} 目录（**只改名、不删除**，可手工取回）。
+     *
+     * <h2>前置门禁（不满足即拒绝，绝不误旁置）</h2>
+     * <ul>
+     *   <li>平台支持（API &ge; 23）；</li>
+     *   <li>{@code fileName} 必须是**模板文件名**（{@code u_<64hex>.bin}）—— 不开放任意/绝对路径删除；</li>
+     *   <li>注册表必须是**完整 FREG2 主表**（与 {@link ListResult#isEnumerationComplete()} 同口径），
+     *       否则无法判定谁是孤儿；</li>
+     *   <li>在**与注册共用的目录锁**内**重读**注册表与引用集合：若该文件已被引用、或已不存在/不再是
+     *       模板文件（列表后被改动），一律拒绝并要求刷新；</li>
+     *   <li>旁置目标取**当前不存在**的唯一名，绝不覆盖既有恢复文件。</li>
+     * </ul>
+     *
+     * <p><b>数据安全</b>：只 {@code rename} 到 {@code .orphan-recovery/}，**不永久删除**；失败时原文件保留。
+     * 旁置成功后原名释放，可用同一 userId 重新注册（副本仍在恢复目录中）。
+     */
+    @NonNull
+    public Result quarantineOrphanTemplate(@NonNull String fileName) {
+        synchronized (dirLock()) {
+            if (!isEnrollmentEnabled()) {
+                return new Result(Status.UNSUPPORTED_PLATFORM, null, unsupportedReason());
+            }
+            if (!FeatureTemplateEncryptedStore.isTemplateFileName(fileName)) {
+                return new Result(Status.INVALID_ARGUMENT, null, "文件名不是合法模板文件名，已拒绝");
+            }
+            RegistrySnapshot snap = loadRegistry();
+            if (snap.status != Status.OK) {
+                return new Result(snap.status, null, "注册表不可读，无法确认该文件是否仍为孤儿");
+            }
+            if (!(snap.formatVersion == 2 && snap.complete)) {
+                return new Result(Status.CORRUPTED, null,
+                        "注册表非完整 FREG2，拒绝旁置以免误移在册人员的模板；请刷新后重试");
+            }
+            // 锁内重读引用集合：确认仍无该条目引用。
+            java.util.Set<String> referenced = new java.util.HashSet<>();
+            for (Entry e : snap.entries) {
+                referenced.add(templateFileFor(e.userId).getName());
+            }
+            if (referenced.contains(fileName)) {
+                return new Result(Status.INVALID_ARGUMENT, null,
+                        "该文件已被注册表引用，拒绝旁置；请刷新列表");
+            }
+            File src = new File(scopeDir, fileName);
+            if (!src.isFile()) {
+                return new Result(Status.NOT_FOUND, null, "模板文件不存在或已变化，请刷新列表");
+            }
+            File recoveryDir = new File(scopeDir, FeatureTemplateEncryptedStore.ORPHAN_RECOVERY_DIR_NAME);
+            if (!recoveryDir.exists() && !recoveryDir.mkdirs()) {
+                return new Result(Status.IO_ERROR, null, "无法创建恢复目录，原文件保留");
+            }
+            File target = uniqueOrphanTarget(recoveryDir, fileName);
+            if (!FileStoreUtils.renameQuietly(src, target)) {
+                return new Result(Status.ATOMIC_RENAME_FAILED, null, "旁置失败，原文件保留");
+            }
+            return new Result(Status.OK, null, "已把孤儿模板旁置到 " + target.getAbsolutePath());
+        }
+    }
+
+    /** 在恢复目录内为 {@code fileName} 选一个**当前不存在**的目标名（不覆盖既有恢复文件）。 */
+    @NonNull
+    @androidx.annotation.VisibleForTesting
+    static File uniqueOrphanTarget(@NonNull File recoveryDir, @NonNull String fileName) {
+        File candidate = new File(recoveryDir, fileName);
+        for (int seq = 1; candidate.exists(); seq++) {
+            candidate = new File(recoveryDir, fileName + "-" + seq);
+        }
+        return candidate;
+    }
+
     /**
      * 读取并消费模板明文：明文只在 {@code consumer} 回调内有效，回调返回后由存储层
      * {@code Arrays.fill(pt, 0)} 清零，仓库不会向调用方泄漏明文数组。
@@ -790,6 +995,21 @@ public final class AndroidEnrollmentRepository {
          */
         boolean authoritative = true;
 
+        /**
+         * 注册表**格式版本**（2 = FREG2 可证完整；1 = FREG1 旧版；0 = 无表 / 损坏 / 恢复的副本）。
+         *
+         * <p>同 {@link ListResult#formatVersion}：仅 {@code status == OK} 时才有意义。
+         */
+        int formatVersion = 0;
+
+        /**
+         * 枚举**完整性**（见 {@link ListResult#isEnumerationComplete()}）：
+         * 「新版 FREG2 主文件且结构严格通过校验」「无坏行的旧版 FREG1 **主文件**」（刻意兼容其原有正常
+         * 使用、允许升级）或「全新安装（无表无副产物）」为 true；被截断/损坏的 FREG2、**任何**从副本
+         * 读取/恢复来的内容（含健康 FREG1 副本）一律 false。
+         */
+        boolean complete = false;
+
         RegistrySnapshot(Status status, List<Entry> entries, int skippedLineCount, String message) {
             this.status = status;
             this.entries = entries;
@@ -807,38 +1027,42 @@ public final class AndroidEnrollmentRepository {
             // ★★ 2026-09-28 修（外部审查 [P1]「备份恢复后可能放行重复人脸注册」+ 独立复核确认可达）：
             //   先试**未消费的 `.tmp`**，再退回 `.bak`。
             //   崩溃窗口「模板已落盘（add）→ 注册表 dst→bak 已完成 → tmp→dst 未完成」下，**最新**的
-            //   条目集在 **`.tmp`** 里，而 `.bak` 是**缺该行**的旧集。原实现只认 `.bak` ⇒ 恢复出缺行集，
-            //   而判重门 `isEnumerationComplete()` 只看 status/skipped、**不**看 `authoritative`
-            //   ⇒ 门被放行 ⇒ 同一张脸可用**另一个 userId** 再注册一次（`add()` 只按 userId 查模板
+            //   条目集在 **`.tmp`** 里，而 `.bak` 是**缺该行**的旧集。原实现只认 `.bak` ⇒ 恢复出缺行集
+            //   而判重门放行 ⇒ 同一张脸可用**另一个 userId** 再注册一次（add() 只按 userId 查模板
             //   文件存在性，换 ID 即绕过）。
-            //   ★ 为什么 `.tmp` 一定更可信：写者不变式是「写 tmp + fsync → dst→bak → tmp→dst」
-            //     ⇒ 只要走到了「dst 缺失」这一步，就说明 dst→bak **已经成功**，而那必然发生在
-            //     tmp **完整落盘并 fsync 之后** ⇒ 此时残留的 tmp 严格**新于** bak。
-            //   ★ 覆盖边界（**已按对抗性核查更正**，勿按初版读）：若 `.tmp` 不存在或 `parseRegistryFile`
-            //     返回非 OK，则退回下面的旧 `.bak` 臂 —— 那条路径的判重缺口**仍存在**。
-            //     ⚠️ 更正一处**不成立**的说法：初版这里写「tmp 被截断一定不可解析 —— 不成立。
-            //       `parseRegistryFile` 只校验首行 `FREG1`，**没有行数 / 尾校验**；而 tmp 是整块
-            //       `fos.write(...)` 落盘的，**部分写若恰好停在换行处**，解析结果会是
-            //       `status==OK && skippedLineCount==0`，但条目集**不完整** ⇒ 判重门照样放行。
-            //       （`getFD().sync()` 失败还被 `catch (Exception ignored)` 吞掉。）
-            //       ⇒ 这是**已登记的剩余缺口**，本轮未修（修它需要一个完整性标记或行数尾校验）。
-            //     ⚠️ 另：初版写的「写到一半就崩不会走到本分支」**只对崩溃**成立（那时 dst 还在，
-            //       走的是 `parseRegistryFile(dst)` 那条路）；**外部截断 / 部分写**不受此保护。
-            // 崩溃恢复：上次 persistRegistry 在「dst→bak」之后、「tmp→dst」完成前退出，主文件缺失
-            // 但未消费的 tmp / 备份仍是唯一完整索引。若此处按空库处理，后续写入会先删掉它们，
-            // 已注册人员索引将永久丢失（P1-3）。主文件缺失 ⇒ 可安全把副产品改名就位（不覆盖任何字节）。
+            //   ★ A8 起：**仅完整 FREG2** 副本可被自动采用并（主文件缺失时）提升为主文件；
+            //     旧版 FREG1 或截断/损坏的 FREG2 副本只能**只读查看**、不提升、不参与判重。
             RegistrySnapshot recovered = recoverFromSidecar(dst, "缺失");
             if (recovered != null) {
                 return recovered;
             }
-            // 走到这里：无 `.tmp`，且 `.bak` 不存在或不可解析。
-            if (bak.exists()) {
-                // 备份也损坏/不可读：如实上报，避免伪装成空库后被一次写入覆盖。
-                return parseRegistryFile(bak);
+            // 走到这里：没有**可自动采用的完整 FREG2** 副本。
+            // ★ A8：区分「真正首次安装（无表无副产物）」与「存在不可用副本」——后者绝不能伪装成
+            //   首次空库，否则会以「库为空」放行注册（旧版/截断副本里的在册者会被重复注册）。
+            File tmp = tmpFileFor(dst);
+            File unusable = firstRegularFile(tmp, bak);
+            if (unusable != null) {
+                RegistrySnapshot parsed = parseRegistryFile(unusable);
+                if (parsed.status == Status.OK) {
+                    RegistrySnapshot copy = new RegistrySnapshot(Status.OK, parsed.entries,
+                            parsed.skippedLineCount,
+                            parsed.message.isEmpty()
+                                    ? "注册表主文件缺失，仅剩不可用副本；仅供查看、不参与判重"
+                                    : "注册表主文件缺失，仅剩不可用副本（" + parsed.message + "）；仅供查看、不参与判重");
+                    copy.authoritative = false;
+                    copy.formatVersion = parsed.formatVersion;
+                    copy.complete = false;
+                    return copy;
+                }
+                // 不可解析的副本（CORRUPTED / IO_ERROR）：如实上报。⚠️ 本路径与既有契约
+                // 「status != OK 时 authoritative 未定义」一致，故**不覆写**该字段（保持构造默认）。
+                return parsed;
             }
-            // 无注册表文件：无法区分「全新安装」与「索引丢失」，故不视为权威。
+            // 真正首次无表无副产物的空库：合法，且判重门放行（否则全新安装永远无法注册）。
+            // 注意：不视为权威（无法区分「全新安装」与「索引丢失」），但不影响判重完整性。
             RegistrySnapshot none = new RegistrySnapshot(Status.OK, new ArrayList<Entry>(), 0, "");
             none.authoritative = false;
+            none.complete = true;
             return none;
         }
 
@@ -847,19 +1071,8 @@ public final class AndroidEnrollmentRepository {
             // ★ 2026-09-29 修（头损坏 + 健康 .bak/.tmp 并存时错失自愈）：主文件**不可解析**
             //   （头损坏 CORRUPTED，或整体不可读 IO_ERROR）时，若仍有**可解析**的 `.tmp`/`.bak`，
             //   优先用它自愈，而不是把健康的副产品随主文件一起报废。
-            //   未修前的后果：头损坏 + `.bak` 完好 ⇒ 快照返回 CORRUPTED ⇒ `quarantineCorruptRegistry`
-            //   判定「无可用条目」⇒ 把健康的 `.bak` 也一并旁置、建空表 —— 数据不丢（是改名），
-            //   但**活性库被清空**，而 `.bak` 本可用于自愈。
-            //   ⚠️ 旧的收窄理由（`.bak` 可能陈旧、未必完好，覆盖回去可能丢增量）只在「`.bak` 是唯一
-            //   来源」时成立；这里只是把副产品**读出来用**，主文件一律不被覆盖（见下），故不存在
-            //   「用旧覆盖新」。
-            //   ⚠️ 与旧实现的差异（如实申报）：旧 IO_ERROR 分支在改名成功时会把 `.bak` 提升覆盖主文件；
-            //   现在**只有主文件不存在时**才提升（见 recoverFromSidecar）—— 主文件存在（哪怕字节损坏/
-            //   不可读）时一律只读、绝不 rename 覆盖，以兑现「不可解析的工件仍应保留、改名不删」的
-            //   数据安全约束（POSIX 的 `rename(2)` 会静默覆盖同名目标，覆盖即销毁主文件原字节）。
-            //   ⚠️ 已知剩余缺口（与缺失路径同源、本轮未修，已登记）：`parseRegistryFile` 只校验首行
-            //   魔数、无行数/尾校验，若副产品是**部分写且恰停在换行处**，会得到 `OK && skipped==0`
-            //   但不完整的条目集 ⇒ 判重门放行。
+            //   A8 收窄：自愈**提升**只对**完整 FREG2** 副本开放；旧版/不完整副本仅只读查看，
+            //   绝不 rename 覆盖主文件字节（POSIX 的 rename(2) 会静默覆盖同名目标，覆盖即销毁原件）。
             String mainState = (snap.status == Status.CORRUPTED) ? "头损坏" : "不可读";
             RegistrySnapshot recovered = recoverFromSidecar(dst, mainState);
             if (recovered != null) {
@@ -870,55 +1083,106 @@ public final class AndroidEnrollmentRepository {
     }
 
     /**
-     * 主文件不可用（缺失 / 不可解析）时的**自愈**：按「先 `.tmp`、后 `.bak`」顺序取**首个可解析**
-     * 的副产品，返回恢复出的快照（{@code authoritative=false}）。
+     * 主文件不可用（缺失 / 不可解析）时读取副产品：分两轮 ——
+     * <ol>
+     *   <li><b>采用</b>：按「先 `.tmp`、后 `.bak`」取**首个完整 FREG2** 副本，返回采用出的快照
+     *       （{@code authoritative=false}、{@code complete=true}）；仅当主文件**不存在**时把它
+     *       {@code renameQuietly} 就位（{@code canPromote}）。</li>
+     *   <li><b>只读查看</b>：无完整 FREG2 副本时，取首个**可解析**副本供查看
+     *       （{@code authoritative=false}、{@code complete=false}，**不提升、不判重**）。</li>
+     * </ol>
      *
-     * <p><b>顺序依据</b>：写者不变式「写 tmp + fsync → dst→bak → tmp→dst」下，只要残留 `.tmp`，
-     * 它就是三者中**最新**的一份；`.bak` 可能早于最近一次新增。这与缺失路径的既有口径一致。
-     *
-     * <p><b>何时真“提升”为注册表</b>：仅当主文件**不存在**时把副产品 {@code renameQuietly} 就位
-     * （恢复后主文件重新存在，供后续写入的阶段 1「恢复基线」与各处 {@code dst.exists()} 判据使用）。
-     * 主文件**存在**（哪怕是损坏 / 不可读的字节）时一律**只读**该副产品、绝不 rename 覆盖 ——
-     * POSIX 的 {@code rename(2)} 会静默覆盖同名目标，覆盖即销毁主文件原字节，违背「不可解析的工件
-     * 仍应保留、改名不删」的数据安全约束。
+     * <p><b>顺序依据</b>：写者不变式「写 tmp + fsync → dst→bak → tmp→dst」下，残留的 `.tmp` 严格
+     * 新于 `.bak`。旧版 FREG1 或截断/损坏的 FREG2 副本可能缺行，故**绝不**被「采用」；主文件
+     * **存在**（哪怕是损坏 / 不可读的字节）时一律**只读**副本、绝不 rename 覆盖 —— POSIX 的
+     * {@code rename(2)} 会静默覆盖同名目标，覆盖即销毁主文件原字节，违背「不可解析的工件仍应保留、
+     * 改名不删」的数据安全约束。
      *
      * @param mainState 主文件当前状态的**如实**措辞（「缺失」/「头损坏」/「不可读」），仅用于结果文案
-     * @return 恢复出的快照；无任何可解析副产品时返回 {@code null}（由调用方各自决定如何如实上报）
+     * @return 采用或只读查看得的快照；无任何可解析的普通文件副本时返回 {@code null}（由调用方各自
+     *         决定如何如实上报）
      */
     @Nullable
     private RegistrySnapshot recoverFromSidecar(@NonNull File dst, @NonNull String mainState) {
         boolean canPromote = !dst.exists();
         File tmp = tmpFileFor(dst);
-        if (tmp.exists()) {
-            RegistrySnapshot fromTmp = parseRegistryFile(tmp);
-            if (fromTmp.status == Status.OK) {
-                boolean promoted = canPromote && FileStoreUtils.renameQuietly(tmp, dst);
-                // `authoritative` 置 false：这是**恢复**来的内容，保守起见不宣称权威
-                //（判重门不看它，故不影响修复效果；语义边界见 RegistrySnapshot 的 javadoc）。
-                RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromTmp.entries,
-                        fromTmp.skippedLineCount,
-                        promoted ? "已从未消费的 .tmp 恢复注册表（含最新条目）"
-                                : "注册表主文件" + mainState + "，已从 .tmp 读取（含最新条目）");
-                recovered.authoritative = false;
-                return recovered;
-            }
-        }
         File bak = backupFileFor(dst);
-        if (bak.exists()) {
-            RegistrySnapshot fromBak = parseRegistryFile(bak);
-            if (fromBak.status == Status.OK) {
-                // 恢复返回值必须接：`renameQuietly` 只做裸 renameTo、不先删目标，改名未必成功
-                // ⇒ 不得无条件谎报「已从备份恢复」（沿用 remove 路径同口径：检查返回值再定文案）。
-                boolean promoted = canPromote && FileStoreUtils.renameQuietly(bak, dst);
-                RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, fromBak.entries,
-                        fromBak.skippedLineCount,
-                        promoted ? "已从备份恢复注册表"
-                                : "注册表主文件" + mainState + "，已从备份读取");
-                recovered.authoritative = false;
-                return recovered;
-            }
+
+        // 第一轮：**仅完整 FREG2** 副本可被自动采用，并在主文件缺失时提升为主文件。
+        // 旧版 FREG1 或截断/损坏的 FREG2 副本一律不采用 —— 它们可能缺行，不能作为判重依据。
+        // 顺序「先 .tmp、后 .bak」：写者不变式「写 tmp + fsync → dst→bak → tmp→dst」下，
+        // 残留的 .tmp 严格新于 .bak。
+        RegistrySnapshot adopted = adoptCompleteFreg2(tmp, dst, canPromote, "未消费的 .tmp", mainState);
+        if (adopted != null) {
+            return adopted;
         }
-        return null;
+        adopted = adoptCompleteFreg2(bak, dst, canPromote, "备份", mainState);
+        if (adopted != null) {
+            return adopted;
+        }
+
+        // 第二轮：无可采用的完整 FREG2 副本时，退化为**只读查看**首个可解析副本。
+        // 不提升、不判重（complete/authoritative 均置 false）—— 「读取兼容」不等于「已证明完整」。
+        RegistrySnapshot view = viewOnlySidecar(tmp, mainState, "未消费的 .tmp");
+        if (view != null) {
+            return view;
+        }
+        return viewOnlySidecar(bak, mainState, "备份");
+    }
+
+    /**
+     * 尝试把某个副本作为**完整 FREG2** 采用：解析通过且 {@code formatVersion==2 && complete} 时，
+     * 在主文件缺失（{@code canPromote}）时把它改名提升为主文件，返回快照；否则返回 {@code null}。
+     */
+    @Nullable
+    private RegistrySnapshot adoptCompleteFreg2(@NonNull File sidecar, @NonNull File dst,
+                                                boolean canPromote, @NonNull String label,
+                                                @NonNull String mainState) {
+        if (!sidecar.isFile()) {
+            return null;
+        }
+        RegistrySnapshot parsed = parseRegistryFile(sidecar);
+        if (parsed.status != Status.OK || parsed.formatVersion != 2 || !parsed.complete) {
+            return null;
+        }
+        boolean promoted = canPromote && FileStoreUtils.renameQuietly(sidecar, dst);
+        RegistrySnapshot recovered = new RegistrySnapshot(Status.OK, parsed.entries,
+                parsed.skippedLineCount,
+                promoted ? ("已从" + label + "恢复注册表（含最新条目）")
+                        : ("注册表主文件" + mainState + "，已从" + label + "读取（含最新条目）"));
+        recovered.authoritative = false;
+        recovered.formatVersion = parsed.formatVersion;
+        recovered.complete = true;
+        return recovered;
+    }
+
+    /** 把副本作为**只读查看**内容返回（不提升、不判重）；副本不可解析为 OK 时返回 {@code null}。 */
+    @Nullable
+    private RegistrySnapshot viewOnlySidecar(@NonNull File sidecar, @NonNull String mainState,
+                                             @NonNull String label) {
+        if (!sidecar.isFile()) {
+            return null;
+        }
+        RegistrySnapshot parsed = parseRegistryFile(sidecar);
+        if (parsed.status != Status.OK) {
+            return null;
+        }
+        RegistrySnapshot view = new RegistrySnapshot(Status.OK, parsed.entries,
+                parsed.skippedLineCount,
+                "注册表主文件" + mainState + "，已从" + label + "读取（仅供查看，不参与判重）");
+        view.authoritative = false;
+        view.formatVersion = parsed.formatVersion;
+        view.complete = false;
+        return view;
+    }
+
+    /** 返回两个候选中的第一个**普通文件**（排除目录 / 悬空链接），无则返回 {@code null}。 */
+    @Nullable
+    private static File firstRegularFile(@NonNull File a, @NonNull File b) {
+        if (a.isFile()) {
+            return a;
+        }
+        return b.isFile() ? b : null;
     }
 
     /** 解析单个注册表文件；文件不存在或不可读返回 IO_ERROR（缺省语义由调用方处理）。 */
@@ -934,11 +1198,29 @@ public final class AndroidEnrollmentRepository {
         } catch (Exception ex) {
             return new RegistrySnapshot(Status.IO_ERROR, new ArrayList<Entry>(), 0, "注册表读取失败");
         }
-        if (lines.isEmpty() || !REGISTRY_MAGIC.equals(lines.get(0).trim())) {
+        if (lines.isEmpty()) {
             return new RegistrySnapshot(Status.CORRUPTED, new ArrayList<Entry>(), 0, "注册表头损坏");
         }
+        String magic = lines.get(0).trim();
+        if (REGISTRY_MAGIC_V2.equals(magic)) {
+            return parseRegistryV2(lines);
+        }
+        if (REGISTRY_MAGIC_V1.equals(magic)) {
+            return parseRegistryV1Legacy(lines);
+        }
+        return new RegistrySnapshot(Status.CORRUPTED, new ArrayList<Entry>(), 0, "注册表头损坏");
+    }
 
-        // 单行损坏只跳过并隔离该行，保留其余可解析条目；仅头部/整体不可解析才 CORRUPTED。
+    /**
+     * 旧版 FREG1：仅魔数 + 若干六字段行，**无条目数/结束标记**。
+     *
+     * <p>读取兼容：单行损坏跳过并隔离，保留其余可解析条目。因格式本身无法证明「未缺行」，
+     * {@code complete} 只取「无跳过坏行」这一**必要条件**；行边界截断无法被察觉，属已接受并登记的
+     * 风险（见 {@link ListResult#isEnumerationComplete()}）。作为**副本**使用时，调用方会另行把
+     * {@code complete} 覆写为 false（副本永不参与判重）。
+     */
+    @NonNull
+    private static RegistrySnapshot parseRegistryV1Legacy(@NonNull List<String> lines) {
         List<Entry> out = new ArrayList<>();
         int skipped = 0;
         for (int i = 1; i < lines.size(); i++) {
@@ -957,7 +1239,133 @@ public final class AndroidEnrollmentRepository {
         String msg = (skipped == 0) ? "" : ("注册表有 " + skipped + " 行损坏，已跳过");
         RegistrySnapshot snap = new RegistrySnapshot(Status.OK, out, skipped, msg);
         snap.authoritative = (skipped == 0);   // 跳过了损坏行 ⇒ 条目集不等于全部已注册人员
+        snap.formatVersion = 1;
+        snap.complete = (skipped == 0);
         return snap;
+    }
+
+    /**
+     * 新版 FREG2：<code>FREG2</code> / <code>COUNT N</code> / N 行六字段 / <code>END N</code>。
+     *
+     * <p><b>完整性校验</b>：COUNT 与 END 均为**非负整数、无溢出、数值相同**；实际数据行数严格为 N；
+     * 每条合法且 userId 不重复；END 后无额外记录。任一不满足 ⇒ {@code complete=false}，
+     * 但**可解析条目仍返回**供查看 —— 绝不被「跳过坏行」提升为完整。
+     */
+    @NonNull
+    private static RegistrySnapshot parseRegistryV2(@NonNull List<String> lines) {
+        List<Entry> out = new ArrayList<>();
+        int skipped = 0;
+        Long declared = (lines.size() > 1) ? parseCountField(lines.get(1).trim(), COUNT_PREFIX) : null;
+
+        if (declared == null) {
+            // 缺 COUNT 行 / COUNT 非法（负数 / 溢出 / 非数字）：无法确定数据边界，仅尽力取可解析行供查看。
+            for (int i = 1; i < lines.size(); i++) {
+                String line = lines.get(i).trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+                Entry parsed = parseEntry(line);
+                if (parsed == null) {
+                    skipped++;
+                    continue;
+                }
+                out.add(parsed);
+            }
+            RegistrySnapshot snap = new RegistrySnapshot(Status.OK, out, skipped,
+                    "注册表 COUNT 行缺失或非法");
+            snap.formatVersion = 2;
+            snap.complete = false;
+            return snap;
+        }
+
+        long n = declared;
+        // 溢出保护：条目数超出 int 范围一律视为不完整（不按该值分配 / 迭代）。
+        int nInt = (n <= Integer.MAX_VALUE) ? (int) n : -1;
+        final int dataStart = 2;
+        boolean dup = false;
+        java.util.HashSet<String> seenIds = new java.util.HashSet<>();
+        if (nInt >= 0) {
+            for (int i = 0; i < nInt && dataStart + i < lines.size(); i++) {
+                String line = lines.get(dataStart + i).trim();
+                if (line.isEmpty()) {
+                    skipped++;
+                    continue;
+                }
+                Entry parsed = parseEntry(line);
+                if (parsed == null) {
+                    skipped++;
+                    continue;
+                }
+                if (!seenIds.add(parsed.userId)) {
+                    dup = true;
+                    skipped++;   // 重复 userId：计入跳过，保证 complete 必为 false
+                    continue;
+                }
+                out.add(parsed);
+            }
+        }
+
+        // 期望结构：2 行头 + N 行数据 + 1 行 END。
+        boolean sizeOk = nInt >= 0 && lines.size() == (2L + nInt + 1L);
+        boolean endOk = false;
+        if (nInt >= 0 && (dataStart + nInt) < lines.size()) {
+            Long endN = parseCountField(lines.get(dataStart + nInt).trim(), END_PREFIX);
+            endOk = (endN != null && endN == n);
+        }
+        // END 之后的额外非空行计入 skipped（可见性）。
+        if (nInt >= 0) {
+            for (int i = dataStart + nInt + 1; i < lines.size(); i++) {
+                if (!lines.get(i).trim().isEmpty()) {
+                    skipped++;
+                }
+            }
+        }
+
+        boolean complete = nInt >= 0 && sizeOk && endOk && (skipped == 0) && !dup;
+        String msg = complete ? "" : describeV2Incomplete(sizeOk, endOk, dup, skipped);
+        RegistrySnapshot snap = new RegistrySnapshot(Status.OK, out, skipped, msg);
+        snap.authoritative = complete;
+        snap.formatVersion = 2;
+        snap.complete = complete;
+        return snap;
+    }
+
+    /** 解析 {@code COUNT N} / {@code END N} 行；前缀不符 / 负数 / 溢出 / 非数字时返回 null。 */
+    @Nullable
+    private static Long parseCountField(@NonNull String line, @NonNull String prefix) {
+        String[] t = line.split("\\s+");
+        if (t.length != 2 || !prefix.equals(t[0])) {
+            return null;
+        }
+        try {
+            long v = Long.parseLong(t[1]);
+            return (v < 0) ? null : v;
+        } catch (Exception ex) {
+            // 含数值溢出（Long.parseLong 抛 NumberFormatException）与非数字。
+            return null;
+        }
+    }
+
+    @NonNull
+    private static String describeV2Incomplete(boolean sizeOk, boolean endOk, boolean dup, int skipped) {
+        StringBuilder sb = new StringBuilder("注册表枚举不完整");
+        List<String> reasons = new ArrayList<>();
+        if (!sizeOk) {
+            reasons.add("数据行数与 COUNT 不符或缺少 END/存在额外记录");
+        }
+        if (!endOk) {
+            reasons.add("END 标记缺失或与 COUNT 不一致");
+        }
+        if (dup) {
+            reasons.add("存在重复 userId");
+        }
+        if (skipped > 0) {
+            reasons.add("有 " + skipped + " 行无法解析");
+        }
+        if (!reasons.isEmpty()) {
+            sb.append("：").append(String.join("、", reasons));
+        }
+        return sb.toString();
     }
 
     // 静默重命名（崩溃恢复用）已收敛到 FileStoreUtils.renameQuietly（任务 A4c），本类不再自带实现。
@@ -1028,13 +1436,23 @@ public final class AndroidEnrollmentRepository {
 
         // 阶段 1：恢复上次崩溃遗留的「主文件缺失 + 备份存在」，确立本轮可回滚基线。
         // 恢复不了就宁可不写：绝不删掉唯一索引。
-        if (!dst.exists() && bak.exists() && !FileStoreUtils.renameQuietly(bak, dst)) {
-            return Status.IO_ERROR;
+        // A8：仅**完整 FREG2** 备份可被提升为基线；旧版 FREG1 或截断/损坏的备份**不提升、也不消费**
+        //（如实报错并保留原件），避免把不可判重的副本当作可回滚基线后又被后续写入覆盖。
+        if (!dst.exists() && bak.isFile()) {
+            RegistrySnapshot bakSnap = parseRegistryFile(bak);
+            if (!(bakSnap.status == Status.OK && bakSnap.formatVersion == 2 && bakSnap.complete)) {
+                return Status.IO_ERROR;
+            }
+            if (!FileStoreUtils.renameQuietly(bak, dst)) {
+                return Status.IO_ERROR;
+            }
         }
 
         File tmp = tmpFileFor(dst);
+        int count = entries.size();
         StringBuilder sb = new StringBuilder();
-        sb.append(REGISTRY_MAGIC).append('\n');
+        sb.append(REGISTRY_MAGIC_V2).append('\n');
+        sb.append(COUNT_PREFIX).append(' ').append(count).append('\n');
         for (Entry e : entries) {
             // userId 以可逆 hex 编码落盘（非哈希）：list 预览需要展示标识，见类级 javadoc 取舍说明。
             sb.append(toHex(e.userId.getBytes(StandardCharsets.UTF_8))).append(' ')
@@ -1044,6 +1462,8 @@ public final class AndroidEnrollmentRepository {
                     .append(e.templateFileSha256Hex).append(' ')
                     .append(e.createdAtMs).append('\n');
         }
+        // 末行结束标记：与 COUNT 相同的条目数，作为完整性尾校验。
+        sb.append(END_PREFIX).append(' ').append(count).append('\n');
         // 阶段 2：写 tmp 并 fsync，确保内容先落盘再谈替换。
         try (FileOutputStream fos = new FileOutputStream(tmp, false)) {
             fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
