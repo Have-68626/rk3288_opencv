@@ -32,6 +32,30 @@ std::string toLowerHex(const std::string& s) {
     return r;
 }
 
+// §I2：templateSpaceId 须恰 64 位**小写** hex（[0-9a-f]）。
+// 与 isHex64（大小写不敏感，用于 sha256）刻意不同：空间 ID 会被直接拼进图库目录名，
+// 只认小写可避免同一逻辑空间出现大小写两份目录。
+bool isLowerHex64(const std::string& s) {
+    if (s.size() != 64) return false;
+    for (unsigned char c : s) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+// §I2 精度字段：可选；缺省不改 out（保持调用方预设 "fp32"）；出现则仅 "fp32"/"int8"。
+bool parsePrecision(const rk_win::JsonValue& o, const std::string& label, std::string& out,
+                    std::string& err) {
+    const rk_win::JsonValue* v = o.find("precision");
+    if (!v) return true;  // 可选字段，旧 manifest 缺省走 fp32
+    if (!v->isString() || (v->s != "fp32" && v->s != "int8")) {
+        err = label + ".precision 非法（仅 fp32/int8）";
+        return false;
+    }
+    out = v->s;
+    return true;
+}
+
 bool getString(const rk_win::JsonValue& o, const std::string& key, std::string& out) {
     const rk_win::JsonValue* v = o.find(key);
     if (!v || !v->isString() || v->s.empty()) return false;
@@ -161,6 +185,12 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
     }
     out.schemaVersion = 1;
 
+    // §I2 新增可选字段：显式重置默认，避免复用 out 时残留上一次解析值。
+    // 旧 manifest 缺键 ⇒ 双 fp32 + 空 templateSpaceId ⇒ 走旧图库路径（读取兼容，不自动升级/搬库）。
+    out.detectorPrecision = "fp32";
+    out.embedderPrecision = "fp32";
+    out.templateSpaceId.clear();
+
     if (!getString(root, "profileId", out.profileId) ||
         !getString(root, "displayName", out.displayName)) {
         err = "缺少 profileId 或 displayName";
@@ -193,6 +223,8 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
         err = "detector 配置缺失或非法";
         return false;
     }
+    // §I2 检测精度（可选；仅 fp32/int8）。一致性（须与嵌入精度相同）在下方 emb 解析后统一校验。
+    if (!parsePrecision(*det, "detector", out.detectorPrecision, err)) return false;
     // 检测器输入节点缺键回落值 = "input.1"。
     // 证据：**`models/` 下全部 10 个** SCRFD .param（`models/scrfd_face_detect_ncnn/scrfd_*-opt2.param`
     // 及 int8 侧的 2 个）的 Input 层名**全部**是 input.1，与 manifest 用 sha256 钉住的
@@ -264,6 +296,14 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
         err = "embedder 配置缺失或非法";
         return false;
     }
+    // §I2 嵌入精度（可选；仅 fp32/int8）。
+    if (!parsePrecision(*emb, "embedder", out.embedderPrecision, err)) return false;
+    // §I2 一致性判据：检测与识别精度必须一致——新 INT8 profile 要求两者皆为 int8，
+    // 不允许 detector/embedder 一 int8 一 fp32 的混合（否则「INT8」名不副实且无法对照）。
+    if (out.detectorPrecision != out.embedderPrecision) {
+        err = "detector/embedder precision 必须一致（新 INT8 要求检测与识别都为 int8）";
+        return false;
+    }
     if (!getString(*emb, "input", out.embedderInput)) out.embedderInput = "in0";
     if (!getString(*emb, "output", out.embedderOutput)) out.embedderOutput = "out0";
     if (!parsePositiveInt(*emb, "inputWidth", out.embedderInputW)) out.embedderInputW = 112;
@@ -294,6 +334,17 @@ bool FaceRuntimeManifest::parseV1(const std::string& jsonText, const std::string
 
     if (!getString(root, "modelVersion", out.modelVersion)) out.modelVersion = "1";
     if (!getString(root, "licenseId", out.licenseId)) out.licenseId = "";
+
+    // §I2 独立图库空间 ID（可选顶层字段）。缺省或空串 ⇒ 保持空、走旧图库路径（读取兼容）。
+    // 仅当其为非空字符串时校验：须 64 位小写 hex；否则拒绝（禁止把未校验值拼入图库路径）。
+    const rk_win::JsonValue* ts = root.find("templateSpaceId");
+    if (ts && ts->isString() && !ts->s.empty()) {
+        if (!isLowerHex64(ts->s)) {
+            err = "templateSpaceId 非法（须 64 位小写 hex）";
+            return false;
+        }
+        out.templateSpaceId = ts->s;
+    }
 
     // 校验条目 sha256 已 hex（上文）；schema/维度已检
     err.clear();
@@ -341,5 +392,35 @@ bool FaceRuntimeManifest::verifyFiles(const FaceRuntimeProfile& profile,
     }
     return true;
 }
+
+const char* FaceRuntimeManifest::templateSpaceContract() {
+    // §I2 固定契约串：预处理/对齐契约的规范名。它刻画了「同一空间」的可比条件——
+    // 一旦改动，按旧串算出的全部 templateSpaceId 必须视为新空间（不得原地复用旧库）。
+    return "scrfd_rgb_127.5_1over128_letterbox0__arcface_rgb_127.5_1over127.5_align112_5pt_v2";
+}
+
+std::string FaceRuntimeManifest::composeTemplateSpaceHashInput(const std::string& detParamSha,
+                                                              const std::string& detBinSha,
+                                                              const std::string& embParamSha,
+                                                              const std::string& embBinSha) {
+    // 固定顺序 det_param/det_bin/emb_param/emb_bin，以 '\n' 分隔，再接契约串（同样 '\n' 分隔），
+    // 整体 UTF-8（本仓全仓 UTF-8，std::string 即字节序列，无需转码）。
+    // 发行方对返回值取 SHA256 小写 hex 即得 templateSpaceId；FP32 与其量化版传入同一组 FP32 哈希，
+    // 故得到同一空间 ID，而 INT8 文件哈希不参与。
+    std::string input;
+    input.reserve(64 * 4 + 4 + 80);
+    input += detParamSha;
+    input += '\n';
+    input += detBinSha;
+    input += '\n';
+    input += embParamSha;
+    input += '\n';
+    input += embBinSha;
+    input += '\n';
+    input += templateSpaceContract();
+    return input;
+}
+
+bool FaceRuntimeManifest::isValidTemplateSpaceId(const std::string& s) { return isLowerHex64(s); }
 
 }  // namespace rk_core

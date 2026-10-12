@@ -20,7 +20,7 @@ as_of=2026-10-12
 | 能力 | 目标 | 状态 | 本地证据 / 边界 |
 |---|---|---|---|
 | 加密模板仓库 | 模板向量加密落盘、人员主数据与模板分离 | **已落地** | `AndroidEnrollmentRepository` + `FeatureTemplateEncryptedStore`（AndroidKeyStore + AES-GCM）；注册表 `face_registry_v1.dat` 只存元数据，不含向量 |
-| 注册表落盘崩溃安全 | 中断不丢索引、可自愈 | **已落地（自愈有边界）** | `persistRegistry` 阶段替换 + `.bak` 恢复；单行损坏跳过隔离；**自愈需一次成功的 `add`/`remove`**（只序列化枚举到的条目），边界见 §2.1「容错」第二条 |
+| 注册表落盘崩溃安全 | 中断不丢索引、可自愈 | **已落地（自愈有边界）** | `persistRegistry` 阶段替换 + `.tmp`/`.bak` 恢复；单行损坏跳过隔离（并使枚举不完整）；**A8 起自愈只剩 `remove` 一条路**（`add` 自身以枚举完整性为前置、不完整即拒，不再「顺带清除坏行」），边界见 §2.1「容错」第二条 |
 | 八样本注册会话 | 采样门槛 + 姿态配额 + 均值模板 | **已落地（任务 17）** | `EnrollmentSession`：8 样本、正4/左2/右2，L2 归一均值模板 |
 | 重复人保护 | 拒绝重复注册 | **已落地** | `EnrollmentSession` 与现有模板 cosine ≥ 0.55 判 `DUPLICATE_PERSON`；仓库侧 `DUPLICATE_USER`；判重前先过「枚举完整性」门（`ListResult.isEnumerationComplete()`） |
 | 模板加解密落盘 | 由仓库闭环完成 | **已落地** | `AndroidEnrollmentRepository.add/remove/readTemplate/list/get` 接线加密存储 |
@@ -41,6 +41,7 @@ as_of=2026-10-12
 存储布局（默认作用域 `files/face_templates/`，与 `FeatureTemplateEncryptedStore.defaultDir` 一致）：
 
 - `face_registry_v1.dat` —— gallery 级单表注册表，记录**元数据**：`hex(userId) mv sv templateFileSize templateFileSha256Hex createdAtMs`，**不含任何生物特征向量**。
+  **格式（A8 起为 FREG2）**：首行魔数 `FREG2`、第二行 `COUNT N`、其后 N 行六字段记录、末行 `END N`（空表真实内容为 `FREG2\nCOUNT 0\nEND 0\n`）。旧版 `FREG1`（仅魔数 + 若干六字段行，**无**条目数与结束标记）仍**读取兼容**、不自动判重，下次写入即升级为 FREG2。文件名沿用 `face_registry_v1.dat`，**版本以首行魔数区分**；首行既非 `FREG1` 也非 `FREG2` 判 `CORRUPTED`。六列仍为**位置式、列名不落盘**。
   ⚠️ 第 4/5 列的字段原名 `ciphertextSize`/`ciphertextSha256Hex` 名实不符：实际存的是**整个加密模板文件**（envelope 全量 = 头 64B + 密文 + tag）的字节数与 SHA-256，**不是**纯密文段。该改名**已实施**——`AndroidEnrollmentRepository.Entry` 字段及读点（含 `MainActivity` 的**展示读点**，只读 `e.templateFileSize`、不读摘要列）均已改用现名 `templateFileSize`/`templateFileSha256Hex`，且**不需要数据迁移**（注册表是**位置式六列文本、列名不落盘**）。字段语义以 `AndroidEnrollmentRepository.Entry` 的注释为准。
 - `u_<sha256(userId)>.bin` —— 每人加密模板，由 `FeatureTemplateEncryptedStore` 以 AndroidKeyStore + AES-GCM 落盘。
 
@@ -57,11 +58,12 @@ as_of=2026-10-12
 - **历史明文键：默认保留 + 用户确认后清除（已决策）**：**不在启动、升级或迁移失败时自动删除**。检测到历史键时提示「本设备仍保留未加密的历史显示名，当前不用于展示，可手动清除」；清除需**二次确认**（明确「显示名不可恢复，人员 ID 和模板不受影响」）；**仅删除显示名对应键，禁止清空整个 SharedPreferences**；`commit()` 落盘成功后才提示完成。
   理由：保留是**避免未经同意丢失数据**，**不是**低估历史 PII 风险——而是把它当作**兼容旧数据的明确例外**。**只要历史键存在，就不得宣称「设备上已无明文 PII」**；「注册功能在 API<23 不可用」也不能替代对其他写入路径的检查（已核查：全仓除 `PersonDisplayNameStore.save`（加密）外，**无其他显示名写入路径**）。
 - **并发**：按规范化 `scopeDir` 路径共享静态锁，串行化同目录多实例的 `add/remove/readTemplate/list/get`。
-- **容错**：单行损坏跳过并计数（`skippedLineCount`），仅文件头（魔数 `FREG1`/版本）损坏才判 `CORRUPTED`；**自愈需一次成功的 `add`/`remove`**（`persistRegistry` 只序列化**枚举到的**条目，被跳过的坏行不在其中）。
-  ⚠️ **自愈边界（如实；2026-09-29 更新）**：注册路径的判重门（`EnrollmentSession.fromRepository` → `ListResult.isEnumerationComplete()`）在存在坏行时对**每一帧**样本返回 `REPO_UNAVAILABLE`，会话永远集不满 8 样本 ⇒ 经 UI 的 `add` **不可达**，判重门这条自愈路**仍被切断**。`remove` 的 UI 入口（`MainActivity.showPersonManagementDialog`）按 `list().entries` 列条目：注册表**只剩被跳过的坏行**时 `entries` 为空 ⇒ 列表里**没有任何可删条目**。**但该死角已有应用内恢复出口**：`MainActivity.promptRegistryRecovery`（经 `confirmQuarantineRegistry` 二次确认 → `quarantineRegistry`）调用仓库层 `AndroidEnrollmentRepository.quarantineCorruptRegistry()`，把损坏文件**改名旁置**为 `<原名>.corrupt.<ts>`（**绝不删除**、原字节完整保留）并新建空表，结果回传旁置文件的**绝对路径**供事后手工取回。⚠️ 须区分「**有出口**」与「**自动修复**」：该入口只在注册表「整份不可枚举」（头损坏 / 全部行不合法 / 整体不可读，即 `IO_ERROR`）时触发；旁置**不还原**任何损坏条目（新表为空），`add` 路径的自愈仍被判重门切断，只能经该入口或 `remove`（有可删条目时）推进。
-  ⚠️ 另：`status==OK && skipped==0` **不足以**支撑「可安全用作判重依据」——从 `.bak` 恢复时备份可能早于最近一次 `add`（新条目只存在于未被消费的 `.tmp` 里），此时枚举**确实缺行**而该判据仍为 true；该缺口未修，见 `ListResult.isEnumerationComplete()` 的 javadoc。
-- **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；主文件**缺失或不可解析**时，`loadRegistry` 按「先未消费的 `.tmp`、后 `.bak`」取首个可解析的副本作为注册表。主文件**缺失**时把副本改名就位；主文件**存在**（即便头损坏 / 不可读）时**只读**副本、绝不改名覆盖（POSIX `rename(2)` 会静默覆盖同名目标 ⇒ 覆盖即销毁主文件原字节，违背「不可解析的工件仍应保留、改名不删」）。
-  ⚠️ **头损坏（`CORRUPTED`）也纳入自愈**（2026-09-29 放宽了此前「回退只含 `IO_ERROR`、不含 `CORRUPTED`」的范围）：头损坏 + 健康 `.bak`/`.tmp` 并存时先自愈读回，避免 `quarantineCorruptRegistry` 判定「无可用条目」而把健康副本也一并旁置、清空活性库。范围由 `AndroidEnrollmentRepositoryTest.corruptHeaderRecoversFromUsableBackupWithoutOverwritingMain`（只读、不覆盖主文件字节）与 `RegistryQuarantineRecoveryTest.corruptMainWithUsableBackupSelfHealsInsteadOfQuarantiningBackup`（不旁置健康副本）钉住。
+- **容错**：单行损坏（或 `END` 后多余记录、重复 userId）跳过并计数（`skippedLineCount`），状态码仍为 `OK`；仅文件头损坏（首行魔数既非 `FREG1` 也非 `FREG2`）或整体不可读才判 `CORRUPTED`/`IO_ERROR`。⚠️ 被跳过的坏行使枚举**不完整**（`ListResult.complete=false`）。**A8 起 `add` 不再是自愈路径**：它**自身**以枚举完整性为前置，注册表不完整即返回 `CORRUPTED`、不写任何字节；`persistRegistry` 仍只序列化**传进去的**条目（坏行不在其中），故**自愈只剩一次成功的 `remove`**（重写注册表、顺带清除坏行并升级为 FREG2）。
+  ⚠️ **自愈边界（如实；A8 更新）**：注册路径的判重门（`EnrollmentSession.fromRepository` → `ListResult.isEnumerationComplete()`）在枚举**不完整**时对**每一帧**样本返回 `REPO_UNAVAILABLE` —— 不完整不只指「有坏行」：FREG2 缺 `COUNT`/`END`、数据行数与 `COUNT` 不符、有重复 userId、`END` 后有多余记录、整表被截断，或枚举取自**不可自动采用的副本**（旧版 FREG1 副本、或截断/损坏的 FREG2 副本，仅只读查看）—— **任一**都使 `isEnumerationComplete()` 为 false。（注：旧版 **FREG1 主文件**在无坏行时仍判完整、可继续注册并在下一次写入升级为 FREG2；但 FREG1 无 `COUNT`/`END`，行边界截断无法被察觉，属残余风险。）会话因而永远集不满 8 样本 ⇒ 经 UI 的 `add` **不可达**；且 A8 起 `add` **自身**也以完整性为前置而拒绝，**`add` 这条自愈路已完全切断**。`remove` 的 UI 入口（`MainActivity.showPersonManagementDialog`）按 `list().entries` 列条目：注册表**没有任何可解析条目**（全部行损坏、或 FREG2 被截断到读不出条目）时 `entries` 为空 ⇒ 列表里**没有任何可删条目**。**但该死角已有应用内恢复出口**：`MainActivity.promptRegistryRecovery`（经 `confirmQuarantineRegistry` 二次确认 → `quarantineRegistry`）调用仓库层 `AndroidEnrollmentRepository.quarantineCorruptRegistry()`，把当前注册表工件（`dst`/`.bak`/`.tmp` 三者凡存在者）**改名旁置**为 `<原名>.corrupt.<ts>`（**绝不删除**、原字节完整保留）并新建空的 FREG2 表，结果回传旁置文件的**绝对路径**供事后手工取回。⚠️ 须区分「**有出口**」与「**自动修复**」：该入口只在注册表「**没有任何可用条目**」时触发 —— `status != OK`（头损坏 `CORRUPTED` / 整体不可读 `IO_ERROR`），或 `entries` 为空且枚举不完整（全新安装的空表 `complete==true`，故**不**被误判为损坏）；仍有可解析条目时返回 `INVALID_ARGUMENT`。旁置**不还原**任何损坏条目（新表为空），只能经该入口或 `remove`（有可删条目时）推进。
+  ⚠️ 判据「枚举是否完整」＝ `ListResult.isEnumerationComplete()`（即 `status==OK && complete`）。⚠️ 另：它仍**不足以**完全支撑「可安全用作判重依据」——从副本（`.tmp`/`.bak`）恢复时，只要该副本自身是一条**自洽的完整 FREG2**（`COUNT`/`END` 一致）即被采用并置 `complete=true`，而**不校验它是否新于最近一次成功的写入**。`loadRegistry` 已**优先**采用未消费的 `.tmp`（严格新于 `.bak`），故这条残余窗口需要 `.tmp` **缺失/不可用**才会落到较旧的 `.bak`，此时可能恢复出**缺最近新增行**的枚举而判据仍为 true。该残余边界由 `AndroidEnrollmentRepositoryTest.enumerationCompletenessIsIndependentOfAuthoritative` 的覆盖声明登记（其 javadoc 自述 `isEnumerationComplete()` 不覆盖 `.bak` 恢复路径的缺行）。
+  ⚠️ **`complete` 的语义边界（如实登记）**：`complete==true` 只证「**文件内自洽、未截断/未缺行**」，**不证**「**等于已注册全集**」。FREG2 **无校验和**，`COUNT`/`END` 皆为**自声明**值——任一自洽的 `FREG2 / COUNT N / N 行六字段记录 / END N` 都通过完整性校验，即便磁盘上另有未被写入该文件的模板（构造性反例：手写 `COUNT 2` + 2 行 + `END 2` 全过校验，而第三人模板仍可能存在）。故完整性门拒的是**结构不完整**，**非**真实性/全集证明；不得据此宣称「已注册人员集合完整」。
+- **崩溃恢复（P1-3）**：`persistRegistry` 采「tmp 落盘+fsync → dst→bak → tmp→dst → 清理 bak」；主文件**缺失或不可解析**时，`loadRegistry` 按「先未消费的 `.tmp`、后 `.bak`」**分两轮**读副本：**第一轮**取首个**完整 FREG2**副本**采用**（主文件**缺失**时把它改名就位；A8 起**旧版 FREG1 或截断/损坏的 FREG2 副本一律不采用**），**第二轮**无完整 FREG2 副本时取首个**可解析**副本**只读查看**（不提升、`complete=false`、不参与判重）。主文件**存在**（即便头损坏 / 不可读）时一律**只读**副本、绝不改名覆盖（POSIX `rename(2)` 会静默覆盖同名目标 ⇒ 覆盖即销毁主文件原字节，违背「不可解析的工件仍应保留、改名不删」）。`persistRegistry` 阶段 1「恢复基线」同样**只提升完整 FREG2 备份**，否则返回 `IO_ERROR`（不消费、保留原件）。
+  ⚠️ **头损坏（`CORRUPTED`）也纳入自愈**（2026-09-29 放宽了此前「回退只含 `IO_ERROR`、不含 `CORRUPTED`」的范围；A8 起仅当健康副本本身是**完整 FREG2** 时才自愈/提升，旧版或不完整副本一律只读、不提升）：头损坏 + 健康 `.bak`/`.tmp` 并存时先自愈读回，避免 `quarantineCorruptRegistry` 判定「无可用条目」而把健康副本也一并旁置、清空活性库。范围由 `AndroidEnrollmentRepositoryTest.corruptHeaderRecoversFromUsableBackupWithoutOverwritingMain`（只读、不覆盖主文件字节）与 `RegistryQuarantineRecoveryTest.corruptMainWithUsableBackupSelfHealsInsteadOfQuarantiningBackup`（不旁置健康副本）钉住。
 - **API < 23**：`add/remove/readTemplate` 返回 `UNSUPPORTED_PLATFORM`；`list/get` 放行用于只读预览。
 
 ### 2.2 八样本注册会话 `EnrollmentSession`（任务 17）
@@ -69,8 +71,8 @@ as_of=2026-10-12
 状态机：`IDLE --start()--> COLLECTING --第 8 个样本被接受--> COMPLETED`，任意态可 `cancel()/reset()`；`reset()` 回 `IDLE`。
 
 - **内存与隐私**：不接收、不保存任何图像像素；样本只含调用方测好的数值指标与 512 维 embedding。集满即求均值、L2 归一，只保留一个均值模板；取消/复位清零；本类不调用日志接口。
-- **采样门槛（按检查顺序）**：单确认脸（`faceCount==1`）→ 检测置信度 ≥ 0.5 → 面积占比 ≥ 10% → Laplacian 方差 ≥ 80 → 灰度均值 ∈ [50, 205] → 灰度标准差 ≥ 25 → 姿态可判定 → 姿态配额（正4/左2/右2）→ 与已收样本 cosine ≥ 0.75（否则视为不同人/异常帧）→ **现有模板快照必须可读且枚举完整**（读取失败，或注册表存在被跳过并隔离的坏行 ⇒ `REPO_UNAVAILABLE` 直接拒绝，**绝不按“库中无重复”放行**）→ 与现有模板 cosine ≥ 0.55 判重复人员。
-  ⚠️ 该门拒绝的是**每一帧**（失败标记在 `start()` 的快照阶段即落定），故注册表只要有坏行，整场采集恒停在 0/8；其可用性后果见 §2.1「自愈边界」。另：判据 `isEnumerationComplete()` **不覆盖** `.bak` 恢复路径的缺行。
+- **采样门槛（按检查顺序）**：单确认脸（`faceCount==1`）→ 检测置信度 ≥ 0.5 → 面积占比 ≥ 10% → Laplacian 方差 ≥ 80 → 灰度均值 ∈ [50, 205] → 灰度标准差 ≥ 25 → 姿态可判定 → 姿态配额（正4/左2/右2）→ 与已收样本 cosine ≥ 0.75（否则视为不同人/异常帧）→ **现有模板快照必须可读且枚举完整**（读取失败，或**枚举不完整** —— 注册表有被跳过并隔离的坏行 / FREG2 缺 `COUNT`/`END` / 行数与 `COUNT` 不符 / 有重复 userId / `END` 后有多余记录 / 被截断 / 取自不可自动采用的旧版 FREG1 或不完整副本 —— ⇒ `REPO_UNAVAILABLE` 直接拒绝，**绝不按“库中无重复”放行**）→ 与现有模板 cosine ≥ 0.55 判重复人员。
+  ⚠️ 该门拒绝的是**每一帧**（失败标记在 `start()` 的快照阶段即落定），故只要注册表枚举不完整（有坏行、或取自不可自动采用的旧版/不完整副本、或被截断/缺尾的 FREG2 等），整场采集恒停在 0/8；其可用性后果见 §2.1「自愈边界」。另：判据 `isEnumerationComplete()` **不覆盖** `.bak` 恢复路径的缺行（见 §2.1「容错」末条）。
 - **常量**：`EMBEDDING_DIM=512`、`TARGET_SAMPLES=8`、`QUOTA_FRONT/LEFT/RIGHT=4/2/2`、`MIN_DET_SCORE=0.5`、`MIN_AREA_RATIO=0.10`、`MIN_LAPLACIAN_VARIANCE=80`、`MIN_GRAY_MEAN=50`、`MAX_GRAY_MEAN=205`、`MIN_GRAY_STD=25`、`MIN_SAMPLE_COSINE=0.75`、`DUPLICATE_TEMPLATE_COSINE=0.55`、`POSE_YAW_THRESHOLD=0.15`。
 - **阈值来源**：Laplacian/灰度/面积占比/cosine/L2 归一复用 `ImageMetrics` 静态实现；姿态默认由关键点偏航代理分类（`ImageMetrics.classifyPose`），调用方可直接给 `Pose`。
 
@@ -109,12 +111,12 @@ APK 不内置模型，用户经 SAF 导入 ZIP；校验链、ZIP 契约与原子
 ## 3. 未落地（任务 18 及以后）
 
 - **注册闭环的逐帧特征源（#1，已接线；真机未验收）**：注册 UI 已接线——`EnrollmentSession` 由 `MainActivity.startEnrollment` 构造，采样进度/拒绝原因由对话框轮询展示，完成时经 `AndroidEnrollmentRepository.add` 加密落盘并 `replaceGallery` 刷新运行中图库。逐帧特征源也已接线：`MainActivity.startNativeEnrollmentCapture` 调 `NativeFaceBridge.startEnrollmentCapture` → native `onEnrollmentCaptureSample` → 回调 `MainActivity.onEnrollmentFrameFromNative` → `MainActivity.feedEnrollmentSample`。因此原文「JNI 未暴露逐帧 embedding / `feedEnrollmentSample` 无生产调用方 / 会话恒停在 0/8」**均不再成立**，不再作为 Blocker 证据。
-  ⚠️ **仍未落地的部分（如实）**：(a) **真机闭环验收未做**——本机/CI 只能证明接线与结构，不能证明 RK3288 上能真实采满 8 样本（真机验收见 `docs/guides/rk3288-device-acceptance.md`）；(b) 采集开启失败时（无 Engine、模型未激活、native 未接通）`startEnrollmentCapture` 返回非 ok，本类只记日志并断开监听器，进度区停在 0/8；(c) 注册表存在坏行时判重门拒收每一帧（见 §2.1 自愈边界）。故当前表述应为「**接线完成、真机闭环未验收**」，既不得宣称闭环已在设备上可用，也不得再称其因缺特征源而不可用。`NativeFaceBridge.beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` 4 个注册类原生方法**仍无生产调用方**（属实）。
+  ⚠️ **仍未落地的部分（如实）**：(a) **真机闭环验收未做**——本机/CI 只能证明接线与结构，不能证明 RK3288 上能真实采满 8 样本（真机验收见 `docs/guides/rk3288-device-acceptance.md`）；(b) 采集开启失败时（无 Engine、模型未激活、native 未接通）`startEnrollmentCapture` 返回非 ok，本类只记日志并断开监听器，进度区停在 0/8；(c) 注册表枚举不完整（含坏行、不可自动采用的旧版/不完整副本、被截断的 FREG2 等）时判重门拒收每一帧（见 §2.1 自愈边界）。故当前表述应为「**接线完成、真机闭环未验收**」，既不得宣称闭环已在设备上可用，也不得再称其因缺特征源而不可用。`NativeFaceBridge.beginEnrollment`/`cancelEnrollment`/`getEnrollmentStatus`/`takeEnrollmentTemplate` 4 个注册类原生方法**仍无生产调用方**（属实）。
 - **冷启动恢复**：已落地——`MainActivity.restoreActiveProfileOnStartup`（由 `MainActivity.onCreate` 调用）先由加密仓库重建内存图库并 `replaceGallery`，再读取 `active_profile` 回放 `activate`；后台执行、失败不阻塞启动，reason 如实展示。
-- **注册表损坏时的 UI 恢复出口（2026-09-29 已提供）**：注册表存在坏行时 `add` 自愈**仍**被判重门切断（`EnrollmentSession` 返回 `REPO_UNAVAILABLE`），而「只剩坏行」时人员列表为空、没有可删条目。该死角现已提供**非破坏性**的应用内出口：`MainActivity.promptRegistryRecovery` → `confirmQuarantineRegistry`（二次确认）→ `quarantineRegistry` 调仓库层 `quarantineCorruptRegistry()`，**改名旁置 + 新建空表**（**绝不删除**、回传绝对路径）。须如实区分：解决的是「**有出口**」而非「**自动修复**」——空表不含任何已注册人员，旁置文件仅供手工取回；仅当注册表「整份不可枚举」（头损坏 / 全部行不合法 / 整体不可读，即 `IO_ERROR`）时触发，仍有可解析条目时返回 `INVALID_ARGUMENT`（宜走 `remove` 逐个自愈）。
+- **注册表损坏时的 UI 恢复出口（2026-09-29 已提供）**：A8 起 `add` **自身**即以枚举完整性为前置（不完整即拒），故 `add` 自愈已**完全切断**（`EnrollmentSession` 另对每一帧返回 `REPO_UNAVAILABLE`），而「没有任何可解析条目」时人员列表为空、没有可删条目。该死角现已提供**非破坏性**的应用内出口：`MainActivity.promptRegistryRecovery` → `confirmQuarantineRegistry`（二次确认）→ `quarantineRegistry` 调仓库层 `quarantineCorruptRegistry()`，**改名旁置 + 新建空表**（**绝不删除**、回传绝对路径）。须如实区分：解决的是「**有出口**」而非「**自动修复**」——空表不含任何已注册人员，旁置文件仅供手工取回；仅当注册表「没有任何可用条目」（`status != OK`，即头损坏 / 整体不可读；或 `entries` 为空且枚举不完整）时触发，仍有可解析条目时返回 `INVALID_ARGUMENT`（宜走 `remove` 逐个自愈）。
 - **身份证件/人员域扩展**：人员域对象、权限、审计、双端同步均未实现（顶层设计目标项）。
 
-Android 端的注册能力当前应表述为“**数据层与会话可用、注册 UI 与逐帧特征源均已接线，但真机闭环尚未验收**”；同时须带上两条限定：① 注册表存在坏行时注册会被判重门拒绝（该死角已有应用内恢复出口 `MainActivity.promptRegistryRecovery`「改名旁置 + 建空表」，**绝不删除**，2026-09-29 落地）；② 从 `.bak` 恢复后枚举可能缺行，判重保证不完整。
+Android 端的注册能力当前应表述为“**数据层与会话可用、注册 UI 与逐帧特征源均已接线，但真机闭环尚未验收**”；同时须带上两条限定：① 注册表枚举不完整（含坏行、不可自动采用的旧版/不完整副本、被截断的 FREG2 等）时注册会被判重门拒绝（该死角已有应用内恢复出口 `MainActivity.promptRegistryRecovery`「改名旁置 + 建空表」，**绝不删除**，2026-09-29 落地）；② 从 `.bak` 恢复后枚举可能缺行，判重保证不完整。
 
 ## 4. 安全与隐私约束（已落地部分）
 
@@ -129,5 +131,6 @@ Android 端的注册能力当前应表述为“**数据层与会话可用、注�
 - 注册表 userId 可逆编码（hex）是刻意取舍，若合规升级要求标识不可逆，需同步改造 `list` 展示策略。
 - 模板双端互通仍为研究项，Android 与 Windows 模板不假设可直认。
 - **注册表损坏时的 UI 恢复出口（2026-09-29 已提供）**：见 §2.1 自愈边界与 §3；`MainActivity.promptRegistryRecovery`（二次确认后调仓库层 `quarantineCorruptRegistry()`）提供「改名旁置 + 建空表」出口（**绝不删除**、回传绝对路径），只解决「**有出口**」、不还原损坏条目。
-- **判重保证不完整**：`ListResult.isEnumerationComplete()` 不覆盖 `.bak` 恢复路径（备份可能早于最近一次 `add` ⇒ 枚举可能真缺行而判据仍为 true）。修法需要「比对备份与主文件的时间戳/条目数」或改用不可逆随机 id，未在本批实施。
+- **判重保证不完整**：`ListResult.isEnumerationComplete()` 对**副本恢复**路径不校验新旧 —— `adoptCompleteFreg2` 只要副本自身是**自洽的完整 FREG2** 即置 `complete=true`（`loadRegistry` 已优先采用未消费的 `.tmp`，故须 `.tmp` 缺失/不可用才会落到较旧的 `.bak`）⇒ 理论上仍可能恢复出**缺最近新增行**的枚举而判据为 true。修法需要「比对备份与主文件的时间戳/条目数」或改用不可逆随机 id，未在本批实施。
+- ⚠️ **待核（源码内口径分歧）**：`ListResult.isEnumerationComplete()` 的 javadoc 自述「**旧版 FREG1 一律不置 true**」，但 `parseRegistryV1Legacy` 对**无坏行的 FREG1 主文件**置 `complete=(skippedLineCount==0)`，且用例 `AndroidEnrollmentRepositoryTest.legacyFreg1MainIsReadableAndUpgradesToFreg2` 亦断言其 `isEnumerationComplete()` 为 **true**（即放行升级为 FREG2）。本文按**可执行行为**记述（旧版主文件可判完整、旧版**副本**不被采信）；该 javadoc 措辞与实现不符，待源码侧统一。
 - 低版本只读模式下注册入口的门禁已在 `MainActivity.startEnrollment`（判据 `AndroidEnrollmentRepository.isEnrollmentEnabled`）实现：点击后返回 `unsupportedReason()` 的受控失败；如要求进入前即置灰按钮，仍待 UI 层补充。

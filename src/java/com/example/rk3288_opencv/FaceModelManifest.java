@@ -44,6 +44,14 @@ public final class FaceModelManifest {
     /** detector 约定输出个数（score/bbox/kps × 3 个尺度）。 */
     public static final int DETECTOR_OUTPUT_COUNT = 9;
 
+    /**
+     * §I2 独立图库契约串（固定；预处理/对齐契约的规范名）。
+     * 一旦改动，按旧串算出的全部 templateSpaceId 必须视为新空间（不得原地复用旧库）。
+     * 与 C++ {@code FaceRuntimeManifest::templateSpaceContract()} 逐字一致。
+     */
+    public static final String TEMPLATE_SPACE_CONTRACT =
+            "scrfd_rgb_127.5_1over128_letterbox0__arcface_rgb_127.5_1over127.5_align112_5pt_v2";
+
     private FaceModelManifest() {
     }
 
@@ -104,6 +112,20 @@ public final class FaceModelManifest {
         public final int embedderInputH;
         public final int embeddingDim;
 
+        /**
+         * 精度（§I2 独立图库契约）：仅 {@code "fp32"}/{@code "int8"}，缺省 {@code "fp32"}。
+         * 两者必须一致——新 INT8 profile 要求检测与识别都为 int8（见 {@link #parse} 的一致性判据）。
+         */
+        @NonNull public final String detectorPrecision;
+        @NonNull public final String embedderPrecision;
+
+        /**
+         * 独立图库空间 ID（§I2）：64 位**小写** hex；旧 manifest 缺省为空 ⇒ 走旧图库路径，
+         * 不自动升级/搬库。由发行方按 SHA256(composeTemplateSpaceHashInput(四个 FP32 文件 sha256)) 计算；
+         * FP32 与其量化版共用同一值（INT8 文件哈希不参与）。
+         */
+        @NonNull public final String templateSpaceId;
+
         public final float detectionConfidence;
         public final float nmsIou;
         public final float identitySimilarity;
@@ -120,6 +142,8 @@ public final class FaceModelManifest {
                 @NonNull Entry embedderParam, @NonNull Entry embedderBin,
                 @NonNull String embedderInput, @NonNull String embedderOutput,
                 int embedderInputW, int embedderInputH, int embeddingDim,
+                @NonNull String detectorPrecision, @NonNull String embedderPrecision,
+                @NonNull String templateSpaceId,
                 float detectionConfidence, float nmsIou, float identitySimilarity,
                 @NonNull String modelVersion, @NonNull String licenseId) {
             this.schemaVersion = schemaVersion;
@@ -142,6 +166,9 @@ public final class FaceModelManifest {
             this.embedderInputW = embedderInputW;
             this.embedderInputH = embedderInputH;
             this.embeddingDim = embeddingDim;
+            this.detectorPrecision = detectorPrecision;
+            this.embedderPrecision = embedderPrecision;
+            this.templateSpaceId = templateSpaceId;
             this.detectionConfidence = detectionConfidence;
             this.nmsIou = nmsIou;
             this.identitySimilarity = identitySimilarity;
@@ -251,6 +278,11 @@ public final class FaceModelManifest {
         if (detParam == null || detBin == null) {
             return new ParseResult(Status.MISSING_FIELD, null, "detector 配置缺失或非法");
         }
+        // §I2 检测精度（可选；仅 fp32/int8）。一致性（须与嵌入精度相同）在下方 emb 解析后统一校验。
+        String detPrecision = parsePrecision(det);
+        if (detPrecision == null) {
+            return new ParseResult(Status.BAD_VALUE, null, "detector.precision 非法（仅 fp32/int8）");
+        }
         // 检测器输入节点缺键回落值 = "input.1"（**方向**与 C++ FaceRuntimeProfile 一致）。
         // ⚠️ 精确措辞（2026-09-26 二次审计更正）：本行**不是**「与 C++ 逐字镜像」——
         //    C++ `getString` 在**空串**时也回落（`v->s.empty()` ⇒ 用默认值），而本行的 `strOr`
@@ -327,6 +359,16 @@ public final class FaceModelManifest {
         if (embParam == null || embBin == null) {
             return new ParseResult(Status.MISSING_FIELD, null, "embedder 配置缺失或非法");
         }
+        // §I2 嵌入精度（可选；仅 fp32/int8）。
+        String embPrecision = parsePrecision(emb);
+        if (embPrecision == null) {
+            return new ParseResult(Status.BAD_VALUE, null, "embedder.precision 非法（仅 fp32/int8）");
+        }
+        // §I2 一致性判据：检测与识别精度必须一致——新 INT8 profile 要求两者皆为 int8（与 C++ 一致）。
+        if (!detPrecision.equals(embPrecision)) {
+            return new ParseResult(Status.BAD_VALUE, null,
+                    "detector/embedder precision 必须一致（新 INT8 要求检测与识别都为 int8）");
+        }
         String embInput = strOr(asString(emb.get("input")), "in0");
         String embOutput = strOr(asString(emb.get("output")), "out0");
         Integer embW = positiveIntOrNull(emb.get("inputWidth"));
@@ -370,10 +412,22 @@ public final class FaceModelManifest {
         String modelVersion = strOr(asString(obj.get("modelVersion")), "1");
         String licenseId = strOr(asString(obj.get("licenseId")), "");
 
+        // §I2 独立图库空间 ID（可选顶层字段）。缺省或空串 ⇒ 保持空、走旧图库路径（读取兼容）。
+        // 仅当其为非空字符串时校验：须 64 位小写 hex；否则拒绝（禁止把未校验值拼入图库路径）。
+        String templateSpaceId = "";
+        String tsRaw = asString(obj.get("templateSpaceId"));
+        if (tsRaw != null && !tsRaw.isEmpty()) {
+            if (!isValidTemplateSpaceId(tsRaw)) {
+                return new ParseResult(Status.BAD_VALUE, null, "templateSpaceId 非法（须 64 位小写 hex）");
+            }
+            templateSpaceId = tsRaw;
+        }
+
         Profile profile = new Profile(SCHEMA_VERSION, profileId, displayName, abis,
                 detParam, detBin, detInput, detOutputs, detInputW, detInputH,
                 decodeMode, anchors, outputLayout,
                 embParam, embBin, embInput, embOutput, embInputW, embInputH, embeddingDim,
+                detPrecision, embPrecision, templateSpaceId,
                 dConf != null ? dConf : 0.55f,
                 nms != null ? nms : 0.40f,
                 sim != null ? sim : 0.45f,
@@ -422,6 +476,37 @@ public final class FaceModelManifest {
             }
         }
         return true;
+    }
+
+    /**
+     * §I2 templateSpaceId 合法性：恰 64 位**小写** hex（[0-9a-f]）。
+     * 与 {@link #isSha256Hex} 的大小写不敏感刻意不同：空间 ID 会被直接拼进图库目录名，
+     * 只认小写可避免同一逻辑空间出现大小写两份目录。与 C++ {@code isValidTemplateSpaceId} 一致。
+     */
+    public static boolean isValidTemplateSpaceId(@NonNull String s) {
+        if (s.length() != 64) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * §I2 空间 ID 的哈希输入：四个**父 FP32** 文件 sha256 按 det_param/det_bin/emb_param/emb_bin
+     * 顺序以 {@code '\n'} 连接、再接契约串（同样 {@code '\n'} 分隔），整体 UTF-8。
+     * 发行方对其取 SHA256 小写 hex 即得 templateSpaceId。与 C++ {@code composeTemplateSpaceHashInput}
+     * 逐字一致（同一输入 ⇒ 两语言得同一串）。INT8 文件哈希不参与，故 FP32 与量化版共用同一空间。
+     */
+    @NonNull
+    public static String composeTemplateSpaceHashInput(@NonNull String detParamSha,
+            @NonNull String detBinSha, @NonNull String embParamSha, @NonNull String embBinSha) {
+        return detParamSha + "\n" + detBinSha + "\n" + embParamSha + "\n" + embBinSha + "\n"
+                + TEMPLATE_SPACE_CONTRACT;
     }
 
     /** 目录名安全校验：非空、不含分隔符/父目录段，且不是 . / ..（profileId 会作为目录名）。 */
@@ -519,6 +604,23 @@ public final class FaceModelManifest {
     @NonNull
     private static String strOr(@Nullable String v, @NonNull String dflt) {
         return (v == null) ? dflt : v;
+    }
+
+    /**
+     * §I2 精度字段：缺省返回 {@code "fp32"}（旧 manifest 兼容）；出现则仅 {@code "fp32"}/{@code "int8"}；
+     * 其它值（含非字符串）返回 {@code null} 表示非法。与 C++ {@code parsePrecision} 语义一致。
+     */
+    @Nullable
+    private static String parsePrecision(@NonNull Map<String, Object> parent) {
+        Object raw = parent.get("precision");
+        if (raw == null) {
+            return "fp32";
+        }
+        String s = asString(raw);
+        if (!"fp32".equals(s) && !"int8".equals(s)) {
+            return null;
+        }
+        return s;
     }
 
     private static boolean isBlank(@Nullable String s) {
