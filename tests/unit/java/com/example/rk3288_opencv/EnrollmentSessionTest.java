@@ -545,6 +545,35 @@ public class EnrollmentSessionTest {
         assertEquals(0, s.acceptedCount());
     }
 
+    /**
+     * A8：FREG2 主表被**截断**（缺 END）时枚举不完整 —— 这是旧版「只校验首行」判据**无法察觉**的
+     * 形态（skippedLineCount 仍为 0），故必须由 FREG2 结构校验判出不完整，判重门据此拒收。
+     */
+    @Test
+    public void truncatedFreg2RegistryRejectsSampleWithRepoUnavailable() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertTrue(repo.add("bob", EnrollmentSession.encodeLe(otherEmbedding()), MV, TSV).isOk());
+        // 截断：只保留 FREG2 / COUNT 1 / 数据行，丢掉末行 END。
+        List<String> lines = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < lines.size() - 1; i++) {
+            sb.append(lines.get(i)).append('\n');
+        }
+        Files.write(repo.registryFile().toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertTrue("前置条件：截断后仍可读", list.isOk());
+        assertFalse("前置条件：截断后枚举必须判不完整", list.isEnumerationComplete());
+
+        EnrollmentSession s = new EnrollmentSession("alice", EnrollmentSession.fromRepository(repo));
+        s.start();
+        assertTrue("截断的 FREG2 必须落定失败标记", s.isExistingLoadFailed());
+        EnrollmentSession.FeedResult r = s.feed(sample(base(), EnrollmentSession.Pose.FRONT));
+        assertFalse("枚举不完整不得放行注册", r.accepted);
+        assertEquals(EnrollmentSession.Reason.REPO_UNAVAILABLE, r.reason);
+        assertEquals(0, s.acceptedCount());
+    }
+
     /** 正常空库仍可正常注册，失败通道不误伤。 */
     @Test
     public void emptyRepositoryStillAllowsNormalEnrollment() throws Exception {

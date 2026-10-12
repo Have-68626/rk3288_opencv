@@ -75,4 +75,11 @@
     <string name="ui_register_start">开始采集（8 样本）</string>
     <string name="ui_register_cancel">取消采集</string>
     <string name="ui_register_status_idle">未开始：请输入人员标识后点击开始采集</string>
+
+    <!-- A15：孤儿模板旁置（逐个二次确认；只旁置、不删除，保留恢复副本） -->
+    <string name="ui_orphan_templates_entry">孤儿模板…</string>
+    <string name="ui_orphan_templates_title">孤儿模板</string>
+    <string name="ui_orphan_templates_warning">这些模板文件在注册表中没有对应条目，可能是注册表缺失或损坏造成。文件名是人员标识的哈希，无法反推出具体人员，也不代表某个确定的人员。</string>
+    <string name="ui_orphan_templates_confirm_title">确认旁置该孤儿模板？</string>
+    <string name="ui_orphan_templates_confirm_message">将把该模板文件移动到本图库的 .orphan-recovery/ 目录（不永久删除，可手工取回）。该文件不在注册表中，旁置后不影响任何已注册人员。确认继续？</string>
 </resources>

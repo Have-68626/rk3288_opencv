@@ -4716,6 +4716,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 AlertDialog.Builder builder = new AlertDialog.Builder(this)
                         .setTitle("人员列表（点击删除，需二次确认）")
                         .setItems(items, (d, which) -> confirmDeletePerson(entries.get(which)))
+                        // A15：孤儿模板旁置入口（逐个二次确认；只旁置、不删除）。
+                        .setNeutralButton(getString(R.string.ui_orphan_templates_entry),
+                                (d, w) -> showOrphanTemplateRecovery())
                         .setNegativeButton("关闭", null);
                 if (skipped > 0) {
                     builder.setMessage("⚠ 注册表有 " + skipped + " 行损坏已被跳过：这些人的模板若仍在磁盘，"
@@ -4779,6 +4782,88 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 }
             });
         }, "FaceRegistryRecover").start();
+    }
+
+    /**
+     * 孤儿模板恢复入口（A15）—— 人员管理页提供「**逐个二次确认**的旁置」：模板文件名在注册表中无
+     * 条目引用时，通常是**注册表缺失/损坏**造成，只把该文件**旁置**到本图库的 {@code .orphan-recovery/}
+     * 目录（绝不删除），保留恢复副本。
+     *
+     * <p>不虚构人员名、不展示模板内容：文件名是人员标识的 SHA-256，无法反推具体人员。
+     * 缺主表 / 旧版 FREG1 / 不完整 FREG2 时**只能查看**（{@code quarantineAllowed=false}），
+     * 旁置要求完整 FREG2 主表且平台支持。
+     *
+     * <p>文件操作与错误通道全部委托仓库层的
+     * {@link AndroidEnrollmentRepository#listOrphanTemplates()} 与
+     * {@link AndroidEnrollmentRepository#quarantineOrphanTemplate(String)}
+     *（不在 UI 里直接做文件 IO）。
+     */
+    private void showOrphanTemplateRecovery() {
+        new Thread(() -> {
+            final AndroidEnrollmentRepository.OrphanListResult r =
+                    enrollmentRepository().listOrphanTemplates();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (!r.isOk()) {
+                    Toast.makeText(this, "孤儿模板读取失败：" + r.message, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (r.fileNames.isEmpty()) {
+                    Toast.makeText(this, "未发现孤儿模板", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                final String header = getString(R.string.ui_orphan_templates_warning)
+                        + "\n\n共 " + r.fileNames.size() + " 个";
+                if (!r.quarantineAllowed) {
+                    // 缺主表 / 旧版 / 不完整：只查看，不提供旁置。
+                    new AlertDialog.Builder(this)
+                            .setTitle(getString(R.string.ui_orphan_templates_title))
+                            .setMessage(header + "\n\n" + r.message)
+                            .setPositiveButton("知道了", null)
+                            .show();
+                    return;
+                }
+                String[] items = new String[r.fileNames.size()];
+                for (int i = 0; i < r.fileNames.size(); i++) {
+                    // 仅展示文件名（哈希），不可反推人员、不代表确定人员。
+                    items[i] = r.fileNames.get(i);
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle(getString(R.string.ui_orphan_templates_title) + "（点击旁置，需二次确认）")
+                        .setMessage(header)
+                        .setItems(items, (d, which) -> confirmQuarantineOrphan(r.fileNames.get(which)))
+                        .setNegativeButton("关闭", null)
+                        .show();
+            });
+        }, "FaceOrphanList").start();
+    }
+
+    /** 孤儿旁置的**二次确认**：只旁置、不删除，须用户显式确认，默认不执行。 */
+    private void confirmQuarantineOrphan(@NonNull final String fileName) {
+        new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.ui_orphan_templates_confirm_title))
+                .setMessage(getString(R.string.ui_orphan_templates_confirm_message))
+                .setPositiveButton("确认旁置", (d, w) -> quarantineOrphan(fileName))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 后台执行单项孤儿旁置；成功/失败经既有错误通道（Result.status/message）如实上报。 */
+    private void quarantineOrphan(@NonNull final String fileName) {
+        new Thread(() -> {
+            final AndroidEnrollmentRepository.Result result =
+                    enrollmentRepository().quarantineOrphanTemplate(fileName);
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (result.isOk()) {
+                    Toast.makeText(this, result.message, Toast.LENGTH_LONG).show();
+                    refreshGalleryFromRepository();
+                } else {
+                    Toast.makeText(this, "旁置失败（" + result.status + "）：" + result.message,
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "FaceOrphanQuarantine").start();
     }
 
     /** 删除二次确认（不可逆操作必须显式确认）。 */
