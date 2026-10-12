@@ -184,4 +184,69 @@ TEST(FrameTransformTest, MapRectMatchesHorizontalMirror) {
     EXPECT_EQ(mapped.height, r.height);
 }
 
+// ⑫ XOR 真值表（A1 镜像契约）：input=帧实际已镜像，target=最终希望镜像，
+// 实际水平翻转 = input XOR target。四格：00→不翻、01→翻、10→翻、11→不翻。
+// 既有用例已分散覆盖各格，此处把四格**显式穷尽**在一处，作为契约的可执行定义。
+TEST(FrameTransformTest, EffectiveFlipXIsInputXorTarget) {
+    struct Case { bool in; bool tgt; bool expect; };
+    const Case cases[] = {
+        {false, false, false},  // 00：都不镜像 → 不翻
+        {false, true,  true },  // 01：仅目标镜像 → 翻
+        {true,  false, true },  // 10：源已镜像、目标不镜像 → 翻
+        {true,  true,  false},  // 11：源已镜像 + 目标镜像 → XOR 抵消
+    };
+    for (const auto& c : cases) {
+        FrameTransformConfig cfg;
+        cfg.input_mirrored_x = c.in;
+        cfg.target_mirrored_x = c.tgt;
+        EXPECT_EQ(FrameTransform::effectiveFlipX(cfg), c.expect)
+            << "input=" << c.in << " target=" << c.tgt;
+    }
+}
+
+// ⑬ 四格 XOR 下「像素 / 框 / 关键点」共用同一变换（A1 的真实缺口）：
+//    把非对称标记放在非边界位置，applyImage 后 mapRect/mapPoint 必须把它映射到**同一位置**
+//    （映射框内的每个像素都是标记；标记中心经 mapPoint 落在框内且仍是标记）。跨全部四格验证。
+TEST(FrameTransformTest, MappedBoxAndKeypointsAgreeWithImageUnderAllXorCombos) {
+    const int w = 40, h = 30;
+    const cv::Rect marker(6, 5, 8, 9);  // 非对称位置（靠左上但非贴边）
+    struct Case { bool in; bool tgt; };
+    const Case cases[] = {{false, false}, {false, true}, {true, false}, {true, true}};
+    for (const auto& c : cases) {
+        FrameTransformConfig cfg;
+        cfg.input_mirrored_x = c.in;
+        cfg.target_mirrored_x = c.tgt;
+        cv::Mat in(h, w, CV_8UC3, cv::Scalar(0, 0, 0));
+        in(marker).setTo(cv::Scalar(255, 255, 255));
+        cv::Mat out = FrameTransform::applyImage(in, cfg);
+
+        const cv::Rect mapped = FrameTransform::mapRect(marker, cfg, w, h);
+        ASSERT_EQ(mapped.width, marker.width);
+        ASSERT_EQ(mapped.height, marker.height);
+        ASSERT_GE(mapped.x, 0) << "in=" << c.in << " tgt=" << c.tgt;
+        ASSERT_GE(mapped.y, 0);
+        ASSERT_LE(mapped.x + mapped.width, out.cols);
+        ASSERT_LE(mapped.y + mapped.height, out.rows);
+
+        // 映射框内每个像素都应是标记（白）
+        for (int y = mapped.y; y < mapped.y + mapped.height; ++y) {
+            for (int x = mapped.x; x < mapped.x + mapped.width; ++x) {
+                EXPECT_EQ(out.at<cv::Vec3b>(y, x)[0], 255)
+                    << "标记未落在 mapRect 映射框内 in=" << c.in << " tgt=" << c.tgt
+                    << " @(" << x << "," << y << ")";
+            }
+        }
+        // 关键点：标记中心经 mapPoint 应落在映射框内且仍是标记
+        const cv::Point2f pc = FrameTransform::mapPoint(
+            cv::Point2f(marker.x + marker.width / 2.f, marker.y + marker.height / 2.f),
+            cfg, w, h);
+        EXPECT_GE(pc.x, mapped.x);
+        EXPECT_LE(pc.x, mapped.x + mapped.width - 1);
+        EXPECT_GE(pc.y, mapped.y);
+        EXPECT_LE(pc.y, mapped.y + mapped.height - 1);
+        EXPECT_EQ(out.at<cv::Vec3b>(static_cast<int>(pc.y), static_cast<int>(pc.x))[0], 255)
+            << "关键点 mapPoint 未落在标记上 in=" << c.in << " tgt=" << c.tgt;
+    }
+}
+
 }  // namespace

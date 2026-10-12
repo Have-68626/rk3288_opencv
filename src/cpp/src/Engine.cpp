@@ -844,6 +844,8 @@ bool Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline)
         // 含同一 personId 也不可沿用——其模板处于不同嵌入空间）。故与 applyGalleryUpdate 同语义
         // 撤销全部跟踪身份（保留轨迹本体与 bbox），并递增 identityVersion_ 使在途渲染在发布点
         // 作废旧身份结果（否则换模型后残留旧 id 会持续输出 VERIFIED）。
+        // A2：空 keepIds ⇒ resetIdentitiesExcept 连**候选身份**一并清空（模板空间切换必须清全部
+        // 候选，不能只按同名 personId 保留——旧空间下的候选计数在新空间同样失效）。
         revokeTrackIdentitiesLocked({});
     }
     if (!enabled) {
@@ -1455,8 +1457,9 @@ void Engine::trackFaces(const std::vector<pipeline::DetectedFace>& faces, bool d
     std::lock_guard<std::mutex> lock(tracksMu_);
     // #4 残留竞态闭合（读路径代次作废）：若图库在「读库(assignRealtimeIdentities)」与
     // 「提交轨迹(此处)」之间被替换，本帧的认证结论据**旧库**得出、已失效——须先降级为
-    // Unknown 再交 coordinator，否则 update() 会把已删除/已移除者的身份重新写入轨迹
-    //（stableId=="Unknown" 且该帧 isAuthenticated 时会重新赋身份），使撤销失效。
+    // Unknown 再交 coordinator。A2 语义下 update() 对「未认证 / Unknown」检测会**立即撤销**
+    // 轨迹身份并清零候选（observeIdentity→clearIdentity），故降级既让已撤销身份不再恢复，
+    // 也**不计入身份识别的连续次数**（否则一个过时的 alice 结论会被当成一次真实识别统计）。
     // 代次一致（正常帧）时零拷贝、零开销；兼容路径传 kNoGalleryGuard，恒不触发。
     const std::vector<pipeline::DetectedFace>* effective = &faces;
     std::vector<pipeline::DetectedFace> staleFaces;

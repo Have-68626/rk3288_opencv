@@ -84,7 +84,8 @@ namespace {
 //     **真值口径随之改变**：stale 帧的“真值身份”按**降级后**的检测计（图库已换，旧认证结论在新库
 //     下不成立 → 该帧的真值就是 Unknown），故它不会把“保守的 fail-closed 降级”误记成串人。
 //   * `@ revoke <keep>` —— **身份撤销**（帧间事件，不产生视图）。`<keep>` 为 `-`（空集，等价于清空
-//     全部已报告身份）或逗号分隔的身份列表；对不在 keep 内的轨迹清 stableId（保留轨迹/bbox/确认计数）。
+//     全部已报告身份）或逗号分隔的身份列表；对不在 keep 内的轨迹清 stableId **与候选身份**
+//     （保留轨迹/bbox/框确认计数）。
 //   * `@ missing <idx> <ts>` —— **模型缺失**：当帧**不调用** update()，对外视图为空，但 coordinator
 //     内部轨迹原样保留（下一秒真正检测恢复时若 TTL 未过，轨迹**继续沿用**，不重建）。其后**不得**
 //     再接 `D` 行。与 `reset()` 的区别专门有用例证明。
@@ -438,17 +439,18 @@ bool sameScript(const ReplayScript& a, const ReplayScript& b) {
 //
 // 因此本载体这样处理：
 //   * identityRewrites  —— 保留原定义（同一 trackId 下**两个非 Unknown 值间**的跳变）。
-//     **本文件既有用例里它仍恒 0**（那是刻意钉住的不变量），但 `@ revoke` 指令使**非零**可达：
-//     撤销把已确认身份清为 Unknown 后，该 trackId 随即被**另一个**已认证身份命中时，对外报告
-//     从 idA 直接跳到 idB（中途不经一次对外 Unknown），即一次真正的身份改写。见
-//     RevocationAllowsIdentityRewriteAcrossSameTrack。
-//     ⚠️ 注意：`idA → "Unknown" → idA` 这条路径**不会**让本计数增加——中间那次对外 Unknown 已把
-//     lastReportedId 置为 "Unknown"，而计数要求前后**都**非 Unknown。故“撤销后可重新认证”只有在
-//     换成**不同身份**时才计入；重新认证为同一身份不计（那是恢复，不是改写）。
+//     **A2 下它结构性恒 0**（本文件各用例均如此）：身份确认改为「同身份连续 3 次实际识别」，
+//     任何身份变更（撤销后改报他人、换人、被作废）都先把候选清零 ⇒ 该帧只累计到 1 次、对外报
+//     "Unknown"，于是 idA→idB 之间**必经一次对外 Unknown**，不再出现「两个非 Unknown 值直跳」。
+//     见 RevocationForcesCandidateReaccumulationNoDirectRewrite（该用例钉住这一结构性质）。
+//     ⚠️ 历史：审计 A3 曾判定它恒 0 并补 @ revoke 非零反例；A2 又把该反例取消（原因如上）。
 //   * staleIdentityFrames —— **真值口径**度量真正的串人：输出框在本帧的**有效检测**（即任何
-//     `@ stale` 降级**之后**交给 update() 的那份）里若有同位置检测，该检测的身份即真值；二者
-//     不一致即「框下面的人不是报的那个人」。stale 帧的真值因此是 Unknown（图库已换、旧认证结论
-//     在新库下不成立），不会把保守的 fail-closed 降级误记成串人。
+//     `@ stale` 降级**之后**交给 update() 的那份）里若有同位置检测，该检测的身份即真值；对外
+//     报出的**具体身份**与之不一致即「框下面的人不是报的那个人」。stale 帧的真值因此是 Unknown
+//     （图库已换、旧认证结论在新库下不成立），不会把保守的 fail-closed 降级误记成串人。
+//     **A2 口径补充**：仅在对外报了**具体（非 Unknown）身份**且与真值不符时计数。新契约下框可
+//     先于身份显形（连续 3 次识别才 VERIFIED），这期间对外报 "Unknown"——那是**尚未确认**，
+//     并未断言「框下是某人」，不算串人（否则会把正确的保守行为误报成串人）。
 //     这是离线回放相对真机目视的核心优势——脚本自带 ground truth。
 //
 // 另需注意：轨迹在「已确认 + 缺失 1 帧」时会续航输出**上一帧的框**，此时本帧脚本里没有
@@ -459,7 +461,7 @@ struct ReplayMetrics {
     std::map<std::string, int> trackIdsCarried;    // 身份 → 承载过它的不同 trackId 数
     int rebuilds = 0;             // Σ(承载数 − 1)：同一人的轨迹被重建的次数。
                                   // **并发重复轨迹同样计入**（该情形另由 duplicateIdCases 单独度量）。
-    int identityRewrites = 0;     // 同一 trackId 报告身份在两个非 Unknown 值间跳变（@ revoke 后可非零）
+    int identityRewrites = 0;     // 同一 trackId 报告身份在两个非 Unknown 值间跳变（A2 下结构性恒 0）
     int staleIdentityFrames = 0;  // 真值口径的串人帧数
     int duplicateIdCases = 0;     // 同一帧同一非 Unknown 身份出现在多个 trackId 上（重复 ID）
     int unattributedFrames = 0;   // 输出框在本帧无同位置检测（缺失期续航）
@@ -582,7 +584,11 @@ ReplayMetrics runReplay(const ReplayScript& script,
             } else {
                 const std::string truthId =
                     truth->isAuthenticated ? truth->identityId : std::string("Unknown");
-                if (truthId != v.stableId) m.staleIdentityFrames += 1;
+                // A2 口径：只有在**对外报了具体（非 Unknown）身份**且与真值不符时才算「串人」。
+                // 新契约下框可先于身份显形（连续 3 次识别才 VERIFIED），这期间对外报的是
+                // "Unknown"——那是**保守的尚未确认**，并未断言「框下是某人」，不构成串人。
+                // （若把「报 Unknown 而真值是 A」也计入，会把这套正确行为误报成串人。）
+                if (v.stableId != "Unknown" && truthId != v.stableId) m.staleIdentityFrames += 1;
             }
         }
         for (const auto& kv : idOccurrences) {
@@ -826,17 +832,15 @@ TEST(TrackReplay, DisplacementBeyondFallbackRatioNeverConfirms) {
     EXPECT_EQ(m.duplicateIdCases, 0);
 }
 
-// ── 同位置换人：旧身份黏住、新人永不被显示（串人的真值口径）───────────────
-// alice 先在 P 处被确认，随后 bob 出现在**同一位置**。三条读数合起来给出设备验收清单
-// 「不串人」条款在离线回放下的可量化证据：
-//   * identityRewrites == 0 —— 轨迹身份不因新检测而改写（只允许 Unknown → 身份 的赋值）。
-//     **这条是刻意钉住的不变量**：RED 判据是把 TrackCoordinator.cpp 里
-//     `if (t.view.stableId == "Unknown")` 的守卫换成无条件赋值，本例立即变红。
-//   * staleIdentityFrames == 3 —— 代价是：bob 站在框里，报告的身份**仍是 alice**。
-//   * neverConfirmed == 1 —— bob 因此**永远得不到自己的轨迹**，也就永远不会被显示。
-// 说明：这是「不同身份不覆盖」这一**刻意取舍**的既有行为（防单帧误识别抢走已确立的身份），
-// 本用例只**度量其代价**，不主张其为缺陷——是否调整属产品决策，需另行确认。
-TEST(TrackReplay, SamePositionHandoverKeepsStaleIdentityAndStarvesNewcomer) {
+// ── 同位置换人（A2 新产品契约）：旧身份立即撤销、新人正常接管 ─────────────────
+// alice 先在 P 处被确认，随后 bob 出现在**同一位置**。A2 契约下换人**不再**黏住旧身份：
+//   * 换人首帧立即撤销 alice，对外报 "Unknown"（而非继续报 alice）——故 identityRewrites == 0
+//     并非「黏住」，而是「撤销经一次对外 Unknown」：alice→bob 之间不经两个非 Unknown 值直跳。
+//   * staleIdentityFrames == 0 —— 换人窗口内对外报的是 "Unknown"（保守尚未确认），**没有**
+//     断言「框下是 alice」，故按 A2 口径不构成串人（见顶部 staleIdentityFrames 口径补充）。
+//   * neverConfirmed == 0 且 firstConfirmSteps[bob] == 2 —— bob 满 3 次识别后正常得到自己的
+//     身份（旧契约下他永远得不到轨迹，本用例原名 …StarvesNewcomer 描述的正是那一行为）。
+TEST(TrackReplay, SamePositionHandoverRevokesIdentityAndAdmitsNewcomer) {
     ReplayScript s;
     for (int i = 0; i < 3; ++i) {
         s.push_back(frameAt(i, 1000 + i * 100, {det(200, 150, 160, 200, "alice")}));
@@ -846,11 +850,14 @@ TEST(TrackReplay, SamePositionHandoverKeepsStaleIdentityAndStarvesNewcomer) {
     }
     const auto m = runReplay(s);
 
-    EXPECT_EQ(m.identityRewrites, 0) << "身份不得在两个非 Unknown 值之间改写（不变量）";
-    EXPECT_EQ(m.staleIdentityFrames, 3) << "bob 占位 3 帧，报告身份仍为 alice";
-    EXPECT_EQ(m.neverConfirmed, 1) << "bob 永远得不到自己的轨迹";
-    EXPECT_EQ(metricOf(m.firstConfirmSteps, "bob"), -1) << "bob 不应出现在对外输出中";
+    EXPECT_EQ(m.identityRewrites, 0) << "撤销经一次对外 Unknown，alice→bob 之间不经两个非 Unknown 值直跳";
+    EXPECT_EQ(m.staleIdentityFrames, 0) << "换人窗口报 Unknown（保守），未断言框下是 alice ⇒ 不构成串人";
+    EXPECT_EQ(m.neverConfirmed, 0) << "bob 满 3 次识别后被确认（旧契约下他永远得不到轨迹）";
+    EXPECT_EQ(metricOf(m.firstConfirmSteps, "bob"), 2) << "bob 首次对外显示在其首现后第 2 步";
     EXPECT_EQ(metricOf(m.firstConfirmSteps, "alice"), 2);
+    EXPECT_EQ(metricOf(m.trackIdsCarried, "alice"), 1);
+    EXPECT_EQ(metricOf(m.trackIdsCarried, "bob"), 1);
+    EXPECT_EQ(m.rebuilds, 0) << "同一轨迹原地换人，不重建轨迹";
     EXPECT_EQ(m.duplicateIdCases, 0);
 }
 
@@ -1105,76 +1112,77 @@ TEST(TrackReplay, ParserRejectsMalformedDirectives) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── 代次作废（@ stale）：把「本帧认证结论已失效」显式建模为输入降级 ─────────────
-// 场景：一个**匿名**目标先连中 2 帧（轨迹已建、stableId=Unknown、confirmFrames=2），第 3 帧
-// 才被认证为 alice——但恰好这一帧发生图库代次作废，整帧降级为 Unknown 交 update()。
-// 于是第 3 帧的 alice **不会**被写进轨迹，对外仍是 Unknown；直到第 4 帧（不再作废）alice 才
-// 落定。**可观测后果**：firstConfirmSteps["alice"] 从「0（首现即显示）」变为「1（被推迟一步）」。
-//
-// 逐帧手推（stableFrames=3；B=(200,150,160,200)）：
-//   step0 匿名B → 新轨迹 T1(stableId=Unknown, confirm=1)，视图空
-//   step1 匿名B → T1 confirm=2，视图空
-//   step2 aliceB 被 stale 降级为「未认证+Unknown」→ T1 confirm=3 → 视图 [T1 Unknown]
-//         （firstSeenStep["alice"]=2 记的是**原始**检测；视图 stableId=Unknown 被跳过）
-//   step3 aliceB（不再作废）→ stableId=="Unknown" 且已认证 → 写入 alice → 视图 [T1 alice]
-//         confirmed.insert(alice) 首见 → firstConfirmSteps = 3 − 2 = 1
-// 若不发生作废：step2 即写入 alice → firstConfirmSteps = 2 − 2 = 0。故本断言对 @ stale 承重。
+// 场景：一个**匿名**目标先连中 2 帧（轨迹已建、stableId=Unknown、confirmFrames=2），其后
+// 被认证为 alice——但若其中一帧发生图库代次作废，整帧降级为 Unknown 交 update()，该帧的
+// alice 结论**不计入身份识别次数**（A2 下未认证检测会撤销候选并清零）。于是同一段脚本里，
+// 满 3 次识别所需的步数被推迟一步。
+// **A2 口径**：身份需**连续 3 次实际识别**才 VERIFIED，故脚本给足 3 个真实 alice 帧。
+// **自带对照**：同一脚本分别以「第 3 帧 stale / 不 stale」跑两遍，直接比出「推迟一步」。
+//   无 stale：alice 在 step2/3/4 连中 3 次 ⇒ step4 确认（firstConfirm = 4 − 2 = 2）。
+//   有 stale：step2 被降级、不计次 ⇒ 计数落在 step3/4/5 ⇒ step5 确认（firstConfirm = 5 − 2 = 3）。
 TEST(TrackReplay, GenerationInvalidationDelaysIdentityAcquisition) {
     const cv::Rect B(200, 150, 160, 200);
-    ReplayScript s;
-    s.push_back(frameAt(0, 1000, {det(B.x, B.y, B.width, B.height, "")}));
-    s.push_back(frameAt(1, 1100, {det(B.x, B.y, B.width, B.height, "")}));
-    s.push_back(frameAt(2, 1200, {det(B.x, B.y, B.width, B.height, "alice")}, true, /*stale=*/true));
-    s.push_back(frameAt(3, 1300, {det(B.x, B.y, B.width, B.height, "alice")}));
-    const auto m = runReplay(s);
+    auto build = [&](bool staleThird) {
+        ReplayScript s;
+        s.push_back(frameAt(0, 1000, {det(B.x, B.y, B.width, B.height, "")}));
+        s.push_back(frameAt(1, 1100, {det(B.x, B.y, B.width, B.height, "")}));
+        s.push_back(frameAt(2, 1200, {det(B.x, B.y, B.width, B.height, "alice")}, true, staleThird));
+        s.push_back(frameAt(3, 1300, {det(B.x, B.y, B.width, B.height, "alice")}));
+        s.push_back(frameAt(4, 1400, {det(B.x, B.y, B.width, B.height, "alice")}));
+        s.push_back(frameAt(5, 1500, {det(B.x, B.y, B.width, B.height, "alice")}));
+        return s;
+    };
+    const auto mStale = runReplay(build(true));
+    const auto mClean = runReplay(build(false));
 
-    EXPECT_EQ(m.frames, 4);
-    EXPECT_EQ(metricOf(m.firstConfirmSteps, "alice"), 1)
-        << "作废把 alice 的首次对外显示推迟了一步（不作废时为 0）";
-    EXPECT_EQ(metricOf(m.trackIdsCarried, "alice"), 1) << "同一轨迹，未因作废而重建";
-    EXPECT_EQ(m.rebuilds, 0);
-    EXPECT_EQ(m.staleIdentityFrames, 0) << "stale 帧的真值按降级后计（Unknown），不是串人";
-    EXPECT_EQ(m.identityRewrites, 0);
-    EXPECT_EQ(m.neverConfirmed, 0);
-    EXPECT_EQ(m.clearedFrames, 0);
-    EXPECT_EQ(m.revokedIdentities, 0);
+    EXPECT_EQ(metricOf(mStale.firstConfirmSteps, "alice"), 3)
+        << "stale 帧不计入身份识别次数 ⇒ 首确认被推迟一步（对照版为 2）";
+    EXPECT_EQ(metricOf(mClean.firstConfirmSteps, "alice"), 2)
+        << "无 stale 对照：满 3 次识别即确认";
+    EXPECT_EQ(metricOf(mStale.trackIdsCarried, "alice"), 1) << "同一轨迹，未因作废而重建";
+    EXPECT_EQ(mStale.rebuilds, 0);
+    EXPECT_EQ(mStale.staleIdentityFrames, 0) << "stale 帧的真值按降级后计（Unknown），不是串人";
+    EXPECT_EQ(mStale.identityRewrites, 0);
+    EXPECT_EQ(mStale.neverConfirmed, 0);
+    EXPECT_EQ(mStale.clearedFrames, 0);
+    EXPECT_EQ(mStale.revokedIdentities, 0);
 }
 
-// ── 身份撤销（@ revoke）：撤销后同一轨迹可被**另一个**身份改写（identityRewrites 非零）──
-// 这是审计 A3「identityRewrites 在回放里结构性恒 0」的非零反例，也是 #5 的核心。
-//
-// **关键机制（与「id → Unknown → id」不同）**：计数要求**前后都非 Unknown**。撤销把 T1 的
-// stableId 清为 Unknown 后：
-//   * 若下一帧重新命中**同一**身份 alice——中途经一次对外 Unknown（lastReportedId 变 Unknown），
-//     前后不再「都非 Unknown」，**不计**改写（那是恢复，不是改写）；
-//   * 若下一帧命中**另一个**身份 bob——该帧 update() 在 stableId=="Unknown" 时写入 bob，对外
-//     直接从 alice 跳到 bob（**中途不经对外 Unknown**），prev=alice/current=bob **都非 Unknown**
-//     且不同 → identityRewrites += 1。这才是真正的「身份改写」。
-// （注：@ revoke 不产生视图，故它本身不会把 lastReportedId 置为 Unknown。）
-TEST(TrackReplay, RevocationAllowsIdentityRewriteAcrossSameTrack) {
+// ── 身份撤销（@ revoke）：撤销后同一轨迹须**重新累计**才能确认（A2：不再有直接改写）──
+// 审计 A3 曾判定 identityRewrites 在回放里结构性恒 0，并为其补了 @ revoke 非零反例；**A2 又把
+// 它改回结构性 0**：撤销把候选清零后，被另一身份命中时该帧只累计到 1 次 ⇒ 对外报 "Unknown"，
+// alice→bob 之间**必经一次对外 Unknown**，故「同一 trackId 两个非 Unknown 值直跳」不再发生。
+// 本用例据此**钉住新契约**：撤销后 bob 须连续 3 次识别才被确认，且该轨迹的报告不会从 alice
+// 直跳 bob（identityRewrites 恒 0）。
+// 判别点：把 observeIdentity 的 3 次门槛去掉（撤销后首帧即写入 bob）⇒ 该轨迹报告 alice→bob
+//        直跳 ⇒ identityRewrites 变为非零、本断言翻红。
+TEST(TrackReplay, RevocationForcesCandidateReaccumulationNoDirectRewrite) {
     const cv::Rect B(200, 150, 160, 200);
     ReplayScript s;
     for (int i = 0; i < 3; ++i) {  // alice 三帧确认（T1）
         s.push_back(frameAt(i, 1000 + i * 100, {det(B.x, B.y, B.width, B.height, "alice")}));
     }
-    s.push_back(revokeStep({}));   // 空图库：清掉 alice 身份（保留轨迹/bbox/确认计数）
-    s.push_back(frameAt(3, 1300, {det(B.x, B.y, B.width, B.height, "bob")}));  // 同一轨迹改报 bob
+    s.push_back(revokeStep({}));   // 空图库：清掉 alice 身份与候选（保留轨迹/bbox/确认计数）
+    for (int i = 3; i < 6; ++i) {  // 同一轨迹改报 bob，须连续 3 次才确认
+        s.push_back(frameAt(i, 1000 + i * 100, {det(B.x, B.y, B.width, B.height, "bob")}));
+    }
 
     const auto m = runReplay(s);
 
-    EXPECT_EQ(m.identityRewrites, 1)
-        << "同一 trackId 的报告身份由 alice 直接跳到 bob，即一次身份改写";
+    EXPECT_EQ(m.identityRewrites, 0)
+        << "A2 下同一 trackId 的身份变更必经一次对外 Unknown（候选清零重累计）⇒ 无直接改写";
     EXPECT_EQ(m.revokedIdentities, 1) << "@ revoke - 撤销了当前对外可见的 alice";
     EXPECT_EQ(metricOf(m.trackIdsCarried, "alice"), 1);
     EXPECT_EQ(metricOf(m.trackIdsCarried, "bob"), 1);
     EXPECT_EQ(m.rebuilds, 0) << "撤销只清身份、不丢轨迹，故不构成重建";
-    EXPECT_EQ(m.staleIdentityFrames, 0) << "bob 帧的真值就是 bob";
-    EXPECT_EQ(metricOf(m.firstConfirmSteps, "bob"), 0) << "轨迹已确认，写入身份即显示";
+    EXPECT_EQ(m.staleIdentityFrames, 0) << "bob 帧的真值就是 bob；未确认窗口报 Unknown 不计串人";
+    EXPECT_EQ(metricOf(m.firstConfirmSteps, "bob"), 2) << "轨迹已确认，但身份须重新累计满 3 次";
     EXPECT_EQ(m.neverConfirmed, 0);
 }
 
 // ── 撤销计数按**身份个数**计、非按步/帧计（C-10b）：一次 @ revoke 撤销两人 → 2 ──────
-// 动机：identityRewrites 与 revokedIdentities 两个指标的**唯一非零覆盖**原都在上一条用例里
-//（各断言 ==1），任一被删则另一个也失去非零覆盖。本用例**独立**钉住 revokedIdentities 的语义。
+// revokedIdentities 的**唯一非零覆盖**原在 identityRewrites 相关用例里（一条 @ revoke 撤一人）。
+// A2 后 identityRewrites 结构性恒 0，故本用例**独立**钉住 revokedIdentities 的非零语义。
 //
 // 字段刻意**不带** `Frames` 后缀（见其声明处注释）：它不是帧计数——一次 @ revoke 可撤销**多个**
 // 身份，按**个数**累加，不是按 @ revoke 步数、也不是按帧。故本用例让「步数(1) ≠ 个数(2)」：
@@ -1433,10 +1441,10 @@ TEST(TrackReplay, ExporterRejectsWhatRealParserWouldReject) {
 
 // ── 已知不可测项（如实声明，勿改成永远通过的空壳用例）──────────────────────────
 // 审计 A3 曾判定 identityRewrites 与 firstConfirmSteps 的「缺键省略」两条分支在回放中不可达。
-// 本次复核结论：
-//   * identityRewrites —— **已可达**（非零反例见 RevocationAllowsIdentityRewriteAcrossSameTrack）。
-//     原判「不可达」的前提是「回放不触发 resetIdentitiesExcept」；@ revoke 指令补上了这一入口，
-//     且**换身份**（而非重新认证同一身份）时中途不经对外 Unknown，故计数真能增加。
+// 复核结论（A2 后）：
+//   * identityRewrites —— **结构性恒 0**（A2 下身份变更必经一次对外 Unknown，无「两个非 Unknown
+//     值直跳」）。其恒零性由 RevocationForcesCandidateReaccumulationNoDirectRewrite 钉住（它断言
+//     ==0 并给出判别点）；**不为其编写「非零」用例**——那需要一个与新契约相矛盾的输入。
 //   * firstConfirmSteps 的「缺键省略」——**仍不可测**，理由：该分支要求某条对外视图的 stableId
 //     不在 firstSeenStep 里。而视图的 stableId 只可能来自：(a) 已认证检测的 identityId——必已登记
 //     进 firstSeenStep；(b) "Unknown"——被 `!= "Unknown"` 直接跳过；(c) `@ stale` 降级产生的

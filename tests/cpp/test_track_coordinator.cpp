@@ -71,16 +71,209 @@ TEST(TrackCoordinator, IoUMatchesConsecutiveFrames) {
     EXPECT_EQ(tracks3[0].lastSeenMs, 1200);
 }
 
-// 认证升级：未知 → 已认证身份（第 3 帧认证并确认后输出）
+// A2 新产品契约：认证升级——**框**在第 3 次命中即确认输出，但身份不再是「首帧认证即写入」，
+// 而是「同一身份连续 3 次实际识别」才 VERIFIED。故单帧认证不升级；须连续 3 帧同一身份。
+// 判别点：删掉 observeIdentity 的 3 次门槛（改回「stableId=="Unknown" 且 isAuthenticated 即写入」）
+//        ⇒ 第 3 帧的 Unknown 断言翻红。
 TEST(TrackCoordinator, AuthenticatedUpgradesUnknown) {
     pipeline::TrackCoordinator tc;
+    // 两帧匿名：框未确认、无身份候选
     EXPECT_TRUE(tc.update({face(10, 20, 100, 150)}, 1000, true).empty());
     EXPECT_TRUE(tc.update({face(10, 20, 100, 150)}, 1100, true).empty());
 
-    auto tracks3 = tc.update({face(10, 20, 100, 150, true, "bob", 0.88f)}, 1200, true);
-    ASSERT_EQ(tracks3.size(), 1);
-    EXPECT_EQ(tracks3[0].stableId, "bob");
-    EXPECT_GT(tracks3[0].stableConfidence, 0.87f);
+    // 第 3 帧认证 bob：框确认并输出，但身份尚在累计（1/3）→ Unknown
+    auto u1 = tc.update({face(10, 20, 100, 150, true, "bob", 0.88f)}, 1200, true);
+    ASSERT_EQ(u1.size(), 1u);
+    EXPECT_EQ(u1[0].stableId, "Unknown") << "单帧认证不得立即升级（A2：需连续 3 次实际识别）";
+
+    // 第 4 帧继续 bob：仍 Unknown（2/3）
+    auto u2 = tc.update({face(10, 20, 100, 150, true, "bob", 0.88f)}, 1300, true);
+    ASSERT_EQ(u2.size(), 1u);
+    EXPECT_EQ(u2[0].stableId, "Unknown");
+
+    // 第 5 帧：连续第 3 次同一身份 → 升级为 bob
+    auto u3 = tc.update({face(10, 20, 100, 150, true, "bob", 0.89f)}, 1400, true);
+    ASSERT_EQ(u3.size(), 1u);
+    EXPECT_EQ(u3[0].stableId, "bob");
+    EXPECT_GT(u3[0].stableConfidence, 0.87f);
+}
+
+// ── A2：同身份连续 3 次实际识别才 VERIFIED；换人/未识别/识别失败/实际漏检立即撤销 ──────
+
+// 同位置换人：旧身份**立即撤销**（不再黏住），新人满 3 次识别后接管同一轨迹。
+// 判别点：删掉 observeIdentity 里「candidateId != identityId → clearIdentity」的撤销分支
+//        ⇒ 换人首帧仍报 alice ⇒ 本用例 b1 断言翻红。
+TEST(TrackCoordinator, SamePositionSwitchRevokesIdentityImmediately) {
+    pipeline::TrackCoordinator tc;
+    tc.update({face(10, 20, 100, 150, true, "test_person_a")}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "test_person_a")}, 1100, true);
+    auto a = tc.update(
+        {face(10, 20, 100, 150, true, "test_person_a")}, 1200, true);
+    ASSERT_EQ(a.size(), 1u);
+    EXPECT_EQ(a[0].stableId, "test_person_a");
+    const int id = a[0].trackId;
+    auto b1 = tc.update(
+        {face(10, 20, 100, 150, true, "test_person_b")}, 1300, true);
+    ASSERT_EQ(b1.size(), 1u);
+    EXPECT_EQ(b1[0].trackId, id);
+    EXPECT_EQ(b1[0].stableId, "Unknown");
+    auto b2 = tc.update(
+        {face(10, 20, 100, 150, true, "test_person_b")}, 1400, true);
+    ASSERT_EQ(b2.size(), 1u);
+    EXPECT_EQ(b2[0].stableId, "Unknown");
+    auto b3 = tc.update(
+        {face(10, 20, 100, 150, true, "test_person_b")}, 1500, true);
+    ASSERT_EQ(b3.size(), 1u);
+    EXPECT_EQ(b3[0].trackId, id);
+    EXPECT_EQ(b3[0].stableId, "test_person_b");
+}
+
+// 识别失败后重新确认：已确认身份因一次「未识别」立即撤销，之后须再连续 3 次实际识别才恢复。
+TEST(TrackCoordinator, SameIdentityFailureRevokesThenReconfirmsAfterThreeHits) {
+    pipeline::TrackCoordinator tc;
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1100, true);
+    auto a = tc.update({face(10, 20, 100, 150, true, "alice")}, 1200, true);
+    ASSERT_EQ(a.size(), 1u);
+    ASSERT_EQ(a[0].stableId, "alice");
+
+    // 一次识别失败（同位置检测未认证）→ 立即撤销
+    auto f = tc.update({face(10, 20, 100, 150)}, 1300, true);
+    ASSERT_EQ(f.size(), 1u);
+    EXPECT_EQ(f[0].stableId, "Unknown") << "识别失败须立即撤销旧身份";
+
+    // 再 A/A/A：第三次重新确认
+    ASSERT_EQ(tc.update({face(10, 20, 100, 150, true, "alice")}, 1400, true)[0].stableId, "Unknown");
+    ASSERT_EQ(tc.update({face(10, 20, 100, 150, true, "alice")}, 1500, true)[0].stableId, "Unknown");
+    auto r3 = tc.update({face(10, 20, 100, 150, true, "alice")}, 1600, true);
+    ASSERT_EQ(r3.size(), 1u);
+    EXPECT_EQ(r3[0].stableId, "alice") << "失败后须重新连续 3 次才再次确认";
+}
+
+// 一次实际漏检：框按旧寿命保留（已确认缺 1 次不删），但身份立即撤销。
+TEST(TrackCoordinator, IdentityRevokedOnSingleActualMissWhileBoxSurvives) {
+    pipeline::TrackCoordinator tc;
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1100, true);
+    auto a = tc.update({face(10, 20, 100, 150, true, "alice")}, 1200, true);
+    ASSERT_EQ(a.size(), 1u);
+    ASSERT_EQ(a[0].stableId, "alice");
+
+    auto miss = tc.update({}, 1300, true);
+    ASSERT_EQ(miss.size(), 1u) << "已确认框缺 1 次仍续航输出";
+    EXPECT_EQ(miss[0].stableId, "Unknown") << "实际漏检须立即撤销身份";
+    EXPECT_GT(miss[0].bbox.area(), 0) << "框本体保留";
+}
+
+// 两次识别之间跳过检测：跳过不累计身份次数，第三次**实际**识别才确认。
+TEST(TrackCoordinator, SkippedDetectionDoesNotAccumulateIdentityHits) {
+    pipeline::TrackCoordinator tc;
+    // 匿名 1 帧（框 confirm=1）+ 认证 1 帧（confirm=2，候选 alice=1）
+    tc.update({face(10, 20, 100, 150)}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1100, true);
+    // 跳过检测（detectionRan=false）：不计缺失、也不计入身份识别次数
+    tc.update({}, 1150, false);
+    // 第 3 个真实命中帧：框确认输出，但身份仅累计到 2 次 → Unknown
+    auto v2 = tc.update({face(10, 20, 100, 150, true, "alice")}, 1200, true);
+    ASSERT_EQ(v2.size(), 1u);
+    EXPECT_EQ(v2[0].stableId, "Unknown") << "跳过检测不得计入身份识别次数";
+    // 再来一次**实际**识别：满 3 次 → alice
+    auto v3 = tc.update({face(10, 20, 100, 150, true, "alice")}, 1300, true);
+    ASSERT_EQ(v3.size(), 1u);
+    EXPECT_EQ(v3[0].stableId, "alice");
+}
+
+// 存在性审查缺口：直接断言「已 VERIFIED 的身份在 detectionRan=false（跳过检测）帧不撤销」。
+// 既有两例都不是直接判据：SkippedDetectionDoesNotAccumulateIdentityHits 在身份**尚未 VERIFIED**
+// 时跳过；TtlExpiresConfirmedIdentityDuringSkippedDetection 走的是 TTL 兜底清理。
+// 判别点：把「跳过检测」分支误改成撤销身份（例如 `if (!detectionRan)` 内先 clearIdentity 再 return）
+//        ⇒ 跳过帧读到 Unknown ⇒ 本用例红；还原 ⇒ 跳过帧仍读 alice ⇒ 绿。
+TEST(TrackCoordinator, VerifiedIdentitySurvivesSkippedDetectionFrame) {
+    pipeline::TrackCoordinator tc;
+    // 连续 3 次**实际**识别 → 身份 VERIFIED 为 alice
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1100, true);
+    auto verified = tc.update({face(10, 20, 100, 150, true, "alice")}, 1200, true);
+    ASSERT_EQ(verified.size(), 1u);
+    ASSERT_EQ(verified[0].stableId, "alice");
+
+    // 跳过检测帧（detectionRan=false，且在 TTL 内）：既不计缺失、也**不得**撤销已 VERIFIED 身份
+    auto skipped = tc.update({}, 1300, false);
+    ASSERT_EQ(skipped.size(), 1u) << "跳过检测帧仍应输出已确认轨迹";
+    EXPECT_EQ(skipped[0].stableId, "alice")
+            << "detectionRan=false 不得撤销已 VERIFIED 的身份（候选/命中计数亦不得被清）";
+
+    // 恢复实际识别：因跳过帧未清身份与候选，本帧应即时仍为 alice（无需重新累计 3 次）
+    auto resumed = tc.update({face(10, 20, 100, 150, true, "alice")}, 1400, true);
+    ASSERT_EQ(resumed.size(), 1u);
+    EXPECT_EQ(resumed[0].stableId, "alice") << "跳过帧不得清空候选，恢复帧应即时仍为 alice";
+}
+
+// 跳过期间 TTL 已到：轨迹仍按 TTL 兜底清理（顺序不变量：TTL 在跳过早退之前）。
+TEST(TrackCoordinator, TtlExpiresConfirmedIdentityDuringSkippedDetection) {
+    pipeline::TrackConfig cfg{};
+    cfg.ttlMs = 200;
+    pipeline::TrackCoordinator tc(cfg);
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1100, true);
+    ASSERT_EQ(tc.update({face(10, 20, 100, 150, true, "alice")}, 1200, true).size(), 1u);
+    EXPECT_TRUE(tc.update({}, 1200 + 300, false).empty())
+            << "跳过期间超过 TTL 仍须兜底清理";
+}
+
+// A/B 两轨，只撤销 A：B 保留，A 的稳定身份**与候选**一并清（否则单帧命中会以存量 3 次复活）。
+TEST(TrackCoordinator, ResetIdentitiesExceptClearsRevokedCandidateButKeepsOther) {
+    pipeline::TrackCoordinator tc;
+    for (int i = 0; i < 3; ++i) {
+        tc.update({face(0, 0, 100, 150, true, "alice", 0.90f),
+                   face(200, 0, 100, 150, true, "bob", 0.90f)},
+                  1000 + i * 100, true);
+    }
+    ASSERT_EQ(tc.trackCount(), 2);
+    tc.resetIdentitiesExcept({"bob"});
+    // 观测：喂一帧两框认证。若 alice 候选未被清（存量 3 次），本帧会立刻重新确认 alice。
+    const auto v = tc.update({face(0, 0, 100, 150, true, "alice", 0.90f),
+                              face(200, 0, 100, 150, true, "bob", 0.90f)},
+                             1300, true);
+    ASSERT_EQ(v.size(), 2u);
+    std::vector<std::string> ids;
+    for (const auto& t : v) ids.push_back(t.stableId);
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(ids[0], "Unknown") << "被撤销者的候选也须清零，不得凭存量重新确认";
+    EXPECT_EQ(ids[1], "bob") << "未撤销者身份保留";
+}
+
+// 两次候选 A 后图库删除 A：该帧检测被代次作废降级为未认证，不得据旧候选完成确认。
+TEST(TrackCoordinator, StaleGenerationDowngradeCannotReconfirmIdentity) {
+    pipeline::TrackCoordinator tc;
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1000, true);  // 候选 1
+    tc.update({face(10, 20, 100, 150, true, "alice")}, 1100, true);  // 候选 2
+    // 第 3 帧本应确认，但图库代次已变 → Engine 已把检测降级为「未认证 + Unknown」（此处建模为未认证）
+    auto stale = tc.update({face(10, 20, 100, 150)}, 1200, true);
+    ASSERT_EQ(stale.size(), 1u);  // 框第 3 次命中被确认输出
+    EXPECT_EQ(stale[0].stableId, "Unknown")
+            << "代次作废帧不得据旧候选完成身份确认";
+    // 之后重新认证 A：候选已清零，须重新累计（本帧仍 Unknown）
+    auto r = tc.update({face(10, 20, 100, 150, true, "alice")}, 1300, true);
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].stableId, "Unknown") << "作废后候选已清零，须重新累计满 3 次";
+}
+
+// 框连续命中、身份 A/B/A 来回切换：框可见，但身份始终保持 Unknown（每次都从头累计）。
+TEST(TrackCoordinator, AlternatingIdentityKeepsBoxVisibleButIdentityUnknown) {
+    pipeline::TrackCoordinator tc;
+    tc.update({face(10, 20, 100, 150, true, "A")}, 1000, true);
+    tc.update({face(10, 20, 100, 150, true, "A")}, 1100, true);
+    auto a = tc.update({face(10, 20, 100, 150, true, "A")}, 1200, true);
+    ASSERT_EQ(a.size(), 1u);
+    ASSERT_EQ(a[0].stableId, "A");
+
+    auto b = tc.update({face(10, 20, 100, 150, true, "B")}, 1300, true);
+    ASSERT_EQ(b.size(), 1u);
+    EXPECT_EQ(b[0].stableId, "Unknown") << "换到 B 首帧应撤销 A";
+    auto a2 = tc.update({face(10, 20, 100, 150, true, "A")}, 1400, true);
+    ASSERT_EQ(a2.size(), 1u);
+    EXPECT_EQ(a2[0].stableId, "Unknown") << "身份来回切换时框可见但身份保持 Unknown";
 }
 
 // 任务5：新轨迹连续 3 次实际检测确认后，单次缺失仍保留
@@ -299,6 +492,10 @@ TEST(TrackCoordinator, ResetClearsTracksButKeepsIdCounter) {
 
 // 第三波审查 #1：resetIdentitiesExcept 精准撤销——仅清「已不在图库」的身份，
 // 保留其他轨迹身份与轨迹本体（bbox），不丢框、不重新累计 stableFrames。
+// A2 改口径：**不能用空检测观测内部身份**——A2 下实际漏检会立即撤销**全部**身份，
+//   从而无法区分「resetIdentitiesExcept 撤销了 alice」与「漏检撤销了 bob」。故改用一帧
+//   仍命中两框的实际检测来观测：alice 身份已被精准撤销（重新从头累计候选→Unknown），
+//   bob 身份与候选原样保留（候选已满 3 次，本帧命中即稳定为 bob）。
 TEST(TrackCoordinator, ResetIdentitiesExceptKeepsOtherIdentitiesAndBoxes) {
     pipeline::TrackCoordinator tc;
     // 3 帧确认两条已认证轨迹：alice（左）/ bob（右）
@@ -312,8 +509,9 @@ TEST(TrackCoordinator, ResetIdentitiesExceptKeepsOtherIdentitiesAndBoxes) {
     // 模拟「仅删除 alice」：keepIds={bob}
     tc.resetIdentitiesExcept({"bob"});
 
-    // 空检测（已确认轨迹单次缺失仍保留）→ 观测内部身份
-    const auto views = tc.update({}, 1400, true);
+    // 观测内部身份：一帧仍命中两框的**实际检测**（非空检测，理由见上）
+    const auto views = tc.update({face(0, 0, 100, 150, true, "alice", 0.90f),
+                                  face(200, 0, 100, 150, true, "bob", 0.91f)}, 1300, true);
     EXPECT_EQ(tc.trackCount(), 2);  // 轨迹本体保留，不丢框
     ASSERT_EQ(views.size(), 2u);
     std::vector<std::string> ids;
@@ -323,7 +521,7 @@ TEST(TrackCoordinator, ResetIdentitiesExceptKeepsOtherIdentitiesAndBoxes) {
     }
     std::sort(ids.begin(), ids.end());
     ASSERT_EQ(ids.size(), 2u);
-    EXPECT_EQ(ids[0], "Unknown");  // alice 身份被撤销
+    EXPECT_EQ(ids[0], "Unknown");  // alice 身份被撤销（候选也从 0 重新累计）
     EXPECT_EQ(ids[1], "bob");      // bob 身份原样保留
 }
 

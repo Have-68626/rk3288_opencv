@@ -67,6 +67,13 @@ public:
     //   Engine::trackFaces 恒传 detectionRan=true（detThrottleMode_ 未接线去跳过检测）。
     // 输出：返回值（views()）仅包含已确认轨迹（连续实际检测命中 ≥ stableFrames），
     //   未确认轨迹不对外输出（避免首帧误检立即显示）；内部仍保留以累计确认/删除计数。
+    //
+    // A2：身份确认与「框确认」**解耦**。身份采用「同身份连续 3 次实际识别才置为 VERIFIED」的
+    //   固定门槛（与 TrackConfig::stableFrames 无关）：连续命中同一身份 3 次才写入 stableId；
+    //   换人、未识别（未认证 / 空身份 / "Unknown"）、识别失败、以及**实际漏检** 均**立即撤销**
+    //   已确认身份并把候选计数清零、重新累计——不再有「旧身份黏住、同位置换人永不改写」的行为。
+    //   结果是：框（已确认，≥stableFrames）可以对外可见，但其 stableId 仍可能是 "Unknown"
+    //   （身份尚在累计中）——「框可见」不等于「身份已 VERIFIED」。
     // 匹配：优先 IoU（matchIouThreshold），不足时允许中心距离+尺寸比回退。
     std::vector<TrackView> update(
         const std::vector<DetectedFace>& faces,
@@ -92,11 +99,14 @@ public:
 
     // 按图库有效身份**精准撤销**（第三波审查 #1：reset() 过宽——多人场景删除/注册
     // **一人**会瞬时抹掉其他人的稳定身份、需重新累计 stableFrames）。
-    // 语义：对 stableId **不在** keepIds（本次图库仍有效的身份集合）中的轨迹，仅把身份
-    // 清为 "Unknown" 并清零 stableConfidence；**保留轨迹本体、bbox 与确认/缺失计数**，
-    // 避免丢框、避免重新累计 stableFrames。keepIds 中的稳定身份原样保留。
-    // 空 keepIds（删除末位人员 → 空图库）→ 全部清为 "Unknown"，与 reset() 的全清语义
-    // 等价，但**不丢框**（reset() 会清空轨迹、需重新累计确认）。
+    // 语义：对 stableId **或候选身份（candidateId）不在** keepIds（本次图库仍有效的身份集合）
+    // 中的轨迹，清掉其稳定值（清为 "Unknown"、清零 stableConfidence）与候选（candidateId/candidateHits）；
+    // **保留轨迹本体、bbox 与框确认/缺失计数**，避免丢框、避免重新累计 stableFrames。
+    // A2：候选身份是「正在累计、尚未确认」的另一半身份真相，必须一并按 keepIds 撤销——否则被删除
+    //   者的候选会继续累计并在第 3 次「确认」出一个已不在图库的身份。keepIds 中的身份（稳定值或候选）
+    //   原样保留。
+    // 空 keepIds（删除末位人员 → 空图库）→ 全部清为 "Unknown"（含清空候选），与 reset() 的全清身份
+    // 语义等价，但**不丢框**（reset() 会清空轨迹、需重新累计确认）。
     // 线程安全：与 reset() 一致，非线程安全；调用方（Engine）须持 tracksMu_ 与 update() 互斥。
     void resetIdentitiesExcept(const std::vector<std::string>& keepIds);
 
@@ -115,9 +125,20 @@ private:
     // 内部轨迹状态：对外 TrackView + 确认/缺失计数（任务5 确认与消失规则）
     struct InternalTrack {
         TrackView view;
-        int confirmFrames = 0;  // 连续实际检测命中帧数
+        int confirmFrames = 0;  // 连续实际检测命中帧数（**框**寿命，与身份确认相互独立）
         int missedActual = 0;   // 连续实际检测缺失帧数
+        // A2：身份与「框」解耦。candidateId 为当前正在累计的身份，candidateHits 为其**连续实际
+        // 识别**次数；连续（固定门槛）3 次同一身份才写入 view.stableId，否则保持 "Unknown"。
+        // 换人 / 未识别 / 识别失败 / 实际漏检一律 clearIdentity（清空二者）后重新累计。
+        std::string candidateId;
+        int candidateHits = 0;
     };
+
+    // A2 身份确认与撤销的两个私有辅助（声明放在 InternalTrack 定义之后，因其形参依赖该嵌套类型）：
+    //   clearIdentity  —— 把轨迹的稳定身份与候选一并清为「未认证 + 无候选」；
+    //   observeIdentity—— 按本帧识别结果更新候选；连续 3 次同一身份才置 stableId，否则保持 Unknown。
+    static void clearIdentity(InternalTrack& t);
+    static void observeIdentity(InternalTrack& t, const DetectedFace& face);
 
     TrackConfig config_;
     std::vector<InternalTrack> tracks_;

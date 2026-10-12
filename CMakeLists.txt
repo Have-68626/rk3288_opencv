@@ -384,6 +384,19 @@ if(NOT ANDROID)
     add_test(NAME core_gtest_tests COMMAND core_gtest_tests
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # P8/D8：run() 同线程重入拒绝的**行为**测试。该 GTest 默认禁用（DISABLED_ 前缀）⇒ 上面的
+    # core_gtest_tests（无 --gtest_also_run_disabled_tests）**不跑它**，避免守卫失效时的阻塞形态把
+    # 整套拖成超时。此处以独立 CTest 显式启用该单条并加 TIMEOUT：超时只终止**子进程**，
+    # **不给生产加看门狗**（生产构建不定义 RK_ENABLE_TEST_SEAMS，无此用例）。
+    # CI 覆盖：.github/workflows/ci.yml 的 windows job ctest 过滤已扩为
+    #    `-R "unit_tests|core_gtest_tests|engine_run_reentry_behavior"` ⇒ 本 CTest 已由 CI 覆盖。
+    add_test(NAME engine_run_reentry_behavior
+        COMMAND core_gtest_tests
+            --gtest_also_run_disabled_tests
+            --gtest_filter=EngineTest.DISABLED_RunReentryFromEmitGateReturnsImmediately
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(engine_run_reentry_behavior PROPERTIES TIMEOUT 15)
+
     # win_unit_tests contains GTest files (test_http_faces_server.cpp), need GTest::gtest (no _main to avoid main() conflict)
     if(WIN32 AND TARGET win_unit_tests AND TARGET GTest::gtest)
         target_link_libraries(win_unit_tests GTest::gtest)
