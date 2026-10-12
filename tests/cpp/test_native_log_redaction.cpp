@@ -112,6 +112,32 @@ TEST(NativeLogRedaction, MaskSensitiveKvBearerTokenAndCompoundKeys) {
         << "client_secret= 值原值不得出现在输出中";
 }
 
+// A10：通用日志脱敏须覆盖身份键 personId / person_id（裸键、JSON 键、大小写、与其它敏感字段混合）。
+// 判别点：敏感键集合或正则未加 personId/person_id ⇒ 身份原值原样输出 ⇒ 红。
+TEST(NativeLogRedaction, MaskSensitiveKvPersonId) {
+    EXPECT_EQ(rklog::maskSensitiveData("personId=test_person_001")
+                  .find("test_person_001"),
+              std::string::npos);
+    EXPECT_EQ(rklog::maskSensitiveData("person_id=test_person_002")
+                  .find("test_person_002"),
+              std::string::npos);
+    EXPECT_EQ(rklog::maskSensitiveData("{\"personId\":\"test_person_003\"}")
+                  .find("test_person_003"),
+              std::string::npos);
+    EXPECT_EQ(rklog::maskSensitiveData("PERSONID=test_person_004")
+                  .find("test_person_004"),
+              std::string::npos);
+    EXPECT_EQ(rklog::maskSensitiveData("personId=test_person_005 token=abcdef123456")
+                  .find("test_person_005"),
+              std::string::npos);
+    // 掩码确实发生（值经首2+***+尾2 掩码后仍可辨）。
+    EXPECT_NE(rklog::maskSensitiveData("personId=test_person_001").find("***"),
+              std::string::npos);
+    // 负对照：非身份词不得被误伤。
+    EXPECT_EQ(rklog::maskSensitiveData("person identifier=42"), "person identifier=42");
+    EXPECT_EQ(rklog::maskSensitiveData("monkey=banana"), "monkey=banana");
+}
+
 // maskSensitiveData 纯函数单测：不得误伤正常日志。
 TEST(NativeLogRedaction, MaskSensitiveKvNoFalsePositive) {
     EXPECT_EQ(rklog::maskSensitiveData(""), "");

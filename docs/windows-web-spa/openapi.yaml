@@ -167,6 +167,8 @@ paths:
       description: |
         支持局部更新，只发送需要修改的字段即可。
         poster.postUrl 若为加密对象（含 v/alg/nonce/ciphertext/tag），会在服务端解密后加密落盘。
+        poster.postUrl 的**新实际值**只接受 `http`/`https`（hostname 非空）；空串表示清空；
+        缺字段或 `***` 表示不修改。非法值返回 400 且不落盘、不回显该值（加密对象会先解密出候选明文再校验）。
       requestBody:
         required: true
         content:

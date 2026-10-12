@@ -16,6 +16,19 @@ struct PersonEntry {
     std::int64_t count = 0;
 };
 
+// A11：明文 YAML → 加密容器迁移的**可观察结果**。
+// 为什么需要它：load() 的返回 bool 只表达「库是否可读」，**不表达**迁移是否成功清理了本次明文副本
+//   ⇒ 「密文已成功落盘但清理失败」与「完全成功」在原有的 bool 上不可区分，调用方（装配链）无从知晓。
+//   本枚举把四态显式化，供测试与诊断观察（不改动 load() 的既有 bool 契约）。
+enum class MigrationOutcome {
+    NotAttempted,             // 未发生迁移（库不存在 / 已是加密容器 / 常量路径）
+    Success,                  // 加密落盘 + 回读逐项等价验证通过 + 本次明文副本已删除
+    VerifyFailed,             // 加密已替换主库，但回读校验不等价 ⇒ 本次副本保留（失败）
+    CleanupFailed,            // 加密与校验均通过，但删除本次明文副本失败 ⇒ 密文可用、副本保留（清理告警）
+    HistoricalBackupPresent,  // 已存在历史同名 .pre-encrypt 副本 ⇒ 迁移中止、未做任何改动（不覆写不删）
+    Aborted,                  // 其它中止（密钥不可用 / 加密失败 / 备份失败 / 替换失败），旧明文原样保留
+};
+
 // 人脸识别数据库（特征向量 + 身份标签）落盘存储。
 //
 // 存储层加密（S-SEC-B09-002）：磁盘文件为 AES-256-GCM 加密容器（magic "RKFDBCRY" + 版本 +
@@ -66,15 +79,25 @@ public:
     // DPAPI 保护的 AES 主密钥文件路径（<数据库路径>.key.dpapi），供工具/测试计算。
     static std::filesystem::path keyPathFor(const std::filesystem::path& dbPath);
 
+    // A11：最近一次 load() 触发的明文→加密迁移结果（可观察通道，见 MigrationOutcome 说明）。
+    //   线程安全：与 persons() 同受 mu_ 保护。
+    MigrationOutcome lastMigrationOutcome() const;
+    // 迁移结果的补充说明（失败原因 / 保留的副本路径线索）；成功或未迁移时为空串。**不含**人员身份明文。
+    std::string lastMigrationDetail() const;
+
 private:
     // 旧明文 YAML → 加密容器迁移（内部持 keyMu_）；失败/中止保留旧库，可回滚。
-    bool migratePlaintextToEncrypted(const std::filesystem::path& path,
-                                     const std::unordered_map<std::string, PersonEntry>& persons,
-                                     std::string& err);
+    // A11：返回迁移结果（而非 bool），以便 load() 把「密文可用但清理失败」与「完全成功」区分上报。
+    MigrationOutcome migratePlaintextToEncrypted(const std::filesystem::path& path,
+                                                 const std::unordered_map<std::string, PersonEntry>& persons,
+                                                 std::string& err);
 
     mutable std::mutex mu_;
     mutable std::mutex keyMu_;  // 保护密钥文件"读取或创建"，避免并发生成/覆盖竞态
     std::unordered_map<std::string, PersonEntry> persons_;
+    // A11：最近一次迁移结果（受 mu_ 保护）。
+    MigrationOutcome migrationOutcome_ = MigrationOutcome::NotAttempted;
+    std::string migrationDetail_;
 };
 
 }  // namespace rk_win

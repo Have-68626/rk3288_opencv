@@ -22,8 +22,8 @@ as_of=2026-10-12
 - `RK_WCFR_HTTP_PORT`：覆盖 `http.port`
 - `RK_WCFR_POST_URL`：覆盖 `poster.postUrl`
 
-⚠️ **env 覆盖与落盘的来源不对称（FACE-CONFIG-015 → 已由 FACE-CONFIG-017 闭合）**：这些覆盖在**解析时**直接写入**内存**配置（`cfg_`）。FACE-CONFIG-015 登记的缺口是「**落盘时**（PUT / 热重载回滚写回）只看到覆盖后的值、无法分辨来源 ⇒ 一次 PUT 或热重载回滚会把**当时的 env 值**顺带写进 `config.json`，此后**不带**该 env 启动时行为随之改变（用户原本的值被静默替换）」。**该缺口已由 FACE-CONFIG-017 的「env-free 来源快照」闭合**：解析时在套用 `RK_WCFR_*` 覆盖**之前**留存一份纯由 JSON 解析而得的快照，**落盘侧一律序列化该快照**（内存 `cfg_` 仍用 env-applied 值，load 时 env 照旧重放、GET 可见）。此后，对**经 JSON 解析路径装载**的 store，以下写盘路径**不再**把 env 值写进 `config.json`：PUT（`updateFromJsonBody`）、热重载回滚写回（`reloadFromDisk`）、`initialize` 的级联迁移落盘、密钥轮换重加密落盘，以及各处 `lastGoodJsonPretty_`（**经 INI 支装载的 store 是例外**，见下一条）。
-⚠️ **仍未覆盖的边界（如实登记）**：**INI→JSON 首装/回落落盘**（`initialize` 走 `loadConfigFromIniOrDefault()` 那一支）**不经**该快照路径，而 `loadConfigFromIniOrDefault()`（`src/win/src/WinConfig.cpp`）自身也套用同名 env 覆盖 ⇒ 该**首次落盘**的 `config.json` 仍带 env；且该支**取不到** env-free 版本，只能令 `envFreeCfg_ = cfg`（env-applied）⇒ **该 store 之后的密钥轮换重加密落盘与热重载回滚写回亦同样带 env**，直至**首次 PUT** 刷新 `envFreeCfg_` 为止（属已知残留，已在代码注释登记）。
+⚠️ **env 覆盖与落盘的来源不对称（FACE-CONFIG-015 → 已由 FACE-CONFIG-017 闭合）**：这些覆盖在**解析时**直接写入**内存**配置（`cfg_`）。FACE-CONFIG-015 登记的缺口是「**落盘时**（PUT / 热重载回滚写回）只看到覆盖后的值、无法分辨来源 ⇒ 一次 PUT 或热重载回滚会把**当时的 env 值**顺带写进 `config.json`，此后**不带**该 env 启动时行为随之改变（用户原本的值被静默替换）」。**该缺口已由 FACE-CONFIG-017 的「env-free 来源快照」闭合**：解析时在套用 `RK_WCFR_*` 覆盖**之前**留存一份纯由 JSON 解析而得的快照，**落盘侧一律序列化该快照**（内存 `cfg_` 仍用 env-applied 值，load 时 env 照旧重放、GET 可见）。此后，对**经 JSON 解析路径装载**的 store，以下写盘路径**不再**把 env 值写进 `config.json`：PUT（`updateFromJsonBody`）、热重载回滚写回（`reloadFromDisk`）、`initialize` 的级联迁移落盘、密钥轮换重加密落盘，以及各处 `lastGoodJsonPretty_`。**经 INI 支装载的 store 亦已覆盖**（A18，见下一条）。
+⚠️ **INI→JSON 首装/回落落盘（原「尚未覆盖的边界」）已由 A18 闭合**：`loadConfigFromIniOrDefault` 增开可选出参 `envFreeOut`，返回「套用 `RK_WCFR_*` 覆盖**之前**」的来源快照（INI + 默认值 + 路径解析）；`initialize` 的 INI 分支用它建立 `envFreeCfg_` 与落盘/`lastGoodJsonPretty_`（内存 `cfg_` 仍为 env-applied）⇒ **首次落盘、以及该 store 之后的密钥轮换重加密落盘与热重载回滚写回，均不再带 env**。`RK_WCFR_CONFIG` 是**来源选择**（决定读哪个配置文件），对快照与运行值同源、一并生效。
 若需避免影响，请仅在确需覆盖的进程内使用这些变量（覆盖值仍会改写该进程内存配置的取值与 GET 可见性）。
 
 ## 校验（JSON Schema）

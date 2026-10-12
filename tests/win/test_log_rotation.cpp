@@ -18,6 +18,8 @@
 #include "rk_win/RenderMetricsLogger.h"
 #include "rk_win/StructuredLogger.h"
 
+#include "NativeLog.h"  // A10：通用日志身份掩码（rklog::maskSensitiveData）
+
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -1031,5 +1033,89 @@ bool test_render_metrics_logger_open_rolls_oversized_cold_start() {
                   << sizeOf(jsonl) << " 字节" << std::endl;
         return false;
     }
+    return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// D. 身份掩码（A10）——新 CSV/JSONL 不得落盘真实 person_id；通用日志覆盖 personId/person_id
+// ═════════════════════════════════════════════════════════════════════
+
+// D1 StructuredLogger 身份掩码：CSV 与 JSONL 共用同一 facesJson，此处**实际写入后打开文件读回**，
+//   断言真实 person_id（test_person_001/002）在**两路**文件里都消失；掩码值 "***" 确实落盘（证明是
+//   掩码而非丢字段）；空身份与字面 "Unknown" 保留非身份语义；非敏感字段（camera_name）与 JSON 结构保留。
+//   判别点：删掉 append 里对 personId 的掩码 ⇒ 真实 id 原样落盘 ⇒ 红。这是 A10 的唯一行为判据
+//   （此前无任何用例触达 StructuredLogger 的 person_id 落盘内容）。
+bool test_structured_logger_masks_person_id() {
+    TempLogDir tmp("mask_person_id");
+    const std::filesystem::path dir = tmp.path();
+    rk_win::StructuredLogger lg;
+    if (!lg.open(dir, 0, 0)) return false;  // 关闭轮转，专注掩码
+
+    rk_win::FrameLogEntry e = makeFrameEntry("cam", "ok");
+    rk_win::FaceLogEntry f1; f1.personId = "test_person_001"; f1.confidence = 0.9; f1.distance = 0.2;
+    rk_win::FaceLogEntry f2; f2.personId = "test_person_002"; f2.confidence = 0.8; f2.distance = 0.3;
+    rk_win::FaceLogEntry f3; f3.personId = "Unknown";        f3.confidence = 0.5;
+    rk_win::FaceLogEntry f4; f4.personId = "";               // 空身份
+    e.faces = {f1, f2, f3, f4};
+    lg.append(e);
+    lg.close();
+
+    const std::string csv = readFile(dir / "recognition.csv");
+    const std::string jsonl = readFile(dir / "recognition.jsonl");
+    for (const char* real : {"test_person_001", "test_person_002"}) {
+        if (csv.find(real) != std::string::npos) {
+            std::cerr << "[mask_person_id] CSV 落盘泄漏真实 person_id" << std::endl;
+            return false;
+        }
+        if (jsonl.find(real) != std::string::npos) {
+            std::cerr << "[mask_person_id] JSONL 落盘泄漏真实 person_id" << std::endl;
+            return false;
+        }
+    }
+    // 掩码确实写盘（JSONL 中 facesJson 为原样写入；CSV 中该串被 CSV 转义、只判子串 "***"）。
+    if (jsonl.find("\"person_id\":\"***\"") == std::string::npos) {
+        std::cerr << "[mask_person_id] JSONL 未见掩码值 \"***\"" << std::endl;
+        return false;
+    }
+    if (csv.find("***") == std::string::npos) {
+        std::cerr << "[mask_person_id] CSV 未见掩码值 \"***\"" << std::endl;
+        return false;
+    }
+    // 空身份 / "Unknown" 保留非身份语义（不掩）。
+    if (jsonl.find("\"person_id\":\"Unknown\"") == std::string::npos) return false;
+    if (jsonl.find("\"person_id\":\"\"") == std::string::npos) return false;
+    // 非敏感字段与 JSON 结构保留。
+    if (jsonl.find("\"camera_name\":\"cam\"") == std::string::npos) return false;
+    if (jsonl.find("\"faces\":[") == std::string::npos) return false;
+    if (!jsonl.empty() && jsonl.front() != '{') return false;
+    return true;
+}
+
+// D2 通用日志（rklog）身份掩码：maskSensitiveData 的**快速敏感键集合**与**匹配规则**都须覆盖
+//   personId / person_id（裸键、JSON 键、大小写、与其它敏感字段混合）。NativeLog.cpp 已链接进
+//   win_unit_tests（见 cmake/windows.cmake）⇒ 可在此以行为断言验证，无需构建 core 目标。
+//   判别点：敏感键集合或正则未加 personId/person_id ⇒ 真实身份原样输出 ⇒ 红。
+bool test_native_log_masks_person_id() {
+    struct Case { const char* in; const char* mustNotContain; };
+    const Case cases[] = {
+        {"personId=test_person_001", "test_person_001"},
+        {"person_id=test_person_002", "test_person_002"},
+        {"{\"personId\":\"test_person_003\"}", "test_person_003"},
+        {"{\"person_id\":\"test_person_004\"}", "test_person_004"},
+        {"PERSONID=test_person_005", "test_person_005"},
+        {"personId=test_person_006 token=abcdef123456", "test_person_006"},
+    };
+    for (const Case& c : cases) {
+        const std::string out = rklog::maskSensitiveData(c.in);
+        if (out.find(c.mustNotContain) != std::string::npos) {
+            std::cerr << "[native_mask_person_id] 通用日志泄漏身份原值（未被掩码）" << std::endl;
+            return false;
+        }
+    }
+    // 掩码确实发生（值经首2+***+尾2 掩码后仍可辨），而非整行丢弃。
+    if (rklog::maskSensitiveData("personId=test_person_001").find("***") == std::string::npos) return false;
+    // 负对照：非身份词不得被误伤（词边界）。
+    if (rklog::maskSensitiveData("monkey=banana") != "monkey=banana") return false;
+    if (rklog::maskSensitiveData("person identifier=42") != "person identifier=42") return false;
     return true;
 }

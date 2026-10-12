@@ -65,6 +65,9 @@ bool test_structured_logger_header_preserved_across_open_rotation();
 bool test_structured_logger_header_preserved_across_append_rotation();
 bool test_structured_logger_open_prunes_shrunk_generations();
 bool test_structured_logger_rename_failure_does_not_reset_header();
+// A10：新 CSV/JSONL 身份掩码（StructuredLogger）+ 通用日志 personId/person_id 掩码（NativeLog）。
+bool test_structured_logger_masks_person_id();
+bool test_native_log_masks_person_id();
 // 重开失败后**自动恢复** + 两路独立（2026-09-28 新增）。
 bool test_structured_logger_reopen_recovers_and_paths_independent();
 // ★ 2026-09-29 新增：「每路独立重试窗口」的判别用例（S4：此前零覆盖）。
@@ -151,6 +154,15 @@ bool test_face_db_encrypted_roundtrip();
 bool test_face_db_load_nonexistent_path_is_intentionally_ok();
 // FACE-DB-002：畸形旧明文库必须受控失败（不得抛穿 load() 的 false 契约）。
 bool test_face_db_malformed_legacy_is_controlled_failure();
+// A11：历史同名 .pre-encrypt 副本存在时迁移中止（不覆写不删，主库保持明文）。
+bool test_face_db_migration_historical_backup_aborts();
+// A18：INI 加载器的 env-free 来源快照 + initialize INI 分支落盘用该快照。
+bool test_load_config_ini_env_free_snapshot();
+bool test_initialize_ini_branch_writes_env_free();
+// A6：PUT 的 postUrl 独立校验（只接受 http/https；缺字段/"***"保持、空串清空；加密对象先解密再校验）。
+bool test_config_put_post_url_scheme_rejected();
+bool test_config_put_post_url_masked_and_empty();
+bool test_config_put_post_url_encrypted_object_checked_after_decrypt();
 // FACE-ARCWIN-002：initialize() 初始化自检块的判别用例（含阳性对照臂，防 cascade 静默失败造成假绿）。
 bool test_arcwin_selfcheck_positive_control();
 bool test_arcwin_selfcheck_rejects_dim_mismatch();
@@ -279,6 +291,8 @@ int main(int argc, char** argv) {
         {"test_structured_logger_header_preserved_across_append_rotation", test_structured_logger_header_preserved_across_append_rotation},
         {"test_structured_logger_open_prunes_shrunk_generations", test_structured_logger_open_prunes_shrunk_generations},
         {"test_structured_logger_rename_failure_does_not_reset_header", test_structured_logger_rename_failure_does_not_reset_header},
+        {"test_structured_logger_masks_person_id", test_structured_logger_masks_person_id},
+        {"test_native_log_masks_person_id", test_native_log_masks_person_id},
         {"test_structured_logger_reopen_recovers_and_paths_independent",
          test_structured_logger_reopen_recovers_and_paths_independent},
         {"test_structured_logger_reopen_windows_are_per_path",
@@ -354,6 +368,12 @@ int main(int argc, char** argv) {
         {"face_db_encrypted_roundtrip", test_face_db_encrypted_roundtrip},
         {"face_db_load_nonexistent_path_is_intentionally_ok", test_face_db_load_nonexistent_path_is_intentionally_ok},
         {"face_db_malformed_legacy_is_controlled_failure", test_face_db_malformed_legacy_is_controlled_failure},
+        {"face_db_migration_historical_backup_aborts", test_face_db_migration_historical_backup_aborts},
+        {"load_config_ini_env_free_snapshot", test_load_config_ini_env_free_snapshot},
+        {"initialize_ini_branch_writes_env_free", test_initialize_ini_branch_writes_env_free},
+        {"config_put_post_url_scheme_rejected", test_config_put_post_url_scheme_rejected},
+        {"config_put_post_url_masked_and_empty", test_config_put_post_url_masked_and_empty},
+        {"config_put_post_url_encrypted_object_checked_after_decrypt", test_config_put_post_url_encrypted_object_checked_after_decrypt},
         {"arcwin_selfcheck_positive_control", test_arcwin_selfcheck_positive_control},
         {"arcwin_selfcheck_rejects_dim_mismatch", test_arcwin_selfcheck_rejects_dim_mismatch},
         {"arcwin_selfcheck_rejects_unknown_input_blob", test_arcwin_selfcheck_rejects_unknown_input_blob},

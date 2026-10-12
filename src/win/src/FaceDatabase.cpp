@@ -244,6 +244,48 @@ bool readContainer(const std::filesystem::path& path, std::vector<std::uint8_t>&
     return true;
 }
 
+// A11：回读**实际磁盘密文**并用原解密解析链还原，再把完整记录与期望**逐项逐值**比对。
+//   判据是**内容一致**（人员集合 / count / 维度 / 每个 float 的 IEEE-754 bit），**不是**余弦相似。
+//   返回 false 时 errOut 说明原因（**不含**人员身份明文，只用数量/字段名，避免把身份写进诊断）。
+bool encryptedPayloadMatches(const std::filesystem::path& path,
+                             const std::unordered_map<std::string, PersonEntry>& expected,
+                             const std::vector<std::uint8_t>& key, std::string& errOut) {
+    errOut.clear();
+    std::vector<std::uint8_t> nonce, tag, ciphertext;
+    if (!readContainer(path, nonce, tag, ciphertext, errOut)) return false;
+    AesGcmCiphertext ct{std::move(nonce), std::move(ciphertext), std::move(tag)};
+    std::vector<std::uint8_t> plain;
+    if (!aes256gcmDecrypt(key, ct, plain, errOut, makeHeader())) return false;
+    const std::string payload(reinterpret_cast<const char*>(plain.data()), plain.size());
+    std::unordered_map<std::string, PersonEntry> got;
+    if (!deserializePayload(payload, got)) {
+        errOut = "载荷反序列化失败";
+        return false;
+    }
+    if (got.size() != expected.size()) {
+        errOut = "人员数量不一致";
+        return false;
+    }
+    for (const auto& kv : expected) {
+        const auto it = got.find(kv.first);
+        if (it == got.end()) {
+            errOut = "存在缺失记录";
+            return false;
+        }
+        const PersonEntry& a = kv.second;
+        const PersonEntry& b = it->second;
+        if (a.count != b.count) { errOut = "记录 count 不一致"; return false; }
+        if (a.mean.size() != b.mean.size()) { errOut = "记录维度不一致"; return false; }
+        for (std::size_t i = 0; i < a.mean.size(); ++i) {
+            std::uint32_t x = 0, y = 0;
+            std::memcpy(&x, &a.mean[i], sizeof(x));
+            std::memcpy(&y, &b.mean[i], sizeof(y));
+            if (x != y) { errOut = "记录特征值不一致（非逐值等价）"; return false; }
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 std::filesystem::path FaceDatabase::keyPathFor(const std::filesystem::path& dbPath) {
@@ -252,6 +294,12 @@ std::filesystem::path FaceDatabase::keyPathFor(const std::filesystem::path& dbPa
 
 bool FaceDatabase::load(const std::filesystem::path& path) {
     if (path.empty()) return false;
+    // A11：每次 load 先复位迁移结果（仅明文分支才可能改写为正结果；加密/不存在/失败均为 NotAttempted）。
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        migrationOutcome_ = MigrationOutcome::NotAttempted;
+        migrationDetail_.clear();
+    }
     if (!std::filesystem::exists(path)) {
         std::lock_guard<std::mutex> lock(mu_);
         persons_.clear();
@@ -268,6 +316,9 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
     }
 
     std::unordered_map<std::string, PersonEntry> tmp;
+    // A11：迁移结果暂存（在末尾统一提交到成员，与 persons_ 同处 mu_ 临界区）。
+    MigrationOutcome migOutcome = MigrationOutcome::NotAttempted;
+    std::string migDetail;
     if (encrypted) {
         std::vector<std::uint8_t> nonce, tag, ciphertext, key;
         std::string err;
@@ -367,11 +418,14 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
         }
         // `migratePlaintextToEncrypted` 不使用 OpenCV（纯加密 + 文件 IO，自带回滚）⇒ 刻意留在 try 之外。
         std::string migErr;
-        (void)migratePlaintextToEncrypted(path, tmp, migErr);
+        migOutcome = migratePlaintextToEncrypted(path, tmp, migErr);
+        migDetail = migErr;
     }
 
     std::lock_guard<std::mutex> lock(mu_);
     persons_ = std::move(tmp);
+    migrationOutcome_ = migOutcome;
+    migrationDetail_ = migDetail;
     return true;
 }
 
@@ -409,11 +463,21 @@ bool FaceDatabase::save(const std::filesystem::path& path) const {
     return true;
 }
 
-bool FaceDatabase::migratePlaintextToEncrypted(
+MigrationOutcome FaceDatabase::migratePlaintextToEncrypted(
     const std::filesystem::path& path,
     const std::unordered_map<std::string, PersonEntry>& persons,
     std::string& err) {
     err.clear();
+    const std::filesystem::path bak = std::filesystem::path(path.string() + ".pre-encrypt");
+
+    // A11：迁移前若**已存在**同名 .pre-encrypt 副本，必须明确报错停止 —— 它可能是人工恢复的
+    //   最后凭据（或上一次迁移的产物），静默覆写/删除都不允许。此支不改动任何文件（主库仍为明文）。
+    std::error_code existsEc;
+    if (std::filesystem::exists(bak, existsEc)) {
+        err = "已存在历史 .pre-encrypt 副本，为避免覆盖而中止迁移（未做任何改动）";
+        return MigrationOutcome::HistoricalBackupPresent;
+    }
+
     const std::string payload = serializePayload(persons);
     std::vector<std::uint8_t> plain(payload.begin(), payload.end());
 
@@ -421,7 +485,7 @@ bool FaceDatabase::migratePlaintextToEncrypted(
     {
         std::lock_guard<std::mutex> lock(keyMu_);
         // 密钥不可用 → 迁移中止：不加密、不动旧库（后续仍可明文读取）。
-        if (!ensureOrLoadKey(keyPathFor(path), key, err)) return false;
+        if (!ensureOrLoadKey(keyPathFor(path), key, err)) return MigrationOutcome::Aborted;
     }
 
     // 先写临时加密文件；成功后再备份旧明文并原子替换。任一步失败旧库保持原样。
@@ -429,25 +493,51 @@ bool FaceDatabase::migratePlaintextToEncrypted(
     if (!encryptToFile(tmp, plain, key, err)) {
         std::error_code ec;
         std::filesystem::remove(tmp, ec);
-        return false;
+        return MigrationOutcome::Aborted;
     }
 
-    // 备份旧明文（回滚点）。按冻结规格 §3.2：迁移任一步失败即中止——若备份失败仍继续
-    // 替换，替换成功后明文与回滚点会双双消失（备份未生成 + 原路径已被密文覆盖），
-    // 无回滚点（P2-1 S3 CONFIRMED）。故备份失败必须中止、保留旧明文原路径可重试。
+    // 备份旧明文（**本次迁移**的副本）。按冻结规格 §3.2：迁移任一步失败即中止——若备份失败仍继续
+    // 替换，替换成功后明文与回滚点会双双消失（备份未生成 + 原路径已被密文覆盖），无回滚点。
+    // 这里用 copy_options::none（而非 overwrite_existing）：上面已判过不存在，若此刻竞态出现同名文件
+    // 则 copy 失败并中止，绝不静默覆盖（与「历史副本不覆写」同一安全方向）。
     std::error_code ec;
-    std::filesystem::copy_file(path, std::filesystem::path(path.string() + ".pre-encrypt"),
-                               std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::copy_file(path, bak, std::filesystem::copy_options::none, ec);
     if (ec) {
         std::filesystem::remove(tmp, ec);
-        return false;  // 备份失败：旧明文仍在原路径，未损坏。
+        err = "明文备份失败: " + ec.message();
+        return MigrationOutcome::Aborted;  // 备份失败：旧明文仍在原路径，未损坏。
     }
 
     if (!replaceFile(tmp, path, err)) {
-        std::filesystem::remove(tmp, ec);
-        return false;  // 替换失败：旧明文仍在原路径，未损坏。
+        std::error_code rmEc;
+        std::filesystem::remove(tmp, rmEc);
+        return MigrationOutcome::Aborted;  // 替换失败：旧明文仍在原路径，未损坏。
     }
-    return true;
+
+    // A11：回读**实际密文主库**，用原解密解析链还原完整记录，与本次迁移源逐项逐值等价（非余弦相似）。
+    std::string verifyErr;
+    if (!encryptedPayloadMatches(path, persons, key, verifyErr)) {
+        err = "迁移后回读校验失败（" + verifyErr + "）；已保留本次明文副本";
+        return MigrationOutcome::VerifyFailed;  // 密文已替换主库，但校验不等价 ⇒ 副本保留（失败）
+    }
+
+    // 验证通过才删**本次**生成的备份；删除失败显式报告并保留（此时密文已可用，属清理告警而非失败）。
+    std::error_code rmBakEc;
+    if (!std::filesystem::remove(bak, rmBakEc)) {
+        err = "迁移验证通过但删除本次明文副本失败: " + rmBakEc.message() + "；副本保留";
+        return MigrationOutcome::CleanupFailed;
+    }
+    return MigrationOutcome::Success;
+}
+
+MigrationOutcome FaceDatabase::lastMigrationOutcome() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return migrationOutcome_;
+}
+
+std::string FaceDatabase::lastMigrationDetail() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return migrationDetail_;
 }
 
 void FaceDatabase::clear() {

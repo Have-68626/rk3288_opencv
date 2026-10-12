@@ -32,6 +32,14 @@ bool renameBestEffort(const std::filesystem::path& from, const std::filesystem::
     return !ec;
 }
 
+// A10：落盘身份掩码 —— 空身份与字面 "Unknown" **不携带身份语义**，原样保留；其余统一替换为 "***"。
+// 为什么在此处（facesJson 的构造点）统一掩码：CSV 与 JSONL 共用同一 facesJson 字符串 ⇒ 一处即覆盖两路落盘。
+// 为什么不做可逆编码 / 稳定哈希：决策 A10 明确要求掩码（业务结果与界面身份另行保留，不受影响）。
+std::string maskIdentityForLog(const std::string& id) {
+    if (id.empty() || id == "Unknown") return id;
+    return "***";
+}
+
 }  // namespace
 
 std::string nowIso8601Local() {
@@ -328,7 +336,7 @@ void StructuredLogger::append(const FrameLogEntry& e) {
         facesJson += ",\"h\":";
         facesJson += std::to_string(f.h);
         facesJson += ",\"person_id\":\"";
-        facesJson += escapeJson(f.personId);
+        facesJson += escapeJson(maskIdentityForLog(f.personId));
         facesJson += "\",\"distance\":";
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%g", f.distance);

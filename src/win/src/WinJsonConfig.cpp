@@ -842,10 +842,10 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     //     曾存在的缺口是「序列化侧只看到 env 覆盖后的 cfg、无法回退」⇒ 一次「热重载回滚写回」
     //     （reloadFromDisk）或 PUT（updateFromJsonBody）会把 env 值烤进 config.json；现两者均改为序列化
     //     env-free 快照，initialize 的级联迁移落盘 / rotate 重加密落盘 / 各处 lastGoodJsonPretty_ 亦同。
-    //   · ⚠️ **射程边界（如实登记）**：**INI→JSON 首装/回落落盘**（initialize 走 loadConfigFromIniOrDefault
-    //     那一支）**不经**本函数，而该函数（src/win/src/WinConfig.cpp）自身也套用同名 env 覆盖 ⇒ 该**单条**
-    //     写盘路径仍可能把 env 值写进**首次落盘**的 config.json。它不在本方案（「本函数内快照」）的射程内，
-    //     且 WinConfig.cpp 不在本次允许改动范围 ⇒ 留作已知残留。
+    //   · ✅ A18 **已闭合**（原「已知残留」）：**INI→JSON 首装/回落落盘**（initialize 走 loadConfigFromIniOrDefault
+    //     那一支）此前不经本函数、且该函数自身套用同名 env 覆盖 ⇒ 该单条写盘路径会把 env 值写进**首次落盘**的
+    //     config.json。A18 已给 loadConfigFromIniOrDefault 增开可选出参 envFreeOut，initialize 的 INI 分支改用该
+    //     env-free 来源快照序列化（见 initialize 内 `AppConfig envFreeIni; loadConfigFromIniOrDefault(&envFreeIni);`）。
     //   详见 docs/guides/windows-service/config.md。
     const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
     const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
@@ -1222,9 +1222,13 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
     }
 
     // 迁移：从旧 INI 读取（兼容已有流程），然后落盘为 JSON
-    AppConfig cfg = loadConfigFromIniOrDefault();
+    // A18：同时取「套用 RK_WCFR_* 取值覆盖**之前**」的 env-free 来源快照（loadConfigFromIniOrDefault 的出参），
+    //   落盘与 lastGoodJsonPretty_ 一律用它；运行 cfg 仍 env-applied（current() 保留 env 值）。
+    AppConfig envFreeIni;
+    AppConfig cfg = loadConfigFromIniOrDefault(&envFreeIni);
     cfg.configPath = configPath_;
-    const std::string pretty = buildSettingsJson(cfg, false, true);
+    envFreeIni.configPath = configPath_;
+    const std::string pretty = buildSettingsJson(envFreeIni, false, true);
     // 落盘前置闸门：序列化产物必须自洽（能过 settings schema）。密钥不可用时 buildSettingsJson
     // 返回错误 stub，写盘会让「下次启动必被 schema 拒 ⇒ 再隔离、再写同一 stub」自持续循环。
     std::string notWritable;
@@ -1255,12 +1259,10 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
     {
         std::lock_guard<std::mutex> lock(mu_);
         cfg_ = cfg;
-        // FACE-CONFIG-017 射程边界（如实登记）：本支的 cfg 来自 loadConfigFromIniOrDefault()，该函数
-        //   （src/win/src/WinConfig.cpp）**自身**也套用同名 RK_WCFR_* 覆盖且**不在**本次允许改动范围 ⇒
-        //   此处**取不到** env-free 版本，只能令 envFreeCfg_ = cfg（即本支之后 rotate / 回滚写盘仍可能带
-        //   env 值，与改动前的行为一致）。parse → 落盘 诸路径（PUT / 回滚内存臂 / 级联迁移 / lastGood）才是
-        //   本方案的射程。INI→JSON **首装/回落落盘本身**（下方 pretty）同理带 env（见函数末尾登记块的说明）。
-        envFreeCfg_ = cfg;
+        // FACE-CONFIG-017 / A18：INI 首装/回落分支现由 loadConfigFromIniOrDefault(&envFreeIni) 取得
+        //   env-free 来源快照 ⇒ envFreeCfg_ 与 lastGoodJsonPretty_（示例 pretty 由其序列化而来）均为 env-free，
+        //   不再把 env 覆盖值烤进首次落盘或后续 rotate/回滚写盘（旧残留已闭合）。
+        envFreeCfg_ = envFreeIni;
         lastGoodJsonPretty_ = pretty;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::exists(configPath_) ? std::filesystem::last_write_time(configPath_, ec) : std::filesystem::file_time_type{};
@@ -1298,6 +1300,31 @@ uint64_t WinJsonConfigStore::generation() const {
 std::string WinJsonConfigStore::currentRedactedJsonPretty() const {
     std::lock_guard<std::mutex> lock(mu_);
     return buildSettingsJson(cfg_, true, false);
+}
+
+// A6：PUT 的 poster.postUrl **新实际值**的形状判据（后端独立实现，不复用前端代码、但判据同源）。
+//   语义与前端 isValidMaskedPostUrl 对齐：空串（trim 后）= 显式清空 ⇒ 放行；含内嵌空白 ⇒ 拒；
+//   其余仅接受 http/https 且 hostname 非空。
+//   ⚠️ 入参在此**必是已解密的明文**（补丁里的加密对象由调用方先经原解密链路还原）——绝不对 ciphertext 做 scheme 匹配。
+static bool isValidPostUrlScheme(const std::string& raw) {
+    std::size_t b = 0, e = raw.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
+    const std::string s = raw.substr(b, e - b);
+    if (s.empty()) return true;                                         // 显式清空
+    if (s.find_first_of(" \t\r\n") != std::string::npos) return false;  // 内嵌空白
+    const std::string lower = asciiLower(s);
+    const auto schemeOk = [&](const char* sch) -> bool {
+        const std::size_t n = std::char_traits<char>::length(sch);
+        if (lower.size() < n + 3) return false;
+        if (lower.compare(0, n, sch) != 0) return false;
+        if (lower.compare(n, 3, "://") != 0) return false;
+        const std::size_t hostStart = n + 3;
+        if (hostStart >= s.size()) return false;                        // 无 host
+        const char c = s[hostStart];
+        return c != '/' && c != '?' && c != '#';                        // hostname 非空
+    };
+    return schemeOk("http") || schemeOk("https");
 }
 
 WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const std::string& bodyUtf8) {
@@ -1350,6 +1377,43 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     // 脱敏全量回写保护：剔除 patch 中的 "***" 哨兵（语义=不修改，保留 base 既有值）。
     // 否则 GET 脱敏输出被原样回写时，真实密文会被字面量 "***" 覆盖并重加密销毁。
     stripMaskedSentinels(patch);
+
+    // A6：postUrl **独立校验** —— 只对 patch **显式携带**的 poster.postUrl 生效（缺字段 ⇒ 保持来源值；
+    //   "***" 已被 stripMaskedSentinels 剔除 ⇒ 亦保持来源值）。
+    //   为什么只查 patch（而非合并后的 baseDoc）：否则既有 config.json 里已存在的**历史非法值**会让
+    //   **任何** PUT 都被 400（哪怕只改摄像头宽度）而被锁死——与 FACE-CONFIG-018 只查 patch 同因；
+    //   历史非法值仍在装载期只告警（不收紧加载 schema），用户主动改其它字段仍可用。
+    //   为什么加密对象要先解密：只有候选**明文**才携带 scheme；对 ciphertext 做 scheme 匹配会恒拒或恒放。
+    //   ⚠️ 拒绝时**不落盘、不回显 URL**（错误消息/详情不含该值）。
+    if (const JsonValue* posterPatch = patch.find("poster"); posterPatch && posterPatch->isObject()) {
+        if (const JsonValue* pu = posterPatch->find("postUrl"); pu) {
+            std::string candidate;  // 已解密的候选明文（空 = 显式清空）
+            bool needsCheck = true;
+            if (pu->isString()) {
+                candidate = pu->s;
+            } else if (pu->isObject()) {
+                AesGcmCiphertext ct;
+                std::vector<std::uint8_t> key, plain;
+                std::string e;
+                if (!parseEncryptedStringObject(*pu, ct, e) || !ensureOrLoadKey(key, e) ||
+                    !aes256gcmDecrypt(key, ct, plain, e, "poster.postUrl")) {
+                    r.message = "settings 未应用：poster.postUrl 加密对象不可解析/解密";
+                    r.details = {"poster.postUrl 加密对象校验失败"};
+                    return r;  // 400，不落盘
+                }
+                if (!plain.empty()) {
+                    candidate.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
+                }
+            } else {
+                needsCheck = false;  // 非 string/object 交给 schema 校验（保持既有错误文案不变）
+            }
+            if (needsCheck && !isValidPostUrlScheme(candidate)) {
+                r.message = "settings 未应用：poster.postUrl 仅接受 http/https";
+                r.details = {"poster.postUrl：仅接受 http/https 且 hostname 非空的地址"};
+                return r;  // 400，不落盘、不回显 URL
+            }
+        }
+    }
 
     // FACE-CONFIG-018（S-1）：写型路径字段的**真正强制**只在此处——PUT 是唯一能安全拒绝的路径
     //   （启动期拒绝会触发 INI 回落清空用户配置，见 WinConfig.h 的「只钳不拒」承重理由）。
