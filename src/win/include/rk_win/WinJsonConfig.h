@@ -185,7 +185,10 @@ private:
     bool ensureOrLoadKey(std::vector<std::uint8_t>& keyOut, std::string& outErr) const;
 
     // JSON <-> AppConfig
-    bool parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, std::string& outErr) const;
+    // envFreeOut（FACE-CONFIG-017）：非空时回填一份「套用 RK_WCFR_* 覆盖**之前**」的**来源快照**；
+    //   cfgOut 仍是 env-applied（= 内存 cfg_ 的事实源，load 时 env 照旧重放）。落盘侧一律用 envFreeOut
+    //   序列化 ⇒ env 覆盖值不会被静默烤进 config.json。
+    bool parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, AppConfig* envFreeOut, std::string& outErr) const;
     std::string buildSettingsJson(const AppConfig& cfg, bool redacted, bool encryptSensitive) const;
 
     static std::filesystem::path defaultConfigPath();
@@ -203,7 +206,15 @@ private:
 
     mutable std::mutex mu_;
     AppConfig cfg_{};
-    std::string lastGoodJsonPretty_;  // 用于回滚/调试输出（不含密钥）
+    // FACE-CONFIG-017：cfg_ 的 env-free 对应值（= parseAndValidateSettingsDoc 的 envFreeOut 快照）。
+    //   ⚠️ **并非恒为 env-free**：INI→JSON 首装/回落支取不到快照，只能令 envFreeCfg_ = cfg（env-applied），
+    //   见 WinJsonConfig.cpp 该支的登记。除此例外，凡给 cfg_ 赋值处也给它赋值（**唯一跳过**：rotate 内
+    //   `cfg_ = cfg` 是把本次取到的 cfg_ 快照**等值回写**，envFreeCfg_ 本次未变、故不重赋）。
+    //   与 cfg_ 在**同一 mu_ 临界区内成对更新**，故锁纪律与 cfg_ 完全一致、不引入新的交错窗口。
+    //   用途：让「按当前生效配置重新序列化并落盘」的路径（rotateKeyAndReencrypt / reloadFromDisk 的内存
+    //   写回臂）取到**不含 env 覆盖**的版本，避免 env 值被写回 config.json。
+    AppConfig envFreeCfg_{};
+    std::string lastGoodJsonPretty_;  // 用于回滚/调试输出（不含密钥）；FACE-CONFIG-017 起为 **env-free** 序列化
     std::atomic<std::uint64_t> generation_{0};
 
     // FACE-CONFIG-001 启动装载诊断，由 initialize 在 mu_ 保护下写入，由三个 const 访问器读取。

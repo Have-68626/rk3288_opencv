@@ -590,7 +590,7 @@ static void normalizeRecognitionKeys(JsonValue& doc);
 static void normalizeLogBudgetKeys(JsonValue& doc);
 static void warnUnsafeConfigPaths(JsonValue& doc);
 
-bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, std::string& outErr) const {
+bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, AppConfig* envFreeOut, std::string& outErr) const {
     outErr.clear();
     JsonValue doc;
     std::string perr;
@@ -695,13 +695,9 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*d, "modelPath", s)) cfg.dnn.modelPath = resolvePathFromExeDir(s);
         if (getString(*d, "configPath", s)) cfg.dnn.configPath = resolvePathFromExeDir(s);
 
-        // 冗余 env 覆盖（FACE-CONFIG-015）：与函数末尾同名覆盖重复，且同样会被烤进磁盘（见末尾登记块）。
-        const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
-        if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
-
-        const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
-        if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(envConfig);
-
+        // ⚠️ FACE-CONFIG-017：此处**原**有一对冗余的 RK_WCFR_DNN_MODEL / RK_WCFR_DNN_CONFIG env 覆盖
+        //   （与函数末尾同名覆盖重复）。为使「套用 env **之前**的来源快照」真正 env-free，已把它们**删除**——
+        //   唯一取值点收敛到函数末尾那处（cfgOut 的取值不变：末尾覆盖对本块**无条件**生效，故删除是行为中性的）。
         if (getNumber(*d, "inputWidth", v)) cfg.dnn.inputWidth = static_cast<int>(v);
         if (getNumber(*d, "inputHeight", v)) cfg.dnn.inputHeight = static_cast<int>(v);
         if (getNumber(*d, "scale", v)) cfg.dnn.scale = v;
@@ -770,9 +766,8 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
             }
         }
 
-        // 冗余 env 覆盖（FACE-CONFIG-015）：与函数末尾同名覆盖重复，且同样会被烤进磁盘（见末尾登记块）。
-        const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
-        if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
+        // ⚠️ FACE-CONFIG-017：此处**原**有一条冗余的 RK_WCFR_POST_URL env 覆盖（与函数末尾重复）。为使来源
+        //   快照 env-free，已删除；唯一取值点收敛到函数末尾（cfgOut 取值不变：末尾覆盖无条件生效）。
         if (getNumber(*p, "throttleMs", v)) cfg.poster.throttleMs = static_cast<int>(v);
         if (getNumber(*p, "backoffMinMs", v)) cfg.poster.backoffMinMs = static_cast<int>(v);
         if (getNumber(*p, "backoffMaxMs", v)) cfg.poster.backoffMaxMs = static_cast<int>(v);
@@ -830,30 +825,27 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }
 
-    // Apply environment variable overrides if present
+    // ★ FACE-CONFIG-017：**来源快照** —— 在套用下方 RK_WCFR_* 覆盖**之前**，把此时（纯由 JSON 解析而得、
+    //   未受任何 env 影响）的 cfg 留存一份到 envFreeOut。落盘侧一律用该 **env-free 快照**序列化
+    //   （见 WinJsonConfig.h 的 envFreeOut 说明与 envFreeCfg_ 成员注释），故 env 覆盖值不会被静默
+    //   烤进 config.json；内存 cfg_ 仍用下方 env-applied 值（load 时 env 照旧重放）。
+    //   注：本函数早先的 dnn 块内**有两条冗余的 env 覆盖**（RK_WCFR_DNN_MODEL + RK_WCFR_DNN_CONFIG）、
+    //   poster 块内**有一条**（RK_WCFR_POST_URL），均与下方同名覆盖重复；为使此处快照确保 env-free 已删除
+    //   ——删除是**行为中性**的：下方覆盖无条件生效，cfgOut 取值逐位不变。
+    if (envFreeOut) *envFreeOut = cfg;
+
+    // Apply environment variable overrides if present.
     //
-    // ⚠️ FACE-CONFIG-015（已知不对称，本轮**不修**，取方案 (b)：如实登记不修）：
-    //   下面这些 RK_WCFR_* 覆盖（本块 4 个 + 上文 dnn / poster 块内 3 处冗余覆盖的 env 读取：
-    //   getEnvW(L"RK_WCFR_DNN_MODEL") / (L"RK_WCFR_DNN_CONFIG") / (L"RK_WCFR_POST_URL")）会被**写回磁盘**。
-    //   ⚠️ 此处**刻意不写行号**：本文件行号随每次编辑漂移（上一版写的 622/625/689 即已失准）⇒ 只按
-    //   函数/字面量定位，避免留下会腐烂的引用。
-    //   原因：本函数把 env 值**无条件覆盖进 cfg**，而序列化侧
-    //   （toSettingsDocObject / buildSettingsJson）只看到覆盖后的 cfg、**无法回退到用户原值** ⇒ 一旦发生
-    //   「热重载回滚写回」（reloadFromDisk）或 PUT（updateFromJsonBody），两者都经 parseAndValidateSettingsDoc
-    //   → 序列化落盘，env 值就被**烤进 config.json**；此后**不带**该 env 启动时行为随之改变、用户原本的值被静默替换。
-    //   · 这是**既有性质，非本轮引入**：PUT 路径一直如此（且 initialize 成功分支的 lastGoodJsonPretty_
-    //     也由 env 覆盖后的 cfg 序列化而来，故 PUT 的合并基底亦含 env 值；见 `updateFromJsonBody` 的合并基底
-    //     注释——那里的基底**含 env 覆盖值**，旧措辞「解耦环境覆盖项」不成立）。
-    //   · 本轮新增的**触达路径**是「热重载被拒后**无需用户动作**即写回」（FACE-CONFIG-010，属**上一提交**、
-    //     非本批新增），使该不对称更易被触发 ⇒ 值得登记。
-    //   为什么**不**修（选 (b) 的理由）：修法**非平凡**——**注意**：准确说法**不是**「必然引入来源歧义」。
-    //     现有序列化侧只拿到「env 覆盖后的 cfg」，无从分辨哪些字段被 env 覆盖；但存在一条**不涉及**「把用户在
-    //     UI 显式改的值误判成 env 值」那类歧义的可行替代（**后续可选方案**，本轮未做）：
-    //       在 parseAndValidateSettingsDoc 内把「应用 env **之前**的 cfg」留一份**来源快照**；落盘一律用该
-    //       **env-free 快照**，内存 cfg_ 仍用 env-applied 值（load 时 env 照旧重放）。
-    //     其代价：需把「落盘用哪份 cfg」贯穿 **initialize / PUT / 回滚** 三处写盘路径，并新增相应回归用例
-    //     （非平凡、触及面广），故本轮未做。环境变量本身按文档定位为「容器化 / 临时调试」用途，该场景下
-    //     env 值落盘通常可接受；留待有明确需求时实现上述替代方案。
+    // ⚠️ FACE-CONFIG-015 / FACE-CONFIG-017：下面这些 RK_WCFR_* 覆盖（本块 4 个）**只**改写返回的 cfgOut
+    //   （= 内存 cfg_ 的事实源），**不再**进入落盘产物——落盘侧一律用上面那份 env-free 快照。
+    //   · FACE-CONFIG-015（原「已知不对称、本轮不修」的登记）**已由 FACE-CONFIG-017 的上述方案闭合**：
+    //     曾存在的缺口是「序列化侧只看到 env 覆盖后的 cfg、无法回退」⇒ 一次「热重载回滚写回」
+    //     （reloadFromDisk）或 PUT（updateFromJsonBody）会把 env 值烤进 config.json；现两者均改为序列化
+    //     env-free 快照，initialize 的级联迁移落盘 / rotate 重加密落盘 / 各处 lastGoodJsonPretty_ 亦同。
+    //   · ⚠️ **射程边界（如实登记）**：**INI→JSON 首装/回落落盘**（initialize 走 loadConfigFromIniOrDefault
+    //     那一支）**不经**本函数，而该函数（src/win/src/WinConfig.cpp）自身也套用同名 env 覆盖 ⇒ 该**单条**
+    //     写盘路径仍可能把 env 值写进**首次落盘**的 config.json。它不在本方案（「本函数内快照」）的射程内，
+    //     且 WinConfig.cpp 不在本次允许改动范围 ⇒ 留作已知残留。
     //   详见 docs/guides/windows-service/config.md。
     const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
     const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
@@ -1100,7 +1092,8 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
         std::string txt, err;
         if (readFileAll(configPath_, txt, err)) {
             AppConfig cfg;
-            if (parseAndValidateSettingsDoc(txt, cfg, err)) {
+            AppConfig envFree;  // FACE-CONFIG-017：env-free 来源快照（落盘侧的唯一取值来源）
+            if (parseAndValidateSettingsDoc(txt, cfg, &envFree, err)) {
                 // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警**就地取走**：
                 // 本处是它们**唯一用户可见**的出口——并入 warnOut ⇒ initWarning_ ⇒ /api/v1/health 的
                 // configWarning + configStatus=degraded（零新增通道）。健康装载（默认值全部在界内、
@@ -1118,7 +1111,10 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                 const auto oldCascade = resolvePathFromExeDir(L"tests/data/lbpcascade_frontalface.xml");
                 if (cfg.recognition.cascadePath == oldCascade && !std::filesystem::exists(cfg.recognition.cascadePath)) {
                     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
-                    const std::string prettyMigrated = buildSettingsJson(cfg, false, true);
+                    // FACE-CONFIG-017：级联路径迁移只改 cascadePath（非 env 字段）⇒ 同步改 env-free 快照，
+                    //   否则落盘会漏掉本次迁移（写回旧路径，下次启动再次进入本分支）。
+                    envFree.recognition.cascadePath = cfg.recognition.cascadePath;
+                    const std::string prettyMigrated = buildSettingsJson(envFree, false, true);
                     std::string writeErr;
                     // 落盘前置闸门（与下方 INI/默认值落盘那处**同款**，见 serializedDocIsWritable 定义）：序列化
                     //   产物必须自洽（能过 settings schema）。若**此刻**密钥变为「存在但不可读 / 损坏 / DPAPI 失败」，
@@ -1168,9 +1164,12 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
                     migrateWarn = migrateWarn.empty() ? normWarn : (migrateWarn + "; " + normWarn);
                 }
 
-                const std::string pretty = buildSettingsJson(cfg, false, true);
+                // FACE-CONFIG-017：落盘/缓存产物一律用 **env-free 快照**（env 覆盖值既不写回磁盘，
+                //   也不进 lastGoodJsonPretty_ 这一 PUT 合并基底；内存 cfg_ 仍用 env-applied 值）。
+                const std::string pretty = buildSettingsJson(envFree, false, true);
                 std::lock_guard<std::mutex> lock(mu_);
                 cfg_ = cfg;
+                envFreeCfg_ = envFree;
                 lastGoodJsonPretty_ = pretty;
                 std::error_code ec;
                 lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
@@ -1256,6 +1255,12 @@ bool WinJsonConfigStore::initialize(std::string& warnOut) {
     {
         std::lock_guard<std::mutex> lock(mu_);
         cfg_ = cfg;
+        // FACE-CONFIG-017 射程边界（如实登记）：本支的 cfg 来自 loadConfigFromIniOrDefault()，该函数
+        //   （src/win/src/WinConfig.cpp）**自身**也套用同名 RK_WCFR_* 覆盖且**不在**本次允许改动范围 ⇒
+        //   此处**取不到** env-free 版本，只能令 envFreeCfg_ = cfg（即本支之后 rotate / 回滚写盘仍可能带
+        //   env 值，与改动前的行为一致）。parse → 落盘 诸路径（PUT / 回滚内存臂 / 级联迁移 / lastGood）才是
+        //   本方案的射程。INI→JSON **首装/回落落盘本身**（下方 pretty）同理带 env（见函数末尾登记块的说明）。
+        envFreeCfg_ = cfg;
         lastGoodJsonPretty_ = pretty;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::exists(configPath_) ? std::filesystem::last_write_time(configPath_, ec) : std::filesystem::file_time_type{};
@@ -1326,10 +1331,10 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     //     deepMergeObject / JsonSchemaValidator::validate / toJsonString / parseAndValidateSettingsDoc /
     //     buildSettingsJson / writeAtomicallyWithBackup **均不取 mu_**（逐字核实）⇒ 不会递归加锁；全函数
     //     仅此一把锁 ⇒ 无锁序问题、无死锁风险。
-    // ⚠️ 该基底**含 env 覆盖值**——**不是**「解耦环境覆盖项」的纯净值（旧措辞已判定为假，就地订正）：
-    //   lastGoodJsonPretty_ 由**已套用** RK_WCFR_* 覆盖（parseAndValidateSettingsDoc 末尾）的 cfg 序列化而来，
-    //   故一次 PUT 会把**当时的 env 值**顺带写回 config.json。属既有性质、非本批引入，详见
-    //   parseAndValidateSettingsDoc 末尾的 FACE-CONFIG-015 登记块与 docs/guides/windows-service/config.md。
+    // ✅ FACE-CONFIG-017：该基底现为 **env-free**（**订正**：早先此处写作「含 env 覆盖值」，在 FACE-CONFIG-017
+    //   落地后已不成立）——lastGoodJsonPretty_ 由 parseAndValidateSettingsDoc 回填的 env-free 快照序列化而来，
+    //   故一次 PUT **不会**把当时的 env 值写回 config.json；内存 cfg_ 仍照旧套用 env（GET 可见）。详见
+    //   parseAndValidateSettingsDoc 的 envFreeOut 说明与 docs/guides/windows-service/config.md。
     std::lock_guard<std::mutex> lock(mu_);
 
     JsonValue baseDoc;
@@ -1405,6 +1410,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     // 将 doc 序列化并解析为 AppConfig（会解密密文字段）
     const std::string mergedText = toJsonString(baseDoc, true);
     AppConfig newCfg;
+    AppConfig newEnvFree;  // FACE-CONFIG-017：env-free 来源快照（落盘侧取值来源；内存 cfg_ 用 newCfg）
 #if defined(RK_ENABLE_TEST_SEAMS)
     // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setPutPreDecryptTestHookForTesting 声明注释）：
     //   在「读父代基底 / 合并 / schema 校验之后，解密之前」同步触发一次由测试注入的动作。⚠️ 此刻**已持 mu_**
@@ -1413,7 +1419,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     //   读取点已在 mu_ 内 ⇒ 直接读成员、不新增锁往返；语义/数据不变；默认未设置 ⇒ 恒假，生产不编译本块。
     if (putPreDecryptTestHook_) putPreDecryptTestHook_();
 #endif
-    if (!parseAndValidateSettingsDoc(mergedText, newCfg, err)) {
+    if (!parseAndValidateSettingsDoc(mergedText, newCfg, &newEnvFree, err)) {
         r.message = "settings 应用失败";
         r.details.push_back(err);
         return r;
@@ -1426,7 +1432,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     //   · log.maxFileBytes / log.maxRollFiles：PUT 路径的 schema 对 log 段上下界照旧宽松（1 GiB /
     //     1000）⇒ 原值通过本函数内那句 `JsonSchemaValidator::validate(...)`（在 deepMergeObject 之后、
     //     parseAndValidateSettingsDoc 之前），钳制发生在随后那句
-    //     `parseAndValidateSettingsDoc(mergedText, newCfg, err)` 内 ⇒ 提交的 cfg_ 是**钳后**值，
+    //     `parseAndValidateSettingsDoc(mergedText, newCfg, &newEnvFree, err)` 内 ⇒ 提交的 cfg_ 是**钳后**值，
     //     GET settings 可见；但**本次 PUT 的响应**不含告警文本（通道缺口如上，告警被 (void) 丢弃）。
     //   · recognition.identifyThreshold：PUT 上**不是「钳」而是「拒」**——那句 schema 校验发生在
     //     parseAndValidateSettingsDoc **之前**，且该键的 maximum 已收紧到 64 ⇒ `> 64` 的 PUT 在 schema
@@ -1450,7 +1456,9 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     //   代价（如实登记）：持锁范围由「仅加密 + 写盘」**扩大**为「读基底 + 合并 + schema 校验 + DPAPI 解保护 +
     //     AES 解密 + AES 加密 + 写盘」（详见上方单一原子段的代价登记）。
     {
-        const std::string prettyEnc = buildSettingsJson(newCfg, false, true);
+        // FACE-CONFIG-017：落盘与 lastGoodJsonPretty_ 一律用 **env-free 快照** newEnvFree（env 覆盖值不写回
+        //   磁盘、也不进 PUT 的合并基底）；内存 cfg_/envFreeCfg_ 仍是 env-applied / env-free 各自的事实源。
+        const std::string prettyEnc = buildSettingsJson(newEnvFree, false, true);
         if (prettyEnc.find("\"_error\"") != std::string::npos) {
             r.httpStatus = 500;
             r.code = "crypto_error";
@@ -1466,6 +1474,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
             return r;
         }
         cfg_ = newCfg;
+        envFreeCfg_ = newEnvFree;
         lastGoodJsonPretty_ = prettyEnc;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
@@ -1601,7 +1610,10 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
                     r.details.push_back(ioErr);
                     return r;
                 }
-                const std::string prettyEnc = buildSettingsJson(cfg, false, true);
+                // FACE-CONFIG-017：加密落盘用 **env-free** envFreeCfg_（而非 env-applied 的 cfg）——rotate 只
+                //   重加密当前生效配置、不应把 env 覆盖值写回 (读的是成员、此刻已在 mu_ 临界区内且代次未变 ⇒
+                //   与快照一致)；内存提交仍为 cfg_ = cfg（env-applied）。
+                const std::string prettyEnc = buildSettingsJson(envFreeCfg_, false, true);
                 if (prettyEnc.find("\"_error\"") != std::string::npos) {
                     restoreOldKey();
                     r.code = "crypto_error";
@@ -1675,8 +1687,9 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
     }
 
     AppConfig cfg;
+    AppConfig envFree;  // FACE-CONFIG-017：env-free 来源快照（lastGoodJsonPretty_ / envFreeCfg_ 的取值来源）
     std::string parseErr;
-    if (!parseAndValidateSettingsDoc(txt, cfg, parseErr)) {
+    if (!parseAndValidateSettingsDoc(txt, cfg, &envFree, parseErr)) {
         // 热重载校验失败：与启动路径（initialize）对齐的**证据保全**——先把坏文件改名另存
         // （config.json.corrupt.<毫秒时间戳>），使其不被随后写盘覆盖。
         // ⚠️ 该保全**仅限本次处理**（不变量有同样时限）：隔离产物不会被自动清理，但原位置的后续写入
@@ -1790,7 +1803,9 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         const std::filesystem::path rbTmp = configPath_.parent_path() / L"config.json.rollback.tmp";
         {
             std::lock_guard<std::mutex> lock(mu_);
-            const std::string memPretty = buildSettingsJson(cfg_, false, true);
+            // FACE-CONFIG-017：回滚内存写回用 **env-free** envFreeCfg_（而非 env-applied 的 cfg_）——本路径
+            //   本就要让磁盘与内存**语义一致**，而磁盘侧不应含 env 覆盖值（env-free 才是「用户原值」形态）。
+            const std::string memPretty = buildSettingsJson(envFreeCfg_, false, true);
             std::string memWhyNot;
             if (serializedDocIsWritable(memPretty, memWhyNot)) {
                 std::string ioErr;
@@ -1813,7 +1828,9 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
                     std::string bakTxt, e2;
                     if (readFileAll(bakPath_, bakTxt, e2)) {
                         AppConfig bakCfg;
-                        if (parseAndValidateSettingsDoc(bakTxt, bakCfg, e2)) {
+                        // FACE-CONFIG-017：此处仅**原样**写回 .bak 的字节（下面的 writeFileAll(rbTmp, bakTxt)），
+                        //   不做再序列化 ⇒ 不需要 env-free 快照，envFreeOut 传 nullptr。解析结果只用于「.bak 是否有效」。
+                        if (parseAndValidateSettingsDoc(bakTxt, bakCfg, nullptr, e2)) {
                             std::string ioErr;
                             if (writeFileAll(rbTmp, bakTxt, ioErr) && moveReplaceWriteThrough(rbTmp, configPath_, ioErr)) {
                                 outErr += "; 已用 .bak 写回 config.json（本次不应用）";
@@ -1868,7 +1885,8 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
     }
 
     cfg.configPath = configPath_;
-    const std::string pretty = buildSettingsJson(cfg, false, true);
+    // FACE-CONFIG-017：lastGoodJsonPretty_ 用 **env-free** 快照（供后续 PUT 作为 env-free 合并基底）。
+    const std::string pretty = buildSettingsJson(envFree, false, true);
     {
         std::lock_guard<std::mutex> lock(mu_);
         std::error_code cec;
@@ -1879,6 +1897,7 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
             return false;
         }
         cfg_ = cfg;
+        envFreeCfg_ = envFree;  // FACE-CONFIG-017：与 cfg_ 成对更新（同一 mu_ 临界区）
         // 序列化产物若为错误 stub（密钥运行期失效 ⇒ buildSettingsJson 返回 {"_error":...}），不得
         // 记为「最近良好序列化」——否则后续 PUT 会以该 stub 为 base 合并（updateFromJsonBody 对自身
         // 产物另有 "_error" 检查，此处对齐同一闸门）。

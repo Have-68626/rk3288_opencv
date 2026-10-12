@@ -1091,6 +1091,360 @@ bool test_config_reload_rejected_rewrites_memory_not_stale_bak() {
     return wv->n == 800;  // 修复前 = 640（旧 .bak）⇒ 红
 }
 
+// FACE-CONFIG-017（**核心判别 / PUT 路径**）：落盘产物必须**不含** RK_WCFR_* 环境覆盖值，而内存 cfg_ 仍含
+//   （env-applied）。背景：parseAndValidateSettingsDoc 把 env 覆盖**无条件**套进 cfg；若落盘侧（序列化）沿用
+//   该 env-applied cfg，一次 PUT / 回滚会把 env 值静默烤进 config.json —— 此后不带该 env 启动行为随之改变、
+//   用户原值被替换。修法：本函数另留一份「套用 env **之前**」的 **env-free 快照**，落盘一律用它。
+// 构造：清空 env → initialize → **先 PUT 把 http.port 置为「非默认」哨兵 12345**（无 env 时落盘 = 12345）→
+//   注入 RK_WCFR_HTTP_PORT=39999 → PUT 一个无关字段（不触碰 http）。断言：① 内存 current().http.port == 39999
+//   （env 生效于内存）；② 磁盘 config.json 的 http.port 仍为 **12345**（**未**被 env 值污染）。
+//   ⚠️ 为何用「非默认」哨兵 12345 而非默认值 p0：若断言 `diskPort == p0`，则「快照填充被移除」时 envFreeCfg_
+//   回落到**默认构造值**（其 http.port 恰为默认）⇒ 恰好也等于 p0 ⇒ 用例**误绿**（盲区，已实测）。用 12345 后，
+//   删掉 parseAndValidateSettingsDoc 里那句 `if (envFreeOut) *envFreeOut = cfg;`（快照填充）⇒ 磁盘回落默认 ⇒ 红。
+bool test_config_disk_write_excludes_env_overrides() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("env_free_put_write");
+    ConfigEnvGuard env(dir / "config.json");
+    const auto cfgPath = dir / "config.json";
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+
+    // 先把 http.port 置为**非默认**哨兵值（无 env 时落盘 = 该值、envFreeCfg_ 亦 = 该值）。
+    constexpr int kUserPort = 12345;
+    if (store.current().http.port == kUserPort) return false;  // 哨兵不得与默认值重合（否则判别失效）
+    if (!store.updateFromJsonBody("{\"http\":{\"port\":12345}}").ok) return false;
+    if (store.current().http.port != kUserPort) return false;
+
+    constexpr int kEnvPort = 39999;
+    if (kUserPort == kEnvPort) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+
+    const auto res = store.updateFromJsonBody("{\"camera\":{\"width\":800}}");
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);  // 及时清理，避免污染后续用例
+    if (!res.ok) return false;
+
+    const bool memHasEnv = (store.current().http.port == kEnvPort);  // ① 内存为 env-applied
+
+    std::string disk;  // ② 磁盘为 env-free（= 用户哨兵 12345，非 env 值、也非默认值）
+    if (!readAllText(cfgPath, disk)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(disk, doc, perr) || !doc.isObject()) return false;
+    const rk_win::JsonValue* http = doc.find("http");
+    if (!http || !http->isObject()) return false;
+    const rk_win::JsonValue* pv = http->find("port");
+    if (!pv || !pv->isNumber()) return false;
+    const int diskPort = static_cast<int>(pv->n);
+
+    return memHasEnv && diskPort == kUserPort;  // 修复前 diskPort == 39999（env 被烤进磁盘）⇒ 红
+}
+
+// FACE-CONFIG-017（**回滚路径判别**）：热重载被拒后的「内存写回 config.json」臂（reloadFromDisk）也必须写
+//   **env-free** 版本 —— 该臂取的是 envFreeCfg_ 成员，而非 env-applied 的 cfg_。
+// 构造：清空 env → initialize → **先 PUT 把 http.port 置为非默认哨兵 12345**（无 env 时落盘 = 12345、envFreeCfg_
+//   = 12345）→ 注入 RK_WCFR_HTTP_PORT=39999 → PUT 一个无关字段（此后内存 cfg_ 为 env-applied port=39999、
+//   envFreeCfg_ 仍为 12345）→ 外部把 config.json 改成坏内容触发 pollReloadOnce。断言：回滚写回的 config.json
+//   的 http.port == **12345**（env-free）；且内存 current().http.port 仍 == 39999（回滚**不**应用、内存保持 env-applied）。
+//   ⚠️ 用非默认哨兵而非默认值 p0 的理由同 test_config_disk_write_excludes_env_overrides：默认值与「快照未填充时
+//   的默认构造值」重合会致**误绿**。删掉 `if (envFreeOut) *envFreeOut = cfg;` ⇒ 磁盘回落默认 ⇒ 红（已实测）。
+bool test_config_rollback_write_excludes_env_overrides() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("env_free_rollback_write");
+    ConfigEnvGuard env(dir / "config.json");
+    const auto cfgPath = dir / "config.json";
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+
+    constexpr int kUserPort = 12345;
+    if (store.current().http.port == kUserPort) return false;
+    if (!store.updateFromJsonBody("{\"http\":{\"port\":12345}}").ok) return false;
+    if (store.current().http.port != kUserPort) return false;
+
+    constexpr int kEnvPort = 39999;
+    if (kUserPort == kEnvPort) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    const auto res = store.updateFromJsonBody("{\"camera\":{\"width\":800}}");
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    if (!res.ok) return false;
+    if (store.current().http.port != kEnvPort) return false;  // 前置：内存已为 env-applied
+
+    // 触发回滚：把 config.json 改成「JSON 可解析但被 schema 拒」的内容。
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    rec->o["minFaceSizePx"] = rk_win::JsonValue::makeString("80");  // 期望 number ⇒ schema 拒
+    if (!writeAllText(cfgPath, rk_win::toJsonString(doc, true))) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = true;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+    if (applied) return false;
+    if (store.current().http.port != kEnvPort) return false;  // 回滚不应用：内存仍 env-applied
+
+    // 回滚写回的 config.json 必须为 env-free（http.port == 12345，而非 env 值 39999、也非默认值）。
+    std::string back;
+    if (!readAllText(cfgPath, back)) return false;
+    rk_win::JsonValue backDoc;
+    std::string berr;
+    if (!rk_win::parseJson(back, backDoc, berr) || !backDoc.isObject()) return false;
+    const rk_win::JsonValue* http = backDoc.find("http");
+    if (!http || !http->isObject()) return false;
+    const rk_win::JsonValue* pv = http->find("port");
+    if (!pv || !pv->isNumber()) return false;
+    return static_cast<int>(pv->n) == kUserPort;  // 修复前 == 39999（env 被写回）⇒ 红
+}
+
+// FACE-CONFIG-017（**rotate 显式落盘路径判别**）：rotateKeyAndReencrypt 的重加密落盘用 **env-free** 快照
+//   envFreeCfg_，而非 env-applied 的 cfg_ —— 否则一次密钥轮换会把 env 覆盖值烤进 config.json。
+// 构造：清空 env → initialize → PUT 把 http.port 置为**非默认**哨兵 12345（无 env，落盘=12345、envFreeCfg_=12345）
+//   → 注入 RK_WCFR_HTTP_PORT=39999 → PUT 一个无关字段（此后内存 cfg_=39999、envFreeCfg_=12345）→ 清 env →
+//   rotate（显式重加密落盘）。断言：磁盘 http.port == **12345**（env-free），且内存 current().http.port == 39999。
+// 判别力（两处均实测）：① 把 rotate 落盘改回用 cfg_（env-applied）⇒ 磁盘变 39999 ⇒ 红；② 删掉
+//   parseAndValidateSettingsDoc 里的 `if (envFreeOut) *envFreeOut = cfg;`（快照填充）⇒ envFreeCfg_ 回落到默认
+//   构造值（默认 port 8080）⇒ 磁盘变 8080 ⇒ 红。
+bool test_config_rotate_write_excludes_env_overrides() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("env_free_rotate_write");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+
+    constexpr int kUserPort = 12345;
+    if (store.current().http.port == kUserPort) return false;
+    if (!store.updateFromJsonBody("{\"http\":{\"port\":12345}}").ok) return false;
+    if (store.current().http.port != kUserPort) return false;
+
+    constexpr int kEnvPort = 39999;
+    if (kUserPort == kEnvPort) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    const auto res = store.updateFromJsonBody("{\"camera\":{\"width\":800}}");
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    if (!res.ok) return false;
+    if (store.current().http.port != kEnvPort) return false;  // 前置：内存已 env-applied
+
+    const auto rr = store.rotateKeyAndReencrypt();
+    if (!rr.ok) {
+        std::cerr << "[env_free_rotate_write] rotate 返回失败: code=" << rr.code << std::endl;
+        return false;
+    }
+    if (store.current().http.port != kEnvPort) return false;  // rotate 不改内存 env-applied
+
+    std::string disk;
+    if (!readAllText(cfgPath, disk)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(disk, doc, perr) || !doc.isObject()) return false;
+    const rk_win::JsonValue* http = doc.find("http");
+    if (!http || !http->isObject()) return false;
+    const rk_win::JsonValue* pv = http->find("port");
+    if (!pv || !pv->isNumber()) return false;
+    return static_cast<int>(pv->n) == kUserPort;  // rotate 落盘若用 cfg_ ⇒ 39999 ⇒ 红
+}
+
+// FACE-CONFIG-017（**initialize 级联迁移落盘判别**）：命中级联路径迁移时的落盘用 **env-free** 快照 envFree
+//   （迁移只改 cascadePath，envFree 同步改），而非 env-applied 的 cfg —— 否则迁移写盘会把 env 覆盖值烤进磁盘。
+// 构造：seed store（无 env）PUT 把 cascadePath 指到**不存在**的 tests/data 旧路径、并把 http.port 置为非默认哨兵
+//   12345 → 注入 RK_WCFR_HTTP_PORT=39999 → 新 store.initialize()（读既有 config.json；cfg=env-applied 39999、
+//   envFree=12345）⇒ 命中迁移分支并落盘。断言：磁盘 http.port == **12345**（env-free）；且内存 cascadePath 已改指
+//   assets；且 initWarning 为空（迁移落盘成功、非降级）。
+// 判别力：把迁移落盘改回用 cfg（env-applied）⇒ 磁盘 port 变 39999 ⇒ 红（已实测）。
+bool test_config_migration_write_excludes_env_overrides() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("env_free_migration_write");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    // seed：落默认配置，再经 PUT 指到旧 cascade 路径 + 非默认 port。
+    rk_win::WinJsonConfigStore seed;
+    std::string w;
+    if (!seed.initialize(w)) return false;
+    if (!seed.updateFromJsonBody(
+             "{\"recognition\":{\"cascadePath\":\"tests/data/lbpcascade_frontalface.xml\"},\"http\":{\"port\":12345}}")
+             .ok) {
+        return false;
+    }
+    // 前置：旧 cascade 路径确实解析为绝对路径且该文件不存在（否则迁移分支不触发 ⇒ 用例无判别力）。
+    {
+        std::string txt;
+        if (!readAllText(cfgPath, txt)) return false;
+        rk_win::JsonValue doc;
+        std::string perr;
+        if (!rk_win::parseJson(txt, doc, perr) || !doc.isObject()) return false;
+        const rk_win::JsonValue* rec = doc.find("recognition");
+        if (!rec || !rec->isObject()) return false;
+        const rk_win::JsonValue* cp = rec->find("cascadePath");
+        if (!cp || !cp->isString() || cp->s.empty()) return false;
+        if (std::filesystem::exists(cp->s)) return false;  // 场景前提：旧文件确实不存在
+    }
+
+    constexpr int kEnvPort = 39999;
+    if (kEnvPort == 12345) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+
+    if (store.configRejectedOnLoad()) return false;
+    if (!store.initWarning().empty()) return false;  // 迁移必须**成功落盘**（非降级）
+    if (store.current().recognition.cascadePath.string().find("assets") == std::string::npos) return false;
+
+    std::string disk;
+    if (!readAllText(cfgPath, disk)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(disk, doc, perr) || !doc.isObject()) return false;
+    const rk_win::JsonValue* http = doc.find("http");
+    if (!http || !http->isObject()) return false;
+    const rk_win::JsonValue* pv = http->find("port");
+    if (!pv || !pv->isNumber()) return false;
+
+    // FACE-CONFIG-017 判别锚：迁移落盘取自 **envFree 快照**（buildSettingsJson(envFree, ...)）。
+    //   承重行 `envFree.recognition.cascadePath = cfg.recognition.cascadePath;` 若被删，envFree 仍持
+    //   **未迁移的旧路径**（tests/data/…，该文件不存在）⇒ 磁盘写回旧路径；而 cfg 在迁移分支已改指
+    //   assets 路径、经 store.current() 可见 ⇒ 二者不一致 ⇒ 红。
+    //   断言「磁盘 cascadePath == 内存迁移后 cascadePath」——取内存真值比对，不复抄常量。
+    const rk_win::JsonValue* rec = doc.find("recognition");
+    if (!rec || !rec->isObject()) return false;
+    const rk_win::JsonValue* dv = rec->find("cascadePath");
+    if (!dv || !dv->isString()) return false;
+    if (dv->s != store.current().recognition.cascadePath.string()) return false;  // envFree 未同步 ⇒ 磁盘旧路径 ⇒ 红
+
+    return static_cast<int>(pv->n) == 12345;  // 迁移落盘若用 cfg ⇒ 39999 ⇒ 红
+}
+
+// FACE-CONFIG-017（**initialize 成功分支 lastGoodJsonPretty_ 判别**）：成功装载既有 config.json 时，
+//   lastGoodJsonPretty_（后续 PUT 的 env-free 合并基底）由 env-free 快照序列化而来，而非 env-applied 的 cfg。
+// 构造：seed（无 env）PUT 把 http.port 置为非默认哨兵 12345 → 注入 RK_WCFR_HTTP_PORT=39999 → 新 store.initialize()
+//   （读既有 config.json）⇒ lastGoodJsonPretty_ 应为 env-free(12345)；清 env → PUT 一个无关字段（基底 =
+//   lastGoodJsonPretty_）。断言：磁盘 http.port == **12345**。
+// 判别力：把 initialize 的 `const std::string pretty = buildSettingsJson(envFree, ...)` 改回用 cfg ⇒ lastGood
+//   含 env ⇒ 随后 PUT 基底变 39999 ⇒ 磁盘 39999 ⇒ 红（已实测）。
+bool test_config_initialize_lastgood_excludes_env_overrides() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("env_free_init_lastgood");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore seed;
+    std::string w;
+    if (!seed.initialize(w)) return false;
+    if (!seed.updateFromJsonBody("{\"http\":{\"port\":12345}}").ok) return false;
+
+    constexpr int kEnvPort = 39999;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    if (store.configRejectedOnLoad()) return false;
+
+    // PUT 一个无关字段：合并基底 = lastGoodJsonPretty_（若 env-free ⇒ 磁盘 port 保持 12345）。
+    if (!store.updateFromJsonBody("{\"camera\":{\"width\":800}}").ok) return false;
+    (void)kEnvPort;
+
+    std::string disk;
+    if (!readAllText(cfgPath, disk)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(disk, doc, perr) || !doc.isObject()) return false;
+    const rk_win::JsonValue* http = doc.find("http");
+    if (!http || !http->isObject()) return false;
+    const rk_win::JsonValue* pv = http->find("port");
+    if (!pv || !pv->isNumber()) return false;
+    return static_cast<int>(pv->n) == 12345;  // lastGood 若为 env-applied ⇒ 磁盘 39999 ⇒ 红
+}
+
+// FACE-CONFIG-017（**reloadFromDisk 成功分支 lastGoodJsonPretty_ 判别**）：成功热重载应用外部变更时，
+//   lastGoodJsonPretty_ 取 env-free 快照，供后续 PUT 作为合并基底。
+// 构造：initialize（无 env）PUT 把 http.port 置为非默认哨兵 12345 → 注入 RK_WCFR_HTTP_PORT=39999 → 外部改
+//   config.json（camera.width=800）触发 pollReloadOnce（applied）→ 清 env → PUT 一个无关字段。断言：① 热重载
+//   应用后内存 http.port == 39999（env-applied）；② 随后 PUT 落盘 http.port == **12345**（env-free 基底）。
+// 判别力：把 reload 成功分支的 `const std::string pretty = buildSettingsJson(envFree, ...)` 改回用 cfg ⇒ lastGood
+//   含 env ⇒ 随后 PUT 基底变 39999 ⇒ 磁盘 39999 ⇒ 红（已实测）。
+bool test_config_reload_lastgood_excludes_env_overrides() {
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_MODEL", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_DNN_CONFIG", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+    SetEnvironmentVariableW(L"RK_WCFR_POST_URL", nullptr);
+
+    const auto dir = makeTempDir("env_free_reload_lastgood");
+    const auto cfgPath = dir / "config.json";
+    ConfigEnvGuard env(cfgPath);
+
+    rk_win::WinJsonConfigStore store;
+    std::string warn;
+    if (!store.initialize(warn)) return false;
+    if (!store.updateFromJsonBody("{\"http\":{\"port\":12345}}").ok) return false;
+
+    // 外部改一个合法字段（camera.width=800）⇒ 触发一次成功热重载。
+    constexpr int kEnvPort = 39999;
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", L"39999");
+    std::string base;
+    if (!readAllText(cfgPath, base)) return false;
+    rk_win::JsonValue doc;
+    std::string perr;
+    if (!rk_win::parseJson(base, doc, perr) || !doc.isObject()) return false;
+    rk_win::JsonValue* cam = doc.find("camera");
+    if (!cam || !cam->isObject()) return false;
+    cam->o["width"] = rk_win::JsonValue::makeNumber(800);
+    if (!writeAllText(cfgPath, rk_win::toJsonString(doc, true))) return false;
+    if (!bumpMtimePlus2s(cfgPath)) return false;
+
+    bool applied = false;
+    std::string err;
+    store.pollReloadOnce(applied, err);
+    if (!applied) return false;                                // 前置：热重载必须应用
+    if (store.current().http.port != kEnvPort) return false;   // ① 内存为 env-applied
+    SetEnvironmentVariableW(L"RK_WCFR_HTTP_PORT", nullptr);
+
+    // ② PUT 一个无关字段：基底 = lastGoodJsonPretty_（应为 env-free 12345）。
+    if (!store.updateFromJsonBody("{\"camera\":{\"height\":600}}").ok) return false;
+
+    std::string disk;
+    if (!readAllText(cfgPath, disk)) return false;
+    rk_win::JsonValue ddoc;
+    std::string derr;
+    if (!rk_win::parseJson(disk, ddoc, derr) || !ddoc.isObject()) return false;
+    const rk_win::JsonValue* http = ddoc.find("http");
+    if (!http || !http->isObject()) return false;
+    const rk_win::JsonValue* pv = http->find("port");
+    if (!pv || !pv->isNumber()) return false;
+    return static_cast<int>(pv->n) == 12345;  // lastGood 若为 env-applied ⇒ 磁盘 39999 ⇒ 红
+}
+
 // FACE-CONFIG-001 补充（**核心**）：热重载被拒 ⇒ 隔离 + 保全证据 + **不应用**。
 //
 // 判别力：这是本轮「回退改动前语义」的行为钉。构造使 .bak 合法但比内存配置**更旧**：
