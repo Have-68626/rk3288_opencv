@@ -195,9 +195,11 @@ jobs:
 
       - name: Audit dependencies (High/Critical gate)
         # 依赖审计门禁：High/Critical 漏洞必须阻断本 job。
-        # 已知豁免：GHSA-jmr9-qjv8-65gv（extract-zip symlink path traversal）——最新 2.0.1
-        # 仍 vulnerable 无修复版本，仅 cypress dev 工具链使用（安装时解压二进制），运行时
-        # 不受影响（获准豁免，记治理文件）。其余 high 阻断。
+        # 已知豁免（仅此包、仅 dev 工具链、且上游无修复版本）：
+        #  - GHSA-jmr9-qjv8-65gv / GHSA-7pqw-9j4j-h8q3：extract-zip 的 symlink 路径穿越。
+        #    最新 2.0.1 仍 vulnerable（patched_versions=<0.0.0>，上游无修复版本）；仅 cypress
+        #    dev 工具链在安装阶段解压二进制时用到，不进入生产运行路径（获准豁免，记治理文件）。
+        # 其余 High 一律阻断。
         run: |
           cd web && node -e "
             const {execSync}=require('child_process');
@@ -205,7 +207,7 @@ jobs:
             try{out=execSync('pnpm audit --audit-level high --json --registry=https://registry.npmjs.org',{encoding:'utf8',stdio:['ignore','pipe','ignore']});}catch(e){out=String(e.stdout||'');}
             const d=JSON.parse(out);
             const adv=d.advisories||{};
-            const exempt=new Set(['GHSA-jmr9-qjv8-65gv']);
+            const exempt=new Set(['GHSA-jmr9-qjv8-65gv','GHSA-7pqw-9j4j-h8q3']);
             let nonExemptHigh=[];
             for(const [id,a] of Object.entries(adv)){
               if(a.severity==='high'){
