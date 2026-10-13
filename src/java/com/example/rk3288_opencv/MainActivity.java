@@ -4701,10 +4701,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     if (skipped > 0) {
                         // 死角：entries 为空 ⇒ 没有可删条目；走非破坏性的旁置恢复，而不是只报「无出路」。
                         promptRegistryRecovery("注册表有 " + skipped + " 行损坏已被跳过，且没有可删除的人员条目");
-                    } else {
-                        Toast.makeText(this, "暂无已注册人员", Toast.LENGTH_SHORT).show();
+                        return;
                     }
-                    return;
+                    // 空表也可能遗留模板，必须保留孤儿恢复入口以释放重复人员标识。
                 }
                 String[] items = new String[entries.size()];
                 for (int i = 0; i < entries.size(); i++) {
@@ -4721,9 +4720,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                                 (d, w) -> showOrphanTemplateRecovery())
                         .setNegativeButton("关闭", null);
                 if (skipped > 0) {
-                    builder.setMessage("⚠ 注册表有 " + skipped + " 行损坏已被跳过：这些人的模板若仍在磁盘，"
+                    TextView warning = new TextView(this);
+                    warning.setText("⚠ 注册表有 " + skipped + " 行损坏已被跳过：这些人的模板若仍在磁盘，"
                             + "判重覆盖不到他们，因此新的注册会被拒绝。删除下方任意一位人员会重写注册表"
                             + "并顺带清除损坏行 —— 这是当前唯一的自愈途径。");
+                    // AppCompat 的消息与列表互斥；自定义提示视图可与人员列表同时显示。
+                    builder.setView(warning);
                 }
                 builder.show();
             });
@@ -4828,9 +4830,11 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     // 仅展示文件名（哈希），不可反推人员、不代表确定人员。
                     items[i] = r.fileNames.get(i);
                 }
+                TextView warning = new TextView(this);
+                warning.setText(header);
                 new AlertDialog.Builder(this)
                         .setTitle(getString(R.string.ui_orphan_templates_title) + "（点击旁置，需二次确认）")
-                        .setMessage(header)
+                        .setView(warning)
                         .setItems(items, (d, which) -> confirmQuarantineOrphan(r.fileNames.get(which)))
                         .setNegativeButton("关闭", null)
                         .show();

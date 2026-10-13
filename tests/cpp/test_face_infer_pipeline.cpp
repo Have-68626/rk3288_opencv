@@ -11,12 +11,15 @@ using namespace rk_core;
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/ScrfdNcnnAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
+#include "ncnn_test_models.h"
+#include "rk_win/JsonLite.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <atomic>
 #include <condition_variable>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -866,5 +869,261 @@ bool test_face_infer_profile_failure_leaves_request_unchanged() {
     const auto out = runFaceInferOnce(req2);
     if (out.ok) return false;
     if (out.stage != "face_profile") { std::cerr << "[profile_fail] stage=" << out.stage << std::endl; return false; }
+    return true;
+}
+
+bool test_face_infer_profile_uses_manifest_identity_threshold() {
+    const auto dir = makeTempDir("profile_identity_threshold");
+    if (!writeProfileDir(dir, "windows-x64", "fp32", "fp32")) return false;
+    FaceInferRequest req;
+    req.imagePath = writeTestImage(dir, "image.jpg").string();
+    req.faceProfileDir = dir.string();
+    req.fakeDetect = true;
+    req.fakeEmbedding = true;
+    FaceInferContext context;
+    FaceInferMetrics metrics;
+    if (!FaceInferStages::loadImage(req, context, metrics).ok ||
+        !FaceInferStages::detectFaces(req, context, metrics).ok) return false;
+    FaceInferStages::selectMainFace(req, context);
+    if (!FaceInferStages::computeEmbedding(req, context, metrics).ok) return false;
+    // 从真实阶段输出构造单位模板，余弦固定为 0.40，避免只检查阈值字段而漏掉认证行为。
+    auto orthogonal = context.embedding;
+    const float projection = orthogonal[0];
+    for (float& value : orthogonal) value *= -projection;
+    orthogonal[0] += 1.0f;
+    if (!ArcFaceEmbedder::l2Normalize(orthogonal)) return false;
+    FaceSearchEntry entry;
+    entry.id = "threshold_probe";
+    entry.embedding.resize(context.embedding.size());
+    for (std::size_t i = 0; i < entry.embedding.size(); ++i) {
+        entry.embedding[i] = 0.4f * context.embedding[i] + std::sqrt(0.84f) * orthogonal[i];
+    }
+    auto gallery = std::make_shared<FaceSearchLinearIndex>();
+    std::vector<FaceSearchEntry> entries;
+    entries.push_back(std::move(entry));
+    std::string err;
+    if (!gallery->reset(std::move(entries), context.embedding.size(), err)) return false;
+    req.gallerySnapshot = gallery;
+    const auto decisionMatches = [](const FaceInferOutcome& out, double threshold, bool accepted) {
+        rk_win::JsonValue json;
+        std::string parseErr;
+        if (!out.ok || !rk_win::parseJson(out.json, json, parseErr)) return false;
+        const auto* decision = json.find("decision");
+        if (!decision || !decision->isObject()) return false;
+        const auto* score = decision->find("bestScore");
+        const auto* actualThreshold = decision->find("threshold");
+        const auto* pass = decision->find("passNow");
+        return score && score->isNumber() && std::abs(score->n - 0.4) < 1e-4 &&
+               actualThreshold && actualThreshold->isNumber() && std::abs(actualThreshold->n - threshold) < 1e-4 &&
+               pass && pass->isBool() && pass->b == accepted;
+    };
+    const auto out = runFaceInferOnce(req);
+    if (!decisionMatches(out, 0.45, false)) {
+        std::cerr << "[profile_threshold] manifest 阈值 0.45 未拒绝真实检索得分 0.40" << std::endl;
+        return false;
+    }
+    req.acceptThreshold = 0.35f;
+    req.acceptThresholdExplicit = true;
+    const auto overridden = runFaceInferOnce(req);
+    return decisionMatches(overridden, 0.35, true);
+}
+
+bool test_face_infer_int8_rejects_real_opencv_backend() {
+    const auto dir = makeTempDir("int8_backend_requirement");
+    ModelRegistry::ensureBuiltinRegistered();
+    ModelRegistry::instance().registerEmbedder("int8_backend_probe",
+        []() { return std::make_unique<CountingEmb>(); },
+        {"int8_backend_probe", "精度探针", "recognize", "测试", "", 0});
+    FaceInferRequest req;
+    req.imagePath = writeTestImage(dir, "image.jpg").string();
+    req.embedderId = "int8_backend_probe";
+    req.fakeDetect = true;
+    req.int8Enabled = true;
+    const auto out = runFaceInferOnce(req);
+    if (out.ok || out.stage != "arc_init" || !contains(out.message, "int8_requires_ncnn")) {
+        std::cerr << "[int8_backend] 实际 OpenCV 嵌入路径未拒绝 INT8 请求" << std::endl;
+        return false;
+    }
+    req.fakeEmbedding = true;
+    if (!runFaceInferOnce(req).ok) return false;
+    ModelRegistry::instance().registerDetector("int8_detector_probe",
+        []() { return std::make_unique<CountingDet>(); },
+        {"int8_detector_probe", "检测精度探针", "detect", "测试", "", 0});
+    req.detectorId = "int8_detector_probe";
+    req.fakeDetect = false;
+    const auto detected = runFaceInferOnce(req);
+    return !detected.ok && detected.stage == "yolo_load" && contains(detected.message, "int8_requires_ncnn");
+}
+
+bool test_face_infer_int8_rejects_fp32_param_and_nonweight_flags() {
+    const auto dir = makeTempDir("int8_asset_requirement");
+    ModelRegistry::ensureBuiltinRegistered();
+    ModelRegistry::instance().registerEmbedder("int8_asset_probe",
+        []() { return std::make_unique<CountingEmb>(); },
+        {"int8_asset_probe", "资产探针", "recognize", "测试", "", 0});
+    FaceInferRequest req;
+    req.imagePath = writeTestImage(dir, "image.jpg").string();
+    req.embedderId = "int8_asset_probe";
+    req.fakeDetect = true;
+    req.arcBackend = "ncnn";
+    req.int8Enabled = true;
+    // 文件故意叫 INT8，只有参数图的量化权重层能证明精度。
+    req.arcModelPath = (dir / "renamed_int8.param").string();
+    req.arcNcnnParam = req.arcModelPath;
+    for (const auto& graph : {
+        "7767517\n2 2\nInput input 0 1 in0\nInnerProduct fp32 1 1 in0 out0 0=512 2=1536\n",
+        "7767517\n2 2\nInput input 0 1 in0\nPadding pad 1 1 in0 out0 8=1\n",
+        "7767517\n2 2\nInput input 0 1 in0\nInnerProduct fp32 1 1 in0 out0 0=512 2=1536 8=2 8=0\n"}) {
+        std::ofstream(req.arcModelPath) << graph;
+        const auto out = runFaceInferOnce(req);
+        if (out.ok || out.stage != "arc_init" || !contains(out.message, "int8_required_param_not_quantized")) {
+            std::cerr << "[int8_asset] 非量化参数图未拒绝 INT8 请求" << std::endl;
+            return false;
+        }
+    }
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    // 同一真实 FP32 图在普通请求下可推理，切换精度要求后必须在装配缓存之前拒绝。
+    if (!rk_test::writeEmbeddingModel(dir, false)) return false;
+    req.embedderId = "arcface";
+    req.arcModelPath = (dir / "embedding.param").string();
+    req.arcNcnnParam = req.arcModelPath;
+    req.arcNcnnBin = (dir / "embedding.bin").string();
+    req.arcNcnnInput = "in0";
+    req.arcNcnnOutput = "out0";
+    req.int8Enabled = false;
+    if (!runFaceInferOnce(req).ok) return false;
+    req.int8Enabled = true;
+    const auto realFp32 = runFaceInferOnce(req);
+    if (realFp32.ok || !contains(realFp32.message, "int8_required_param_not_quantized")) return false;
+    for (const auto& suffix : {" 8=2 08=0", " 8=2 +8=0", " # 8=2",
+            "\nInnerProduct ignored 1 1 out0 unused 0=512 2=1536 8=2"}) {
+        if (!rk_test::writeEmbeddingModel(dir, false)) return false;
+        std::ifstream input(req.arcNcnnParam);
+        std::ostringstream graph;
+        graph << input.rdbuf();
+        std::string text = graph.str();
+        text.insert(text.size() - 1, suffix);
+        std::ofstream(req.arcNcnnParam) << text;
+        // 更换版本使正常请求也真实重载改写后的图，避免缓存掩盖参数格式错误。
+        ++req.arcModelVersion;
+        req.int8Enabled = false;
+        const auto fp32 = runFaceInferOnce(req);
+        if (!fp32.ok) return false;
+        req.int8Enabled = true;
+        const auto required = runFaceInferOnce(req);
+        if (required.ok || !contains(required.message, "int8_required_param_not_quantized")) {
+            std::cerr << "[int8_asset] ncnn 实际未量化的图绕过参数守卫" << std::endl;
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+namespace {
+bool writeScrfdCacheProfile(const std::filesystem::path& dir, const std::string& decode = "distance",
+                           int anchors = 2, const std::string& layout = "nchw", int missingNode = -1) {
+    std::ofstream manifest(dir / "manifest.json");
+    manifest << "{\"schemaVersion\":1,\"profileId\":\"cache_contract\",\"displayName\":\"测试\","
+             << "\"supportedAbis\":[\"windows-x64\"],\"detector\":{\"param\":{\"path\":\"scrfd.param\"},"
+             << "\"bin\":{\"path\":\"scrfd.bin\"},\"input\":\"input.1\",\"inputWidth\":320,\"inputHeight\":320,"
+             << "\"decodeMode\":\"" << decode << "\",\"anchorsPerPos\":[" << anchors << ',' << anchors << ',' << anchors
+             << "],\"outputLayout\":\"" << layout << "\",\"outputs\":[";
+    const char* names[] = {"s8","s16","s32","b8","b16","b32","k8","k16","k32"};
+    for (int i = 0; i < 9; ++i) {
+        if (i) manifest << ',';
+        manifest << '"' << (i == missingNode ? "missing_output" : names[i]) << '"';
+    }
+    manifest << "]},\"embedder\":{\"param\":{\"path\":\"embedding.param\"},\"bin\":{\"path\":\"embedding.bin\"}},"
+             << "\"detectionConfidence\":0.5,\"nmsIou\":0.4,\"identitySimilarity\":0.45}";
+    return static_cast<bool>(manifest);
+}
+}
+#endif
+
+bool test_face_infer_scrfd_cache_reloads_complete_decode_contract() {
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    const auto dir = makeTempDir("scrfd_complete_cache_key");
+    if (!rk_test::writeConstantScrfdModel(dir, 320) || !rk_test::writeEmbeddingModel(dir, false)) return false;
+    FaceInferRequest req;
+    req.imagePath = writeTestImage(dir, "image.jpg").string();
+    req.faceProfileDir = dir.string();
+    req.fakeEmbedding = true;
+    const auto baseline = [&]() {
+        if (!writeScrfdCacheProfile(dir)) return false;
+        const auto out = runFaceInferOnce(req);
+        return out.ok && contains(out.json, "\"hasFace\":true");
+    };
+    if (!baseline()) return false;
+    for (int kind = 0; kind < 2; ++kind) {
+        if (!writeScrfdCacheProfile(dir, kind == 0 ? "delta" : "distance", kind == 0 ? 2 : 3)) return false;
+        const auto out = runFaceInferOnce(req);
+        if (out.ok || out.stage != "yolo_detect") {
+            std::cerr << "[scrfd_cache] 解码配置变化后仍复用旧检测器，kind=" << kind << std::endl;
+            return false;
+        }
+        if (!baseline()) return false;
+    }
+    if (!writeScrfdCacheProfile(dir, "distance", 2, "flat")) return false;
+    const auto changedLayout = runFaceInferOnce(req);
+    // 同一平面内存改为 flat 后，高分 anchor 的位置应改变，而非继续使用缓存中的 NCHW 配置。
+    if (!changedLayout.ok || !contains(changedLayout.json, "\"x\":38")) {
+        std::cerr << "[scrfd_cache] outputLayout 变化后未使用新的解码布局" << std::endl;
+        return false;
+    }
+    for (int node = 1; node < 9; ++node) {
+        if (!baseline() || !writeScrfdCacheProfile(dir, "distance", 2, "nchw", node)) return false;
+        const auto out = runFaceInferOnce(req);
+        if (out.ok || out.stage != "yolo_detect") {
+            std::cerr << "[scrfd_cache] 第 " << node << " 个输出节点变化未生效" << std::endl;
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
+bool test_face_infer_int8_accepts_real_quantized_and_mixed_graphs() {
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    for (bool mixed : {false, true}) {
+        const auto dir = makeTempDir(mixed ? "int8_mixed_forward" : "int8_quantized_forward");
+        if (!rk_test::writeEmbeddingModel(dir, true, mixed)) return false;
+        FaceInferRequest req;
+        req.imagePath = writeTestImage(dir, "image.jpg").string();
+        req.fakeDetect = true;
+        req.arcBackend = "ncnn";
+        req.arcModelPath = (dir / "embedding.param").string();
+        req.arcNcnnParam = req.arcModelPath;
+        req.arcNcnnBin = (dir / "embedding.bin").string();
+        req.arcNcnnInput = "in0";
+        req.arcNcnnOutput = "out0";
+        req.int8Enabled = true;
+        const auto out = runFaceInferOnce(req);
+        if (!out.ok || !contains(out.json, "\"dim\":512") || !contains(out.json, "\"backend\":\"ncnn\"")) {
+            std::cerr << "[int8_forward] 合法量化图推理失败: " << out.message << std::endl;
+            return false;
+        }
+    }
+    // profile 的精度声明不能清除调用方显式要求；默认 FP32 则仍可正常推理。
+    const auto dir = makeTempDir("profile_int8_requirement");
+    if (!rk_test::writeConstantScrfdModel(dir, 320) || !rk_test::writeEmbeddingModel(dir, false)
+            || !writeScrfdCacheProfile(dir)) return false;
+    FaceInferRequest req;
+    req.imagePath = writeTestImage(dir, "image.jpg").string();
+    req.faceProfileDir = dir.string();
+    req.fakeDetect = true;
+    if (!runFaceInferOnce(req).ok) return false;
+    req.int8Enabled = true;
+    const auto required = runFaceInferOnce(req);
+    if (required.ok || required.stage != "arc_init"
+            || !contains(required.message, "int8_required_param_not_quantized")) {
+        std::cerr << "[int8_profile] FP32 profile 清除了显式 INT8 要求" << std::endl;
+        return false;
+    }
+    if (!rk_test::writeEmbeddingModel(dir, true)) return false;
+    const auto quantized = runFaceInferOnce(req);
+    if (!quantized.ok) return false;
+#endif
     return true;
 }

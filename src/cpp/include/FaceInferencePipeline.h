@@ -77,6 +77,8 @@ struct FaceInferRequest {
     std::uint32_t arcPreprocessVersion = 1;
 
     float acceptThreshold = 0.35f;
+    // profile 默认采用 manifest 身份阈值；显式阈值由调用方标记，避免被 profile 覆盖。
+    bool acceptThresholdExplicit = false;
     std::string thresholdVersionId = "thr_v1";
     int consecutivePassesToTrigger = 1;
 

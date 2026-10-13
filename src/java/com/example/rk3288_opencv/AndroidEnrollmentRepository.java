@@ -1273,6 +1273,7 @@ public final class AndroidEnrollmentRepository {
             }
             RegistrySnapshot snap = new RegistrySnapshot(Status.OK, out, skipped,
                     "注册表 COUNT 行缺失或非法");
+            snap.authoritative = false;
             snap.formatVersion = 2;
             snap.complete = false;
             return snap;
@@ -1308,14 +1309,16 @@ public final class AndroidEnrollmentRepository {
         // 期望结构：2 行头 + N 行数据 + 1 行 END。
         boolean sizeOk = nInt >= 0 && lines.size() == (2L + nInt + 1L);
         boolean endOk = false;
-        if (nInt >= 0 && (dataStart + nInt) < lines.size()) {
-            Long endN = parseCountField(lines.get(dataStart + nInt).trim(), END_PREFIX);
+        // 先用 long 计算头尾偏移，避免 COUNT 接近 int 上限时溢出为负索引。
+        long endIndex = (long) dataStart + nInt;
+        if (nInt >= 0 && endIndex < lines.size()) {
+            Long endN = parseCountField(lines.get((int) endIndex).trim(), END_PREFIX);
             endOk = (endN != null && endN == n);
         }
         // END 之后的额外非空行计入 skipped（可见性）。
         if (nInt >= 0) {
-            for (int i = dataStart + nInt + 1; i < lines.size(); i++) {
-                if (!lines.get(i).trim().isEmpty()) {
+            for (long i = endIndex + 1; i < lines.size(); i++) {
+                if (!lines.get((int) i).trim().isEmpty()) {
                     skipped++;
                 }
             }

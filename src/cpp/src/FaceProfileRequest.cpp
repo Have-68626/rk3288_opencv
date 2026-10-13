@@ -107,6 +107,7 @@ bool applyFaceProfileToRequest(const std::string& profileDir, const std::string&
     eff.yoloInputH = parsed.detectorInputH;
     eff.yoloScoreThreshold = parsed.detectionConfidence;
     eff.yoloNmsIouThreshold = parsed.nmsIou;
+    if (!eff.acceptThresholdExplicit) eff.acceptThreshold = parsed.identitySimilarity;
     eff.arcModelPath = embParam;
     eff.arcNcnnParam = embParam;
     eff.arcNcnnBin = embBin;
@@ -115,8 +116,8 @@ bool applyFaceProfileToRequest(const std::string& profileDir, const std::string&
     eff.arcInputW = parsed.embedderInputW;
     eff.arcInputH = parsed.embedderInputH;
     eff.arcModelVersion = parseModelVersion(parsed.modelVersion);
-    // INT8 是该架构路径的实际精度要求：要求检测与识别**同时**为 int8，任一为 fp32 即 false。
-    eff.int8Enabled = (detPrecision == "int8" && embPrecision == "int8");
+    // 双 INT8 profile 自动要求量化；调用方显式要求也必须保留，不能被 FP32 声明降级。
+    eff.int8Enabled = eff.int8Enabled || (detPrecision == "int8" && embPrecision == "int8");
 
     req = eff;
     profile = parsed;

@@ -17,6 +17,7 @@
 using namespace rk_core;
 
 #include <chrono>
+#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -29,6 +30,7 @@ using namespace rk_core;
 #include "FaceInferStages.h"
 #include "FaceProfileRequest.h"
 #include "ModelRegistry.h"
+#include "NcnnParamGuard.h"
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/ScrfdNcnnAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
@@ -109,6 +111,66 @@ static int errorCodeForStage(const std::string& stage) {
     return 1;
 }
 
+#if RK_CPP_HAS_OPENCV
+// 文件名和 manifest precision 不能证明量化；只认真实权重层的 ncnn int8_scale_term。
+// ncnn 允许混合图，故只要求至少一个卷积/全连接权重层带量化标志。
+static bool satisfiesInt8Requirement(const std::string& backend, const std::string& paramPath,
+                                    std::string& err) {
+    if (backend != "ncnn") {
+        err = "int8_requires_ncnn";
+        return false;
+    }
+    std::ifstream file(paramPath, std::ios::binary);
+    if (!file) {
+        err = "int8_param_unreadable";
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    const std::string text = buffer.str();
+    if (file.bad() || !validateNcnnParamText(text, err)) return false;
+    std::istringstream lines(text);
+    std::string line;
+    std::getline(lines, line);  // magic 由后续 ncnn loader 校验。
+    std::getline(lines, line);
+    int layerCount = 0, blobCount = 0;
+    std::istringstream header(line);
+    if (!(header >> layerCount >> blobCount) || layerCount <= 0 || blobCount <= 0) {
+        err = "int8_param_invalid_header";
+        return false;
+    }
+    int parsedLayers = 0;
+    // loader 只加载声明层数，尾部未加载的量化声明不能作为精度证据。
+    while (parsedLayers < layerCount && std::getline(lines, line)) {
+        if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+        ++parsedLayers;
+        std::istringstream fields(line);
+        std::string type, name, token;
+        int bottoms = 0, tops = 0;
+        if (!(fields >> type >> name >> bottoms >> tops) || bottoms < 0 || tops < 0) continue;
+        for (int i = 0; i < bottoms && fields; ++i) fields >> token;
+        for (int i = 0; i < tops && fields; ++i) fields >> token;
+        if (type != "Convolution" && type != "ConvolutionDepthWise" && type != "InnerProduct") continue;
+        int scaleTerm = 0;
+        while (fields >> token) {
+            std::istringstream value(token);
+            int key = 0, term = 0;
+            char equal = 0, trailing = 0;
+            // ncnn 的 %d= 接受前导零和正号；遇到非参数内容即停止，不能扫描注释中的假标志。
+            if (!(value >> key >> equal) || equal != '=') break;
+            // 数组参数不能证明标量量化开关。
+            if (key == -23308) { scaleTerm = 0; continue; }
+            if (key != 8) continue;
+            // ParamDict 对重复 key 采用最后一个值，不能把前面的 8>0 误作最终量化声明。
+            scaleTerm = ((value >> term) && !(value >> trailing)) ? term : 0;
+        }
+        if (scaleTerm > 0) return true;
+    }
+    err = "int8_required_param_not_quantized";
+    return false;
+}
+#endif
+
 // 当前进程编译 ABI 字符串（用于 profile 的 supportedAbis 校验）。
 // 与 §I5 单图 JNI 同一口径：按**编译期**宏判断，不以设备列表/运行态 ABI 代替。
 static std::string currentAbiString() {
@@ -156,6 +218,27 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
             haveProfile = true;
         }
 
+        if (req.int8Enabled) {
+            const auto precisionFailure = [&](const char* stage, const std::string& message) {
+                out.stage = stage;
+                out.message = message;
+                out.errorCode = errorCodeForStage(out.stage);
+                out.auditDir = "ErrorLog";
+                out.auditFilename = "face_infer_" + std::to_string(tsMs) + ".json";
+                out.json = buildSimpleErrorJson(false, out.errorCode, out.stage, message, tsMs, req.imagePath);
+                return out;
+            };
+            std::string precisionErr;
+            if (!req.fakeDetect && !satisfiesInt8Requirement(req.yoloBackend,
+                    req.yoloNcnnParam.empty() ? req.yoloModelPath : req.yoloNcnnParam, precisionErr)) {
+                return precisionFailure("yolo_load", precisionErr);
+            }
+            if (!req.fakeEmbedding && !satisfiesInt8Requirement(req.arcBackend,
+                    req.arcNcnnParam.empty() ? req.arcModelPath : req.arcNcnnParam, precisionErr)) {
+                return precisionFailure("arc_init", precisionErr);
+            }
+        }
+
         const auto t0 = std::chrono::steady_clock::now();
         FaceInferContext ctx;
         FaceInferMetrics m;
@@ -170,7 +253,7 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
 
         // §I3：所有装配/缓存集中在 runFaceInferOnce；Stages 只消费注入实例或返回装配错误。
         // 检测器按 detectorId 路由（不再 createDetector(yoloBackend)）；缓存 key 含完整相关
-        // ID/后端/spec/节点/尺寸/阈值/precision（profile 模式另含 profile 标识与四文件声明哈希）。
+        // ID/后端/spec/节点/尺寸/阈值/precision；profile 另含标识、四文件哈希与完整解码契约。
         if (!req.fakeDetect) {
             static std::mutex s_detMu;
             static std::string s_detCacheKey;
@@ -204,6 +287,15 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
                 detKey += "|prof:" + profile.profileId + ":" + profile.detectorParam.sha256 + ":" +
                           profile.detectorBin.sha256 + ":" + profile.embedderParam.sha256 + ":" +
                           profile.embedderBin.sha256;
+                detKey += "|decode:" + std::to_string(static_cast<int>(profile.detectorDecodeMode)) +
+                          "|anchors:" + std::to_string(profile.detectorAnchorsPerPos[0]) + "," +
+                          std::to_string(profile.detectorAnchorsPerPos[1]) + "," +
+                          std::to_string(profile.detectorAnchorsPerPos[2]) +
+                          "|layout:" + std::to_string(static_cast<int>(profile.detectorOutputLayout));
+                // 节点名带长度，避免名字中的分隔符让不同输出清单碰撞。
+                for (const auto& node : profile.detectorOutputs) {
+                    detKey += "|node:" + std::to_string(node.size()) + ":" + node;
+                }
             }
             {
                 std::lock_guard<std::mutex> lock(s_detMu);

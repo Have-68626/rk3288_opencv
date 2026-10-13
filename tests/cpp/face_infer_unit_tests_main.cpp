@@ -110,10 +110,20 @@ bool test_face_infer_profile_failure_leaves_request_unchanged();
 bool test_face_infer_embed_failure_carries_differential_err();
 // 统一 Embedder 接口不得把「输出维度不符」当成功（失败静默）。
 bool test_face_infer_embedder_dim_mismatch_is_not_silent();
+bool test_face_infer_profile_uses_manifest_identity_threshold();
+bool test_face_infer_int8_rejects_real_opencv_backend();
+bool test_face_infer_int8_rejects_fp32_param_and_nonweight_flags();
+bool test_face_infer_scrfd_cache_reloads_complete_decode_contract();
+bool test_face_infer_int8_accepts_real_quantized_and_mixed_graphs();
 
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
+        {"face_infer_profile_uses_manifest_identity_threshold", test_face_infer_profile_uses_manifest_identity_threshold},
+        {"face_infer_int8_rejects_real_opencv_backend", test_face_infer_int8_rejects_real_opencv_backend},
+        {"face_infer_int8_rejects_fp32_param_and_nonweight_flags", test_face_infer_int8_rejects_fp32_param_and_nonweight_flags},
+        {"face_infer_scrfd_cache_reloads_complete_decode_contract", test_face_infer_scrfd_cache_reloads_complete_decode_contract},
+        {"face_infer_int8_accepts_real_quantized_and_mixed_graphs", test_face_infer_int8_accepts_real_quantized_and_mixed_graphs},
         {"face_infer_image_load_failure", test_face_infer_image_load_failure},
         {"face_infer_yolo_load_failure", test_face_infer_yolo_load_failure},
         {"face_infer_concurrent_model_key_switch", test_face_infer_concurrent_model_key_switch},

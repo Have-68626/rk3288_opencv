@@ -4,6 +4,8 @@
 #include <opencv2/core.hpp>
 
 #include <vector>
+#include <filesystem>
+#include "ncnn_test_models.h"
 
 using namespace rk_core;
 using namespace pipeline;
@@ -180,3 +182,38 @@ TEST(ScrfdNcnnAdapterTest, NormalizeLevelUnknownLayoutRejected) {
     EXPECT_FALSE(ok);
     EXPECT_FALSE(err.empty());
 }
+
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+TEST(ScrfdNcnnAdapterTest, RealForwardPreservesPaddedNchwChannels) {
+    const auto dir = std::filesystem::temp_directory_path() / "rk_scrfd_padded_nchw";
+    ASSERT_TRUE(rk_test::writeConstantScrfdModel(dir, 288));
+    ScrfdNcnnConfig cfg;
+    cfg.paramPath = (dir / "scrfd.param").string();
+    cfg.binPath = (dir / "scrfd.bin").string();
+    cfg.inputName = "input.1";
+    cfg.inputW = cfg.inputH = 288;
+    cfg.decodeMode = DecodeMode::kDistance;
+    cfg.outputLayout = ScrfdNcnnConfig::OutputLayout::kNChw;
+    for (int i = 0; i < 3; ++i) {
+        const auto stride = std::to_string(8 << i);
+        cfg.scoreNames[i] = "s" + stride;
+        cfg.bboxNames[i] = "b" + stride;
+        cfg.kpsNames[i] = "k" + stride;
+        cfg.anchorsPerPos[i] = 2;
+    }
+    ScrfdNcnnAdapter adapter(cfg);
+    std::string err;
+    ASSERT_TRUE(adapter.load(cfg.paramPath, err)) << err;
+    const auto faces = adapter.detect(cv::Mat(288, 288, CV_8UC3, cv::Scalar(128, 128, 128)), err);
+    ASSERT_TRUE(err.empty()) << err;
+    ASSERT_EQ(faces.size(), 1u);
+    EXPECT_FLOAT_EQ(faces[0].bbox.x, 96.0f);
+    EXPECT_FLOAT_EQ(faces[0].bbox.y, 96.0f);
+    EXPECT_FLOAT_EQ(faces[0].bbox.width, 64.0f);
+    ASSERT_TRUE(faces[0].keypoints5.has_value());
+    for (const auto& point : *faces[0].keypoints5) {
+        EXPECT_FLOAT_EQ(point.x, 128.0f);
+        EXPECT_FLOAT_EQ(point.y, 128.0f);
+    }
+}
+#endif

@@ -8,6 +8,7 @@ using namespace rk_core;
 #include <filesystem>
 
 #include <cstring>
+#include <thread>
 
 #include <opencv2/imgproc.hpp>
 

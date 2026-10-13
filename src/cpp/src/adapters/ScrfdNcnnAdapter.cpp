@@ -114,8 +114,13 @@ public:
                 err = "ncnn_output_empty: " + std::string(names[i]);
                 return false;
             }
-            const float* p = reinterpret_cast<const float*>(o.data);
-            outs[i].assign(p, p + total);
+            // ncnn 的通道跨度 cstep 含对齐 padding，逐通道复制逻辑元素才能形成紧密 CHW。
+            outs[i].resize(total);
+            const std::size_t plane = static_cast<std::size_t>(h) * w;
+            for (int ch = 0; ch < c; ++ch) {
+                const float* p = o.channel(ch);
+                std::copy_n(p, plane, outs[i].data() + static_cast<std::size_t>(ch) * plane);
+            }
             shapes[i] = {c, h, w};
         }
         return true;
