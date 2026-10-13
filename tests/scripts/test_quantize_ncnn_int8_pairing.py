@@ -62,3 +62,65 @@ def test_missing_files_exits_nonzero(tmp_path):
     with pytest.raises(SystemExit) as e:
         quant.find_fp32_model(d)
     assert e.value.code == 1
+
+
+# ── §I1.2 校准预处理与生产契约一致 ───────────────────────────────────────────
+# 判据落在**实际传给 ncnn2table 的 argv**（而非只查 MODEL_PRESETS 字典）：
+# 字典与 argv 若有任一处漂移（如字典改了但 run_ncnn2table 没透传），本组用例都会红。
+def _capture_ncnn2table_argv(monkeypatch, tmp_path, model):
+    """monkeypatch subprocess.run，捕获 run_ncnn2table 实际拼出的命令。"""
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return _Result()
+
+    monkeypatch.setattr(quant.subprocess, "run", _fake_run)
+
+    imagelist = tmp_path / "imagelist.txt"
+    imagelist.write_text("img1.png\nimg2.png\n", encoding="utf-8")
+    quant.run_ncnn2table(
+        "ncnn2table", "m.param", "m.bin",
+        str(imagelist), str(tmp_path / "m.table"),
+        quant.MODEL_PRESETS[model], 4,
+    )
+    return captured["cmd"]
+
+
+def _assert_argv_has(cmd, token):
+    assert token in cmd, f"argv 缺少 {token}：{cmd}"
+
+
+def test_scrfd_preset_matches_production_preprocessing(monkeypatch, tmp_path):
+    """SCRFD 校准预设 = 生产契约：RGB / mean 127.5×3 / norm 1/128 / 640×640。"""
+    cmd = _capture_ncnn2table_argv(monkeypatch, tmp_path, "scrfd")
+    _assert_argv_has(cmd, "pixel=RGB")
+    _assert_argv_has(cmd, "mean=[127.5,127.5,127.5]")
+    _assert_argv_has(cmd, "norm=[0.0078125,0.0078125,0.0078125]")
+    _assert_argv_has(cmd, "shape=[640,640,3]")
+    # 反例：旧的 BGR/ImageNet 均值不得再出现在传给工具的命令里。
+    assert not any("pixel=BGR" in a for a in cmd)
+    assert not any("mean=[104" in a for a in cmd)
+
+
+def test_arcface_preset_matches_production_preprocessing(monkeypatch, tmp_path):
+    """ArcFace 校准预设 = 生产契约：RGB / mean 127.5×3 / norm 1/127.5 / 112×112。"""
+    cmd = _capture_ncnn2table_argv(monkeypatch, tmp_path, "arcface")
+    _assert_argv_has(cmd, "pixel=RGB")
+    _assert_argv_has(cmd, "mean=[127.5,127.5,127.5]")
+    _assert_argv_has(cmd, f"norm=[{1.0 / 127.5},{1.0 / 127.5},{1.0 / 127.5}]")
+    _assert_argv_has(cmd, "shape=[112,112,3]")
+
+
+def test_mobilefacenet_preset_untouched(monkeypatch, tmp_path):
+    """MobileFaceNet 预设不在本任务改动面内（保持原值：RGB / 127.5 / 1/128 / 112）。"""
+    cmd = _capture_ncnn2table_argv(monkeypatch, tmp_path, "mobilefacenet")
+    _assert_argv_has(cmd, "pixel=RGB")
+    _assert_argv_has(cmd, "mean=[127.5,127.5,127.5]")
+    _assert_argv_has(cmd, "norm=[0.0078125,0.0078125,0.0078125]")
+    _assert_argv_has(cmd, "shape=[112,112,3]")

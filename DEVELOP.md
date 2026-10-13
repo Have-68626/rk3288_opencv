@@ -1,7 +1,12 @@
+<!-- DOCSYNC_DOC
+type=guide
+status=living
+as_of=2026-09-30
+-->
+
 ﻿# RK3288 AI Engine - 开发指南 (Development Guide)
 
 **版本**: v0.1beta1
-**更新日期**: 2026-07-06
 
 ---
 
@@ -9,7 +14,7 @@
 
 ### 1.1 背景与目标 (Background & Objectives)
 本项目旨在为 **Rockchip RK3288** 平台（ARM Cortex-A17 四核、Mali-T764 GPU；目标设备不含 NPU，仅 CPU+GPU）提供一套高性能、低资源的机器视觉解决方案。
-核心目标是**在有限的算力下（< 60% CPU, < 512MB RAM）实现实时的视频监控（720p@30fps）与生物识别（< 100ms 延迟）**。
+核心工程目标是**在有限的算力下（目标值：< 60% CPU、< 512MB RAM）实现实时的视频监控（720p@30fps）与生物识别（目标值：< 100ms 延迟）**。上述 CPU 占用与延迟数字均为**工程目标值（非验收判据）**；**验收判据的权威阈值口径与出处**见 [RK3288_OPTIMIZATION.md](docs/RK3288_OPTIMIZATION.md) 的 §5「判据阈值表（唯一事实源）」。
 
 目标设备画像与硬约束入口：[RK3288_CONSTRAINTS.md](docs/RK3288_CONSTRAINTS.md)。
 
@@ -17,7 +22,7 @@
 
 ## 2. 系统架构 (System Architecture)
 
-> **架构契约**：项目遵循 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。
+> **架构契约**：项目定义了 5 条跨子系统架构契约，详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。这 5 条是目标契约：合规总表中 #1 RAII 资源封装已在 `ANativeWindow`/`AndroidBitmap` **两个符号族**上闭环（#444），**该契约的 `open/close` 族仍未收口**；其余 4 条仍待修复。
 
 ### 2.1 分层架构 (Layered Architecture)
 系统采用分层设计，确保底层加速库与上层业务逻辑解耦。
@@ -90,9 +95,11 @@ rk3288_opencv/
 │   └── win/              # Windows 本地服务实现
 ├── web/                  # Web SPA 前端源码 (React/Vite)
 ├── config/               # 配置文件与 Schema
-├── docs/                 # 项目文档与设计文档
+├── docs/                 # 项目文档（规范见 docs/DOC_STANDARD.md）
+│   ├── index.md          # 文档索引
 │   ├── architecture/     # 架构文档（ARCHITECTURE.md）
-│   └── superpowers/      # 设计规格与实施计划
+│   ├── designs/ plans/ specs/   # 设计、实施计划、设计规格
+│   └── guides/ audits/ research/ security/ bsp/
 ├── scripts/              # 构建、验证与自动化脚本
 ├── tests/                # 单元测试与集成测试
 ├── CMakeLists.txt        # 跨平台构建脚本
@@ -154,28 +161,33 @@ ctest --test-dir build_win -C Release --output-on-failure
 
 | 目标 | 说明 | OpenCV |
 |:-----|:------|:------:|
-| `core_unit_tests` | 核心模块单元测试（17 项） | ❌ 不需要 |
-| `face_infer_unit_tests` | 人脸推理管线测试（23 项，含 INT8） | ✅ 需要 |
+| `core_unit_tests` | 核心模块单元测试（用例数以 `ctest` 输出为准） | ❌ 不需要 |
+| `face_infer_unit_tests` | 人脸推理管线测试（含 INT8；用例数以 `ctest` 输出为准） | ✅ 需要 |
 | `ncnn_precision_test` | ncnn 推理精度对比测试（独立目标） | ✅ 需要 |
-| `win_unit_tests` | Windows 服务单元测试（2 项） | ✅ 需要 |
+| `win_unit_tests` | Windows 服务单元测试（用例数以 `ctest` 输出为准） | ✅ 需要 |
 | `win_local_service` | Windows 本地服务（默认入口） | ✅ 需要 |
 | `win_face_eval_cli` / `win_face_bench_cli` | 测评与基准 CLI | ✅ 需要 |
 
 ### 4.3 测试框架
 
-项目使用 **GTest**（自 Batch 5 起）。测试分布在 `tests/cpp/`（Core）和 `tests/win/`（Windows）。
+项目**同时**使用 **GoogleTest** 与自定义 `bool` 测试，各 target 归属不同（以各 `*_main.cpp` 的实际注册表为准）。
+新增测试必须沿用所在 target 的既有框架，不能假定全项目统一。
 
 | 测试套件 | 框架 | 位置 | 依赖 |
 |----------|------|------|------|
-| `core_unit_tests` | GTest | `tests/cpp/` | 无（使用 OpenCV mock stubs） |
-| `face_infer_unit_tests` | GTest | `tests/cpp/` | 需要 OpenCV |
-| `win_unit_tests` | GTest | `tests/win/` | 需要 OpenCV |
-| `core_gtest_tests` | GTest | `tests/cpp/` | 需要 OpenCV |
-| `ncnn_precision_test` | GTest | `tests/cpp/` | ncnn + OpenCV |
+| `core_unit_tests` | GoogleTest | `tests/cpp/` | 无（使用 OpenCV mock stubs） |
+| `core_gtest_tests` | GoogleTest | `tests/cpp/` | 需要 OpenCV |
+| `face_infer_unit_tests` | 自定义 `bool` | `tests/cpp/` | 需要 OpenCV |
+| `win_unit_tests` | 自定义 `bool` + GoogleTest（**混合**） | `tests/win/` | 需要 OpenCV |
+| `ncnn_precision_test` | 自定义 `bool` | `tests/cpp/` | ncnn + OpenCV |
 | Web 单元测试 | Vitest | `web/src/` | 无 |
 | Web E2E | Cypress | `web/cypress/` | 需要后端 |
 
-> 早期使用自定义 `bool TestCase` 的测试仍存在但不再新增。新测试统一使用 `TEST(Group, Name)` 宏。
+**自定义 `bool` 测试**的约定：测试文件声明 `bool test_xxx()`，并在对应 `*_main.cpp` 的 `TestCase` 表中注册；输出格式为 `TEST_PASS name=...` / `TEST_FAIL name=...` / `TEST_SUMMARY pass=N fail=N total=N`；另有一种 `TEST_SKIP_ABSENT reason=... path=... note=...`（由 `tests/cpp/test_int8_quantization.cpp` 的 `skipIfNoModel()` 在模型缺失时打印），**出现 `TEST_SKIP_ABSENT` 时该用例仍计 PASS**——该标记只增加可见性，返回值仍是 `true`、仍计入 `pass`，勿误读为失败。
+
+> `win_unit_tests` 是混合 target：runner 为自定义 `bool` 表驱动，同时链接了 `tests/win/test_http_faces_server.cpp` 的 GoogleTest 用例。
+
+> **新增测试必须沿用所在 target 的既有框架，不能假定全项目统一**——`bool` 表驱动与 `TEST(Group, Name)` 两种形态都仍在用，各自归属各自 target，不存在"全项目统一用某一种"的规则；口径同 `AGENTS.md` 的 Test framework 一节。
 
 ### 4.4 构建要点
 
@@ -185,7 +197,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 - **`RK_ENABLE_NCNN=ON`** 启用 ncnn 后端（Android 默认开启，Windows 需手动指定）
 - **CMake 模块化**：`CMakeLists.txt` 已拆分为 `cmake/opencv.cmake` / `core.cmake` / `face_infer.cmake` / `android.cmake` / `windows.cmake`
 - **MSVC** 必须使用 `-G "Visual Studio 17 2022" -A x64`
-- **Gradle** 始终使用 `--no-daemon`（Gradle 9.0-milestone-1 预发布版稳定性问题）
+- **Gradle** 始终使用 `--no-daemon`（该约定起于 wrapper 尚为 `9.0-milestone-1` 预发布版的时期；现行 wrapper 与校验和已锁定正式的 `gradle-9.0`，约定保留以保证 CI 与本机一致）
 - **`JAVA_HOME`** 建议设到 JDK 17+，否则 Gradle 会使用 PATH 中的 java
 
 ### 4.5 依赖状态
@@ -198,9 +210,9 @@ ctest --test-dir build_win -C Release --output-on-failure
 本节包含针对核心技术难点的深度研究报告及落地建议。此外，项目治理相关文档见：
 
 - **架构契约**：[docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) — 5 条跨子系统规则
-- **架构治理设计**：[docs/superpowers/specs/2026-07-06-architecture-governance-design.md](docs/superpowers/specs/2026-07-06-architecture-governance-design.md)
-- **架构治理实施计划**：[docs/superpowers/plans/2026-07-06-architecture-governance-plan.md](docs/superpowers/plans/2026-07-06-architecture-governance-plan.md)
-- **全项目审计报告**：[AUDIT_REPORT.md](AUDIT_REPORT.md)
+- **架构治理设计**：[docs/specs/2026-07-06-architecture-governance-design.md](docs/specs/2026-07-06-architecture-governance-design.md)
+- **架构治理实施计划**：[docs/plans/2026-07-06-architecture-governance-plan.md](docs/plans/2026-07-06-architecture-governance-plan.md)
+- **全项目审计报告**：[AUDIT_REPORT.md](docs/audits/archive/AUDIT_REPORT.md)
 
 以下内容已内嵌到本文件的附录中：
 
@@ -214,7 +226,7 @@ ctest --test-dir build_win -C Release --output-on-failure
 
 其他专项设计文档（独立文件）：
 - [INT8 量化工具链设计](docs/designs/int8-quantization-design.md)
-- [INT8 量化实现计划](docs/designs/int8-quantization-plan.md)
+- [INT8 量化实现计划](docs/plans/int8-quantization-plan.md)
 - [人员注册与权限系统顶层设计](docs/designs/personnel-enrollment-design.md)
 
 ---
@@ -273,79 +285,22 @@ INT8 量化工具链位于 `scripts/quantize_ncnn_int8.py`，使用两步流程�
 - **基准配置**: `docs/bsp/defconfig/rk3288_defconfig`
 - **运行快照**: `docs/bsp/kernel-config/kernel.config`
 
----
+### 6.8 提交流程 (Commit & Pull Request)
 
-## 附录 A. 代码速查 (Code Quick Reference)
+提交信息遵循 **Conventional Commits**：类型与 scope 用英文（如 `feat` / `fix` / `docs` / `test` / `refactor` / `chore`），描述用中文，标题 ≤ 72 字符；生成后先展示、确认后方可 `git commit`，**禁止自动 push**。
 
-### A.1 C++ 核心 (`src/cpp/`)
+PR 合并规则（权威口径见 [AGENTS.md](AGENTS.md) 的「PR 合并规则」，与 [CLAUDE.md](CLAUDE.md) 同源）：
 
-| 类 / 函数 | 文件 | 说明 |
-| :--- | :--- | :--- |
-| `Engine::initialize()` | [Engine.cpp](src/cpp/src/Engine.cpp) | 初始化引擎及所有子模块 |
-| `FaceInferencePipeline::process()` | [FaceInferencePipeline.cpp](src/cpp/src/FaceInferencePipeline.cpp) | 执行完整人脸推理管线 |
-| `YoloFaceDetector` | [YoloFaceDetector.cpp](src/cpp/src/YoloFaceDetector.cpp) | YOLO 人脸检测 (OpenCV DNN / NCNN) |
-| `ArcFaceEmbedder` | [ArcFaceEmbedder.cpp](src/cpp/src/ArcFaceEmbedder.cpp) | ArcFace 特征提取 |
-| `FaceSearch` / `FaceSearchLinearIndex` | [FaceSearch.h](src/cpp/include/FaceSearch.h) | 1:N 人脸检索（含 NEON/SIMD 点积加速） |
-| `FaceAlign` | [FaceAlign.cpp](src/cpp/src/FaceAlign.cpp) | 人脸对齐 |
-| `ModelRegistry` | [ModelRegistry.cpp](src/cpp/src/ModelRegistry.cpp) | 模型注册与条件加载 |
+1. 逐条阅读并解决 PR 上的全部 review / issue comments。
+2. 解决所有冲突：`git merge origin/master`。
+3. 等待 CI 必需检查通过（`unit-tests` 已降级为非门禁，其失败仅作提示，需人工留意）。
+4. **仅用 squash and merge**；禁止 merge commit 与 rebase merge。
+5. 删除已合并的源分支。
+6. 不绕过分支保护规则；`--admin` 仅限紧急修复使用。
 
-### A.2 Android Java (`src/java/com/example/rk3288_opencv/`)
-
-| 类 / 方法 | 说明 |
-| :--- | :--- |
-| `MainActivity.initEngine()` | 调用 `nativeInit` 启动 C++ 引擎 |
-| `CameraXCaptureController` | CameraX 采集控制器 |
-| `FeatureTemplateEncryptedStore` | Android Keystore 加密存储 |
-
-### A.3 Windows C++ (`src/win/`)
-
-| 类 / 函数 | 文件 | 说明 |
-| :--- | :--- | :--- |
-| `HttpFacesServer::start()` | [HttpFacesServer.cpp](src/win/src/HttpFacesServer.cpp) | 启动 HTTP 服务 (127.0.0.1) |
-| `MfCamera` | [MfCamera.cpp](src/win/src/MfCamera.cpp) | Media Foundation 摄像头采集 |
-| `WinJsonConfig` | [WinJsonConfig.cpp](src/win/src/WinJsonConfig.cpp) | JSON 配置读写与热重载 |
-| `FramePipeline` | [FramePipeline.cpp](src/win/src/FramePipeline.cpp) | Windows 端识别管线编排 |
-| `ArcFaceWinRecognizer` | [ArcFaceWinRecognizer.cpp](src/win/src/ArcFaceWinRecognizer.cpp) | Windows ArcFace ONNX 推理 |
-
-### A.4 Web 前端 (`web/`)
-
-| 组件 / 页面 | 说明 |
-| :--- | :--- |
-| `AppStore.tsx` | 全局状态管理 |
-| `PreviewPage.tsx` | 实时预览与人脸注册 |
-| `SettingsPage.tsx` | 系统参数配置 |
+提交前本地须通过文档门禁：`node scripts/docs-sync-audit.js --skip-links`（要求 high=0 且 medium=0）。
 
 ---
-
-## 附录 B. 加速方案可行性分析与实现状态
-
-> **本附录已移出至独立文件。** 详见 [docs/research/appendix-b.md](docs/research/appendix-b.md)
->
-> **摘要：** 分析各硬件加速方案（MPP、ncnn、Qualcomm SNPE、OpenCL、libyuv 等）在 RK3288 上的可行性、当前实现状态及回退路径。
-
----
-
-## 附录 C. Android 摄像头调用机制研究
-
-> **本附录已移出至独立文件。** 详见 [docs/research/appendix-c.md](docs/research/appendix-c.md)
->
-> **摘要：** 研究 Android 摄像头调用机制，涵盖 Camera1/Camera2/CameraX 选型对比、生命周期、权限处理、能力枚举、时序与异常恢复。
-
----
-
-## 附录 D. 人脸识别技术实现方案研究
-
-> **本附录已移出至独立文件。** 详见 [docs/research/appendix-d.md](docs/research/appendix-d.md)
->
-> **摘要：** 人脸识别技术工程化对比与研究，涵盖端侧/云端方案选型、Android 集成模板、硬件要求与 1:N 基准口径、活体检测、特征加密存储与合规。
-
----
-
-## 附录 E. 性能优化与故障排障研究
-
-> **本附录已移出至独立文件。** 详见 [docs/research/appendix-e.md](docs/research/appendix-e.md)
->
-> **摘要：** 性能优化路线图与故障排查指南，涵盖基线路径定义、阶段加速路线、Go/No-Go 门槛、评审签署流程及高级排障主题。
 
 ---
 
@@ -408,6 +363,38 @@ INT8 量化工具链位于 `scripts/quantize_ncnn_int8.py`，使用两步流程�
 
 
 [← 返回目录](#5-深度研究与专项文档-research-deep-dive)
+---
+
+## 附录 B. 加速方案可行性分析与实现状态
+
+> **本附录已移出至独立文件。** 详见 [docs/research/appendix-b.md](docs/research/appendix-b.md)
+>
+> **摘要：** 分析各硬件加速方案（MPP、ncnn、Qualcomm SNPE、OpenCL、libyuv 等）在 RK3288 上的可行性、当前实现状态及回退路径。
+
+---
+
+## 附录 C. Android 摄像头调用机制研究
+
+> **本附录已移出至独立文件。** 详见 [docs/research/appendix-c.md](docs/research/appendix-c.md)
+>
+> **摘要：** 研究 Android 摄像头调用机制，涵盖 Camera1/Camera2/CameraX 选型对比、生命周期、权限处理、能力枚举、时序与异常恢复。
+
+---
+
+## 附录 D. 人脸识别技术实现方案研究
+
+> **本附录已移出至独立文件。** 详见 [docs/research/appendix-d.md](docs/research/appendix-d.md)
+>
+> **摘要：** 人脸识别技术工程化对比与研究，涵盖端侧/云端方案选型、Android 集成模板、硬件要求与 1:N 基准口径、活体检测、特征加密存储与合规。
+
+---
+
+## 附录 E. 性能优化与故障排障研究
+
+> **本附录已移出至独立文件。** 详见 [docs/research/appendix-e.md](docs/research/appendix-e.md)
+>
+> **摘要：** 性能优化路线图与故障排查指南，涵盖基线路径定义、阶段加速路线、Go/No-Go 门槛、评审签署流程及高级排障主题。
+
 ---
 
 ## 附录 F. 日志分析报告：evidence_20170115_035627

@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=guide
+status=living
+as_of=2026-09-26
+-->
+
 # RK3288 机器视觉引擎 (AI Engine)
 
-**更新日期**: 2026-07-06
 
 ![Platform](https://img.shields.io/badge/Platform-RK3288%20%7C%20ARMv7%20%7C%20x86_64-blue)
 ![Language](https://img.shields.io/badge/Language-C%2B%2B17-green)
@@ -9,7 +14,7 @@
 
 ## 项目简介与运行模式
 
-跨平台机器视觉应用，支持在资源受限设备（RK3288, Cortex-A17, 2GB RAM）上进行稳定的视频监控与边缘生物识别：
+跨平台机器视觉应用，支持在资源受限设备（RK3288, Cortex-A17, 2GB RAM，实测 MemTotal ≈1.95GiB）上进行稳定的视频监控与边缘生物识别：
 
 - **Android App (Gradle)**: `app/` + `src/java/` — 摄像头预览、人脸识别 UI、JNI 引擎绑定
 - **C++ 核心引擎 (CMake)**: `src/cpp/` — 人脸检测/识别/追踪管线、帧处理、性能监控
@@ -33,16 +38,22 @@ rk3288_opencv/
 │   └── java/                     # Android Java 源码
 ├── web/                          # Web SPA 前端
 ├── cmake/                        # 模块化 CMake（5 模块）
-├── docs/
-│   ├── architecture/             # 架构契约（ARCHITECTURE.md）
-│   └── superpowers/              # 设计文档 + 实施计划
+├── docs/                         # 文档规范见 docs/DOC_STANDARD.md
+│   ├── index.md                  # 文档索引（全量文档入口）
+│   ├── architecture/             # 架构契约
+│   ├── designs/ plans/ specs/    # 设计、实施计划、设计规格
+│   ├── guides/                   # 使用与运维说明、验收清单
+│   ├── audits/ research/ security/   # 审计、研究、安全
+│   └── bsp/                      # 板级支持包
 ├── tests/                        # 单元测试 + 集成测试
 └── scripts/                      # 构建/测试/验证脚本
 ```
 
 ## 架构契约
 
-项目遵循 5 条跨子系统架构契约（详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)）：
+项目定义了 5 条跨子系统架构契约（详见 [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)）：
+
+> ⚠️ 这 5 条是**目标契约**：合规总表中 #1 RAII 资源封装已在 `ANativeWindow`/`AndroidBitmap` **两个符号族**上闭环（#444），**该契约的 `open/close` 族仍未收口**；其余 4 条仍待修复。
 
 | 契约 | 规则 |
 |------|------|
@@ -54,9 +65,11 @@ rk3288_opencv/
 
 ## 依赖
 
-**必需**：OpenCV 4.10.0（源码构建）、Android NDK 27.0、CMake 3.22.1+、Gradle 9.0-milestone-1、Node.js 22.x、pnpm
+**必需**：OpenCV 4.10.0（源码构建）、Android NDK 27.0、CMake 3.22.1+、Gradle 9.0、Node.js 22.x、pnpm
 
 **可选**：ncnn（推理加速）、RK MPP（硬解码）、Qualcomm SNPE、libyuv
+
+> ⚠️ **RK MPP 的设备侧警告**：目标机实测为旧 `vpu_service` 驱动、**并非 MPP 框架**（无 `/dev/mpp*`、无 `/proc/mpp_service`），`mpp-1.0.11` 与设备驱动的匹配性**从未真机验证**——**"本机能编过" ≠ "设备上能跑"**。详见 `AGENTS.md` 的 MPP 条目与 `docs/RK3288_CONSTRAINTS.md` §0.4。
 
 > 完整依赖清单与模型台账见 [CREDITS.md](CREDITS.md)。
 
@@ -97,28 +110,23 @@ pnpm -C web e2e:run     # Cypress E2E
 
 ## 测试框架
 
-| 测试套件 | 框架 | 位置 | 依赖 |
-|----------|------|------|------|
-| core_unit_tests | GTest | `tests/cpp/` | 无（使用 OpenCV mock stubs） |
-| face_infer_unit_tests | GTest | `tests/cpp/` | 需 OpenCV |
-| win_unit_tests | GTest | `tests/win/` | 需 OpenCV |
-| core_gtest_tests | GTest | `tests/cpp/` | 需 OpenCV |
-| ncnn_precision_test | GTest | `tests/cpp/` | 需 ncnn + OpenCV |
-| Web 单元测试 | Vitest | `web/src/` | 无 |
-| Web E2E | Cypress | `web/cypress/` | 需后端运行 |
+项目**同时**使用 GoogleTest 与自定义 `bool` 测试，各测试 target 的框架归属不同（例如 `win_unit_tests` 是二者混用的 target）。
+
+完整对照表见 [DEVELOP.md](DEVELOP.md) 的「测试框架」一节（按其为准，本页不再重复）。
 
 ## CI 流水线
 
-`.github/workflows/ci.yml` — 6 个 job：
+`.github/workflows/ci.yml` — 7 个 job（另有独立 workflow `.github/workflows/docs-audit.yml`）：
 
 | Job | 触发 | 内容 |
 |:----|:----:|:-----|
-| repo-hygiene | PR/push → master | 仓库垃圾文件扫描 |
-| unit-tests | PR/push → master | CMake + Ninja, `RK_SKIP_OPENCV=ON` |
-| docs-audit | PR/push → master | 文档同步状态审计 |
-| web | PR/push → master | `pnpm install` → `lint` → `build` → `e2e:run:coverage` |
-| android | PR/push → master | `assembleDebug` + `testDebugUnitTest` + `lintDebug` |
-| windows | push only | 完整 OpenCV 源码构建 + ctest + INT8 精度测试 |
+| changes | PR/push → master | 变更分类，输出 `docs_only`（纯 docs 变更时其余 job 跳过） |
+| repo-hygiene | PR/push → master，非纯 docs | 仓库垃圾文件扫描 + `tests/scripts/*.test.js` |
+| unit-tests | PR/push → master，非纯 docs | CMake + Ninja, `RK_SKIP_OPENCV=ON`（**非门禁**，job 级 `continue-on-error`） |
+| docs-audit | PR/push → master，**含纯 docs** | 文档同步门禁（high=0 且 medium=0） |
+| web | PR/push → master，非纯 docs | `pnpm install` → `lint` → `build` → `e2e:run:coverage` |
+| android | PR/push → master，非纯 docs | `assembleDebug` + `testDebugUnitTest` + `lintDebug` |
+| windows | PR/push → master，非纯 docs；`workflow_dispatch` 时跳过 | 完整 OpenCV 源码构建 + ctest + INT8 精度测试 |
 
 ## 治理进度
 
@@ -145,6 +153,7 @@ pnpm -C web e2e:run     # Cypress E2E
 | `check-raii-violations.sh` | 架构契约 #1 RAII 合规检查 |
 | `run-web-e2e.ps1` | Web E2E 测试 + 覆盖率 |
 | `bench_camera_adb.ps1` / `.sh` | Android 摄像头基准测试 |
+| `run-android-face-regression.ps1` | Android 人脸回归采集（私有媒体，匿名化聚合报告；含稳态 FPS 判据） |
 | `stability_switch_50_adb.ps1` | Android 前后台 50 次稳定性验收 |
 
 ## 许可证
@@ -157,8 +166,9 @@ MIT License
 
 ## 审计与设计文档
 
-- [全项目审计报告](AUDIT_REPORT.md) — 综合评分 2.9/5
+- [全项目审计报告](docs/audits/archive/AUDIT_REPORT.md) — 综合评分 2.9/5
 - [架构契约](docs/architecture/ARCHITECTURE.md) — 5 条跨子系统规则
-- [架构治理设计](docs/superpowers/specs/2026-07-06-architecture-governance-design.md)
-- [架构治理实施计划](docs/superpowers/plans/2026-07-06-architecture-governance-plan.md)
-- [远程分支审计](REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
+- [架构治理设计](docs/specs/2026-07-06-architecture-governance-design.md)
+- [架构治理实施计划](docs/plans/2026-07-06-architecture-governance-plan.md)
+- [远程分支审计](docs/audits/archive/REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
+- [文档审计报告](docs/audits/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题

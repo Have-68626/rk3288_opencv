@@ -384,13 +384,16 @@ static int runFaceInferCli(int argc, char** argv) {
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
                      "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive N] "
                      "[--face-select score_area|score|area|first] "
-                     "[--fake-detect 1|0] [--fake-embedding 1|0]"
+                     "[--detector-id yolo_face|scrfd_0.5gf] [--embedder-id arcface|mobilefacenet] [--face-profile-dir <dir>] "
+                     "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"
                   << std::endl;
         return 2;
     }
 
     FaceInferCliArgs a;
     a.req.imagePath = argv[2];
+    // §I3：profile 模式与显式模型/后端参数互斥（冲突明确拒绝，不按参数顺序悄悄覆盖）。
+    bool explicitModelArg = false;
 
     for (int i = 3; i < argc; i++) {
         const std::string k = argv[i];
@@ -410,8 +413,11 @@ static int runFaceInferCli(int argc, char** argv) {
             if (i + 1 < argc) v = isFlagTrue(argv[++i]);
         };
 
-        if (k == "--yolo-backend") nextStr(a.req.yoloBackend);
-        else if (k == "--yolo-model") nextStr(a.req.yoloModelPath);
+        if (k == "--detector-id") { nextStr(a.req.detectorId); explicitModelArg = true; }
+        else if (k == "--embedder-id") { nextStr(a.req.embedderId); explicitModelArg = true; }
+        else if (k == "--face-profile-dir") nextStr(a.req.faceProfileDir);
+        else if (k == "--yolo-backend") { nextStr(a.req.yoloBackend); explicitModelArg = true; }
+        else if (k == "--yolo-model") { nextStr(a.req.yoloModelPath); explicitModelArg = true; }
         else if (k == "--yolo-config") nextStr(a.req.yoloConfigPath);
         else if (k == "--yolo-framework") nextStr(a.req.yoloFramework);
         else if (k == "--yolo-output-name") nextStr(a.req.yoloOutputName);
@@ -436,8 +442,8 @@ static int runFaceInferCli(int argc, char** argv) {
         else if (k == "--yolo-ncnn-threads") nextInt(a.req.yoloNcnnThreads);
         else if (k == "--yolo-ncnn-lightmode") nextBool(a.req.yoloNcnnLightmode);
 
-        else if (k == "--arc-backend") nextStr(a.req.arcBackend);
-        else if (k == "--arc-model") nextStr(a.req.arcModelPath);
+        else if (k == "--arc-backend") { nextStr(a.req.arcBackend); explicitModelArg = true; }
+        else if (k == "--arc-model") { nextStr(a.req.arcModelPath); explicitModelArg = true; }
         else if (k == "--arc-config") nextStr(a.req.arcConfigPath);
         else if (k == "--arc-framework") nextStr(a.req.arcFramework);
         else if (k == "--arc-output-name") nextStr(a.req.arcOutputName);
@@ -472,6 +478,23 @@ static int runFaceInferCli(int argc, char** argv) {
 
         else if (k == "--fake-detect") nextBool(a.req.fakeDetect);
         else if (k == "--fake-embedding") nextBool(a.req.fakeEmbedding);
+
+        // `--int8 1|0`：显式设置 FaceInferRequest::int8Enabled（「期望精度」标志）。
+        // §I3 起语义已变：**不再是**「先试 INT8 条目、失败再回落 FP32」的回落开关——装配集中在
+        // runFaceInferOnce，检测/嵌入各由 --detector-id/--embedder-id 唯一选定（无盲试式回落）。
+        // 本标志只作为期望精度参与装配缓存 key 与一致性判据（int8=true 只允许 ncnn 且量化资产），
+        // 不改变所选 ID。profile 模式会由 manifest 双 precision 自动派生该值。
+        // 与 `--fake-embedding` 同形（`1|true|yes|on` 为真，见 isFlagTrue），不是裸开关。
+        // 默认 false。
+        else if (k == "--int8") nextBool(a.req.int8Enabled);
+    }
+
+    // §I3：--face-profile-dir 与显式模型/后端参数互斥——profile 会派生这些字段，
+    // 同给会构成「按参数顺序悄悄覆盖」的歧义，故明确拒绝。
+    if (!a.req.faceProfileDir.empty() && explicitModelArg) {
+        std::cerr << "--face-profile-dir 不能与 --detector-id/--embedder-id/--yolo-backend/--yolo-model/"
+                     "--arc-backend/--arc-model 同时使用（模型/后端由 profile 派生）" << std::endl;
+        return 2;
     }
 
     const auto o = runFaceInferOnce(a.req);
@@ -587,8 +610,13 @@ static std::vector<std::string> listImagesInDir(const std::filesystem::path& dir
     return out;
 }
 
-// NOTE: 与 D3D11Renderer.cpp:percentileFromSorted 功能重复。
-// main.cpp 需要独立实现（不依赖 Windows 渲染器），修改时请保持逻辑一致。
+// NOTE: 与 D3D11Renderer.cpp:percentileFromSorted **用途相同、算法不同**（原注释写「修改时请保持
+// 逻辑一致」，会把人引向「两者应算出同一数值」——不成立，已订正）：
+//   · 本函数 = **nearest-rank**（排序后取 ceil(q*n)-1，含端点），与
+//     RealtimeFacePipeline.cpp 的 percentile95 同族，是本仓 CLI/基准口径的真源；
+//   · D3D11Renderer 版 = **线性插值**（idx=(n-1)*q，在 i0/i1 间按 frac 插值），且 p<=0/>=1 分别
+//     返回 front/back。两者在 n 与 q 相同的情况下给出**不同数值**，不得互相替换或「对齐」。
+// main.cpp 需要独立实现（不依赖 Windows 渲染器）；若要统一，必须同时确认两侧用例与报告口径。
 static double percentileNearestRank(std::vector<double> v, double q) {
     if (v.empty()) return 0.0;
     if (q <= 0.0) q = 0.0;
@@ -840,7 +868,7 @@ static int runFaceBaselineCli(int argc, char** argv) {
                      "[--arc-backend opencv] [--arc-model <path>] [--arc-config <path>] [--arc-framework <name>] [--arc-output-name <name>] [--arc-input-name <name>] [--arc-w 112] [--arc-h 112] "
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
                      "[--gallery-dir <dir>] [--topk N] [--face-select score_area|score|area|first] "
-                     "[--fake-detect 1|0] [--fake-embedding 1|0]"
+                     "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"
                   << std::endl;
         return 2;
     }
@@ -917,6 +945,16 @@ static int runFaceBaselineCli(int argc, char** argv) {
 
         else if (k == "--fake-detect") nextBool(a.req.fakeDetect);
         else if (k == "--fake-embedding") nextBool(a.req.fakeEmbedding);
+        // `--int8 1|0`：只**解析并写入** FaceInferRequest::int8Enabled（与 `--face-infer` 的
+        // 同名参数写法一致，但**不是**同一条有效通路，见下）。
+        // ⚠️ 本子命令（`--face-baseline`）**不消费**该字段：基准路径自建 det / emb（见下方
+        //    CreateOpenCvDnnYoloFaceDetector / ArcFaceEmbedder 的直用），**不调用
+        //    runFaceInferOnce**、也就**不经过** FaceInferStages 的 INT8 回落分支 ⇒ 在基准里该开关
+        //    **零效果：不发生 INT8 尝试、0 行 warn**，读数本就是 FP32。
+        //    （原注释「该开关只贡献一行 warn，读数照常回落 FP32」失真——那行 warn 属 `--face-infer`
+        //    的检测回落段，本路径根本走不到，已订正。）真正消费该字段的是 `--face-infer`。
+        // bench 读数不会因本开关失真——原因正是「本路径从不读它」，而非「读了但回落」。
+        else if (k == "--int8") nextBool(a.req.int8Enabled);
     }
 
     const long long tsMs = nowEpochMillis();

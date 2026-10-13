@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=guide
+status=living
+as_of=2026-07-21
+-->
+
 ﻿# Web SPA 前端
 
-**更新日期**: 2026-07-21
 
 
 Windows 本地服务的浏览器 UI，基于 **React 18 + TypeScript 5 + Vite 8 + Ant Design 5**。

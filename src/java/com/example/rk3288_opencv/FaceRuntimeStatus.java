@@ -1,0 +1,269 @@
+package com.example.rk3288_opencv;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import java.util.Map;
+
+/**
+ * FaceRuntimeStatus —— 人脸模型运行时状态快照（任务 14）。
+ *
+ * <p>本类是模型管理器（{@link FaceModelManager}）对外暴露的<b>只读状态</b>，供 UI 判断：
+ * <ul>
+ *   <li>首启无内置模型 → {@link State#NOT_IMPORTED}，{@link #message} 为用户引导文案；</li>
+ *   <li>已导入并激活 → {@link State#READY}，携带 profileId / 版本 / 许可（是否已加载生效见
+ *       {@link #nativeProfileActive}）；</li>
+ *   <li>已激活但 manifest/文件损坏 → {@link State#ERROR}；</li>
+ *   <li>后台状态快照尚未产出（首帧占位）→ {@link State#LOADING}（#3-Low-1，不等于「未导入」）。</li>
+ * </ul>
+ *
+ * <h2>模型来源信号（供「模型与加速状态」界面使用）</h2>
+ * P1-6 路线下 <b>APK 不内置任何权重</b>，因此所有可用模型都来自用户导入：
+ * <ul>
+ *   <li>{@link #isUserImported()} —— 是否有用户导入且激活的模型；</li>
+ *   <li>{@link #sourceLabel()} —— 可直接展示的中文来源标签（「用户导入」/「未导入」/「不可用」）。</li>
+ * </ul>
+ * UI 只需调用 {@code FaceModelManager.forDefault(ctx).status().sourceLabel()} 即可，无需改动
+ * native/C++。
+ *
+ * <p>本类不包含任何模型权重/向量内容，只含元数据与中文提示。
+ */
+public final class FaceRuntimeStatus {
+
+    /** 运行时状态。 */
+    public enum State {
+        /** 未导入任何模型（首启默认态），需引导用户通过 SAF 导入 ZIP。 */
+        NOT_IMPORTED,
+        /**
+         * #3-Low-1（第三波审查）加载中占位：后台尚未产出状态快照时的首帧态，
+         * <b>不等于</b>「未导入」结论，UI 必须显式区分，避免冷启动误显「模型来源=未导入」。
+         */
+        LOADING,
+        /** 已导入并激活（manifest 已校验、文件已落盘）。是否已加载生效另见 {@link #nativeProfileActive}。 */
+        READY,
+        /** 存在激活配置但校验失败（manifest 损坏、文件缺失、native 拒绝）。 */
+        ERROR
+    }
+
+    @NonNull public final State state;
+    /** 当前激活的 profileId；未导入时为空串。 */
+    @NonNull public final String profileId;
+    /** manifest 展示名；未导入时为空串。 */
+    @NonNull public final String displayName;
+    /** 模型版本；未导入时为空串。 */
+    @NonNull public final String modelVersion;
+    /** 许可标识（如 insightface-models-noncommercial-research）；未导入时为空串。 */
+    @NonNull public final String licenseId;
+    /** 已导入的 profile 数量（storeDir 下含合法 manifest 的目录数，含未激活者）。 */
+    public final int importedProfileCount;
+    /**
+     * native 侧 {@code getRuntimeStatus} 报告的 profile 已校验/暂存（{@code profileValidated}，
+     * 兼容旧字段 {@code profileLoaded}）。<b>不代表</b>推理管线已加载生效；native 不可用时为 false。
+     */
+    public final boolean nativeProfileValidated;
+    /**
+     * native 侧是否<b>已加载生效</b>（{@code getRuntimeStatus} 的 {@code effective}
+     * 且 {@code reason} 为 ok）。仅凭 {@link #nativeProfileValidated} 不得判定就绪；native 不可用时为 false。
+     */
+    public final boolean nativeProfileActive;
+    /** native 侧报告的 embedding 维度；未知时为 0。 */
+    public final int nativeEmbeddingDim;
+    /** 可直接展示的中文提示（引导或错误原因），不含敏感内容。 */
+    @NonNull public final String message;
+    /**
+     * 出现「新旧配置并存且无法判定哪份应生效」的**歧义现场**时，这里是那个 profileId；
+     * 其余情况为 null。
+     *
+     * <p>为什么需要机器可读字段而不是让 UI 匹配 {@link #message} 文案：歧义现场需要用户在两个
+     * 选项间**显式了结**（见 {@code FaceModelManager.resolveAmbiguousSwap}），UI 必须能在
+     * ERROR 的多种原因里准确识别出这一种并给出操作入口；靠文案匹配会在任何措辞调整时静默失效。
+     */
+    @Nullable public final String ambiguousSwapProfileId;
+
+    FaceRuntimeStatus(@NonNull State state, @NonNull String profileId, @NonNull String displayName,
+                      @NonNull String modelVersion, @NonNull String licenseId,
+                      int importedProfileCount, boolean nativeProfileActive, int nativeEmbeddingDim,
+                      @NonNull String message) {
+        this(state, profileId, displayName, modelVersion, licenseId, importedProfileCount,
+                false, nativeProfileActive, nativeEmbeddingDim, message);
+    }
+
+    FaceRuntimeStatus(@NonNull State state, @NonNull String profileId, @NonNull String displayName,
+                      @NonNull String modelVersion, @NonNull String licenseId,
+                      int importedProfileCount, boolean nativeProfileValidated,
+                      boolean nativeProfileActive, int nativeEmbeddingDim, @NonNull String message) {
+        this(state, profileId, displayName, modelVersion, licenseId, importedProfileCount,
+                nativeProfileValidated, nativeProfileActive, nativeEmbeddingDim, message, null);
+    }
+
+    FaceRuntimeStatus(@NonNull State state, @NonNull String profileId, @NonNull String displayName,
+                      @NonNull String modelVersion, @NonNull String licenseId,
+                      int importedProfileCount, boolean nativeProfileValidated,
+                      boolean nativeProfileActive, int nativeEmbeddingDim, @NonNull String message,
+                      @Nullable String ambiguousSwapProfileId) {
+        this.state = state;
+        this.profileId = profileId;
+        this.displayName = displayName;
+        this.modelVersion = modelVersion;
+        this.licenseId = licenseId;
+        this.importedProfileCount = importedProfileCount;
+        this.nativeProfileValidated = nativeProfileValidated;
+        this.nativeProfileActive = nativeProfileActive;
+        this.nativeEmbeddingDim = nativeEmbeddingDim;
+        this.message = message;
+        this.ambiguousSwapProfileId = ambiguousSwapProfileId;
+    }
+
+    public boolean isReady() {
+        return state == State.READY;
+    }
+
+    public boolean isNotImported() {
+        return state == State.NOT_IMPORTED;
+    }
+
+    /**
+     * #3-Low-1（第三波审查）：是否为「加载中」占位态（后台快照尚未产出）。
+     * UI 应优先判本状态并展示「加载中」，<b>不得</b>当作「未导入」渲染。
+     */
+    public boolean isLoading() {
+        return state == State.LOADING;
+    }
+
+    /**
+     * 推理管线是否已加载生效（native {@code effective}）。与 {@link #nativeProfileValidated}
+     * 区分：manifest 已校验/暂存不等于管线已生效（Engine 未创建或模型运行时装配失败时后者为 false）。
+     */
+    public boolean isRuntimeEffective() {
+        return nativeProfileActive;
+    }
+
+    /** 是否有用户导入且激活的模型（P1-6 下所有可用模型均为用户导入）。 */
+    public boolean isUserImported() {
+        return state == State.READY && !profileId.isEmpty();
+    }
+
+    /** 中文来源标签，UI 可直接展示。 */
+    @NonNull
+    public String sourceLabel() {
+        switch (state) {
+            case READY:
+                return "用户导入";
+            case NOT_IMPORTED:
+                return "未导入";
+            case LOADING:
+                // #3-Low-1：占位态显式标「加载中」，避免被误读为「未导入」结论。
+                return "加载中";
+            default:
+                return "不可用";
+        }
+    }
+
+    /**
+     * #3-Low-1（第三波审查）加载中占位工厂：后台快照尚未产出时的首帧态，
+     * {@link #message} 为「正在加载」，{@link #state} 为 {@link State#LOADING}，
+     * 供 UI 区分「加载中」与「真未导入」。
+     */
+    @NonNull
+    public static FaceRuntimeStatus loading() {
+        return new FaceRuntimeStatus(State.LOADING, "", "", "", "",
+                0, false, 0, "正在加载模型状态…");
+    }
+
+    /** 首启未导入态工厂，携带 SAF 导入引导文案。 */
+    @NonNull
+    public static FaceRuntimeStatus notImported(int importedProfileCount) {
+        return new FaceRuntimeStatus(State.NOT_IMPORTED, "", "", "", "",
+                importedProfileCount, false, 0,
+                "尚未导入人脸模型：APK 不内置权重，请通过「导入模型」选择包含 manifest.json 的 ZIP 包（≤256 MiB）。");
+    }
+
+    /** 就绪态工厂。 */
+    @NonNull
+    public static FaceRuntimeStatus ready(@NonNull String profileId, @NonNull String displayName,
+                                          @NonNull String modelVersion, @NonNull String licenseId,
+                                          int importedProfileCount, boolean nativeProfileActive,
+                                          int nativeEmbeddingDim) {
+        return new FaceRuntimeStatus(State.READY, profileId, displayName, modelVersion, licenseId,
+                importedProfileCount, nativeProfileActive, nativeEmbeddingDim,
+                "模型已就绪：" + displayName + "（" + profileId + "）");
+    }
+
+    /** 错误态工厂；{@code reason} 为中文原因，不含模型内容。 */
+    @NonNull
+    public static FaceRuntimeStatus error(@NonNull String profileId, int importedProfileCount,
+                                          @NonNull String reason) {
+        return new FaceRuntimeStatus(State.ERROR, profileId, "", "", "",
+                importedProfileCount, false, 0, reason);
+    }
+
+    /**
+     * 歧义现场错误态工厂：新旧配置并存、无法判定哪份应生效，需用户显式了结。
+     *
+     * <p>与 {@link #error} 的唯一区别是携带 {@link #ambiguousSwapProfileId}，供 UI 准确地
+     * 在多种 ERROR 原因中识别出「可人工了结」的这一种并给出操作入口。
+     */
+    @NonNull
+    public static FaceRuntimeStatus errorAmbiguousSwap(@NonNull String profileId,
+                                                       int importedProfileCount,
+                                                       @NonNull String reason,
+                                                       @NonNull String ambiguousSwapProfileId) {
+        return new FaceRuntimeStatus(State.ERROR, profileId, "", "", "",
+                importedProfileCount, false, false, 0, reason, ambiguousSwapProfileId);
+    }
+
+    /**
+     * 合并 native {@code getRuntimeStatus()} 的 JSON，补全 {@link #nativeProfileValidated}
+     * 与 {@link #nativeProfileActive}/{@link #nativeEmbeddingDim}。
+     *
+     * <p>语义区分：{@code profileValidated}（兼容旧字段 {@code profileLoaded}）只表示 manifest
+     * 已校验/暂存；{@code effective} 才表示推理管线已加载生效。二者分别映射到
+     * {@link #nativeProfileValidated} 与 {@link #nativeProfileActive}，绝不互相替代。
+     *
+     * <p>解析失败或 native 不可用时<b>原样返回 this</b>，保证 UI 层拿到稳定状态、不因 native
+     * 缺失而崩溃。
+     */
+    @NonNull
+    public FaceRuntimeStatus withNativeStatus(@Nullable String nativeStatusJson) {
+        if (nativeStatusJson == null || nativeStatusJson.isEmpty()) {
+            return this;
+        }
+        try {
+            Map<String, Object> root = FaceModelManifest.asObject(
+                    FaceModelManifest.parseJsonValue(nativeStatusJson));
+            if (root == null) {
+                return this;
+            }
+            Boolean validated = FaceModelManifest.asBoolean(root.get("profileValidated"));
+            if (validated == null) {
+                // 兼容旧 native：无 profileValidated 时回退读 profileLoaded（其历史语义即「已校验」）。
+                validated = FaceModelManifest.asBoolean(root.get("profileLoaded"));
+            }
+            Boolean effective = FaceModelManifest.asBoolean(root.get("effective"));
+            Double dim = FaceModelManifest.asNumber(root.get("embeddingDim"));
+            if (validated == null && effective == null && dim == null) {
+                // native 返回里没有可合并字段时保持原对象，便于调用方按引用判断「未变化」。
+                return this;
+            }
+            boolean validatedFlag = validated != null && validated;
+            // 就绪只看 effective：仅 manifest 校验通过不得被判为「已加载生效」。
+            boolean active = effective != null && effective;
+            int d = (dim != null) ? dim.intValue() : 0;
+            // 必须把 ambiguousSwapProfileId 一并带过：withNativeStatus 是重建对象，
+            // 丢掉它会让 UI 在 native 状态合并后失去「可人工了结」的操作入口。
+            return new FaceRuntimeStatus(state, profileId, displayName, modelVersion, licenseId,
+                    importedProfileCount, validatedFlag, active, d, message, ambiguousSwapProfileId);
+        } catch (Exception ex) {
+            return this;
+        }
+    }
+
+    @NonNull
+    @Override
+    public String toString() {
+        return "FaceRuntimeStatus{state=" + state + ", profileId='" + profileId
+                + "', imported=" + importedProfileCount
+                + ", nativeValidated=" + nativeProfileValidated
+                + ", nativeActive=" + nativeProfileActive + "}";
+    }
+}

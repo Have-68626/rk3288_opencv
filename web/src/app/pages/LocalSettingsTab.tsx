@@ -95,7 +95,18 @@ export function LocalSettingsTab() {
                         ]}
                       />
                     </Form.Item>
-                    <Form.Item label="语言" name="language">
+                    {/* ★ 2026-09-28（外部审查 [P3]「Web 的 English 选项只切换组件库语言」）：
+                        明确该偏好的**实际范围**——它只切换 **antd 组件库的 locale**，业务页面与导航
+                        文案仍为中文。没有这句提示时，选 English 会得到一个中英混合界面且**无任何说明**。
+                        （全站双语不在当前范围。`prefs.language` 的消费点只有两处：`App.tsx`
+                        **按它切换 antd locale**；`HomePage.tsx` 的「应用偏好」卡片**原样显示它的值**。
+                        ⇒ 除组件库外，全仓没有任何按它切换语言的渲染逻辑 —— 但「唯一消费点」的说法
+                        不成立（验收代理指出），此处已按实际收窄。） */}
+                    <Form.Item
+                      label="语言"
+                      name="language"
+                      extra="English 目前仅切换组件库语言；业务文案仍为中文（全站双语不在当前范围）"
+                    >
                       <Select
                         options={[
                           { value: 'zh-CN', label: '中文' },

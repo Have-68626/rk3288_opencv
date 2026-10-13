@@ -2,6 +2,12 @@
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) || ''
 
 export const API = {
+  // Health
+  health: `${BASE}/api/v1/health`,
+
+  // Faces（当前帧人脸快照；**不套 Envelope**）
+  faces: `${BASE}/api/v1/faces`,
+
   // Cameras
   cameras: `${BASE}/api/v1/cameras`,
 

@@ -4,6 +4,7 @@ using namespace rk_core;
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <string>
 #include <thread>
 
@@ -63,4 +64,40 @@ bool test_model_registry_concurrent_get_and_register() {
     reader.join();
 
     return totalReads.load() > 0 && badReads.load() == 0;
+}
+
+// FACE-SCRFD-004：`retinaface_scrfd` 注册条目**已被删除**（不是改指）—— 本用例锁住这个决定。
+//
+// 为什么是删除而不是改指 ScrfdNcnnAdapter（三条独立理由，详见 ModelRegistry.cpp 该处注释）：
+//   1) 该 ID **零消费者**（无 profile / manifest / Java / Web / JNI / CLI 引用）；
+//   2) ★ 决定性：注册表以 `make_unique<ScrfdNcnnAdapter>()` **默认构造**后只调 `load(path)`
+//      ⇒ 用的是默认 `cfg_`（`kDelta` + `anchorsPerPos={1,1,1}`），**本路径不消费 profile**；
+//      真实 SCRFD det_10g 需 `kDistance` + 2 anchor ⇒ 经注册表取得的实例**必然解错框位**。
+//      故改指只能修好加载器、解码照样错，等于换一个坑；
+//   3) 原指向的 RetinaFaceAdapter 用 delta 解码（SCRFD 是距离编码），且加载器只吃 ONNX，
+//      与已记录的文档意图（CREDITS.md「NCNN SCRFD」记为 BIN/PARAM）矛盾。
+//
+// 判别力（已实测）：把该条目加回注册表 ⇒ `getEntry` 有值 ⇒ 本用例**红**。
+// （RetinaFaceAdapter 类本身也已在本批一并删除，故"加回"只能指向 ScrfdNcnnAdapter。）
+// 反向护栏：同族的 `scrfd_0.5gf` 必须仍在，防止「删多了」。
+bool test_model_registry_has_no_retinaface_scrfd_entry() {
+    ModelRegistry::ensureBuiltinRegistered();
+    auto& reg = ModelRegistry::instance();
+
+    if (reg.getEntry("retinaface_scrfd").has_value()) {
+        std::fprintf(stderr, "retinaface_scrfd 条目应已被删除，实际仍存在于注册表\n");
+        return false;
+    }
+    if (reg.createDetector("retinaface_scrfd", nullptr) != nullptr) {
+        std::fprintf(stderr, "retinaface_scrfd 应无法创建实例，实际创建成功\n");
+        return false;
+    }
+
+    // 反向护栏：0.5g 档位不得被误删（本批只删 retinaface_scrfd 一条）。
+    auto det05 = reg.createDetector("scrfd_0.5gf", nullptr);
+    if (!det05) {
+        std::fprintf(stderr, "scrfd_0.5gf 条目被误删\n");
+        return false;
+    }
+    return true;
 }

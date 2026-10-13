@@ -38,6 +38,12 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeSetFlip(JNIEnv*, jobject, jboolean, jboolean) {
 }
 
+// nativeGetFlipGeneration()J —— 任务3 诊断：占位返回 0（真实构建由 engine.cpp 注册返回 flipGeneration_）
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeGetFlipGeneration(JNIEnv*, jobject) {
+    return 0;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888(JNIEnv* env, jobject /* this */, jobject, jint, jobject, jint, jint, jobject, jint, jint, jint, jint, jlong, jint, jboolean) {
     return JNI_FALSE;
@@ -122,4 +128,71 @@ Java_com_example_rk3288_1opencv_NativeBridge_nativeSetDetectionThrottle(JNIEnv* 
 // nativeSetRecognitionThrottle(String, I)V —— stub 占位空操作
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_rk3288_1opencv_NativeBridge_nativeSetRecognitionThrottle(JNIEnv* /* env */, jclass /* clazz */, jstring, jint) {
+}
+
+// ── NativeFaceBridge 静态方法补齐（任务13）──
+// Q-CQ-B07-008：stub 无 JNI_OnLoad/RegisterNatives，NativeFaceBridge 的 native
+// 方法只能靠 JNI mangled 符号解析；缺失即 UnsatisfiedLinkError。此处仅最小占位，
+// 返回失败 JSON / null，不实现任何真实算法逻辑。
+// 描述符与 src/cpp/jni/native_face_bridge.cpp 的 registerFaceBridgeMethods 逐项一致。
+// 注意：static native → JNI 第二参数为 jclass（而非 jobject）。
+
+// loadProfile(String, String)Ljava/lang/String; —— stub 返回占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_loadProfile(JNIEnv* env, jclass /* clazz */, jstring, jstring) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// activateRuntime(String, String, String, String)Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring, jstring, jstring, jstring) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// replaceGallery([Ljava/lang/String;[Ljava/nio/ByteBuffer;)Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_replaceGallery(JNIEnv* env, jclass /* clazz */, jobjectArray, jobjectArray) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// beginEnrollment(String, ByteBuffer)Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_beginEnrollment(JNIEnv* env, jclass /* clazz */, jstring, jobject) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// cancelEnrollment()Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_cancelEnrollment(JNIEnv* env, jclass /* clazz */) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// getEnrollmentStatus()Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_getEnrollmentStatus(JNIEnv* env, jclass /* clazz */) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// takeEnrollmentTemplate()[B —— 无暂存模板，占位返回 null
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_takeEnrollmentTemplate(JNIEnv* /* env */, jclass /* clazz */) {
+    return nullptr;
+}
+
+// #1 startEnrollmentCapture(ByteBuffer)Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_startEnrollmentCapture(JNIEnv* env, jclass /* clazz */, jobject) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// #1 stopEnrollmentCapture()Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_stopEnrollmentCapture(JNIEnv* env, jclass /* clazz */) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
+}
+
+// getRuntimeStatus()Ljava/lang/String; —— 占位失败 JSON
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_rk3288_1opencv_NativeFaceBridge_getRuntimeStatus(JNIEnv* env, jclass /* clazz */) {
+    return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
 }

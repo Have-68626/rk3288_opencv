@@ -51,7 +51,8 @@ final class CameraXCaptureController implements CaptureController {
     private ImageAnalysis analysis;
     // Q-CQ-B07-004：异步 bind 会话代次门 —— 每次启动/停止递增代次，
     // ProcessCameraProvider 回调先校验代次仍当前才继续，过期则整体忽略（不 bind/不覆盖）。
-    private final StartSessionGate startGate = new StartSessionGate();
+    // 任务 2 归一：代次语义收敛到统一组件 CaptureSourceEpochGate。
+    private final CaptureSourceEpochGate startGate = new CaptureSourceEpochGate();
 
     private int sensorOrientation;
     private boolean mirrored;
@@ -80,6 +81,11 @@ final class CameraXCaptureController implements CaptureController {
     @Override
     public String name() {
         return "CameraX";
+    }
+
+    @Override
+    public long currentSourceEpoch() {
+        return startGate.current();
     }
 
     @Override
@@ -120,7 +126,10 @@ final class CameraXCaptureController implements CaptureController {
 
                 analysis = builder.build();
 
-                analysis.setAnalyzer(analyzerExecutor, this::analyze);
+                // P1-4 帧代次隔离：把当前会话 epoch 捕获进 analyzer 闭包 —— stop/切换源前已排队、
+                // stop 后才送达的 ImageProxy 携带旧 epoch，analyze 入口校验不通过即丢弃。
+                final long analyzeEpoch = epoch;
+                analysis.setAnalyzer(analyzerExecutor, image -> analyze(image, analyzeEpoch));
                 outputResolutionLogged = false;
                 lastStatsRealtimeMs = SystemClock.elapsedRealtime();
                 lastFrameTsNs = 0L;
@@ -140,7 +149,7 @@ final class CameraXCaptureController implements CaptureController {
                         applyCamera2Fps(builder720, fps);
                     }
                     analysis = builder720.build();
-                    analysis.setAnalyzer(analyzerExecutor, this::analyze);
+                    analysis.setAnalyzer(analyzerExecutor, image -> analyze(image, analyzeEpoch));
                     camera = provider.bindToLifecycle(lifecycleOwner, selector, analysis);
                 }
 
@@ -162,7 +171,7 @@ final class CameraXCaptureController implements CaptureController {
     @Override
     public void stop() {
         // Q-CQ-B07-004：使进行中的异步绑定过期，旧回调不得在 stop 后重新拉起相机/覆盖状态
-        startGate.invalidate();
+        startGate.advance();
         if (analysis != null) {
             try {
                 analysis.clearAnalyzer();
@@ -187,7 +196,17 @@ final class CameraXCaptureController implements CaptureController {
         }
     }
 
-    private void analyze(@NonNull ImageProxy image) {
+    private void analyze(@NonNull ImageProxy image, long capturedEpoch) {
+        // P1-4: 帧代次门禁 —— capturedEpoch 为 bind 时捕获的会话代次；stop/切换源后到达的
+        // 旧代次帧直接丢弃（不推送、不统计）。ImageProxy 必须显式 close，否则缓冲区泄漏、
+        // 后续帧无法送达（等价于原 finally 的释放责任在此路径上不可省略）。
+        if (!startGate.isCurrent(capturedEpoch)) {
+            try {
+                image.close();
+            } catch (Exception ignored) {
+            }
+            return;
+        }
         long startNs = SystemClock.elapsedRealtimeNanos();
         try {
             int w = image.getWidth();
@@ -211,6 +230,20 @@ final class CameraXCaptureController implements CaptureController {
             ByteBuffer v = planes[2].getBuffer();
             long ts = image.getImageInfo().getTimestamp();
             int rot = computeRotationDegrees();
+            // FACE-CAM-008：提交前二次代次复检（与 Camera2CaptureController.onImageAvailable 保持
+            // 「同位置、同表达式」）。入口校验（本方法开头）与提交之间仍会执行取尺寸/取平面/取 buffer/
+            // 算旋转，该窗口内若发生 stop/切源，旧帧会被推入已失效的会话。复检紧贴提交点，把该窗口内
+            // 的实际副作用压到最小：复检通过后到 sink 真正收到帧之间，只剩 sink 实参求值时的数次
+            // 平面访问器调用（planes[i].getRowStride()/getPixelStride()）。作为量级参考，整段
+            // 「入口校验→提交」约含 11 次虚调用（3 个 plane 的 getBuffer/getRowStride/getPixelStride
+            // 共 8 次 + getWidth/getHeight/getTimestamp 3 次），并非「数条指令」；残留窗口仍存，
+            // 彻底消除需提交侧持锁，会阻塞 stop 线程，实时路径不可接受，故明确接受。
+            if (!startGate.isCurrent(capturedEpoch)) {
+                // 已知副作用（接受）：本 return 落在 try 内 ⇒ 仍走 finally，ImageProxy 照常关闭、
+                // 该帧亦计入 statsFrames（入口即丢弃的路径不统计，二者语义略有出入）。为罕见竞态
+                // 重构 try 结构不划算，故接受并在此注释。
+                return;
+            }
             boolean ok = sink.onYuv420888Frame(
                     y, planes[0].getRowStride(),
                     u, planes[1].getRowStride(), planes[1].getPixelStride(),
@@ -393,34 +426,5 @@ final class CameraXCaptureController implements CaptureController {
             }
         });
         return list.get(0);
-    }
-
-    /**
-     * 会话代次门（Q-CQ-B07-004）。
-     *
-     * <p>ProcessCameraProvider.getInstance() 的 Future 可能延迟完成；若期间再次 start()/stop()，
-     * 旧 Future 的回调若继续执行 provider.unbindAll()/bindToLifecycle() 会覆盖 camera/analysis
-     * 等新状态、甚至 stop 后重新拉起相机。每次启动 enter() 递增代次使旧会话过期，回调通过
-     * isCurrent(epoch) 校验；过期则整体忽略。与 MonitoringCoordinator 的 isCurrentGeneration
-     * 取消门模式保持一致。</p>
-     */
-    static final class StartSessionGate {
-        // S3: 防御性硬化 —— 镜像 MonitoringCoordinator 取消门，跨线程代次读写需 volatile 保证可见性/原子性
-        private volatile long current;
-
-        // 进入新会话：返回本次代次，并使之前会话过期
-        long enter() {
-            return ++current;
-        }
-
-        // 停止/重建：使进行中的异步绑定过期
-        void invalidate() {
-            ++current;
-        }
-
-        // 代次校验：仅当前代次允许继续；过期 Future 回调不得 bind/覆盖新状态
-        boolean isCurrent(long epoch) {
-            return epoch == current;
-        }
     }
 }

@@ -5,7 +5,12 @@ info:
   description: |
     RK_WCFR（Windows Camera Face Recognition）本地 REST API。
     服务以 Windows 本地服务形式运行，默认监听 http://127.0.0.1:8080。
-    所有响应包装在统一 Envelope 中，通过 `ok` 字段表示业务成功与否。
+    绝大多数响应包装在统一 Envelope 中，通过 `ok` 字段表示业务成功与否；
+    例外（不套 Envelope）为二进制 / 流式端点（`/api/v1/preview.jpg`、`/api/v1/preview.mjpeg`、
+    `/api/v1/faces/stream`）与 `/api/v1/openapi`、`/openapi.json`，
+    以及**路由器级错误**：未知端点的 404 与方法不匹配的 405（由 `EndpointRegistry::dispatch`
+    经 `ResponseFactory::err` 产生，响应体为 `{"error":...,"details":...}`，详见 `NotFound` 组件）。
+    认证模型（可选 Bearer token、匿名白名单、401/403）见 `docs/security/auth-model.md`。
 
 servers:
   - url: http://127.0.0.1:{port}
@@ -18,9 +23,73 @@ paths:
   /api/v1/health:
     get:
       summary: 健康检查
+      description: |
+        匿名白名单端点（无需 Bearer token 即可读取）。除 `name` / `port` 外，data 另暴露
+        启动期配置诊断（FACE-CONFIG-001「独立可见通道」）：
+
+        - `configStatus`（字符串，**始终出现**）：取值 `ok` / `degraded` / `rejected` / `unknown`。
+          当 config.json 存在但无法装载（不可读 / JSON 解析失败 / schema 校验被拒）时，服务以默认值启动，
+          此时为 `rejected`；装载完成但本次启动存在告警（默认配置写盘失败 / 序列化未通过 schema 等）时为
+          `degraded`；正常装载且无告警为 `ok`；`unknown` = 诊断通道缺失（`ctx.settings` 为空，
+          无法判定配置状态，仅内部测试路径可达）。判据优先级：`unknown` > `rejected` > `degraded` > `ok`。
+          恒出现使监控能区分「配置正常」与「对端为旧版本、尚未实现本字段」。
+          ⚠️ `degraded` 的成因不止「默认配置写盘失败 / 序列化未通过 schema」，还包括启动期的
+          **越界值钳制告警**（`log.maxFileBytes`、`log.maxRollFiles` 超**四份**文件集合计的 512 MiB 总预算，
+          或 `recognition.identifyThreshold` 超物理上界 64）与**不安全路径告警**（路径含 `..` 段）。
+          这两类成因有一个关键性质：启动期**只告警、不拒绝**（拒绝会触发 INI 回落并清空用户配置）；
+          其中越界值另在**内存中**被夹进合法区间（「只钳不拒」），越界路径则原样保留。
+          而**磁盘上的越界值 / 越界路径都不会被改写** ⇒ 只要用户不改配置，同一告警会在
+          **每次启动复现，重启不自愈**（监控方勿把它当成瞬时抖动的信号）。收敛方式只有一次成功的
+          `PUT /api/v1/settings`（其提交会把规范化后的**生效值**写回 config.json）或手工编辑 config.json。
+          ⚠️ 但路径类告警只对 PUT **显式携带**的写型字段判违规 ⇒ 一次不携带该字段的 PUT 不会顺带清掉
+          既有的 `..` 段，那类配置须显式改写该字段才收敛；而 log 段两个键的钳后值会随任意一次成功 PUT
+          写盘（PUT 的合并基底含全部字段）。
+        - `configWarning`（字符串，**仅在本次启动存在告警时出现**）：initialize 的告警文本副本。
+        - `configQuarantinedTo`（字符串，**仅在发生隔离时出现**）：被改名另存为证据的坏配置
+          文件名（形如 `config.json.corrupt.<毫秒时间戳>`）。
+
+        data 另暴露启动期**运行时装配**诊断（FACE-ARCWIN-003 可观测性部分）：
+
+        - `status`（字符串，**始终出现**）：取值 `ok` / `degraded` / `starting`。`starting` = 尚未装配
+          （pipeline 未挂载或从未装配）；`degraded` = 运行时**装配失败**（识别器整体初始化失败，例如
+          cascade 文件 / 识别模型（含节点名）/ database 路径之一有误），此时服务照常启动、API 照常可用，
+          仅识别功能缺失；`ok` = 已装配且无降级。判据优先级：`starting` > `degraded` > `ok`。
+        - `availableFeatures`（字符串数组，**始终出现**）：当前 `status=="loaded"` 的模型 id 集合
+          （正常态即「可用能力清单」；未装配或降级时可能为空数组）。恒出现使监控能区分「本版本未实现
+          该字段」与「当前确实没有可用模型」。
+        - `reasonCode`（字符串，**仅在 `status=="degraded"` 时出现**）：降级原因码。取值域为加速契约的
+          7 个固定码（`ok` / `build_disabled` / `unsupported_platform` / `missing_dependency` /
+          `missing_model` / `runtime_init_failed` / `unsupported_input`）；本管线目前只产
+          `runtime_init_failed` —— `RuntimeBootstrap` 不区分识别器失败的具体原因，故不臆造更细的码。
+        - `warning`（字符串，**仅在降级且文本非空时出现**）：`RuntimeBootstrap` 的告警原文。
+          ⚠️ 与 `configWarning` 同类：它是服务端告警原文，**可能包含文件系统绝对路径**。来源链（本管线
+          目前唯一产生 `status=degraded` 的路径）：`RuntimeBootstrap` 的 `"DNN 检测初始化失败: " + err`，
+          而 `err` 由 `DnnSsdFaceDetector` 拼接 `cv::Exception::what()`（`"readNet 失败: " + what()`），
+          OpenCV 的报错文本**通常含被打开的模型文件全路径**（例如 `models/` 下 ONNX 的绝对路径）；
+          识别器侧失败文案虽不自带路径，但 DNN 侧那条同在此字段内。且本端点位于**匿名白名单、免 token**
+          ⇒ 该字段的内容仍应按**本机可见**对待（与 `configWarning` 同一性质，见下方说明）。
+        - `degradedSince`（字符串，**仅在降级时出现**）：**首次**进入降级的时间，格式
+          `%Y-%m-%dT%H:%M:%S.mmm`（本地时间、**无时区后缀**，与本项目其他时间戳一致）。
+
+        ⚠️ `configStatus` 描述**配置装载**状态，`status` 描述**运行时装配**状态，二者是**不同的量**，
+        并存且互不覆盖（勿以为是重复字段）。两者可任意组合，例如 `configStatus=ok`（配置完全合法）
+        而 `status=degraded`（模型文件缺失）——只看 `configStatus` 会漏报「服务起来了但识别功能缺失」。
+
+        ⚠️ `status` / `availableFeatures` 等字段是**只读可观测性**：`degraded` **不映射为任何非 2xx**，
+        也不阻断任何端点或操作。（`warning` 与 `configWarning` 同类，均可能含文件系统路径。）
+
+        该端点仅监听 127.0.0.1，且位于匿名白名单（无需 Bearer token）。可达性前提：`http.enable`
+        为真且监听端口未被占用。⚠️ 「配置被拒 ⇒ 端口回落 8080」只在**无旧 INI、无
+        `RK_WCFR_HTTP_PORT`、且 8080 未被占用**时成立；沿用旧 INI 时端口可能被 INI 改写，
+        `http.enable=false` 时该端点根本不存在 ⇒ **不能假定「监控始终可连」**。
+
+        ⚠️ `configWarning` 是服务端告警原文，**可能包含文件系统路径**（例如 `%APPDATA%` 下的配置
+        路径）。故本端点虽仅回环可达，其内容仍应按**本机可见**对待。
       responses:
         "200":
-          description: 服务正常运行
+          description: |
+            服务可达（**恒为 200**）。注意：`status:"degraded"` / `configStatus:"rejected"` 等降级或
+            被拒状态**不改变 HTTP 状态码** —— 本端点不返回非 2xx 表达降级，降级信息只在 data 字段里。
           content:
             application/json:
               schema:
@@ -30,8 +99,15 @@ paths:
     get:
       summary: 加速配置与活动后端
       description: |
-        返回请求的加速器配置与实际生效的加速后端（requested/effective/evidence/reason 模式），
-        以及各加速器的自检状态。
+        返回加速配置与当前生效的后端。data 含三个字段：
+
+        - `config`：settings 的 `acceleration` 段副本（enableOpenCL / enableLibyuv /
+          enableMpp / enableQualcomm）；settings 不可用或该段缺失时不出现。
+        - `dnn`：dnn 段摘要（`enable` / `backend` / `confThreshold`）。
+        - `activeBackends`：当前 `isInUse` 的模型清单（每项 `id` / `backend` / `status`）。
+
+        注：`Engine::performAccelSelfCheck()` 的 requested / effective / evidence / reason
+        四元组只写**单行日志**，不经本端点返回；本端点也不返回各加速器的自检结果。
       responses:
         "200":
           description: 加速配置与活动后端列表
@@ -69,7 +145,8 @@ paths:
       summary: 获取完整配置（敏感字段已脱敏）
       description: |
         返回当前生效的完整配置。敏感字段（如 poster.postUrl 中的加密凭据）不会以明文返回。
-        返回结构体 Envelope.data 包含 camera、recognition、dnn、http、poster、log、ui、display、acceleration 等字段。
+        返回结构体 Envelope.data 含 `Settings` 组件的全部段：camera、recognition、inference、
+        dnn、model、http、poster、log、ui、display、acceleration。
       responses:
         "200":
           description: 配置数据（脱敏）
@@ -90,6 +167,8 @@ paths:
       description: |
         支持局部更新，只发送需要修改的字段即可。
         poster.postUrl 若为加密对象（含 v/alg/nonce/ciphertext/tag），会在服务端解密后加密落盘。
+        poster.postUrl 的**新实际值**只接受 `http`/`https`（hostname 非空）；空串表示清空；
+        缺字段或 `***` 表示不修改。非法值返回 400 且不落盘、不回显该值（加密对象会先解密出候选明文再校验）。
       requestBody:
         required: true
         content:
@@ -116,7 +195,10 @@ paths:
   /api/v1/cameras:
     get:
       summary: 枚举可用摄像头与能力
-      description: 返回系统可用摄像头列表，含设备 ID、描述、朝向等属性。
+      description: |
+        返回系统可用摄像头列表。data.devices 为数组，每项含 `index`（设备序号）、
+        `name`（设备名）、`deviceId`（设备 ID）与 `formats`（支持的分辨率/帧率列表，
+        每项含 `w` / `h` / `fps`）。
       responses:
         "200":
           description: 摄像头列表
@@ -124,11 +206,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/preview.jpg:
     get:
       summary: 获取单帧预览 JPEG
-      description: 返回当前处理帧的单帧 JPEG 图像。
+      description: |
+        返回当前处理帧的单帧 JPEG。画面为**已绘制标注**的渲染帧（与 `/api/v1/preview.mjpeg` 同源：
+        已识别人脸绿框 + `personId + 置信度` 文本、未识别红框 + 置信度），并额外在每张检出人脸上
+        叠加一个**白色矩形**（`handlePreviewJpg` 自绘）。
+        无可用画面（尚无渲染帧 / 帧为空）→ 503 `frame_unavailable`；
+        JPEG 编码失败 → 500 `encode_failed`；Pipeline 不可用 → 503 `pipeline_unavailable`。
+        这些错误响应为 Envelope 形状（`application/json`），与本端点成功响应的 `image/jpeg` 不同。
       responses:
         "200":
           description: JPEG 图像
@@ -137,11 +227,18 @@ paths:
               schema:
                 type: string
                 format: binary
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/preview.mjpeg:
     get:
       summary: 获取 MJPEG 预览流
-      description: 返回持续的 MJPEG 流（multipart/x-mixed-replace），适用于浏览器 img 标签直接显示。
+      description: |
+        返回持续的 MJPEG 流（multipart/x-mixed-replace），适用于浏览器 img 标签直接显示。
+        画面为**已绘制标注**的渲染帧（已识别人脸画绿框并叠加 `personId + 置信度` 文本、
+        未识别画红框 + 置信度）——即身份信息以**像素**形式出现在该流中。
+        该端点由 StreamSessionRunner 旁路处理，受流会话配额约束（MJPEG 帧率上限 20fps、
+        单会话字节上限、会话时长上限，见 `docs/security/auth-model.md` §8）。
       responses:
         "200":
           description: MJPEG 视频流
@@ -155,7 +252,10 @@ paths:
       summary: 人脸识别结果 SSE 流
       description: |
         实时推送人脸识别事件（text/event-stream）。该路径由 StreamSessionRunner 旁路处理，
-        不经过 EndpointRegistry 路由表。
+        不经过 EndpointRegistry 路由表。每个事件形如 `data: <JSON>` + 空行，其 JSON 与
+        `/api/faces` 的快照对象同构（`timestamp_ms` / `frame` / `preview` / `perf` / `faces[]`，
+        **不含 personId**）。
+        流会话配额（单会话字节上限、会话时长上限）见 `docs/security/auth-model.md` §8。
       responses:
         "200":
           description: SSE 事件流
@@ -169,7 +269,7 @@ paths:
       summary: 人脸识别结果 SSE 流（版本化路径）
       description: |
         /api/v1/faces/stream 为 /api/faces/stream 的版本化别名，同样由 StreamSessionRunner
-        旁路处理（见 src/win/src/StreamSession.cpp 的 isStreamRequest）。
+        旁路处理（见 src/win/src/StreamSession.cpp 的 isStreamRequest），事件体同构。
       responses:
         "200":
           description: SSE 事件流
@@ -181,7 +281,13 @@ paths:
   /api/v1/actions/enroll:
     post:
       summary: 注册当前检测到的人脸到人脸库
-      description: 将当前帧中检测到的主脸注册到人脸库，关联指定的 personId。
+      description: |
+        **异步提交**注册请求：把 `personId` 入队（`FramePipeline::requestEnroll`），由处理循环在
+        随后 `recognition.enrollSamples` 帧内采集样本并写入人脸库。
+        本端点只表示**请求已受理**（`data` 为空对象 `{}`），不表示注册已完成。
+        ⚠️ 注册进度/结果**不经任何 HTTP 端点回传**：进度只写入进程内的渲染态文本
+        （`RenderState.status`，供本地 UI 显示），`/api/faces` 与 SSE 流均不含该字段。
+        `personId` 为空或全空白 → 400；请求体非 JSON object → 400；Pipeline 不可用 → 503。
       requestBody:
         required: true
         content:
@@ -196,32 +302,37 @@ paths:
                   example: "user_001"
       responses:
         "200":
-          description: 注册成功
+          description: 注册请求已受理（异步，`data` 为 `{}`）
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/actions/db/clear:
     post:
       summary: 清空人脸数据库
-      description: 删除所有人脸特征模板。此操作不可逆，执行前建议备份配置目录。
+      description: |
+        **异步提交**清空请求（`FramePipeline::requestClearDb`），由处理循环执行。
+        删除所有人脸特征模板，此操作不可逆，执行前建议备份配置目录。
+        返回 200 仅表示请求已受理；Pipeline 不可用 → 503。
       responses:
         "200":
-          description: 已清空
+          description: 清空请求已受理（异步）
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/actions/privacy/open:
     post:
       summary: 打开 Windows 摄像头隐私设置
-      description: 调用系统设置打开 Windows 摄像头隐私设置页面。
+      description: 调用系统设置打开 Windows 摄像头隐私设置页面（`FramePipeline::openPrivacySettings`）。
       responses:
         "200":
           description: 已打开设置页面
@@ -229,13 +340,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/actions/crypto/rotate:
     post:
       summary: 轮换加密密钥并重新加密敏感字段落盘
       description: |
-        生成新密钥，重新加密配置文件中所有敏感字段（如 poster.postUrl 中的加密凭据），
-        并将新密文落盘。旧密钥标记为废弃。
+        生成新的 32 字节 AES-256 主密钥（DPAPI 保护后 base64 落盘，`config.key.dpapi`），
+        重新加密配置文件中的敏感字段（如 poster.postUrl 的加密凭据）并原子落盘。
+        **旧密钥被新密钥原地覆盖**——不保留旧密钥副本、也无「已废弃」标记；任一步失败时
+        回滚为新密钥覆盖前的旧密钥，配置写入失败同样回滚密钥（错误码 500：
+        `internal_error` / `io_error` / `crypto_error`）。settings 存储未初始化 → 503。
       responses:
         "200":
           description: 密钥轮换完成
@@ -243,10 +359,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/camera/flip:
     put:
       summary: 设置画面翻转（运行时即时生效）
+      description: |
+        `flipX` / `flipY` 省略或类型不是 boolean 时按 `false` 处理（不报错）。
+        请求体非 JSON object → 400；Pipeline 不可用 → 503。
       requestBody:
         required: true
         content:
@@ -271,38 +392,61 @@ paths:
                 $ref: "#/components/schemas/Envelope"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/faces:
     get:
-      summary: 人脸库快照
+      summary: 当前帧人脸快照
       description: |
-        返回当前人脸库快照。该路径与 /api/v1/faces 等价，均由 handleGetFaces 处理。
+        返回**当前帧**的人脸快照（不是人脸库内容）。该路径与 `/api/v1/faces` 等价，
+        均由 `handleGetFaces` 处理（序列化见 `buildFacesJson`）。
+        ⚠️ 成功响应**不套 Envelope**：响应体即快照对象本身，含 `timestamp_ms`、
+        `frame{w,h}`、`preview{w,h,scale_mode}`、`perf{infer_ms,drop_rate,stride}` 与
+        `faces[]`（每项仅 `bbox` / `display_bbox` / `confidence`）。
+        注意：本端点**不返回 personId 等身份字段**；身份仅由预览画面上的标签绘制体现。
+        Pipeline 不可用 → 503（该错误为 Envelope 形状）。
       responses:
         "200":
-          description: 人脸库快照
+          description: 人脸快照（原始 JSON 对象，非 Envelope）
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Envelope"
+                type: object
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/faces:
     get:
-      summary: 人脸库快照（版本化路径）
+      summary: 当前帧人脸快照（版本化路径）
       description: |
-        版本化的人脸库快照端点，行为与 /api/faces 一致。
+        版本化路径，行为与 `/api/faces` 完全一致（同样不套 Envelope、同样不含 personId）。
       responses:
         "200":
-          description: 人脸库快照
+          description: 人脸快照（原始 JSON 对象，非 Envelope）
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Envelope"
+                type: object
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/models:
     get:
       summary: 获取模型状态列表
       description: |
-        列出所有已注册的检测和识别模型，含模型 ID、显示名称、任务类型、推荐场景等元数据。
+        返回模型清单与状态。data 含三段：
+
+        - `supportedModels`：静态受支持模型注册表，每项含 `id` / `displayName` / `taskType` /
+          `notes` / `recommendedFor`（推荐场景：`high_speed` / `balanced`）；
+        - `activeModels`：运行期活动模型，每项含 `id` / `displayName` / `taskType` / `backend` /
+          `status`（`loaded` / `failed` / `missing`）/ `isInUse`，并按需含 `hash` /
+          `modelVersion` / `lastError`；
+        - `summary`：计数汇总 `totalSupported` / `totalConfigured` / `totalLoaded` /
+          `totalFailed` / `totalMissing`。
+
+        注意：`supportedModels` 是静态注册表（当前恒为 `cascade_frontalface` 与
+        `dnn_face_detector` 两条），`activeModels` 才是本次运行期实际配置并装载的模型。
       responses:
         "200":
           description: 模型列表
@@ -313,8 +457,22 @@ paths:
 
   /api/v1/models/reload:
     post:
-      summary: 重载指定模型
-      description: 按模型 ID 重载模型。重载后后续推理使用新模型实例。
+      summary: 重载运行时（按 id 作存在性校验）
+      description: |
+        `id` 只作**存在性门槛**：须出现在当前 `GET /api/v1/models` 的 `activeModels` 清单中。
+        **id 不决定重载对象**——校验通过后整体重建运行时（`FramePipeline::reloadRuntime`，
+        以当前生效配置重建全部模型/后端快照），成功后 `runtimeReloadGen` 递增。
+
+        响应（Envelope.data）：
+        - `id` 存在 → `status:"reloaded"` + `generation` + `ok`（+ 降级时 `warning`）。
+          `status` **恒为** `"reloaded"`：其含义是「存在性校验通过且已执行重载」，**不是**「装配成功」
+          （把恒值改为受成败影响属破坏性契约变更）。`generation` **无条件递增** ⇒ 它只证明重载确实
+          执行过，**不证明装配成功** —— 装配成败看 `ok`。`ok` 是 data 内字段，与 Envelope 根部的
+          `ok`（HTTP 业务调用成功）语义不同：`ok:true` = 重载后运行时装配成功；`ok:false` = 装配失败
+          （识别器未能初始化，服务与其余 API 照常可用）。`warning` 仅在装配失败且文本非空时出现；
+        - `id` 不存在 → **HTTP 200** + `status:"not_found"`（**本端点不返回 404**，且该分支不带 `ok`）；
+        - 缺 `id` 字段 / 请求体非 JSON object → 400；
+        - settings 存储未初始化 → 503。
       requestBody:
         required: true
         content:
@@ -325,32 +483,48 @@ paths:
               properties:
                 id:
                   type: string
-                  description: 模型 ID（如 `yolo_face`、`arcface`）
-                  example: "yolo_face"
+                  description: 模型 ID（须存在于 activeModels，如 `cascade_frontalface`、`dnn_face_detector`）
+                  example: "cascade_frontalface"
       responses:
         "200":
-          description: 重载成功
+          description: 已处理（`status` 为 `reloaded` 或 `not_found`，两者均为 200）
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
 components:
   securitySchemes:
-    # 当前版本未启用认证。后续版本可能通过 Windows 本地服务绑定至 loopback 接口
-    # 或增加 Bearer Token / Windows Integrated Auth。
-    # 部署时建议在防火墙层面限制对 8080 端口的访问。
+    # S-SEC-B09-001：Bearer token 认证已实现（规格见 docs/security/auth-model.md，冻结）。
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        可选 Bearer token 认证：`Authorization: Bearer <token>`（RFC 6750）。
+        token 来源为环境变量 `RK_WCFR_HTTP_AUTH_TOKEN`（配置字段 `http.authToken` 未实现），
+        服务启动时读取一次并缓存；比较为**恒定时间比较**。
+
+        - token 未配置（空）→ **兼容模式**：认证未启用，全部端点匿名可达（记录在案的残余风险）。
+        - token 已配置 → 除匿名白名单外的一切 `/api` 请求（含 SSE / MJPEG 流）必须携带有效
+          token，否则 **401** `{"ok":false,"error":{"code":"unauthorized",...}}`
+          （不发送 `WWW-Authenticate`）。
+        - 匿名白名单：非 `/api` 前缀的静态文件，以及 `GET /api/v1/health`、
+          `GET /api/v1/acceleration`。
+        - 写方法（POST / PUT / DELETE）另经 CSRF 校验（`Sec-Fetch-Site` / `Origin`），
+          不通过 → **403**（`cross_site_forbidden`）；兼容模式下 CSRF 仍生效。
+
+        完整机制与边界见 `docs/security/auth-model.md`（冻结规格）。
     loopbackOnly:
       type: apiKey
       in: header
       name: X-Loopback-Only
       description: |
-        当前 API 仅监听 127.0.0.1，网络级安全依赖 Windows 防火墙。
-        该头部当前未强制执行，仅作为占位。
+        占位项：该头部**未强制执行**，保留以便前端/工具标记回环部署约束。
+        真实的网络级约束是服务仅 bind 127.0.0.1，网络级安全依赖 Windows 防火墙。
 
   schemas:
     Envelope:
@@ -385,6 +559,7 @@ components:
 
     Settings:
       type: object
+      additionalProperties: false
       description: 完整配置对象
       required:
         - schemaVersion
@@ -399,7 +574,9 @@ components:
       properties:
         schemaVersion:
           type: number
-          description: Schema 版本号
+          description: Schema 版本号（当前恒为 1，运行时校验与 config.schema.json 均限定 [1,1]）
+          minimum: 1
+          maximum: 1
           example: 1
         camera:
           $ref: "#/components/schemas/CameraSettings"
@@ -426,6 +603,7 @@ components:
 
     CameraSettings:
       type: object
+      additionalProperties: false
       description: 摄像头采集配置
       required:
         - preferredDeviceId
@@ -458,6 +636,7 @@ components:
 
     RecognitionSettings:
       type: object
+      additionalProperties: false
       description: 人脸识别配置
       required:
         - cascadePath
@@ -465,6 +644,7 @@ components:
         - arcFaceModelPath
         - minFaceSizePx
         - identifyThreshold
+        - identifyThresholdArcFace
         - enrollSamples
       properties:
         cascadePath:
@@ -479,6 +659,14 @@ components:
           type: string
           description: ArcFace 识别模型路径
           example: "C:\\ProgramData\\rk_wcfr\\models\\arcface_w600k_r50.onnx"
+        arcFaceInputName:
+          type: string
+          description: ArcFace 输入节点名（默认空串 = OpenCV 自动取默认输入）
+          example: ""
+        arcFaceOutputName:
+          type: string
+          description: ArcFace 输出节点名（默认空串 = OpenCV 自动取首个输出）
+          example: ""
         minFaceSizePx:
           type: number
           description: 最小检测脸尺寸（像素边长）
@@ -487,10 +675,23 @@ components:
           example: 60
         identifyThreshold:
           type: number
-          description: 识别阈值（LBPH 距离/余弦相似度）
+          description: |
+            LBPH 识别阈值（卡方距离，**1..64**；越小越严格）。下界 1 与三方 schema 同值
+            （`minimum`，不是 0）。上界 64 由 LBPH 的 `gridX × gridY = 64` 个 cell × 单 cell 上界 2 推出：
+            每 cell 归一化后 `chiSquareDistance = 0.5·Σ(a−b)²/(a+b)`，由 `(a−b)² ≤ (a+b)²` 得单 cell ≤ 2。
+            取 > 64 时 `distance <= threshold` 恒真、阈值形同虚设。
+            ⚠️ 启动期对磁盘上的越界值**只钳不拒**：就地夹进 [1, 64] 并把 `configStatus` 打成 `degraded`
+            + 告警，磁盘原值不改（故告警每次启动复现，见 `/api/v1/health` 的 `configStatus` 说明）；
+            `PUT /api/v1/settings` 携带本键且 > 64 时则**直接 400 拒绝**。
           minimum: 1
-          maximum: 100000
-          example: 2000
+          maximum: 64
+          example: 55
+        identifyThresholdArcFace:
+          type: number
+          description: ArcFace 识别阈值（余弦相似度，0..1；小于此值拒绝）
+          minimum: 0
+          maximum: 1
+          example: 0.45
         enrollSamples:
           type: number
           description: 注册所需样本数
@@ -500,6 +701,7 @@ components:
 
     InferenceSettings:
       type: object
+      additionalProperties: false
       description: 推理节流配置
       required:
         - throttleMode
@@ -518,6 +720,7 @@ components:
 
     DnnSettings:
       type: object
+      additionalProperties: false
       description: DNN（深度学习）推理配置
       required:
         - enable
@@ -595,6 +798,7 @@ components:
 
     ModelSettings:
       type: object
+      additionalProperties: false
       description: 模型加载配置（缺省时全部回退默认值）
       properties:
         detection:
@@ -628,6 +832,7 @@ components:
 
     HttpSettings:
       type: object
+      additionalProperties: false
       description: HTTP 服务配置
       required:
         - enable
@@ -646,6 +851,7 @@ components:
 
     PosterSettings:
       type: object
+      additionalProperties: false
       description: 识别结果推送配置
       required:
         - enable
@@ -665,6 +871,7 @@ components:
               example: "http://10.0.0.1:9090/events"
             - type: object
               description: 加密推送 URL（含密钥轮换密码箱）
+              additionalProperties: false
               required:
                 - v
                 - alg
@@ -674,11 +881,15 @@ components:
               properties:
                 v:
                   type: number
-                  description: 加密方案版本
+                  description: 加密方案版本（当前仅 1，与 config.schema.json / 运行时 schema 同值）
+                  minimum: 1
+                  maximum: 1
                   example: 1
                 alg:
                   type: string
-                  description: 加密算法标识
+                  description: 加密算法标识（取值域见 config.schema.json 的 enum）
+                  enum:
+                    - AES-256-GCM
                   example: "AES-256-GCM"
                 nonce:
                   type: string
@@ -713,6 +924,7 @@ components:
 
     LogSettings:
       type: object
+      additionalProperties: false
       description: 日志配置
       required:
         - logDir
@@ -725,19 +937,50 @@ components:
           example: "C:\\ProgramData\\rk_wcfr\\logs"
         maxFileBytes:
           type: number
-          description: 单日志文件最大字节数
+          description: |
+            单日志文件最大字节数（**声明值**）。
+            ⚠️ 该值**可能被运行期按总预算静默下调**，`GET /api/v1/settings` 返回的是**钳后生效值**：
+            落盘面为 **4 份**文件集（`recognition.csv`、`recognition.jsonl`、`event_log.jsonl`，
+            以及**旧版 UI 目标**（`win_camera_face_recognition`）另写的 `render_metrics.jsonl`），
+            各占 `maxFileBytes × (maxRollFiles + 1)` 字节，四份**合计**受 512 MiB 总预算约束
+            （单份均分额 = 512 MiB / 4 = 128 MiB = 134217728 B），故本键生效上界取均分额的一半
+            = **64 MiB**（67108864 B），以保证 `maxRollFiles` 取 schema 下界 1 时单份仍需
+            `maxFileBytes × 2`。
+            ⚠️ 除数取 **4** 而非 3 的推导：`maxFileBytes` / `maxRollFiles` 是**同一份 `config.json`
+            的两个键**、被两个可执行体共用，而两者写入的文件集数不同（`win_local_service` 写 3 份；
+            `win_camera_face_recognition` 写 4 份）⇒ 预算要成立就必须按**写得多**的那个分配。
+            取大只让实际占用更小，方向安全。
+            下调只**告警**（`configStatus` 转 `degraded`）、不拒绝；`maximum` 保持 schema 契约值不变，
+            **不要**据此收紧（收紧会让既有合法配置失效）。
+            ⚠️ 上述「只**告警**（`configStatus` 转 `degraded`）、不拒绝」**只对启动装载
+            （`initialize` 读 config.json）成立**——勿据此推断其余两条路径：**热重载**
+            （`reloadFromDisk`）虽同样只告警、不拒绝，但其告警只并入内部 `outErr`（生产调用方忽略）
+            ⇒ 用户不可见、**不**产生 `degraded`，且该路径**不写盘**；**PUT 路径不成立**：
+            `PUT /api/v1/settings` **不产生告警、也不产生 `degraded`**，但提交会把**钳后的生效值**
+            （如 `maxRollFiles=1000` 在默认 `maxFileBytes` 下变为 11）**静默写回** `config.json`
+            ⇒ PUT 侧是「**静默收敛到生效值**」，与 `config.schema.json` 的同键 description 同口径。
           minimum: 1024
           maximum: 1073741824
           example: 5242880
         maxRollFiles:
           type: number
-          description: 滚动保留日志文件数
+          description: |
+            滚动保留日志文件数（**声明值**）。
+            ⚠️ 同 `maxFileBytes`：可能被运行期按**四份**文件集合计的 512 MiB 总预算静默下调——上界
+            = 单份均分额（128 MiB）/ **钳后的** `maxFileBytes` − 1；默认 10 MiB 时上界为 **11**
+            （134217728 / 10485760 = 12，下取整后减 1），`maxFileBytes` 取上限时上界为 1。
+            `GET /api/v1/settings` 返回钳后生效值；**启动装载**下调只告警、不拒绝（`configStatus` 转
+            `degraded`，磁盘原值不改）。
+            ⚠️ 同 `maxFileBytes`：**热重载**的同类告警用户不可见且不写盘；**PUT 路径不产生告警、也不
+            产生 `degraded`**，只把钳后的生效值**静默写回** `config.json`（「静默收敛到生效值」，
+            PUT 的合并基底含全部字段）。
           minimum: 1
           maximum: 1000
           example: 10
 
     UiSettings:
       type: object
+      additionalProperties: false
       description: 用户界面配置
       required:
         - windowWidth
@@ -765,6 +1008,7 @@ components:
 
     DisplaySettings:
       type: object
+      additionalProperties: false
       description: 显示输出配置（服务渲染用）
       required:
         - outputIndex
@@ -861,6 +1105,7 @@ components:
 
     AccelerationSettings:
       type: object
+      additionalProperties: false
       description: 硬件加速器配置
       required:
         - enableOpenCL
@@ -915,30 +1160,26 @@ components:
                           - "camera.width: 9000 超出允许范围 [1, 8192]"
 
     NotFound:
-      description: 请求的资源不存在
+      description: |
+        未知端点（`EndpointRegistry::dispatch` → 404）或路径存在但方法不匹配（405）。
+        ⚠️ 该错误由 `ResponseFactory::err` 产生，**不套 Envelope**：响应体形如
+        `{"error":"not_found","details":"未知端点"}`；405 时为
+        `{"error":"method_not_allowed","details":"不支持的请求方法"}`。
+        各业务端点的错误（400 / 500 / 503）由 handler 的 `errJson` 产生，仍为 Envelope 形状
+        （见 BadRequest / ServiceUnavailable）。
       content:
         application/json:
           schema:
-            allOf:
-              - $ref: "#/components/schemas/Envelope"
-              - type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: false
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        example: "MODEL_NOT_FOUND"
-                      message:
-                        type: string
-                        example: "模型 ID 'unknown_model' 未注册"
-                      details:
-                        type: array
-                        items:
-                          type: string
+            type: object
+            properties:
+              error:
+                type: string
+                description: 错误码（`not_found` / `method_not_allowed`）
+                example: "not_found"
+              details:
+                type: string
+                description: 人类可读描述（字符串，注意不是数组）
+                example: "未知端点"
 
     ServiceUnavailable:
       description: 服务暂不可用（引擎未初始化或正在重启）

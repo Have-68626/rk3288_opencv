@@ -322,7 +322,29 @@ std::string buildOutcomeJson(const FaceInferOutcomeJsonInput& in) {
     j.key("embedding");
     j.beginObject();
     j.key("dim");
-    j.number(512LL);
+    // ★ 改为**本帧实际**向量维度（2026-09-28 修）。原为硬编码 `512LL` —— 那是**契约常量**，
+    //   不是本帧的测量值，于是会在两个**可达**场景下把 JSON 写得不符事实：
+    //     ① 无脸（`hasFace == false`）：`computeEmbedding` 在 `!ctx.hasFace` 处直接 `okStatus()`
+    //        早退（**不写** embedding），而本 builder 仍被 `makeSuccessOutcome` 调用
+    //        ⇒ 旧行为把一个「不存在嵌入」的帧描述成 512 维嵌入；
+    //     ② 维度不符：INT8 分支已把该向量清零并清空 ⇒ 现在 `dim` 为 0（旧行为谎报 512）。
+    //   ★ 语义变更（**已在登记处写明，勿当无变化**）：`dim` = 本帧实际维度，无嵌入时为 0；
+    //     契约维度本身是编译期常量 `ArcFaceEmbedding::kDim`，无需在 JSON 里重复。
+    //     ⚠️ 上面那两条**不是穷尽枚举**（A2 指出）：`FaceInferContext` 是 public struct，
+    //     API 层直接构造它的调用方可给出**任意**维度（例如 128）——新语义在那种情形下同样自洽。
+    //   ★ 破坏性评估（**限定必须一并引用**，2026-09-28 对抗性代理 A2 修正）：
+    //     · **仓内**：除本批同步改过的 `tests/cpp/test_face_infer_outcome_json.cpp` 那条断言外，
+    //       **无**代码消费该字段 —— OpenAPI / `web/src` / 已入库前端产物 `src/win/app/webroot/` /
+    //       `scripts/` / `.github/` 实测零命中。
+    //     · ⚠️ 我原先写的「全仓**没有**任何消费方 ⇒ 不构成破坏性变更」**不成立**，两处错：
+    //       ① 它漏了测试断言自身；② 它依赖一个带**转义盲区**的检索式（`git grep '"dim"'`
+    //          命不中 C++ 里写作 `\"dim\":` 的断言——而那正是最可能的消费形态）。
+    //     · ⚠️ **仓外无法排除**：`--face-infer` 把 `o.json` 同时打到 stdout 与 `tests/metrics/`
+    //       （见 `src/cpp/main.cpp`），而 `docs/research/appendix-d.md` 已画出「CI 门禁读
+    //       `tests/metrics/*.json`」的形态（其脚本尚未入库）⇒ 该字段的设计意图本就是**给门外工具读**。
+    //   ⇒ 准确结论：**仓内代码无消费方（测试除外）**；「不构成破坏性变更」需要「仓外无消费方」这一
+    //     **仓内无法证成**的命题 ⇒ **本项按语义变更如实登记，不宣称无风险**。
+    j.number(static_cast<long long>(in.ctx->embedding.size()));
     j.key("backend");
     j.string(in.ctx->arcBackendName);
     j.key("fake");
@@ -337,7 +359,11 @@ std::string buildOutcomeJson(const FaceInferOutcomeJsonInput& in) {
     j.key("dir");
     j.string(in.req.galleryDir);
     j.key("size");
-    j.number(static_cast<std::uint64_t>((in.ctx->hasFace && in.ctx->embeddingOk) ? in.ctx->index.size() : 0));
+    // §I3：绑定内存快照时，图库规模取该不可变索引的条目数（ctx.index 未被重建）。
+    j.number(static_cast<std::uint64_t>(
+        (in.ctx->hasFace && in.ctx->embeddingOk)
+            ? (in.ctx->gallerySnapshot ? in.ctx->gallerySnapshot->size() : in.ctx->index.size())
+            : 0));
     if (!in.ctx->galleryWarnings.empty()) {
         j.key("warnings");
         j.beginArray();
@@ -361,6 +387,13 @@ std::string buildOutcomeJson(const FaceInferOutcomeJsonInput& in) {
         j.number(static_cast<long long>(in.ctx->hits[i].index));
         j.key("score");
         j.number(static_cast<double>(in.ctx->hits[i].score));
+        // 身份回填：gallery 条目 id 即人员标识 personId（JNI 侧以 personIds 数组建库，
+        // Windows 侧 LBPH 标签同为 personId），此处从其透传，id 字段保持原样以便向后兼容。
+        j.key("personId");
+        j.string(in.ctx->hits[i].id);
+        // native 核心层无人员 displayName 来源（FaceRuntimeProfile/ModelRegistry 的
+        // displayName 是模型/档案名，与人员无关），未知时**省略该字段**而非输出空串，
+        // 避免下游 JSON 消费方把空串误当权威值；由 Java 侧按 personId 映射补充。
         j.endObject();
     }
     j.endArray();

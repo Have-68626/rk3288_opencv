@@ -1,4 +1,10 @@
-# Loop Configuration — Minimal Triage (Claude Code)
+<!-- DOCSYNC_DOC
+type=process
+status=living
+as_of=2026-09-15
+-->
+
+# Loop Configuration — rk3288_opencv（Minimal Triage）
 
 ## Active Loops
 
@@ -8,25 +14,29 @@
 
 ## Human Gates
 
-- No auto-fix until L2 checklist complete
-- All high-risk paths: human review required (see docs/safety.md denylist)
+- L2 检查清单完成前不做自动修复（见 `docs/patterns/loop-design-checklist.md`）
+- 高风险路径需人工复核（清单见 `docs/safety.md`）
 
 ## Worktrees
 
-- Use `isolation: worktree` when spawning implementer sub-agents (L2+).
-- One worktree per fix attempt; discard after verifier REJECT.
+- L2+ 派发 implementer 子代理时使用 `isolation: worktree`。
+- 每次修复尝试一个 worktree；verifier 判定 REJECT 后丢弃。
 
 ## Connectors (MCP)
 
-- MCP optional for L1 report-only loops.
-- For L2+: GitHub MCP to read CI/issues; scope connectors to read + comment only until trusted.
+- L1 report-only 模式下 MCP 可选。
+- L2+ 需要 GitHub MCP 读取 CI / issue；在取得信任前，连接器范围限定为只读 + 评论。
 
 ## Budget
 
-- Max sub-agent spawns per run: 0 (L1)
-- Review STATE.md daily
+- 每次运行子代理上限：0（L1）
+- 每日上限与超额处置见 `loop-budget.md`
+- 每日复核 `STATE.md`
 
 ## Links
 
 - Pattern: [daily-triage](docs/patterns/daily-triage.md)
 - Checklist: [loop-design-checklist](docs/patterns/loop-design-checklist.md)
+- Constraints: [loop-constraints](loop-constraints.md)
+- Budget: [loop-budget](loop-budget.md)
+- Run log: [loop-run-log](loop-run-log.md)

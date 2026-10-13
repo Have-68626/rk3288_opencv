@@ -61,6 +61,9 @@ jboolean engine_nativeInitFile(
          rk_core::VideoManager::sanitizeUriForLog(pathStr).c_str());
     if (!g_engine) {
         g_engine = std::make_unique<rk_core::Engine>();
+        // 若 NativeFaceBridge.activateRuntime 先于 Engine 创建被调用，此处补一次激活
+        // （消费 FaceBridgeState 中暂存的 manifest/baseDir/abi/galleryDir）。
+        applyPendingFaceRuntimeActivation();
     }
 
     g_cancelInit.store(false);
@@ -150,6 +153,9 @@ jboolean engine_nativeInit(
 
     if (!g_engine) {
         g_engine = std::make_unique<rk_core::Engine>();
+        // 若 NativeFaceBridge.activateRuntime 先于 Engine 创建被调用，此处补一次激活
+        // （消费 FaceBridgeState 中暂存的 manifest/baseDir/abi/galleryDir）。
+        applyPendingFaceRuntimeActivation();
     }
 
     g_cancelInit.store(false);
@@ -222,6 +228,12 @@ void engine_nativeSetFlip(JNIEnv* /* env */, jobject /* this */,
     g_engine->setFlip(flipX == JNI_TRUE, flipY == JNI_TRUE);
 }
 
+// ========== nativeGetFlipGeneration ==========
+jlong engine_nativeGetFlipGeneration(JNIEnv* /* env */, jobject /* this */) {
+    if (!g_engine) return 0;
+    return static_cast<jlong>(g_engine->getFlipGeneration());
+}
+
 } // anonymous namespace
 
 void registerEngineMethods(JniMethodRegistry& registry) {
@@ -242,5 +254,7 @@ void registerEngineMethods(JniMethodRegistry& registry) {
          reinterpret_cast<void*>(engine_nativeSetMode)},
         {"nativeSetFlip", "(ZZ)V",
          reinterpret_cast<void*>(engine_nativeSetFlip)},
+        {"nativeGetFlipGeneration", "()J",
+         reinterpret_cast<void*>(engine_nativeGetFlipGeneration)},
     });
 }

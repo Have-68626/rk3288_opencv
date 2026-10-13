@@ -3,11 +3,11 @@
 using namespace rk_core;
 
 #include "adapters/ArcFaceAdapter.h"
+#include "adapters/ScrfdNcnnAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
 #include "adapters/MobileFaceNetAdapter.h"
 #include "adapters/YuNetAdapter.h"
 #include "adapters/SFaceAdapter.h"
-#include "adapters/RetinaFaceAdapter.h"
 #ifdef _WIN32
 #include "adapters/DnnSsdAdapter.h"
 #include "adapters/CascadeAdapter.h"
@@ -35,19 +35,41 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "YOLOv5 架构，320x320 输入，精度高。适合光照良好、角度正面的场景。RK3288 ncnn 约 15ms/帧。",
          "high_accuracy", 1});
 
-    reg.registerDetector("scrfd_0.5gf", []() { return std::make_unique<YoloFaceAdapter>(); },
+    reg.registerDetector("scrfd_0.5gf", []() { return std::make_unique<ScrfdNcnnAdapter>(); },
         {"scrfd_0.5gf", "SCRFD-0.5GF", "detect",
          "轻量级检测器，0.5G FLOPs，WiderFace 96.1% AP。适合资源受限设备。需要额外下载 ncnn 模型。",
          "high_speed", 2});
 
+    // ⚠️ **注册表路径不注入节点名**（β-N3）：`createEmbedder` 的 factory 是默认构造、
+    //    只填模型路径，故经注册表取到的适配器一律沿用各自头文件的**默认节点名**——
+    //    `MobileFaceNetAdapter` 默认已是 `in0`/`out0`（与本仓模型一致）；而 `ArcFaceAdapter`
+    //    包装的 `ArcFaceEmbedderConfig` **两套后端默认并不相同**：**ncnn 字段** `ncnnInput`/`ncnnOutput`
+    //    默认 `data`/`output`（与本仓 `in0`/`out0` 模型**不一致**）；**OpenCV-DNN 字段**
+    //    `opencvInput`/`opencvOutput` 则**无初值（空串 = 自动推断）**，与 ncnn 侧不是同一套默认。
+    //    ncnn 侧的 `data`/`output` 是**有意保留**的遗留兼容默认，由 `test_arcface_contract.cpp`
+    //    **三个用例、共 5 条断言**主动钉住——`NodeNamesConfigDriven`（2 条：`ncnnInput`/`ncnnOutput`
+    //    初值）、`AdapterNodeNamesInjectedFromManifest`（2 条：未注入时 `inputNodeName`/`outputNodeName`）、
+    //    `AdapterNodeNameEmptyIgnored`（1 条：空 output 保留默认）。
+    //    ⇒ **不要擅自改该默认**，要改须同步改这 5 条断言并说明理由。
+    //    生产侧唯一注入点是 manifest 驱动的 `RealtimeFacePipeline::loadEmbedder`。
+    //    另：本条与下方 `mobilefacenet` 在生产源码中**无 createEmbedder 消费者**
+    //    （`createEmbedder("arcface")` 零调用）。这两个条目的元数据在生产侧只有 `rk3288_cli
+    //    --list-models` 经 `listAll()` 消费；`getEntry()` **在生产代码中无任何调用点**（仅测试用），
+    //    而 REST 的 `/api/v1/models` 读的是 `RuntimeBootstrap` 的 `ModelSnapshot`、**不经本注册表**
+    //    ⇒ 属 **catalog-only** 条目。
     reg.registerEmbedder("arcface", []() { return std::make_unique<ArcFaceAdapter>(); },
         {"arcface", "ArcFace 512D", "recognize",
          "ArcFace 512 维特征提取，LFW 99.8%。精度优先方案，适合门禁/人证比对。RK3288 ncnn 约 8ms/帧。",
          "high_accuracy", 1});
 
+    // §2.5-A：两条 `mobilefacenet*` 条目的描述此前自相矛盾（本条目写 128D、下方 INT8 条目写 512D）。
+    // 以**本仓模型文件为准**统一为 512D：`models/mobilefacenet_ncnn/mobilefacenet.param` 与
+    // `models/mobilefacenet_int8_ncnn/mobilefacenet_int8.param` 的末层均为
+    // `InnerProduct linear_33 … out0 0=512`，首层均为 `Input in0`。
+    // 适配器侧已同步（默认节点名 in0/out0、默认期望维度 512，且均可注入）。
     reg.registerEmbedder("mobilefacenet", []() { return std::make_unique<MobileFaceNetAdapter>(); },
-        {"mobilefacenet", "MobileFaceNet 128D", "recognize",
-         "MobileFaceNet 128 维嵌入，推理快 2-3 倍。适合 RK3288 等资源受限设备。需额外下载模型。",
+        {"mobilefacenet", "MobileFaceNet 512D", "recognize",
+         "MobileFaceNet 512 维嵌入，推理快 2-3 倍。适合 RK3288 等资源受限设备。需额外下载模型。",
          "high_speed", 2});
 
 #ifdef _WIN32
@@ -67,19 +89,36 @@ void ModelRegistry::ensureBuiltinRegistered() {
          "high_speed", 3});
 #endif
 
-    reg.registerDetector("retinaface_scrfd", []() { return std::make_unique<RetinaFaceAdapter>(); },
-        {"retinaface_scrfd", "SCRFD/RetinaFace (det_10g)", "detect",
-         "SCRFD 架构，640x640 输入，FPN 多尺度。WiderFace 96.1%。PNNX 转换 ONNX 模型。",
-         "high_accuracy", 1});
+    // FACE-SCRFD-004：原先此处注册 `retinaface_scrfd` → RetinaFaceAdapter，**现已删除**（不是改指）。
+    //
+    // 删除理由（三条各自独立成立）：
+    //  1) **零消费者**：`retinaface_scrfd` 在本仓只出现于注册表自身、文档的检测器表与 CREDITS 台账；
+    //     无任何 profile / manifest / Java / Web / JNI / CLI / 默认配置引用它。
+    //  2) **本注册表路径无法让它工作**（决定性）：注册表以 `make_unique<ScrfdNcnnAdapter>()`
+    //     **默认构造**，随后只调 `load(modelPath)` 填 param/bin 路径；而默认 `cfg_` 是
+    //     `decodeMode = kDelta` + `anchorsPerPos = {1,1,1}`（见 ScrfdNcnnAdapter.h），
+    //     **这条路径不消费任何 profile**。真实 SCRFD det_10g 需要 `kDistance` + 每位置 2 anchor
+    //     ⇒ 经注册表取得的实例**必然解错框位**。故「改指 ScrfdNcnnAdapter」只修好了加载器
+    //     （能读 ncnn），解码**照样错** —— 相当于换一个坑，故不采纳。
+    //     ⚠️ 同一条限制也适用于上面的 `scrfd_0.5gf`（同一路径、同一默认 cfg）：那是**既有**的
+    //     结构性限制，与本条无关，本次**未**处理。
+    //  3) 原指向的 RetinaFaceAdapter 用 **delta** 解码（SCRFD 是距离编码），且加载器只吃 ONNX，
+    //     与已记录的文档意图（CREDITS.md「NCNN SCRFD」行记为 BIN/PARAM）相矛盾。
+    // ⚠️ 后续处置（本批）：RetinaFaceAdapter **类本身已一并删除**。判定依据：它是全仓**唯一**
+    //    未被任何注册点引用的适配器（其余每个 adapter 都有注册点），且无任何测试引用；
+    //    它对本条目而言本来就是错配的「加载器 + 解码器」。其能力（FPN anchor 生成 / NMS）在
+    //    ScrfdNcnnAdapter、YoloFaceAdapter、YuNetAdapter 与 pipeline::FacePostProcessor 中
+    //    均有等价实现 ⇒ 删除不损失任何唯一能力。将来若真接入 RetinaFace 权重，
+    //    可从 git 历史取回该类。
 
     reg.registerDetector("yunet", []() { return std::make_unique<YuNetAdapter>(); },
         {"yunet", "YuNet Face Detector", "detect",
-         "OpenCV FaceDetectorYN，320x320 输入。多尺度 FPN+SSH，WiderFace 91.5%。OpenCV 内置，无需额外模型依赖。",
+         "OpenCV FaceDetectorYN（cv::FaceDetectorYN API），320x320 输入。多尺度 FPN+SSH，WiderFace 91.5%。权重需外部 ONNX（OpenCV Zoo face_detection_yunet），经配置 modelPath 加载，仓内不随附。",
          "balanced", 3});
 
     reg.registerEmbedder("sface", []() { return std::make_unique<SFaceAdapter>(); },
         {"sface", "SFace 128D", "recognize",
-         "SFace 128 维特征提取，CPU 上最快的识别模型。OpenCV contrib face 模块内置。",
+         "SFace 128 维特征提取（cv::FaceRecognizerSF API），CPU 上最快的识别模型。权重需外部 ONNX（OpenCV Zoo face_recognition_sface），经配置 modelPath 加载，仓内不随附。",
          "high_speed", 2});
 
     // INT8 量化模型注册 — 需要 INT8 模型文件存在才注册
@@ -101,8 +140,8 @@ void ModelRegistry::ensureBuiltinRegistered() {
         reg.registerEmbedder("arcface_int8", []() {
             return std::make_unique<ArcFaceAdapter>();
         },
-        {"arcface_int8", "ArcFace INT8 128D", "recognize",
-         "ArcFace INT8 量化模型，128 维嵌入。推理快、体积小，适合嵌入式部署。",
+        {"arcface_int8", "ArcFace INT8 512D", "recognize",
+         "ArcFace INT8 量化模型，512 维嵌入（实测 linear_78 输出维度一致）。推理快、体积小，适合嵌入式部署。",
          "high_speed", 2});
     }
 
@@ -110,8 +149,8 @@ void ModelRegistry::ensureBuiltinRegistered() {
         reg.registerEmbedder("mobilefacenet_int8", []() {
             return std::make_unique<MobileFaceNetAdapter>();
         },
-        {"mobilefacenet_int8", "MobileFaceNet INT8 128D", "recognize",
-         "MobileFaceNet INT8 量化模型，128 维嵌入。极轻量，适合资源极度受限设备。",
+        {"mobilefacenet_int8", "MobileFaceNet INT8 512D", "recognize",
+         "MobileFaceNet INT8 量化模型，512 维嵌入（实测 linear_33 输出维度一致）。极轻量，适合资源极度受限设备。",
          "high_speed", 3});
     }
     });

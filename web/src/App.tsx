@@ -22,6 +22,9 @@ const PreviewPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('./app/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
 )
+const FacesPage = lazy(() =>
+  import('./app/pages/FacesPage').then((m) => ({ default: m.FacesPage })),
+)
 
 // 懒加载 fallback：全屏居中 antd Spin（避免白屏闪烁）
 function RouteFallback() {
@@ -77,6 +80,7 @@ function AntdAndRouteInner() {
             <Route element={<MainLayout />}>
               <Route path="/home" element={<HomePage />} />
               <Route path="/preview" element={<PreviewPage />} />
+              <Route path="/faces" element={<FacesPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
 

@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=design
+status=living
+as_of=2026-09-30
+-->
+
 ﻿# 功能对照清单（Win32 UI → 浏览器 SPA）
 
-**更新日期**: 2026-07-21
 
 
 本清单用于保证新方案覆盖旧版 Win32 客户端全部功能点，并作为验收与迁移跟踪依据。
@@ -13,7 +18,7 @@
 | 健康检查 | 无单独入口 | 顶部状态区 | `GET /api/v1/health` | 已迁移 | 仅监听 127.0.0.1 |
 | OpenAPI 文档 | 无单独入口 | 直接访问接口 URL | `GET /api/v1/openapi` | 后端已迁移 | 另保留 `/openapi.json` 兼容；当前 SPA 未提供专用链接 |
 | 基础设置：主题 | 无（跟随系统/无） | 设置页 → 基础设置 |（浏览器本地） | 已迁移 | 存储于浏览器本地偏好；不写入后端配置 |
-| 基础设置：语言 | 无 | 设置页 → 基础设置 |（浏览器本地） | 已迁移 | zh-CN / en-US |
+| 基础设置：语言 | 无 | 设置页 → 基础设置 |（浏览器本地） | 已迁移（**限定**：仅 antd 组件库 locale） | zh-CN / en-US；⚠️ **业务页面与导航文案仍为中文** —— 全站双语不在当前范围（设置页该选项已带同口径提示，见 LocalSettingsTab.tsx） |
 | 基础设置：启动页 | 无 | 设置页 → 基础设置 |（浏览器本地） | 已迁移 | 影响 SPA 启动时跳转 |
 | 高级设置：API 超时/日志级别/缓存策略 | 无 | 设置页 → 高级设置 |（浏览器本地） | 已迁移 | 其中 API 超时/缓存策略作用于前端请求 |
 | 后端设置：配置读取（脱敏） | 读取 INI | 设置页 → 后端设置（查看） | `GET /api/v1/settings` | 已迁移 | 敏感字段脱敏输出 |
@@ -21,7 +26,7 @@
 | 相机选择/切换 | 相机下拉 + “应用相机”按钮 | 预览页 → 摄像头设备 | `GET /api/v1/cameras` + `PUT /api/v1/settings` | 已迁移 | 通过写入 `camera.preferredDeviceId` 与采集规格触发后端应用 |
 | 分辨率/FPS 切换与能力校验 | 分辨率/帧率下拉 + “应用相机” | 预览页 → 分辨率/FPS | `GET /api/v1/cameras` + `PUT /api/v1/settings` | 已迁移 | 后端保留“失败回滚/错误原因”口径 |
 | 翻转 X/Y | 复选框 | 预览页 → 翻转 X/Y | `PUT /api/v1/camera/flip` | 已迁移 | 运行时生效（当前未持久化到配置） |
-| 人脸识别结果 JSON | 无独立页（在日志/叠加绘制体现） |（待补：结果页/调试页） | `GET /api/faces` / `GET /api/faces/stream` | 后端已迁移，前端待补 | SSE 另兼容 `/api/v1/faces/stream`；OpenAPI 当前未描述这些兼容接口 |
+| 人脸识别结果 JSON | 无独立页（在日志/叠加绘制体现） | 结果页（顶栏「人脸结果」，`#/faces`） | `GET /api/faces` / `GET /api/faces/stream` | 已迁移 | SSE 另兼容 `/api/v1/faces/stream`；OpenAPI 已描述 `/api/faces`、`/api/v1/faces` 及其 stream 变体 |
 | 预览画面 | 预览子窗口（D3D11） | 预览页 | `GET /api/v1/preview.mjpeg` / `GET /api/v1/preview.jpg` | 已迁移 | 通过 MJPEG 输出预览（浏览器直接显示） |
 | 注册（Enroll personId） | personId 输入框 + “注册”按钮 | 预览页 → 注册 personId | `POST /api/v1/actions/enroll` | 已迁移 | API 成功只表示注册请求已受理，实际采样在帧管线异步完成 |
 | 清空人脸库 | “清空库”按钮 | 预览页 → 清空库 | `POST /api/v1/actions/db/clear` | 已迁移 | API 成功只表示清库命令已受理 |

@@ -849,8 +849,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_app->displaysReady = g_app->displays.refresh();
                 if (g_app->displaysReady) refreshDisplayCombos(hwnd);
 
-                g_app->metrics.open(g_app->cfg.log.logDir);
-                g_app->events.open(g_app->cfg.log.logDir);
+                g_app->metrics.open(g_app->cfg.log.logDir, g_app->cfg.log.maxFileBytes, g_app->cfg.log.maxRollFiles);
+                g_app->events.open(g_app->cfg.log.logDir, g_app->cfg.log.maxFileBytes, g_app->cfg.log.maxRollFiles);
                 g_app->pipe.setEventLogger(&g_app->events);
                 if (g_app->abcCfg.testC) g_app->cfg.http.enable = true;
                 if (g_app->cfg.http.enable) g_app->http.start(&g_app->pipe, &g_app->events, g_app->cfg.http.port, &g_app->settings);

@@ -129,12 +129,44 @@ graphify-out/
 # Model files (large binaries, not included in repo — see CREDITS.md)
 models/*
 !models/.gitkeep
+# 任务10：models/android/ 开放文本（manifest/LICENSE/NOTICE），模型二进制保持本地不入库（不上传 GitHub）
+!models/android/
+!models/android/**
+models/android/**/*.bin
+models/android/**/*.param
+# 任务10A2：stageFaceModels 的目标 assets 目录忽略——防止本地 stage 后二进制混入提交流（入库）
+app/src/main/assets/face_models/
 deps/WIDER_train/*
 !deps/WIDER_train/.gitkeep
 deps/insightface/*
 !deps/insightface/.gitkeep
+# 可复用缓存根目录（cache/）：构建目录、本机包装脚本、需跨会话保留的验证产物。
+# 内容一律不入库（均可重建），仅保留说明文件 cache/README.md——使本目录的用途有版本记录，
+# 不会被后续清理误判为「编译后未及时清理的垃圾」。
+cache/*
+!cache/README.md
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+
+# OS / editor artifacts（跨平台开发时各工具默认生成，避免误入库）
+.DS_Store
+Thumbs.db
+desktop.ini
+.history/
+
+# Python 虚拟环境与缓存（仓库含 quantize_ncnn_int8.py / pytest）
+.venv/
+venv/
+.cache/
+
+# 前端构建/覆盖率产物（web/：Vite + Cypress）
+web/coverage/
+web/.vite/
+.nyc_output/
+*.tsbuildinfo
+
+# 备份文件（构建/部署脚本产出的临时副本）
+*.bak

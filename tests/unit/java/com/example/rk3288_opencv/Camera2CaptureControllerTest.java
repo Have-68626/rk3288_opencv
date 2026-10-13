@@ -10,14 +10,13 @@ import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CaptureRequest;
+import android.media.Image;
 import android.media.ImageReader;
 import android.os.HandlerThread;
 
 import org.junit.Test;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,6 +56,8 @@ public class Camera2CaptureControllerTest {
     }
 
     static class FakeSink implements ExternalFrameSink {
+        int calls;
+
         @Override
         public boolean onYuv420888Frame(ByteBuffer yBuffer,
                                         int yRowStride,
@@ -71,6 +72,7 @@ public class Camera2CaptureControllerTest {
                                         long timestampNs,
                                         int rotationDegrees,
                                         boolean mirrored) {
+            calls++;
             return true;
         }
     }
@@ -116,7 +118,7 @@ public class Camera2CaptureControllerTest {
         }
 
         @Override
-        boolean startSync(String cameraId, int gen) throws CameraAccessException {
+        boolean startSync(String cameraId, long epoch) throws CameraAccessException {
             startSyncCalls++;
             // Q-CQ-B07-006 模拟：reader/device/session/thread 已在真实路径中预建；
             // 这里直接抛异常，断言回滚路径经释放接缝释放全部四类资源
@@ -132,18 +134,6 @@ public class Camera2CaptureControllerTest {
             f.setAccessible(true);
             f.set(c, value);
         } catch (ReflectiveOperationException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    // 修复前无对应字段时静默跳过，交由后续断言判定 RED
-    private static void setFieldQuietly(Camera2CaptureController c, String name, Object value) {
-        try {
-            Field f = Camera2CaptureController.class.getDeclaredField(name);
-            f.setAccessible(true);
-            f.set(c, value);
-        } catch (NoSuchFieldException ignored) {
-        } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
         }
     }
@@ -176,10 +166,11 @@ public class Camera2CaptureControllerTest {
     public void staleCallback_onlyReleasesParamAndDoesNotTouchCurrentState() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 2); // 模拟已 stop/start，当前代次为 2
+        c.epochGate.enter(); // 模拟已 stop/start：epoch 推进到 2（enter 0→1，再 advance →2）
+        c.epochGate.advance();
 
         // 绑定旧代次 1 的回调 —— 模拟 stop/start 前注册、stop/start 后才到达的异步回调
-        Camera2CaptureController.GenerationStateCallback stale = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback stale = c.new GenerationStateCallback(1L);
 
         stale.onDisconnected(null);
         assertTrue("旧代次断开回调应释放参数 camera", c.releaseCameraDeviceCalls >= 1);
@@ -198,26 +189,21 @@ public class Camera2CaptureControllerTest {
     }
 
     /**
-     * RED 判别：修复前 onImageAvailable 不检查代次，stop/start 后旧 reader 的帧仍会推送
-     * （此处以 null reader 触发异常路径，catch 中仍调用 onFramePushed）。
-     * 修复后帧监听绑定代次与当前代次不一致时直接丢弃：不推送、不统计、不上报。
+     * RED 判别：修复前 onImageAvailable 读取共享可变字段 listenerEpoch，stop/start 覆盖该字段后，
+     * 旧 reader 的迟到帧会读到新 epoch 被错误放行并推送。
+     * P1-3 修复后 epoch 由回调闭包在创建时捕获、经参数传入 onImageAvailable：
+     * 过期代次（1）直接丢弃 —— 不推送、不统计、不上报；且即使当前代次已推进，旧捕获值也不会被“洗白”。
      */
     @Test
     public void staleFrameCallback_isDroppedWithoutPushOrReport() throws Exception {
         FakeObserver obs = new FakeObserver();
         Camera2CaptureController c = newController(obs, new FakeSink());
-        // 模拟 stop/start：帧监听绑定旧代次 1，当前代次已到 2
-        setFieldQuietly(c, "listenerGeneration", 1);
-        setFieldQuietly(c, "generation", 2);
+        // 模拟 stop/start：帧监听创建时捕获旧 epoch 1，当前 epoch 已推进到 2
+        c.epochGate.enter();
+        c.epochGate.advance();
 
-        Method m = Camera2CaptureController.class.getDeclaredMethod("onImageAvailable", ImageReader.class);
-        m.setAccessible(true);
-        try {
-            m.invoke(c, (ImageReader) null);
-        } catch (InvocationTargetException e) {
-            // 修复前无代次门禁时 null reader 触发 NPE：仍应以“不得推送”判定失败
-            throw new RuntimeException("修复前旧帧回调不应可达（应被代次门禁丢弃）", e.getCause());
-        }
+        // 直接以旧 reader 回调携带的过期 epoch 驱动门禁（不再经共享字段注入）
+        c.onImageAvailable(null, 1L);
 
         assertFalse("旧代次帧不得推送", obs.pushed);
         assertFalse("旧代次帧不得上报错误", obs.hasError());
@@ -240,7 +226,7 @@ public class Camera2CaptureControllerTest {
 
         assertFalse("启动失败应返回 false", ok);
         assertEquals("startSync 应被调用一次", 1, c.startSyncCalls);
-        assertEquals("代次应已递增（stop + start 各一次）", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应已递增（stop + start 各一次）", 2L, c.epochGate.current());
         // stop() 回滚 + 失败回滚 各一次，共两次
         assertEquals("session 释放路径应被调用两次", 2, c.releaseCameraSessionCalls);
         assertEquals("device 释放路径应被调用两次", 2, c.releaseCameraDeviceCalls);
@@ -270,9 +256,9 @@ public class Camera2CaptureControllerTest {
     public void configuredSetRepeatingRequestFailure_releasesSessionAndRollsBack() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         cb.handleSessionConfigured(null, null);
 
         assertEquals("配置阶段异常应释放已创建的 session", 1, c.releaseCameraSessionCalls);
@@ -282,7 +268,7 @@ public class Camera2CaptureControllerTest {
         assertNull("session 字段应置空", getField(c, "session"));
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
         assertNull("thread 字段应置空", getField(c, "thread"));
-        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", 2L, c.epochGate.current());
         assertTrue("应上报配置阶段失败错误", obs.hasError());
     }
 
@@ -302,9 +288,9 @@ public class Camera2CaptureControllerTest {
     public void configureFailed_releasesFailedSessionAndRollsBack() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入失败处理分支
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入失败处理分支
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         cb.handleSessionConfigureFailed(null);
 
         assertEquals("onConfigureFailed 应释放失败的 session 参数及回滚 session 字段",
@@ -314,7 +300,7 @@ public class Camera2CaptureControllerTest {
         assertEquals("onConfigureFailed 应释放 thread", 1, c.releaseCaptureThreadCalls);
         assertNull("session 字段应置空", getField(c, "session"));
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
-        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", 2L, c.epochGate.current());
         assertTrue("应上报配置失败错误", obs.hasError());
     }
 
@@ -330,9 +316,9 @@ public class Camera2CaptureControllerTest {
     public void onOpenedCreateSessionFailure_releasesDeviceAndRollsBack() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入会话创建阶段
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入会话创建阶段
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         cb.handleSessionCreate(null);
 
         assertEquals("onOpened 异常应释放 session", 1, c.releaseCameraSessionCalls);
@@ -341,7 +327,7 @@ public class Camera2CaptureControllerTest {
         assertEquals("onOpened 异常应释放 thread", 1, c.releaseCaptureThreadCalls);
         assertNull("session 字段应置空", getField(c, "session"));
         assertNull("cameraDevice 字段应置空", getField(c, "cameraDevice"));
-        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", Integer.valueOf(2), getField(c, "generation"));
+        assertEquals("代次应递增使后续迟到回调按旧代次丢弃", 2L, c.epochGate.current());
         assertTrue("应上报 onOpened 失败错误", obs.hasError());
     }
 
@@ -359,9 +345,9 @@ public class Camera2CaptureControllerTest {
     public void configuredSetRepeatingRequestSuccess_keepsSessionAndStateNormal() {
         FakeObserver obs = new FakeObserver();
         SeamReleaseController c = new SeamReleaseController(obs, new FakeSink());
-        setField(c, "generation", 1); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
+        c.epochGate.enter(); // 当前代次 1，回调绑定同代次，通过门禁进入配置阶段
 
-        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1);
+        Camera2CaptureController.GenerationStateCallback cb = c.new GenerationStateCallback(1L);
         CameraCaptureSession fakeSession = new CameraCaptureSession();
         CaptureRequest.Builder fakeBuilder = new CaptureRequest.Builder();
         cb.handleSessionConfigured(fakeSession, fakeBuilder);
@@ -376,7 +362,124 @@ public class Camera2CaptureControllerTest {
         assertEquals("成功路径不得释放 device", 0, c.releaseCameraDeviceCalls);
         assertEquals("成功路径不得释放 reader", 0, c.releaseImageReaderCalls);
         assertEquals("成功路径不得释放 thread", 0, c.releaseCaptureThreadCalls);
-        assertEquals("成功路径不得递增代次", Integer.valueOf(1), getField(c, "generation"));
+        assertEquals("成功路径不得递增代次", 1L, c.epochGate.current());
         assertFalse("成功路径不得上报错误", obs.hasError());
+    }
+
+    // ---------- FACE-CAM-008：提交前二次代次复检（入口校验与提交之间的竞态） ----------
+
+    /** 构造一帧可被 onImageAvailable 消费的 YUV_420_888 替身（3 平面）。 */
+    private static Image buildOneFrameImage() {
+        Image.Plane[] planes = new Image.Plane[]{
+                new Image.Plane(ByteBuffer.allocate(16), 16, 1),
+                new Image.Plane(ByteBuffer.allocate(8), 8, 1),
+                new Image.Plane(ByteBuffer.allocate(8), 8, 1)
+        };
+        Image img = new Image();
+        img.setPlanes(planes);
+        img.setDimensions(4, 4);
+        img.setTimestamp(123L);
+        return img;
+    }
+
+    /**
+     * FACE-CAM-008 RED 判别：修复前帧路径只在入口校验一次代次（本方法 :225），
+     * 入口校验与 sink 提交之间若发生 stop/切源，旧帧仍会被推入已失效会话。
+     *
+     * 本用例利用已注入的 RotationDegreesProvider：其 lambda 在返回前同步推进代次，
+     * 精确复现「入口校验通过 → 提交前代次失效」窗口（确定性、无 sleep）。这正是复检
+     * 必须放在 computeRotationDegrees() 之后的原因。
+     * 断言：修复后提交前复检失败即丢弃，sink 不得被调用（旧代码 sink.calls==1 即 RED）；
+     * 帧仍须经 finally 关闭释放。
+     */
+    @Test
+    public void frameNotCommittedIfEpochStaleAtSubmitPoint() {
+        FakeObserver obs = new FakeObserver();
+        FakeSink sink = new FakeSink();
+        final Camera2CaptureController[] holder = new Camera2CaptureController[1];
+        // 关键：代次推进发生在 computeRotationDegrees() 内（入口校验之后、提交复检之前）
+        RotationDegreesProvider provider = () -> {
+            holder[0].epochGate.advance();
+            return 0;
+        };
+        Camera2CaptureController c = new Camera2CaptureController(null, sink, obs, provider);
+        holder[0] = c;
+
+        long capturedEpoch = c.epochGate.enter(); // 当前代次 1，回调闭包捕获同代次
+        Image img = buildOneFrameImage();
+        ImageReader reader = new ImageReader();
+        reader.setNextImage(img);
+
+        c.onImageAvailable(reader, capturedEpoch);
+
+        assertEquals("提交前代次已失效，帧不得推送", 0, sink.calls);
+        assertFalse("复检丢弃不得上报推送", obs.pushed);
+        assertTrue("帧仍须经 finally 关闭释放", img.closeCalls >= 1);
+    }
+
+    // ---------- FACE-CAM-007：入口即丢弃（提交点用例的对偶） ----------
+
+    /**
+     * FACE-CAM-007（入口即丢弃）：入口复检（onImageAvailable 开头 :225）在帧被 acquire 之前即判定
+     * 代次过期时，整帧丢弃 —— 不取旋转、不推送、不上报。本条与
+     * {@link #frameNotCommittedIfEpochStaleAtSubmitPoint} 是对偶：那条覆盖「入口通过 → 提交前失效」，
+     * 本条覆盖「入口即已失效」，二者共同封住帧路径上的两道 <code>isCurrent</code> 校验。
+     *
+     * <p><b>判别器必须是 {@code rotCalls}，不是 {@code sink.calls}（务必先读）</b>：入口校验（本方法 :225）
+     * 与提交复检（:249）是两道独立的门。若删掉 :225 的入口校验，本用例的帧会继续走到
+     * {@code computeRotationDegrees()} ⇒ {@code rotCalls[0]} 变 1 ⇒ 本用例 RED；但此刻
+     * <b>{@code sink.calls} 仍是 0</b>——因为 :249 的提交前复检会兜住这帧并丢弃。故
+     * <b>只断言 {@code sink.calls} 会是「假绿」</b>：入口校验删了也测不出来。{@code rotCalls} 记录的才是
+     * 「是否越过入口进了帧处理」，即入口这道门的直接观测量。
+     *
+     * <p><b>与 CameraX 的不对称（勿照抄 close 断言）</b>：CameraX 同名用例可断言
+     * {@code image.closeCalls >= 1}，因为它的入口丢弃落在 acquire 之后、仍需释放该帧。Camera2 的入口
+     * {@code return} 落在 {@code Image image = null;} / {@code reader.acquireLatestImage()} <b>之前</b>——
+     * <b>什么都没 acquire，没有东西要 close</b>，故本用例不得断言 close，也不应依赖 reader 替身的消费。
+     */
+    @Test
+    public void frameNotCommittedIfEpochAlreadyStaleAtEntry() {
+        FakeObserver obs = new FakeObserver();
+        FakeSink sink = new FakeSink();
+        final int[] rotCalls = {0};
+        RotationDegreesProvider provider = () -> {
+            rotCalls[0]++;
+            return 0;
+        };
+        Camera2CaptureController c = new Camera2CaptureController(null, sink, obs, provider);
+
+        long staleEpoch = c.epochGate.enter();   // 回调捕获的代次 1
+        c.epochGate.advance();                   // 入口即已失效（当前代次 2 ≠ 1）
+        Image img = buildOneFrameImage();
+        ImageReader reader = new ImageReader();
+        reader.setNextImage(img);
+
+        c.onImageAvailable(reader, staleEpoch);
+
+        assertEquals("入口即过期 ⇒ 帧不得推送", 0, sink.calls);
+        assertFalse("入口丢弃不得上报推送", obs.pushed);
+        assertEquals("入口即丢弃 ⇒ 不得进入帧处理（不取旋转）", 0, rotCalls[0]);
+    }
+
+    /**
+     * 正对照：代次在提交前保持当前时，帧必须正常提交 —— 证明上面的判别用例不是
+     * 「因为路径本就到不了 sink」而恒绿（若误删提交逻辑，本用例 RED）。
+     */
+    @Test
+    public void frameCommittedWhenEpochStillCurrentAtSubmitPoint() {
+        FakeObserver obs = new FakeObserver();
+        FakeSink sink = new FakeSink();
+        Camera2CaptureController c = new Camera2CaptureController(null, sink, obs, () -> 0);
+
+        long capturedEpoch = c.epochGate.enter(); // 当前代次 1，全程不推进
+        Image img = buildOneFrameImage();
+        ImageReader reader = new ImageReader();
+        reader.setNextImage(img);
+
+        c.onImageAvailable(reader, capturedEpoch);
+
+        assertEquals("代次仍当前，帧应正常提交", 1, sink.calls);
+        assertTrue("提交成功应上报推送", obs.pushed);
+        assertTrue("帧仍须经 finally 关闭释放", img.closeCalls >= 1);
     }
 }

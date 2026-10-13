@@ -1,6 +1,11 @@
+<!-- DOCSYNC_DOC
+type=reference
+status=living
+as_of=2026-09-26
+-->
+
 # 致谢与许可证（CREDITS）
 
-**更新日期**: 2026-07-06
 
 本文件用于记录本项目使用的第三方依赖、来源与许可证信息，便于审计与合规。
 
@@ -160,15 +165,35 @@ CameraX 的传递依赖（已解析）：
 
 本项目使用或支持以下机器视觉模型。对于需要在部署时下载的模型，请确保计算其 SHA-256 哈希值与下表一致，以确保安全性与精度。
 
-| 模型名称 | 用途 | 格式 | 部署路径 | 来源 | SHA-256 | 许可证 |
-|:---------|:-----|:-----|:---------|:-----|:--------|:-------|
-| **LBP Frontal Face** | 人脸检测（级联） | XML | `app/src/main/assets/lbpcascade_frontalface.xml` | [OpenCV Data](https://github.com/opencv/opencv/tree/master/data/lbpcascades) | `529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d` | 3-Clause BSD |
-| **ResNet SSD Face** | 人脸检测（DNN） | PB | `storage/models/opencv_face_detector_uint8.pb` | [OpenCV 3rdparty](https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel) | ⚠️ 需在部署时验证 | Apache 2.0 |
-| **ResNet SSD Config** | 网络结构定义 | PBTXT | `storage/models/opencv_face_detector.pbtxt` | [OpenCV Extra](https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/opencv_face_detector.pbtxt) | ⚠️ 需在部署时验证 | Apache 2.0 |
-| **NCNN YOLO Face** | 端侧检测 | BIN/PARAM | `models/yolo_face_ncnn/` | 自训练/转换 | ⚠️ 需本地生成 | — |
-| **NCNN SCRFD** | 端侧检测（轻量） | BIN/PARAM | `models/scrfd_ncnn/` | PNNX 转换自 `det_10g.onnx` | ⚠️ 需本地生成 | — |
-| **ArcFace Embedder** | 人脸特征提取 | ONNX/BIN | `models/arcface_ncnn/` | 第三方/自训练 | ⚠️ 需本地生成 | — |
-| **MobileFaceNet** | 轻量人脸特征提取 | BIN/PARAM | `models/mobilefacenet_ncnn/` | 自训练/转换 | ⚠️ 需本地生成 | — |
+> **⚠️ 商用限制结论（必读）**：当前**主路径**依赖的检测/识别模型——SCRFD（`det_10g`）与 ArcFace（`w600k_r50`）——其权重**源自 `deepinsight/insightface`**。上游 `model_zoo/README.md` 顶部原文：*"ALL models are available for non-commercial research purposes only."*，且主 README 澄清**手动下载与经其 Python 库自动下载受同一政策约束**；维护者在 [issue #2486](https://github.com/deepinsight/insightface/issues/2486) 明确 buffalo_* 系列不可用于生产。**因此这条主路径上的模型及其 INT8 量化产物均不可商用。** MobileFaceNet 的**来源未定**（见下表脚注 ¹）：按「**开发兼容 / 未验收**」处置、**不猜权重许可**，未对齐前不得按可商用处理。
+>
+> 仓库中 **`yunet`（MIT）与 `sface`（Apache-2.0）** 是**可商用替代**——本轮**仅登记备查，不改模型选型**。
+>
+> 本结论与 `models/android/arm64_accuracy/LICENSE.txt`、`models/android/rk3288_light/LICENSE.txt`（其 `licenseId` 为 `insightface-models-noncommercial-research`）一致；此前中央台账缺少该维度，本轮补齐。
+>
+> 来源：<https://github.com/deepinsight/insightface/blob/master/model_zoo/README.md>、<https://github.com/deepinsight/insightface/blob/master/README.md>、<https://github.com/deepinsight/insightface/issues/2486>。
+
+| 模型名称 | 用途 | 格式 | 部署路径 | 来源 | SHA-256 | 许可证 | 商用限制 |
+|:---------|:-----|:-----|:---------|:-----|:--------|:-------|:---------|
+| **LBP Frontal Face** | 人脸检测（级联，`cascade_lbp`） | XML | `app/src/main/assets/lbpcascade_frontalface.xml` | [OpenCV Data](https://github.com/opencv/opencv/tree/master/data/lbpcascades)（随 OpenCV 4.10.0 分发） | `529f217132809f287aaed5cd35dc00d9bc9b2afebe46dd1fe90ecb67f1daad0d` | 3-Clause BSD | ✅ 可商用 |
+| **ResNet SSD Face** | 人脸检测（DNN，`dnn_ssd`） | PB | `storage/models/opencv_face_detector_uint8.pb` | [OpenCV 3rdparty](https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel)（res10_300x300_ssd） | ⚠️ 需在部署时验证 | Apache-2.0（沿用既有台账） | ✅ 可商用 |
+| **ResNet SSD Config** | 网络结构定义 | PBTXT | `storage/models/opencv_face_detector.pbtxt` | [OpenCV Extra](https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/opencv_face_detector.pbtxt) | ⚠️ 需在部署时验证 | Apache-2.0 | ✅ 可商用 |
+| **NCNN YOLO Face** | 端侧检测（`yolo_face` / `yolo_face_int8`） | BIN/PARAM | `models/yolo_face_int8_ncnn/`（INT8）；FP32 目录仓库内无 | 仓库标注「自训练/转换」，**无上游 URL 可取证** | ⚠️ 需本地生成 | 未能核实 | ⚠️ 未能核实 |
+| **NCNN SCRFD** | 端侧检测（`scrfd_0.5gf`） | BIN/PARAM | `models/scrfd_face_detect_ncnn/`、`models/int8/` | [insightface SCRFD](https://github.com/deepinsight/insightface) `det_10g.onnx`（属 buffalo_l），经 PNNX 转换 | ⚠️ 需本地生成 | 代码 Apache-2.0（Open-MMLab）/ 模型权重：insightface 非商用 | ❌ 非商用（insightface 限制） |
+| **ArcFace Embedder** | 人脸特征提取（`arcface` / `arcface_int8`） | ONNX/BIN | `models/arcface_ncnn/`、`models/arcface_int8_ncnn/` | [insightface](https://github.com/deepinsight/insightface) `w600k_r50.onnx`（属 buffalo_l） | ⚠️ 需本地生成 | 代码 MIT / 模型权重：insightface 非商用 | ❌ 非商用（insightface 限制） |
+| **MobileFaceNet** | 轻量人脸特征提取（`mobilefacenet` / `mobilefacenet_int8`）；**开发兼容适配器**，仅显式调用、非默认、无自动回落 | BIN/PARAM | `models/mobilefacenet_ncnn/`、`models/mobilefacenet_int8_ncnn/` | ⚠️ **来源未定 / 开发兼容 / 未验收**（见脚注 ¹） | ⚠️ 需本地生成 | **来源未定**（不猜权重许可） | ⚠️ 来源未定前不得按可商用处理 |
+| **YuNet** | 端侧检测（`yunet`，可商用替代） | ONNX | 外部模型（经配置 `modelPath` 加载，不随仓库分发） | [OpenCV Zoo `face_detection_yunet`](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) | — | MIT（`Copyright (c) 2020 Shiqi Yu`） | ✅ 可商用 |
+| **SFace** | 人脸特征提取（`sface`，128D，可商用替代） | ONNX | 外部模型（经配置 `modelPath` 加载，不随仓库分发） | [OpenCV Zoo `face_recognition_sface`](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) | — | Apache-2.0（模型目录自带独立 LICENSE 全文） | ✅ 可商用 |
+| **LBPH Face Recognizer** | 人脸识别（`lbph`） | 算法（无训练权重） | opencv_contrib `face` 模块（`OPENCV_CONTRIB_ROOT`） | [OpenCV contrib](https://github.com/opencv/opencv_contrib) | — | Apache-2.0 | ✅ 可商用 |
+
+> **¹ MobileFaceNet 口径：来源未定 / 开发兼容 / 未验收（勿臆测许可）**：该模型**保留为开发兼容适配器**——允许**显式调用**，但不作默认、无自动回落；因**来源未定**，**不作为已合规验收模型**；**不猜权重许可**（既不臆测为 MIT，也不臆测为非商用）。证据如下，**不足以定论**——
+>
+> - **指向 insightface**（**不足以证明**当前部署权重即出自它）：`deps/insightface/` 内含 `w600k_mbf.onnx`（属 buffalo_m）及配套的 PNNX / ncnn 转换产物与脚本（`w600k_mbf_pnnx.py`、`w600k_mbf_ncnn.py`），并与 `buffalo_m.zip` 同处一目录。
+> - **指向「来源未定」**：`docs/security/supply-chain-ledger.md` 将该模型列为 **BLOCKED_DATA（来源未定）**，其原文为"仓库仅标注「自训练/转换」，无上游 URL、训练脚本或校验值记录，无法从仓库取证 FP32 权重来源。**不编造来源**"；且 `models/android/*/LICENSE.txt` 只列了 SCRFD 与 ArcFace，**未列入 MobileFaceNet**。
+>
+> **处置**：口径定为**来源未定**（**不猜权重许可**），该模型**不得按可商用处理**；用户的用途声明（非商业研究）**不等于**权重许可证明。若将来取证到确凿来源与许可，再同步更新本表与 `docs/security/supply-chain-ledger.md`。
+
+> **² 已订正（2026-09-30）：`ModelRegistry` 对 `yunet` / `sface` 的描述曾与事实不符**。原备注 `yunet` 写"OpenCV 内置，无需额外模型依赖"、`sface` 写"OpenCV contrib face 模块内置"，二者**已改为**与事实一致的表述——OpenCV 提供的是 **API**（`cv::FaceDetectorYN` / `cv::FaceRecognizerSF`），权重需**外部 ONNX**（来自 OpenCV Zoo），经配置 `modelPath` 加载，仓内不随附。事实依据：`src/cpp/src/adapters/YuNetAdapter.cpp` 与 `src/cpp/src/adapters/SFaceAdapter.cpp` **均要求传入 `modelPath`**（外部 ONNX，来自 OpenCV Zoo），**并非 OpenCV 内置**。上表已按实际行为登记其部署路径为"外部模型（经配置 `modelPath` 加载，不随仓库分发）"。
 
 > **提示**：启动时程序将自动进行自检，并会在日志中打印所有加载模型的 SHA-256。请确保与上述台账保持一致。
 

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 任务18：人脸注册（8 样本）对话框布局。仅承载输入与状态展示，不展示任何模板/向量。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <EditText
+        android:id="@+id/et_register_person_id"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/ui_register_person_id_hint"
+        android:inputType="text"
+        android:maxLines="1"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#666666"
+        android:background="#333333"
+        android:padding="10dp"
+        android:layout_marginBottom="8dp" />
+
+    <EditText
+        android:id="@+id/et_register_display_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/ui_register_display_name_hint"
+        android:inputType="text"
+        android:maxLines="1"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#666666"
+        android:background="#333333"
+        android:padding="10dp"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/tv_register_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/ui_register_status_idle"
+        android:textColor="#88FF88"
+        android:textSize="13sp"
+        android:layout_marginBottom="12dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_register_start"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="@string/ui_register_start"
+            android:backgroundTint="#444444"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/btn_register_cancel"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="@string/ui_register_cancel"
+            android:backgroundTint="#8B0000"
+            android:textColor="#FFFFFF" />
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,1 @@
+function e(...e){let t={};return e.forEach(e=>{e&&Object.keys(e).forEach(n=>{e[n]!==void 0&&(t[n]=e[n])})}),t}export{e as t};

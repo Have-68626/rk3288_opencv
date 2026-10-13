@@ -52,6 +52,7 @@ bool test_face_infer_outcome_json_missing_decision();
 bool test_face_infer_outcome_json_missing_metrics();
 bool test_face_infer_outcome_json_full();
 bool test_face_infer_outcome_json_no_face();
+bool test_face_infer_outcome_json_hit_identity_edges();
 
 bool test_video_manager_is_url_source_valid_urls();
 bool test_video_manager_is_url_source_local_paths();
@@ -71,6 +72,7 @@ bool test_int8_yolo_face_registered();
 bool test_int8_arcface_registered();
 bool test_int8_mobilefacenet_registered();
 bool test_model_registry_concurrent_get_and_register();
+bool test_model_registry_has_no_retinaface_scrfd_entry();
 bool test_int8_yolo_face_creates_detector();
 bool test_int8_arcface_creates_embedder();
 bool test_int8_mobilefacenet_creates_embedder();
@@ -79,6 +81,8 @@ bool test_face_align_basic();
 bool test_face_align_nan_bbox();
 bool test_face_align_empty_image();
 bool test_face_align_negative_bbox();
+bool test_face_align_keypoints_out_non112();
+bool test_face_align_keypoints_uniform_fit_non_square();
 
 bool test_cleanup_temp_file_removed();
 bool test_cleanup_temp_dir_created_and_removed();
@@ -90,6 +94,22 @@ bool test_gallery_cache_repeated_call();
 bool test_publisher_emits_no_face_on_empty_tracks();
 bool test_publisher_throttles_repeated_calls();
 bool test_publisher_concurrent_set_and_publish();
+// §I3 单次管线统一装配的判别用例（见 test_face_infer_pipeline.cpp）。
+bool test_face_infer_routes_embedder_id_and_configures_arcface();
+bool test_face_infer_routes_detector_id_and_calls_load();
+bool test_face_infer_unknown_ids_fail_without_load();
+bool test_face_infer_arcface_failure_does_not_try_mobilefacenet();
+bool test_face_infer_detector_cache_reinstalls_on_spec_change();
+// 缓存 key 完整性：仅「OpenCV-spec/预处理/ncnn 运行时」字段变化也必须重装。
+bool test_face_infer_detector_cache_reinstalls_on_option_change();
+bool test_face_infer_embedder_cache_reinstalls_on_option_change();
+bool test_face_infer_wrong_backend_for_filetype_fails();
+bool test_face_infer_profile_apply_derives_and_reaches_config();
+bool test_face_infer_profile_failure_leaves_request_unchanged();
+// FACE-TEST-005①：embed 失败的 err 必须带出差异化文本（不得回落成固定文案）。
+bool test_face_infer_embed_failure_carries_differential_err();
+// 统一 Embedder 接口不得把「输出维度不符」当成功（失败静默）。
+bool test_face_infer_embedder_dim_mismatch_is_not_silent();
 
 int main() {
     using namespace rk_face_infer_test;
@@ -118,10 +138,12 @@ int main() {
         {"face_infer_outcome_json_missing_metrics", test_face_infer_outcome_json_missing_metrics},
         {"face_infer_outcome_json_full", test_face_infer_outcome_json_full},
         {"face_infer_outcome_json_no_face", test_face_infer_outcome_json_no_face},
+        {"face_infer_outcome_json_hit_identity_edges", test_face_infer_outcome_json_hit_identity_edges},
         {"int8_yolo_face_registered", test_int8_yolo_face_registered},
         {"int8_arcface_registered", test_int8_arcface_registered},
         {"int8_mobilefacenet_registered", test_int8_mobilefacenet_registered},
         {"model_registry_concurrent_get_and_register", test_model_registry_concurrent_get_and_register},
+        {"model_registry_has_no_retinaface_scrfd_entry", test_model_registry_has_no_retinaface_scrfd_entry},
         {"int8_yolo_face_creates_detector", test_int8_yolo_face_creates_detector},
         {"int8_arcface_creates_embedder", test_int8_arcface_creates_embedder},
         {"int8_mobilefacenet_creates_embedder", test_int8_mobilefacenet_creates_embedder},
@@ -131,6 +153,8 @@ int main() {
         {"face_align_nan_bbox", test_face_align_nan_bbox},
         {"face_align_empty_image", test_face_align_empty_image},
         {"face_align_negative_bbox", test_face_align_negative_bbox},
+        {"face_align_keypoints_out_non112", test_face_align_keypoints_out_non112},
+        {"face_align_keypoints_uniform_fit_non_square", test_face_align_keypoints_uniform_fit_non_square},
         {"cleanup_temp_file_removed", test_cleanup_temp_file_removed},
         {"cleanup_temp_dir_created_and_removed", test_cleanup_temp_dir_created_and_removed},
         {"cleanup_file_write_and_read", test_cleanup_file_write_and_read},
@@ -148,6 +172,30 @@ int main() {
         {"video_manager_sanitize_uri_non_url_passthrough", test_video_manager_sanitize_uri_non_url_passthrough},
         {"video_manager_sanitize_uri_no_userinfo", test_video_manager_sanitize_uri_no_userinfo},
         {"video_manager_uri_log_sink_no_userinfo", test_video_manager_uri_log_sink_no_userinfo},
+        {"face_infer_routes_embedder_id_and_configures_arcface",
+         test_face_infer_routes_embedder_id_and_configures_arcface},
+        {"face_infer_routes_detector_id_and_calls_load",
+         test_face_infer_routes_detector_id_and_calls_load},
+        {"face_infer_unknown_ids_fail_without_load",
+         test_face_infer_unknown_ids_fail_without_load},
+        {"face_infer_arcface_failure_does_not_try_mobilefacenet",
+         test_face_infer_arcface_failure_does_not_try_mobilefacenet},
+        {"face_infer_detector_cache_reinstalls_on_spec_change",
+         test_face_infer_detector_cache_reinstalls_on_spec_change},
+        {"face_infer_detector_cache_reinstalls_on_option_change",
+         test_face_infer_detector_cache_reinstalls_on_option_change},
+        {"face_infer_embedder_cache_reinstalls_on_option_change",
+         test_face_infer_embedder_cache_reinstalls_on_option_change},
+        {"face_infer_wrong_backend_for_filetype_fails",
+         test_face_infer_wrong_backend_for_filetype_fails},
+        {"face_infer_profile_apply_derives_and_reaches_config",
+         test_face_infer_profile_apply_derives_and_reaches_config},
+        {"face_infer_profile_failure_leaves_request_unchanged",
+         test_face_infer_profile_failure_leaves_request_unchanged},
+        {"face_infer_embed_failure_carries_differential_err",
+         test_face_infer_embed_failure_carries_differential_err},
+        {"face_infer_embedder_dim_mismatch_is_not_silent",
+         test_face_infer_embedder_dim_mismatch_is_not_silent},
     };
     const bool ok = runAll(cases, static_cast<int>(sizeof(cases) / sizeof(cases[0])));
     return ok ? 0 : 1;

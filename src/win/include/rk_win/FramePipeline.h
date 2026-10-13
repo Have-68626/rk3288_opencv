@@ -61,6 +61,16 @@ struct RenderState {
     double dropRate = 0.0;
     int stride = 1;
     std::uint64_t timestamp100ns = 0;
+    // 人类可读的运行状态 / 告警文本（在 FramePipeline.cpp 内多处写入）。
+    // ⚠️ 如实口径（本次修复订正；原注释称「该字段**写而不读**——三处 tryGetRenderState 调用点都只
+    //    取帧、丢弃本字段，故装配告警**从不上线**」，**不实**）：全仓 tryGetRenderState 共 **4** 处
+    //    调用点，其中 3 处确实只取帧、丢弃本字段（JsonEndpointHandlers 的 handlePreviewJpg、
+    //    StreamSession 的帧提供器、AbcTestRunner），但**第 4 处会读它**——
+    //    win_camera_face_recognition_main.cpp 的 WM_TIMER 渲染分支（约 :1085-1093）里
+    //    `if (!rs.status.empty())` 把该文本拼进窗口标题（节流 250 ms）⇒ 本字段承载的装配告警在
+    //    **相机 UI 应用**里确实上线（只是不上 Web / health 通道）。
+    //    装配失败的正规发布通道另有下方的 DegradedState（经 /api/v1/health 只读发布），二者并列、
+    //    不替代；**不要**据旧注释以为本字段没有任何消费者，也不要以为它有统一的对外通道。
     std::string status;
 };
 
@@ -142,9 +152,49 @@ public:
 
     std::vector<ModelSnapshot> getActiveModels() const { std::lock_guard<std::mutex> lock(modelsMu_); return activeModels_; }
 
-    // 运行时重载代次：reloadRuntime 原子替换成功时 +1。
-    // reload 端点（B06-020 治理项）以"成功重载必然改变代次"为契约——禁止"伪成功"
+    // ── 降级状态（FACE-ARCWIN-003 可观测性部分）────────────────────────────
+    // 装配失败（RuntimeBootstrap 的 ok==false，即识别器整体初始化失败）在此**一等化**，
+    // 供 /api/v1/health 只读发布，使「启动成功但功能缺失」不再只藏在「设置→模型状态」Tab 里。
+    // 语义与既有的 RenderState::status（FramePipeline.cpp 内 render_.status）**并列、不替代**：
+    // 后者仍按原样写入（既有写入行为**不删**），且**并非无消费者**——相机 UI 应用会把它显示在窗口
+    // 标题上（见 RenderState::status 的注释，本次修复订正了「无消费者」的旧说法）；二者互不覆盖、不合并。
+    // ⚠️ 本状态是**纯读侧可观测性**：它不改变 FramePipeline::initialize 的返回值
+    //    （该函数恒返回 true），也不阻断任何操作。「自检失败是否 fail-closed」属产品决策，
+    //    未拍板前不得让本状态参与任何阻断或非 2xx 映射。
+    struct DegradedState {
+        bool active = false;
+        // 契约码，取值域为 src/cpp/include/AccelerationContract.h 的 7 个固定码：
+        // ok / build_disabled / unsupported_platform / missing_dependency / missing_model /
+        // runtime_init_failed / unsupported_input。
+        // 本管线**只产 runtime_init_failed**：RuntimeBootstrap 的返回不区分识别器失败的
+        // 具体原因（cascade 文件 / 识别模型（含节点名）/ database 路径之一），故不臆造更细的码。
+        std::string reasonCode;
+        // 人类可读告警 = RuntimeBootstrap 的 warning 原文（**可能含文件系统路径**）。
+        std::string warning;
+        // **首次**进入降级的时间。格式与全项目其他时间戳一致：nowIso8601Local() 的
+        // `%Y-%m-%dT%H:%M:%S.mmm`（**本地时间、无时区后缀**，非 UTC）。
+        std::string degradedSinceIso;
+        // 当前 status=="loaded" 的模型 id 集合。**两种状态下都刷新**（正常态即「可用能力清单」）。
+        std::vector<std::string> availableFeatures;
+    };
+
+    // 只读访问器（degradedMu_ 保护，返回副本）：调用方无须持锁。
+    DegradedState degraded() const {
+        std::lock_guard<std::mutex> lock(degradedMu_);
+        return degraded_;
+    }
+
+    // 运行时是否**已装配**（initialize 或 reloadRuntime 之一已执行）。
+    // 供 /api/v1/health 区分「尚未装配（starting）」与「装配完成」。判据用 runtime_ 快照是否
+    // 已建立，**不用 running_**：running_ 在 shutdown 后为 false，会把「已停止」误报为「启动中」。
+    bool runtimeReady() const;
+
+    // 运行时重载代次：reloadRuntime **每次执行**都 +1（`fetch_add` 无条件，见其实现末尾；
+    // 装配失败也照样递增）。
+    // reload 端点（B06-020 治理项）以"成功重载**必然**改变代次"为契约——禁止"伪成功"
     // （返回成功但从未真正重载）；消费方记录已消费代次即可感知重载确实发生。
+    // ⚠️ 反向不成立：代次改变**只证明重载执行过，不证明装配成功**（装配成败看 DegradedState
+    // / reload 响应新增的 ok 键），勿据代次递增推断模型已可用。
     std::uint64_t runtimeReloadGen() const { return runtimeReloadGen_.load(std::memory_order_relaxed); }
 
 private:
@@ -159,6 +209,12 @@ private:
     // 纯诊断、不阻塞。initialize 与 reloadRuntime 成功替换模型后均调用，使日志反映重载后的
     // hash/manifest_match。调用方须已持有 modelsMu_ 锁（命名 *Locked）。
     void checkModelManifestsLocked() const;
+
+    // 把装配结果一等化为 degraded_（见公开段 DegradedState 注释）。调用方**不得**持有
+    // renderMu_ / modelsMu_ / runtimeMu_ —— 本函数自行取 degradedMu_ 与 modelsMu_
+    // （固定锁序 degradedMu_ → modelsMu_），在既有临界区内调用会破坏该锁序。
+    // 参数直接来自 RuntimeBootstrap::build 的结果（ok / warning），失败时为降级、成功时清除。
+    void updateDegradedState(bool bootstrapOk, const std::string& bootstrapWarning);
 
     AppConfig cfg_{};
     mutable std::mutex mu_;
@@ -239,6 +295,11 @@ private:
 
     // 运行时重载代次：见 runtimeReloadGen() 注释（B06-020 治理项）。
     std::atomic<std::uint64_t> runtimeReloadGen_{0};
+
+    // 降级状态（见公开段 DegradedState）：独立于 renderMu_ / modelsMu_ 的锁。
+    // 锁序固定为 degradedMu_ → modelsMu_（见 updateDegradedState）。
+    mutable std::mutex degradedMu_;
+    DegradedState degraded_;
 };
 
 }  // namespace rk_win

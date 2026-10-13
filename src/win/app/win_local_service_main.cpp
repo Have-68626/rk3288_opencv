@@ -118,7 +118,8 @@ int main() {
     rk_win::AppConfig cfg = settings.current();
 
     rk_win::EventLogger events;
-    events.open(cfg.log.logDir);
+    // 轮转参数取自配置（与 StructuredLogger 的接线同口径，见 FramePipeline.cpp 的 metrics.open）。
+    events.open(cfg.log.logDir, cfg.log.maxFileBytes, cfg.log.maxRollFiles);
 
 #ifndef BUILD_ID
 #define BUILD_ID "unknown-dev"
