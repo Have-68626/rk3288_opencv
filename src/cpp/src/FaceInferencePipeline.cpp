@@ -22,16 +22,11 @@ using namespace rk_core;
 
 #if RK_CPP_HAS_OPENCV
 #include "ArcFaceEmbedder.h"
-#include "Embedder.h"
 #include "FaceDetector.h"
 #include "FaceInferOutcomeJson.h"
 #include "FaceInferPipelineData.h"
 #include "FaceInferStages.h"
-#include "FaceProfileRequest.h"
 #include "ModelRegistry.h"
-#include "adapters/ArcFaceAdapter.h"
-#include "adapters/ScrfdNcnnAdapter.h"
-#include "adapters/YoloFaceAdapter.h"
 #endif
 
 namespace {
@@ -104,25 +99,8 @@ static int errorCodeForStage(const std::string& stage) {
     if (stage == "arc_embed") return 410;
     if (stage == "gallery_load") return 500;
     if (stage == "search") return 510;
-    if (stage == "face_profile") return 120;
     if (stage == "exception") return 900;
     return 1;
-}
-
-// 当前进程编译 ABI 字符串（用于 profile 的 supportedAbis 校验）。
-// 与 §I5 单图 JNI 同一口径：按**编译期**宏判断，不以设备列表/运行态 ABI 代替。
-static std::string currentAbiString() {
-#if defined(__aarch64__)
-    return "arm64-v8a";
-#elif defined(__arm__)
-    return "armeabi-v7a";
-#elif defined(_M_X64) || defined(__x86_64__)
-    return "windows-x64";
-#elif defined(__i386__) || defined(_M_IX86)
-    return "x86";
-#else
-    return "unknown";
-#endif
 }
 
 }  // namespace
@@ -130,32 +108,10 @@ static std::string currentAbiString() {
 namespace rk_core {
 
 #if RK_CPP_HAS_OPENCV
-FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
+FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req) {
     FaceInferOutcome out;
     const long long tsMs = nowEpochMillis();
     try {
-        // §I3：profile 模式在装配前一次性派生请求字段（detectorId/embedderId/双后端/模型绝对路径/节点/
-        // 尺寸/阈值/int8Enabled）并取回 profile 供 SCRFD 解码语义消费。失败时 req 不变、直接失败。
-        FaceInferRequest req = reqIn;
-        FaceRuntimeProfile profile;
-        bool haveProfile = false;
-        if (!req.faceProfileDir.empty()) {
-            FaceInferRequest eff = req;
-            std::string perr;
-            if (!applyFaceProfileToRequest(req.faceProfileDir, currentAbiString(), eff, profile, perr)) {
-                out.ok = false;
-                out.stage = "face_profile";
-                out.message = perr.empty() ? "face_profile_failed" : perr;
-                out.errorCode = errorCodeForStage(out.stage);
-                out.auditDir = "ErrorLog";
-                out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
-                out.json = buildSimpleErrorJson(false, out.errorCode, out.stage, out.message, tsMs, reqIn.imagePath);
-                return out;
-            }
-            req = eff;
-            haveProfile = true;
-        }
-
         const auto t0 = std::chrono::steady_clock::now();
         FaceInferContext ctx;
         FaceInferMetrics m;
@@ -166,233 +122,84 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
         // 下方 if 块内，否则块末即析构，ctx.detector/embedder 裸指针仅靠单槽缓存持有，
         // 并发切 key 会销毁使用中的模型（UAF）。
         std::shared_ptr<FaceDetector> localDet;
-        std::shared_ptr<Embedder> localEmb;
+        std::shared_ptr<ArcFaceEmbedder> localEmb;
 
-        // §I3：所有装配/缓存集中在 runFaceInferOnce；Stages 只消费注入实例或返回装配错误。
-        // 检测器按 detectorId 路由（不再 createDetector(yoloBackend)）；缓存 key 含完整相关
-        // ID/后端/spec/节点/尺寸/阈值/precision（profile 模式另含 profile 标识与四文件声明哈希）。
+        // 缓存检测器实例以避免每帧重新加载模型文件（调用方管理生命周期）
         if (!req.fakeDetect) {
             static std::mutex s_detMu;
             static std::string s_detCacheKey;
             static std::shared_ptr<FaceDetector> s_cachedDet;
 
-            // key 须覆盖全部参与装配的字段：除 ID/后端/节点/尺寸/阈值/precision 外，还含
-            // OpenCV-DNN 的 spec（configPath/framework/outputName）、预处理（letterbox/swapRB/
-            // scale/mean/openCvBackend/openCvTarget）与 ncnn 运行时（threads/lightmode）——它们
-            // 都注入到装配实例（见下方 configureOpenCv/configureNcnn），漏掉会让「仅这些字段不同」
-            // 的两次请求静默复用首个实例（错配）。
-            std::string detKey = req.detectorId + "|" + req.yoloBackend + "|" + req.yoloModelPath +
-                                 "|p:" + req.yoloNcnnParam + "|b:" + req.yoloNcnnBin +
-                                 "|in:" + req.yoloNcnnInput + "|out:" + req.yoloNcnnOutput +
-                                 "|" + std::to_string(req.yoloInputW) + "x" + std::to_string(req.yoloInputH) +
-                                 "|s" + std::to_string(req.yoloScoreThreshold) +
-                                 "|n" + std::to_string(req.yoloNmsIouThreshold) +
-                                 "|kps:" + (req.yoloEnableKeypoints5 ? "1" : "0") +
-                                 "|i8:" + (req.int8Enabled ? "1" : "0") +
-                                 "|cfg:" + req.yoloConfigPath + "|fw:" + req.yoloFramework +
-                                 "|outn:" + req.yoloOutputName +
-                                 "|lb:" + (req.yoloLetterbox ? "1" : "0") +
-                                 "|swrb:" + (req.yoloSwapRB ? "1" : "0") +
-                                 "|sc:" + std::to_string(req.yoloScale) +
-                                 "|mb:" + std::to_string(req.yoloMeanB) + "," + std::to_string(req.yoloMeanG) +
-                                 "," + std::to_string(req.yoloMeanR) +
-                                 "|cvb:" + std::to_string(req.yoloOpenCvBackend) +
-                                 "|cvt:" + std::to_string(req.yoloOpenCvTarget) +
-                                 "|thr:" + std::to_string(req.yoloNcnnThreads) +
-                                 "|lm:" + (req.yoloNcnnLightmode ? "1" : "0");
-            if (haveProfile) {
-                detKey += "|prof:" + profile.profileId + ":" + profile.detectorParam.sha256 + ":" +
-                          profile.detectorBin.sha256 + ":" + profile.embedderParam.sha256 + ":" +
-                          profile.embedderBin.sha256;
-            }
+            const std::string detKey = req.yoloBackend + ":" + req.yoloModelPath;
             {
                 std::lock_guard<std::mutex> lock(s_detMu);
-                if (detKey == s_detCacheKey && s_cachedDet) localDet = s_cachedDet;
+                if (detKey == s_detCacheKey && s_cachedDet) {
+                    localDet = s_cachedDet;
+                }
             }
             if (!localDet) {
                 ModelRegistry::ensureBuiltinRegistered();
-                std::unique_ptr<FaceDetector> det;
-                std::string assembleErr;
-
-                if (req.detectorId == "scrfd_0.5gf") {
-                    // 无 profile 的真实 SCRFD 不能猜 distance/anchor/节点 ⇒ 明确失败。
-                    if (!haveProfile) {
-                        assembleErr = "scrfd_requires_profile";
-                    } else {
-                        std::string cfgErr;
-                        ScrfdNcnnConfig scfg = ScrfdNcnnAdapter::configFromProfile(
-                            profile, req.yoloNcnnParam, req.yoloNcnnBin, cfgErr);
-                        if (!cfgErr.empty()) {
-                            assembleErr = cfgErr;
-                        } else {
-                            det = std::make_unique<ScrfdNcnnAdapter>(scfg);
-                            std::string loadErr;
-                            if (!det->load(req.yoloModelPath, loadErr)) {
-                                assembleErr = loadErr.empty() ? "scrfd_load_failed" : loadErr;
-                                det.reset();
-                            }
-                        }
-                    }
-                } else {
-                    // yolo_face 及其它已注册 ID：经注册表按 ID 取适配器（未知 ID ⇒ 明确失败）。
-                    std::string crErr;
-                    det = ModelRegistry::instance().createDetector(req.detectorId, &crErr);
-                    if (!det) {
-                        assembleErr = crErr.empty() ? ("detector_not_found: " + req.detectorId) : crErr;
-                    } else {
-                        // YoloFaceAdapter：按后端名显式配置（不按扩展名猜后端）。
-                        if (auto* yolo = dynamic_cast<YoloFaceAdapter*>(det.get())) {
-                            const std::string& be = req.yoloBackend;
-                            YoloFaceOptions opt;
-                            opt.inputW = req.yoloInputW;
-                            opt.inputH = req.yoloInputH;
-                            opt.scoreThreshold = req.yoloScoreThreshold;
-                            opt.nmsIouThreshold = req.yoloNmsIouThreshold;
-                            opt.enableKeypoints5 = req.yoloEnableKeypoints5;
-                            opt.letterbox = req.yoloLetterbox;
-                            opt.swapRB = req.yoloSwapRB;
-                            opt.scale = req.yoloScale;
-                            opt.meanB = req.yoloMeanB;
-                            opt.meanG = req.yoloMeanG;
-                            opt.meanR = req.yoloMeanR;
-                            opt.opencvBackend = req.yoloOpenCvBackend;
-                            opt.opencvTarget = req.yoloOpenCvTarget;
-                            if (be == "opencv" || be == "opencv_dnn" || be == "qualcomm") {
-                                // qualcomm 无独立实现，历史即回落 CPU（OpenCV）⇒ 与 opencv 同装配。
-                                YoloFaceModelSpec spec;
-                                spec.modelPath = req.yoloModelPath;
-                                spec.configPath = req.yoloConfigPath;
-                                spec.framework = req.yoloFramework;
-                                spec.outputName = req.yoloOutputName;
-                                yolo->configureOpenCv(spec, opt);
-                            } else if (be == "ncnn") {
-#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-                                NcnnYoloFaceModelSpec ns;
-                                ns.paramPath = req.yoloNcnnParam.empty() ? req.yoloModelPath : req.yoloNcnnParam;
-                                ns.binPath = req.yoloNcnnBin;
-                                ns.inputName = req.yoloNcnnInput;
-                                ns.outputName = req.yoloNcnnOutput;
-                                ns.threads = req.yoloNcnnThreads;
-                                ns.lightmode = req.yoloNcnnLightmode;
-                                yolo->configureNcnn(ns, opt);
-#else
-                                assembleErr = "ncnn_backend_unavailable";
-#endif
-                            } else {
-                                assembleErr = "yolo_backend_unsupported: " + be;
-                            }
-                        }
-                        if (assembleErr.empty()) {
-                            std::string loadErr;
-                            if (!det->load(req.yoloModelPath, loadErr)) {
-                                assembleErr = loadErr.empty() ? "yolo_load_failed" : loadErr;
-                                det.reset();
-                            }
-                        } else {
-                            det.reset();
-                        }
-                    }
-                }
-
+                auto det = ModelRegistry::instance().createDetector(req.yoloBackend);
                 if (det) {
-                    std::lock_guard<std::mutex> lock(s_detMu);
-                    s_detCacheKey = detKey;
-                    localDet = std::shared_ptr<FaceDetector>(std::move(det));
-                    s_cachedDet = localDet;
-                } else {
-                    ctx.detectorLoadError = assembleErr.empty() ? "detector_unavailable" : assembleErr;
+                    std::string loadErr;
+                    if (det->load(req.yoloModelPath, loadErr)) {
+                        std::lock_guard<std::mutex> lock(s_detMu);
+                        s_detCacheKey = detKey;
+                        localDet = std::shared_ptr<FaceDetector>(std::move(det));
+                        s_cachedDet = localDet;
+                    }
                 }
             }
             ctx.detector = localDet.get();
         }
 
-        // 嵌入器按 embedderId 路由；未知 ID ⇒ 明确失败。绝不把同一文件依次交给 ArcFace、MobileFaceNet
-        // （无回落候选队列），显式 MobileFaceNet 仅在其自己的 embedderId 下调用。
+        // 缓存嵌入器实例以避免每帧重新加载模型文件（调用方管理生命周期）
         if (!req.fakeEmbedding) {
             static std::mutex s_embMu;
             static std::string s_embCacheKey;
-            static std::shared_ptr<Embedder> s_cachedEmb;
+            static std::shared_ptr<ArcFaceEmbedder> s_cachedEmb;
 
-            // key 须覆盖全部参与装配的字段：除 ID/后端/节点/尺寸/版本/precision 外，还含
-            // OpenCV-DNN 的 spec（configPath/framework/outputName/inputName）、预处理版本
-            // （preprocessVersion）与 ncnn 运行时（threads/lightmode）——它们都注入到装配实例
-            // （见下方 ArcFaceAdapter::configure），漏掉会让「仅这些字段不同」的两次请求静默复用
-            // 首个实例（错配）。
-            std::string embKey = req.embedderId + "|" + req.arcBackend + "|" + req.arcModelPath +
-                                 "|p:" + req.arcNcnnParam + "|b:" + req.arcNcnnBin +
-                                 "|in:" + req.arcNcnnInput + "|out:" + req.arcNcnnOutput +
-                                 "|" + std::to_string(req.arcInputW) + "x" + std::to_string(req.arcInputH) +
-                                 "|mv:" + std::to_string(req.arcModelVersion) +
-                                 "|i8:" + (req.int8Enabled ? "1" : "0") +
-                                 "|cfg:" + req.arcConfigPath + "|fw:" + req.arcFramework +
-                                 "|outn:" + req.arcOutputName + "|inn:" + req.arcInputName +
-                                 "|pv:" + std::to_string(req.arcPreprocessVersion) +
-                                 "|thr:" + std::to_string(req.arcNcnnThreads) +
-                                 "|lm:" + (req.arcNcnnLightmode ? "1" : "0");
-            if (haveProfile) {
-                embKey += "|prof:" + profile.profileId + ":" + profile.embedderParam.sha256 + ":" +
-                          profile.embedderBin.sha256;
-            }
+            const std::string embKey = req.arcBackend + ":" + req.arcModelPath;
             {
                 std::lock_guard<std::mutex> lock(s_embMu);
-                if (embKey == s_embCacheKey && s_cachedEmb) localEmb = s_cachedEmb;
+                if (embKey == s_embCacheKey && s_cachedEmb && s_cachedEmb->isInitialized()) {
+                    localEmb = s_cachedEmb;
+                }
             }
             if (!localEmb) {
-                ModelRegistry::ensureBuiltinRegistered();
-                std::unique_ptr<Embedder> emb;
-                std::string assembleErr;
-                std::string crErr;
-                emb = ModelRegistry::instance().createEmbedder(req.embedderId, &crErr);
-                if (!emb) {
-                    assembleErr = crErr.empty() ? ("embedder_not_found: " + req.embedderId) : crErr;
-                } else {
-                    if (auto* arc = dynamic_cast<ArcFaceAdapter*>(emb.get())) {
-                        ArcFaceEmbedderConfig cfg;
-                        cfg.inputW = req.arcInputW;
-                        cfg.inputH = req.arcInputH;
-                        cfg.modelVersion = req.arcModelVersion;
-                        cfg.preprocessVersion = req.arcPreprocessVersion;
-                        cfg.opencvModel = req.arcModelPath;
-                        cfg.opencvConfig = req.arcConfigPath;
-                        cfg.opencvFramework = req.arcFramework;
-                        cfg.opencvOutput = req.arcOutputName;
-                        cfg.opencvInput = req.arcInputName;
-                        const std::string& be = req.arcBackend;
-                        if (be == "opencv" || be == "opencv_dnn") {
-                            cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
-                        } else if (be == "ncnn") {
-                            cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
-                            cfg.ncnnParam = req.arcNcnnParam.empty() ? req.arcModelPath : req.arcNcnnParam;
-                            cfg.ncnnBin = req.arcNcnnBin;
-                            cfg.ncnnInput = req.arcNcnnInput;
-                            cfg.ncnnOutput = req.arcNcnnOutput;
-                            cfg.ncnnThreads = req.arcNcnnThreads;
-                            cfg.ncnnLightmode = req.arcNcnnLightmode;
-                        } else if (be == "qualcomm") {
-                            cfg.backend = ArcFaceEmbedderConfig::BackendType::Qualcomm;
-                            cfg.qualcommModel = req.arcModelPath;
-                        } else {
-                            assembleErr = "arc_backend_unsupported: " + be;
-                        }
-                        if (assembleErr.empty()) arc->configure(cfg);
-                    }
-                    if (assembleErr.empty()) {
-                        std::string loadErr;
-                        if (!emb->load(req.arcModelPath, loadErr)) {
-                            assembleErr = loadErr.empty() ? "arc_init_failed" : loadErr;
-                            emb.reset();
-                        }
-                    } else {
-                        emb.reset();
-                    }
+                ArcFaceEmbedderConfig cfg;
+                cfg.inputW = req.arcInputW;
+                cfg.inputH = req.arcInputH;
+                cfg.modelVersion = req.arcModelVersion;
+                cfg.preprocessVersion = req.arcPreprocessVersion;
+                cfg.opencvModel = req.arcModelPath;
+                cfg.opencvConfig = req.arcConfigPath;
+                cfg.opencvFramework = req.arcFramework;
+                cfg.opencvOutput = req.arcOutputName;
+                cfg.opencvInput = req.arcInputName;
+
+                if (req.arcBackend == "opencv" || req.arcBackend == "opencv_dnn") {
+                    cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
+                } else if (req.arcBackend == "ncnn") {
+                    cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
+                    cfg.ncnnParam = req.arcNcnnParam;
+                    cfg.ncnnBin = req.arcNcnnBin;
+                    cfg.ncnnInput = req.arcNcnnInput;
+                    cfg.ncnnOutput = req.arcNcnnOutput;
+                    cfg.ncnnThreads = req.arcNcnnThreads;
+                    cfg.ncnnLightmode = req.arcNcnnLightmode;
+                } else if (req.arcBackend == "qualcomm") {
+                    cfg.backend = ArcFaceEmbedderConfig::BackendType::Qualcomm;
+                    cfg.qualcommModel = req.arcModelPath;
                 }
-                if (emb) {
+
+                auto emb = std::make_unique<ArcFaceEmbedder>();
+                std::string initErr;
+                if (emb->initialize(cfg, &initErr)) {
                     std::lock_guard<std::mutex> lock(s_embMu);
                     s_embCacheKey = embKey;
-                    localEmb = std::shared_ptr<Embedder>(std::move(emb));
+                    localEmb = std::shared_ptr<ArcFaceEmbedder>(std::move(emb));
                     s_cachedEmb = localEmb;
-                } else {
-                    ctx.embedderLoadError = assembleErr.empty() ? "embedder_unavailable" : assembleErr;
                 }
             }
             ctx.embedder = localEmb.get();
@@ -483,8 +290,7 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
         out.errorCode = errorCodeForStage(out.stage);
         out.auditDir = "ErrorLog";
         out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
-        // catch 在 try 作用域外，`req`（profile 派生后的局部量）不可见 ⇒ 用入参 reqIn 取 imagePath。
-        FaceInferOutcomeJsonInput jin{out, reqIn};
+        FaceInferOutcomeJsonInput jin{out, req};
         jin.timestampMs = tsMs;
         out.json = buildExceptionJson(jin);
         return out;
@@ -495,8 +301,7 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
         out.errorCode = errorCodeForStage(out.stage);
         out.auditDir = "ErrorLog";
         out.auditFilename = std::string("face_infer_") + std::to_string(tsMs) + ".json";
-        // catch 在 try 作用域外，`req`（profile 派生后的局部量）不可见 ⇒ 用入参 reqIn 取 imagePath。
-        FaceInferOutcomeJsonInput jin{out, reqIn};
+        FaceInferOutcomeJsonInput jin{out, req};
         jin.timestampMs = tsMs;
         out.json = buildExceptionJson(jin);
         return out;

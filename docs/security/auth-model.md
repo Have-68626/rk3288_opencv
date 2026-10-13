@@ -1,13 +1,6 @@
-<!-- DOCSYNC_DOC
-type=security
-status=living
-as_of=2026-09-23
--->
-
 # HTTP 认证授权模型（S-SEC-B09-001）
 
-> 规格状态：**已锁定**。本文档是 Windows 本地服务 REST API 认证授权的事实源；
-> 正文跟随实现更新（元数据 `status=living`），但规格条款未经批准不得变更。
+> 状态：**已冻结（frozen）**。本文档是 Windows 本地服务 REST API 认证授权的事实源。
 > 任何机制/边界变更必须先更新本文档并同步实现与测试。
 > 治理回退：仅允许撤回本项 auth patch；认证模型冻结后不得在未重新冻结前继续扩展。
 
@@ -17,11 +10,9 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
 当前**全匿名**可达：
 
 - `EndpointRegistry::dispatch`（`src/win/src/EndpointRegistry.cpp:9-24`）无鉴权；
-- 注册点 `registerAllHttpApi`（`src/win/src/JsonEndpointHandlers.cpp`）中的写操作
-  （PUT settings、POST actions）与流式端点（SSE/MJPEG，经
-  `HttpFacesServer.cpp:758-759` StreamSessionRunner 旁路）均匿名可达；
-  （该引用只到符号级、**不写行号**：`JsonEndpointHandlers.cpp` 的行数随本批 485→538 的改动
-  持续漂移，写行号等于制造下一处失真；同一取舍见 `docs/designs/model-acquisition-import.md` §7。）
+- 注册点 `registerAllHttpApi`（`src/win/src/JsonEndpointHandlers.cpp:405-436`）
+  中的写操作（PUT settings、POST actions）与流式端点（SSE/MJPEG，经
+  `HttpFacesServer.cpp:605-611` StreamSessionRunner 旁路）均匿名可达；
 - 服务仅 bind `127.0.0.1`，但本机任意进程/用户仍可调用（包括浏览器访问已打开的
   前端页面后调用管理 API、恶意本机进程扫描、以及 DNS-rebinding 类绕过）。
 
@@ -50,40 +41,10 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
 | 路径 | 原因 |
 |---|---|
 | 静态文件（非 `/api` 前缀，如 `/`、`/assets/*`、`/index.html`） | 前端资源，无敏感动作；写操作被 `handleStaticOrFallback` 以 405 拒绝 |
-| `GET /api/v1/health` | 健康检查：回显服务名、端口，以及**启动期配置诊断**三字段（`configStatus` / `configWarning` / `configQuarantinedTo`，见下方「健康端点的启动期配置诊断」），供进程监督/负载探测 |
+| `GET /api/v1/health` | 健康检查：仅回显服务名与端口，供进程监督/负载探测 |
 | `GET /api/v1/acceleration` | 只读状态：当前加速配置与活动后端摘要，不含密钥/凭据 |
 
 > 判定函数：非 `/api` 前缀恒匿名；`/api` 下仅上述两个 GET 端点匿名。
-
-#### 健康端点的启动期配置诊断（FACE-CONFIG-001，2026-09-23 追加；**本小节为规格条款变更**）
-
-原文为「仅回显服务名与端口」。现追加三字段，动机见 `docs/guides/windows-service/config.md`：
-配置装载失败需要一个**不依赖被拒那份配置**的可见通道。
-
-- `configStatus`（**恒出现**）：`ok` / `degraded` / `rejected` / `unknown`。`rejected` = 既有 `config.json`
-  存在但无法装载（不可读 / JSON 解析失败 / schema 校验被拒），服务以默认值启动；`degraded` = 装载完成但
-  本次启动存在告警（默认配置写盘失败 / 序列化未通过 schema 等，即 `initWarning` 非空）；`ok` = 正常装载
-  且无告警；`unknown` = 诊断通道缺失（`ctx.settings` 为空，无法判定配置状态，仅内部测试路径可达）。
-  判据优先级：`unknown` > `rejected` > `degraded` > `ok`。
-- `configWarning`（**仅本次启动有告警时出现**）：服务端告警原文。
-- `configQuarantinedTo`（**仅发生隔离时出现**）：被改名另存的坏配置**文件名**（非全路径）。
-
-边界（据此仍维持 §3.1 的最小权限口径）：
-
-- 端点仍**仅监听 127.0.0.1**，仍**只读**、无写能力、不含密钥/凭据；
-- 新增字段**不回读被拒的那份配置**——只读 `initialize` 写入的三个内存标志，故配置不可信时它依然有效
-  （这正是「独立可见通道」的含义）；
-- ⚠️ `configWarning` 是服务端原文，**可能含文件系统路径**，故本端点内容应按**本机可见**对待；
-- 已按本文件 §1 的冻结流程同步实现与测试（`WinJsonConfig` 的三个诊断访问器 +
-  `JsonEndpointHandlers::handleGetHealth`；用例 `HttpFacesAuth.HealthExposesConfigStatusOk`、
-  `HttpFacesAuth.HealthExposesDegradedConfigStatus`、`HttpFacesAuth.HealthExposesRejectedConfigStatus`
-  与 `HttpFacesAuth.AnonymousWhitelistRemainsPublic`——后者以 `store=nullptr` 断言
-  `configStatus:"unknown"`，补齐四态证据）。
-- ⚠️ `configStatus` 取值集合的历次扩张：`ok` / `rejected` → 增 `unknown`（诊断通道缺失）→ 增 `degraded`
-  （装载完成但本次启动有告警）。其中 `unknown` 为**事后同步**（`handleGetHealth` 先行改为「settings 为空时
-  置 `unknown`、不再回落 `ok`」，本小节随后回填）；`degraded` 为**事前改文档**——本轮先在 §3.1 定稿四态
-  取值与判据，再据此改 `JsonEndpointHandlers::handleGetHealth` 并补用例
-  `HttpFacesAuth.HealthExposesDegradedConfigStatus`。
 
 ### 3.2 需认证（启用认证后全部需有效 token）
 
@@ -92,7 +53,7 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
   crypto/rotate / privacy/open）。
 - **管理类读操作**：`GET /api/v1/models`、`GET /api/v1/settings`（含路径/配置，
   虽脱敏仍属内部信息）、`GET /api/v1/cameras`、`GET /api/faces`、
-  `GET /api/v1/faces`（**当前帧**人脸快照；不含 personId 等身份字段，但暴露在场人员人脸，仍属隐私敏感）、`GET /api/v1/preview.jpg`（相机画面）。
+  `GET /api/v1/faces`（人脸库快照，隐私敏感）、`GET /api/v1/preview.jpg`（相机画面）。
 - **流式端点**（SSE / MJPEG）：`/api/faces/stream`、`/api/v1/faces/stream`、
   `/api/v1/preview.mjpeg` —— 流暴露相机画面与人脸结果，必须认证。
 - **OpenAPI 文档**：`/api/v1/openapi`、`/openapi.json` —— 管理面文档，一并纳入认证

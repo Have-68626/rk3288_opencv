@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=process
-status=living
-as_of=2026-07-22
--->
-
 # Safety — Loop Engineering
 
 ## Path Denylist

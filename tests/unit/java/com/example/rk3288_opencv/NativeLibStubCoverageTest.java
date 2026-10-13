@@ -186,8 +186,7 @@ public class NativeLibStubCoverageTest {
         File stubFile = new File(root, "src/cpp/native-lib-stub.cpp");
         String stubSrc = readFile(stubFile);
 
-        // 任务13：NativeFaceBridge 静态方法组已接入 stub（此前缺失会导致 UnsatisfiedLinkError）。
-        String[] javaClasses = {"MainActivity", "NativeBridge", "NativeFaceBridge"};
+        String[] javaClasses = {"MainActivity", "NativeBridge"};
         StringBuilder report = new StringBuilder("Java native 描述符清单（stub 必须逐项导出）：\n");
         List<String> missingSymbols = new ArrayList<>();
         List<String> arityMismatch = new ArrayList<>();

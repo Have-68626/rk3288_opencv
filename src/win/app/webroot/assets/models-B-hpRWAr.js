@@ -1,1 +1,0 @@
-import{a as e,s as t}from"./AppStore-C4nxJp2_.js";async function n(n){return t(e.models,{method:`GET`,timeoutMs:n.apiTimeoutMs,logLevel:n.logLevel,cacheStrategy:`no-cache`})}async function r(n,r){return t(e.modelsReload,{method:`POST`,body:JSON.stringify({id:r}),timeoutMs:n.apiTimeoutMs,logLevel:n.logLevel,cacheStrategy:`no-cache`})}export{r as n,n as t};

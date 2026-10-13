@@ -2,7 +2,6 @@
 
 #include "rk_win/EventLogger.h"
 #include "rk_win/FramePipeline.h"
-#include "rk_win/WinConfig.h"  // resolvePathFromExeDir（reportDir 的解析口径）
 
 #ifdef _WIN32
 #include <windows.h>
@@ -172,19 +171,8 @@ void AbcTestRunner::run() {
 #ifdef _WIN32
     HWND hwnd = static_cast<HWND>(hwndMain_);
     std::error_code ec;
-    // ★ 相对路径按 **exe 目录** 解析（2026-09-28 修；与同目录的 CLI 工具 `win_face_eval_cli` /
-    //   `win_replay_export_cli` 统一口径）。来源：`AbcTestConfig::reportDir` 的默认值是**相对路径**
-    //   （`docs/windows-camera-face-recognition`），而 `--test_report_dir` 也是**直接赋 argv** 的
-    //   ⇒ 不解析的话，报告会落到**进程 cwd** 下、随启动方式（服务 / 快捷方式 / 命令行）漂移，
-    //   甚至因 cwd 不可写而静默不产出。
-    //   ⚠️ **行为变化（有意的 breaking change，用户 2026-09-28 拍板）**：相对路径现在按 exe 目录解析；
-    //   **绝对路径由 `resolvePathFromExeDir` 原样返回，不受影响**。
-    //   ⚠️ **本文件不在默认构建内**：所属 target `win_camera_face_recognition` 受
-    //   `RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI` 控制、**默认 OFF**（见 cmake/windows.cmake）
-    //   ⇒ 本处改动**未随本批的默认构建做编译验证**，只做了独立语法编译校验（见提交信息）。
-    const std::filesystem::path reportDir = resolvePathFromExeDir(cfg_.reportDir);
-    std::filesystem::create_directories(reportDir, ec);
-    const std::filesystem::path reportPath = reportDir / ("TEST_REPORT_ABC_" + nowStamp() + ".md");
+    std::filesystem::create_directories(cfg_.reportDir, ec);
+    const std::filesystem::path reportPath = cfg_.reportDir / ("TEST_REPORT_ABC_" + nowStamp() + ".md");
     std::ofstream ofs(reportPath, std::ios::binary);
     if (!ofs) return;
 

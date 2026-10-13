@@ -103,16 +103,26 @@ function isValidEnvelope(raw: unknown): raw is Record<string, unknown> {
   return typeof raw === 'object' && raw !== null && 'ok' in raw
 }
 
-// 核心请求：超时 / Bearer 鉴权 / 网络与 HTTP 错误统一归一为 ApiError，返回**已解析**的 JSON。
-// **不做** envelope 校验（由调用方按端点契约决定）：fetchJson 要求统一 envelope，
-// fetchRawJson 用于 /api/v1/faces 这类直接返回对象、不套 Envelope 的端点。
-async function coreRequest(
+export async function fetchJson<T>(
   input: string,
-  init: Pick<RequestInit, 'method' | 'body' | 'headers'> & {
+  init: RequestInit & {
     timeoutMs: number
     logLevel: LogLevel
+    cacheStrategy: CacheStrategy
+    cacheKey?: string
   },
-): Promise<unknown> {
+): Promise<T> {
+  const cacheKey = init.cacheKey ?? input
+  if (init.method?.toUpperCase() === 'GET' && init.cacheStrategy !== 'no-cache') {
+    const hit = getFromCache(init.cacheStrategy, cacheKey)
+    if (hit !== undefined) {
+      log(init.logLevel, 'debug', '[api] cache hit', cacheKey)
+      if (isValidEnvelope(hit)) { return hit as T }
+      // 缓存数据格式不匹配（版本变更），忽略缓存
+      log(init.logLevel, 'warn', '[api] cache format mismatch, discarding')
+    }
+  }
+
   const controller = new AbortController()
   const timeoutId = init.timeoutMs > 0
     ? window.setTimeout(() => controller.abort(), init.timeoutMs)
@@ -122,8 +132,7 @@ async function coreRequest(
     // 后端 Bearer 鉴权：token 非空才附加 Authorization，空 token = 兼容模式，headers 与现状一致
     const apiToken = getApiToken()
     const res = await fetch(input, {
-      method: init.method,
-      body: init.body,
+      ...init,
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
@@ -145,7 +154,15 @@ async function coreRequest(
         : undefined
       throw new ApiError(code, message, { httpStatus: res.status, details })
     }
-    return json
+
+    if (init.method?.toUpperCase() === 'GET' && init.cacheStrategy !== 'no-cache') {
+      putToCache(init.cacheStrategy, cacheKey, json)
+    }
+
+    if (!isValidEnvelope(json)) {
+      throw new ApiError('invalid_response', 'API 响应缺少统一 envelope 结构')
+    }
+    return json as T
   } catch (e: unknown) {
     const err = e as Error
     if (err?.name === 'AbortError') {
@@ -158,53 +175,5 @@ async function coreRequest(
   } finally {
     if (timeoutId > 0) window.clearTimeout(timeoutId)
   }
-}
-
-export async function fetchJson<T>(
-  input: string,
-  init: RequestInit & {
-    timeoutMs: number
-    logLevel: LogLevel
-    cacheStrategy: CacheStrategy
-    cacheKey?: string
-  },
-): Promise<T> {
-  const cacheKey = init.cacheKey ?? input
-  if (init.method?.toUpperCase() === 'GET' && init.cacheStrategy !== 'no-cache') {
-    const hit = getFromCache(init.cacheStrategy, cacheKey)
-    if (hit !== undefined) {
-      log(init.logLevel, 'debug', '[api] cache hit', cacheKey)
-      if (isValidEnvelope(hit)) { return hit as T }
-      // 缓存数据格式不匹配（版本变更），忽略缓存
-      log(init.logLevel, 'warn', '[api] cache format mismatch, discarding')
-    }
-  }
-
-  const json = await coreRequest(input, {
-    method: init.method,
-    body: init.body,
-    headers: init.headers,
-    timeoutMs: init.timeoutMs,
-    logLevel: init.logLevel,
-  })
-
-  if (init.method?.toUpperCase() === 'GET' && init.cacheStrategy !== 'no-cache') {
-    putToCache(init.cacheStrategy, cacheKey, json)
-  }
-
-  if (!isValidEnvelope(json)) {
-    throw new ApiError('invalid_response', 'API 响应缺少统一 envelope 结构')
-  }
-  return json as T
-}
-
-// 非 Envelope JSON 端点（如 GET /api/v1/faces 直接返回快照对象）专用：
-// 与 fetchJson 共用 coreRequest（超时 / 鉴权 / 错误归一），但**不做** envelope 校验，
-// 也**不参与缓存**（人脸快照为逐帧高频变化数据，缓存无意义且会误导）。
-export async function fetchRawJson<T>(
-  input: string,
-  init: { method?: string; timeoutMs: number; logLevel: LogLevel },
-): Promise<T> {
-  return (await coreRequest(input, init)) as T
 }
 

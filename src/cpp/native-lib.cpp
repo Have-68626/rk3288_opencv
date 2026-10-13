@@ -55,122 +55,40 @@ void stopAndJoinEngineThreadIfRunning() {
     }
 }
 
-namespace {
-
-// onNativeResult 的 jclass/jmethodID 缓存：避免**逐帧** GetMethodID（需在类方法表中查找，
-// 且失败时会污染挂起的异常状态）。g_activity 可能被 Java 侧替换为新 Activity 实例，故缓存**必须
-// 能失效**——每次仍取一次 localCls = GetObjectClass(activityLocal)，用 IsSameObject 判定是否换了
-// 类，不同则释放旧全局引用、重建（NewGlobalRef + GetMethodID）。缓存读写均在本锁下进行；缓存的
-// jclass 是全局引用，**只在替换缓存时释放**，切勿在每次调用里误删（会打掉别的线程正在用的方法ID）。
-std::mutex g_resultMethodCacheMutex;
-jclass g_cachedResultClass = nullptr;         // MainActivity 的全局引用（跨线程/跨调用复用）
-jmethodID g_cachedOnResultMethod = nullptr;   // onNativeResult(String)
-
-// 每线程 JNIEnv 缓存。结果回调固定在 native 引擎线程上被逐帧调用（30fps 量级），逐帧
-// AttachCurrentThread/DetachCurrentThread 的开销可观且无必要：本线程首次回调 Attach 一次并复用，
-// 线程退出时由缓存对象析构统一 Detach（仅 Detach 我们自己 Attach 的情形；env 由 Java 线程自带的
-// 不 Detach）。形态与 jni/native_face_bridge.cpp 的 ThreadEnvCache 一致（本文件独立实现）。
-struct ResultEnvCache {
-    JavaVM* vm = nullptr;
-    JNIEnv* env = nullptr;
-    bool attachedByUs = false;
-    ~ResultEnvCache() {
-        if (attachedByUs && vm) vm->DetachCurrentThread();
-    }
-};
-
-// 取本线程可用的 JNIEnv，必要时 Attach（仅首次）。
-// ⚠️ 错误码兜底：GetEnv 返回**既非 JNI_OK 又非 JNI_EDETACHED** 的错误码（如 JNI_EVERSION）时，env
-// **未被初始化**，必须返回 nullptr 让调用方早退——否则会带着未初始化指针一路走到 GetObjectClass
-// 崩溃。此处修复了原实现缺失该兜底的既有缺陷。
-JNIEnv* acquireResultThreadEnv(JavaVM* vm) {
-    static thread_local ResultEnvCache cache;
-    if (vm == nullptr) return nullptr;
-    if (cache.env != nullptr && cache.vm == vm) return cache.env;
-    JNIEnv* env = nullptr;
-    const jint st = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
-    if (st == JNI_EDETACHED) {
-        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK || env == nullptr) return nullptr;
-        cache.attachedByUs = true;
-    } else if (st != JNI_OK || env == nullptr) {
-        return nullptr;  // 其他错误码：env 未初始化，放弃本次上行
-    } else {
-        cache.attachedByUs = false;  // env 由 Java 线程自带，线程退出时不 Detach
-    }
-    cache.vm = vm;
-    cache.env = env;
-    return env;
-}
-
-}  // namespace
-
 void sendRecognitionResult(const std::string& result) {
-    if (!g_vm) return;
-    JNIEnv* env = acquireResultThreadEnv(g_vm);
-    if (env == nullptr) return;  // Attach 失败或 GetEnv 异常错误码：env 不可用，放弃本次上行
-
-    // g_activity 是**全局引用**：只在锁内复制它的值并不足以在锁外安全使用——jni/engine.cpp 会在同一把
-    // g_activityMutex 下 DeleteGlobalRef 旧 Activity 并换新实例，而在途回调可能正握着旧值
-    // ⇒ use-after-delete。故在锁内用 NewLocalRef 取得**本线程自己的局部引用**（真正持有一份引用），
-    // 用毕 DeleteLocalRef。真正的 JNI 上行调用仍在锁外进行，不放进临界区。
-    jobject activityLocal = nullptr;
+    jobject activityLocal;
     {
         std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity != nullptr) activityLocal = env->NewLocalRef(g_activity);
+        activityLocal = g_activity;
     }
-    if (activityLocal == nullptr) {
-        env->ExceptionClear();
-        return;
-    }
+    if (!g_vm || !activityLocal) return;
 
-    // 取本实例的类（局部引用）；既作缓存失效判定的依据，也作 GetMethodID 的宿主。
-    jclass localCls = env->GetObjectClass(activityLocal);
-    if (localCls == nullptr) {
-        env->ExceptionClear();
-        env->DeleteLocalRef(activityLocal);
-        return;
-    }
+    JNIEnv* env;
+    int getEnvStat = g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    bool attached = false;
 
-    jmethodID mid = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_resultMethodCacheMutex);
-        if (g_cachedResultClass != nullptr && env->IsSameObject(localCls, g_cachedResultClass)) {
-            mid = g_cachedOnResultMethod;  // 类未变：复用已缓存的方法ID
-        } else {
-            // 先确认方法存在再替换缓存：查不到就不缓存（也清除挂起异常），本次直接放弃调用。
-            jmethodID freshMid = env->GetMethodID(localCls, "onNativeResult", "(Ljava/lang/String;)V");
-            if (freshMid == nullptr) {
-                env->ExceptionClear();
-            } else {
-                jclass newGlobal = static_cast<jclass>(env->NewGlobalRef(localCls));
-                if (newGlobal == nullptr) {
-                    env->ExceptionClear();
-                } else {
-                    if (g_cachedResultClass != nullptr) env->DeleteGlobalRef(g_cachedResultClass);
-                    g_cachedResultClass = newGlobal;
-                    g_cachedOnResultMethod = freshMid;
-                    mid = freshMid;
-                }
-            }
+    if (getEnvStat == JNI_EDETACHED) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != 0) {
+            return;
         }
+        attached = true;
     }
 
-    env->DeleteLocalRef(localCls);
-
-    if (mid != nullptr) {
+    jclass cls = env->GetObjectClass(activityLocal);
+    jmethodID mid = env->GetMethodID(cls, "onNativeResult", "(Ljava/lang/String;)V");
+    if (mid) {
         jstring jStr = env->NewStringUTF(result.c_str());
-        if (jStr != nullptr) {
-            env->CallVoidMethod(activityLocal, mid, jStr);
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-            }
-            env->DeleteLocalRef(jStr);
-        } else {
+        env->CallVoidMethod(activityLocal, mid, jStr);
+        if (env->ExceptionCheck()) {
             env->ExceptionClear();
         }
+        env->DeleteLocalRef(jStr);
     }
+    env->DeleteLocalRef(cls);
 
-    env->DeleteLocalRef(activityLocal);
+    if (attached) {
+        g_vm->DetachCurrentThread();
+    }
 }
 
 // ========== JNI 入口/出口 ==========

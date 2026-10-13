@@ -8,25 +8,6 @@ def intProp(String name, int fallback) {
     return v != null ? (v as Integer) : fallback
 }
 
-// 诊断构建信息（任务3）：Git 短提交 + 构建时间，注入 BuildConfig 供状态区展示
-// （仅排查旧包/配置变更用，不写日志、不影响构建产物大小）
-def gitHeadShort = {
-    try {
-        new ByteArrayOutputStream().withStream { bos ->
-            exec {
-                commandLine 'git', 'rev-parse', '--short', 'HEAD'
-                standardOutput = bos
-                ignoreExitValue = true
-            }
-            String v = bos.toString().trim();
-            return v.isEmpty() ? 'unknown' : v
-        }
-    } catch (Exception ignored) {
-        return 'unknown'
-    }
-}()
-def buildStamp = new Date().format("yyyyMMdd-HHmm")
-
 android {
     namespace 'com.example.rk3288_opencv'
     compileSdk intProp('rk.compileSdk', 34)
@@ -65,10 +46,6 @@ android {
         targetSdk intProp('rk.targetSdk', 34)
         versionCode intProp('rk.versionCode', 3)
         versionName project.findProperty('rk.versionName') ?: "v0.1beta1"
-
-        // 诊断构建信息（任务3）：Git 短提交 + 构建时间；ABI 运行时读 Build.SUPPORTED_ABIS
-        buildConfigField("String", "BUILD_GIT_COMMIT", "\"${gitHeadShort}\"")
-        buildConfigField("String", "BUILD_TIME", "\"${buildStamp}\"")
 
         externalNativeBuild {
             cmake {
@@ -151,167 +128,6 @@ android {
             path file('../CMakeLists.txt')
             version '3.22.1'
         }
-    }
-}
-
-// 任务10：人脸模型本地校验与打包（模型二进制不提交 GitHub——仅本机/RK_BUNDLE_FACE_MODELS=true 时校验）
-def bundleFaceModels = (project.findProperty('RK_BUNDLE_FACE_MODELS')?.toString()?.toBoolean() ?: false)
-
-// 模型打包数据源（单一来源，verify 与 stage 共用——防「加文件忘同步」时 verify 过但 assets 缺模型）。
-// 注意四处同步义务：本表（源路径 + manifest 相对路径） / models/android/*/manifest.json sha256 引脚 /
-// scripts/verify_face_models.py PROFILES。扩展名必须为 param/bin（stage 与引脚派生依赖之）。
-def faceModelFiles = [
-    'rk3288_light': [
-        'models/scrfd_face_detect_ncnn/scrfd_500m_kps-opt2.param',
-        'models/scrfd_face_detect_ncnn/scrfd_500m_kps-opt2.bin',
-        'models/arcface_int8_ncnn/arcface_int8.param',
-        'models/arcface_int8_ncnn/arcface_int8.bin',
-    ],
-    'arm64_accuracy': [
-        'models/scrfd_face_detect_ncnn/scrfd_2.5g_kps-opt2.param',
-        'models/scrfd_face_detect_ncnn/scrfd_2.5g_kps-opt2.bin',
-        'models/arcface_ncnn/arcface.param',
-        'models/arcface_ncnn/arcface.bin',
-    ],
-]
-
-tasks.register('verifyFaceModels') {
-    onlyIf { bundleFaceModels }  // 默认 CI/Debug 跳过；显式启用时必须过本地校验
-    doLast {
-        // 纯 Gradle/JVM 校验（SHA-256 流式计算 + LFS pointer 检测）：
-        // 不依赖外部 python 进程——gradle(Windows cmd) PATH 常缺 python，且外部 exec 曾悬挂。
-        // 独立命令行工具仍是 scripts/verify_face_models.py（供手动/GitHub 之外使用）。
-        java.security.MessageDigest mdSha;
-        def sha256 = { java.io.File f ->
-            def md = java.security.MessageDigest.getInstance('SHA-256')
-            f.withInputStream { is ->
-                byte[] buf = new byte[1 << 20]
-                int n
-                while ((n = is.read(buf)) > 0) md.update(buf, 0, n)
-            }
-            md.digest().collect { String.format('%02x', it) }.join()
-        }
-        def lfs = { java.io.File f ->
-            def isr = new java.io.FileInputStream(f)
-            try {
-                byte[] head = new byte[512]
-                int got = isr.read(head)
-                return new String(head, 0, got > 0 ? got : 0, 'US-ASCII').contains(
-                        'version https://git-lfs.github.com/spec/v1')
-            } finally { isr.close() }
-        }
-        // 按键名（detector.param / detector.bin / embedder.param / embedder.bin）由文件名派生：
-        // 含 scrfd → detector，否则 embedder；后缀 .param → param，否则 bin（faceModelFiles 条目限 param/bin）。
-        // 注：不用 file(...).extension —— Groovy GDK 对 File.extension 在 Gradle 运行时不可用。
-        def pinKeyOf = { String rel ->
-            def ext = rel.endsWith('.param') ? 'param' : 'bin'
-            (rel.contains('scrfd') ? 'detector' : 'embedder') + '.' + ext
-        }
-        // manifest 引脚比对（A2-High 修复）：models/android/<profile>/manifest.json 的
-        // detector.param/bin + embedder.param/bin 的 sha256 与源模型实际哈希比对，缺失/不匹配即 FAIL。
-        // manifest 缺失/无法解析 → 返回 null（调用方按「清单不可用」FAIL，区别于「哈希不符」）。
-        def loadPins = { prof ->
-            def mf = rootProject.file("models/android/${prof}/manifest.json")
-            if (!mf.isFile()) return null
-            def json
-            try {
-                json = new groovy.json.JsonSlurper().parseText(mf.text)
-            } catch (Exception) { return null }
-            def out = [:]
-            faceModelFiles[prof].each { rel ->
-                def key = pinKeyOf(rel)
-                def sec = key.split('\\.')[0]
-                def sub = key.split('\\.')[1]
-                try { out[key] = json[sec][sub].sha256 ?: '' } catch (Exception) { out[key] = '' }
-            }
-            return out
-        }
-        def bad = []
-        def lines = []   // 先收集后统一打印，引脚不符才不误标 PASS（日志归因）
-        faceModelFiles.each { prof, rels ->
-            def pins = loadPins(prof)
-            if (pins == null) {
-                bad.add("[$prof] 模型清单缺失或无法解析: models/android/${prof}/manifest.json")
-            } else {
-                rels.each { rel ->
-                    def f = rootProject.file(rel)
-                    if (!f.isFile()) { bad.add("[$prof] 缺失: $rel"); return }
-                    if (lfs(f)) { bad.add("[$prof] Git LFS pointer: $rel"); return }
-                    def key = pinKeyOf(rel)
-                    def pin = pins[key]
-                    def sha = sha256(f)
-                    if (!pin) {
-                        bad.add("[$prof] $key 缺少 manifest sha256 引脚")
-                    } else if (pin != sha) {
-                        bad.add("[$prof] $key 哈希不符（模型重导出/重量化后须同步 manifest）\n      manifest=$pin 实际=$sha")
-                    } else {
-                        lines.add("[PASS] $prof $key $rel " + sha)
-                    }
-                }
-            }
-        }
-        lines.each { println it }
-        if (!bad.isEmpty()) throw new GradleException('模型校验失败：\n' + bad.join('\n'))
-    }
-}
-tasks.register('stageFaceModels') {
-    onlyIf { bundleFaceModels }
-    dependsOn tasks.named('verifyFaceModels')  // 先校验后复制，防 LFS/损坏源被 staged（A2 M1）
-    doLast {
-        // 本地复制 profile 源模型到 assets（模型文件不入库；仅供含模型构建）。
-        // 源列表复用 faceModelFiles（单一来源，防 verify 与 stage 不同步）。
-        faceModelFiles.each { prof, srcs ->
-            srcs.each { src ->
-                def base = src.contains('scrfd') ? 'scrfd' : 'arcface'
-                // 不用 file(src).extension：Groovy GDK 扩展在 Gradle 运行时不可用（MissingPropertyException）
-                def dstName = base + '.' + (src.endsWith('.param') ? 'param' : 'bin')
-                def dst = file("src/main/assets/face_models/${prof}/${dstName}")
-                dst.parentFile.mkdirs()
-                // 流式复制，避免大模型(bin 数百 MB)整载入 daemon 堆（A2 M2）
-                rootProject.file(src).withInputStream { is ->
-                    dst.withOutputStream { os -> os << is }
-                }
-            }
-        }
-    }
-}
-
-// 任务10：RK_BUNDLE_FACE_MODELS=true 时把模型挂到 preBuild 先 verify + stage（开发期本地验证）。
-// 发布产物隔离（codex 二次审计 P2）：模型**不随 APK 分发**（P1-6 路线），默认关闭时
-// preBuild 清理可能残留的 staged 模型——防「开启打包后又关闭开关」时旧权重仍进 APK。
-tasks.register('cleanStagedFaceModels') {
-    doLast {
-        def dir = file('src/main/assets/face_models')
-        if (dir.exists()) {
-            delete dir
-            println "[cleanStagedFaceModels] 已清理 ${dir}（发布产物隔离，模型不随 APK 分发）"
-        }
-    }
-}
-if (bundleFaceModels) {
-    tasks.named('preBuild').configure { dependsOn tasks.named('stageFaceModels') }
-} else {
-    tasks.named('preBuild').configure { dependsOn tasks.named('cleanStagedFaceModels') }
-}
-
-// 发布产物守门（codex 二次审计 P2）：构建后检查 APK 内确无模型权重（不随 APK 分发）。
-// 用法：gradlew :app:checkApkFaceModels（会先 assembleDebug）。发现 assets/face_models 条目即失败。
-tasks.register('checkApkFaceModels') {
-    dependsOn 'assembleDebug'
-    doLast {
-        def apk = file("$buildDir/outputs/apk/debug/app-debug.apk")
-        if (!apk.isFile()) {
-            println "[checkApkFaceModels] APK 不存在，跳过: ${apk}"
-            return
-        }
-        def hits = []
-        new java.util.zip.ZipFile(apk).withCloseable { zf ->
-            zf.entries().each { e -> if (e.name.startsWith('assets/face_models/')) hits.add(e.name) }
-        }
-        if (!hits.isEmpty()) {
-            throw new GradleException("APK 含模型权重（应不随 APK 分发）：\n  " + hits.take(8).join('\n  '))
-        }
-        println "[checkApkFaceModels] OK：APK 内无 assets/face_models 条目"
     }
 }
 

@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=architecture
-status=living
-as_of=2026-09-26
--->
-
 # C++ 引擎架构文档
 
 > 本文档描述 RK3288 AI Engine 核心 C++ 层的架构设计，涵盖状态机、数据流、模块依赖、工厂模式及命名空间层级。
@@ -39,7 +33,7 @@ stateDiagram-v2
 - **`MonitoringMode`**（`Types.h`）：`CONTINUOUS` / `MOTION_TRIGGERED`
 - **`InferenceThrottleMode`**（`InferenceThrottle.h`）：`Off` / `Manual` / `Auto`
 
-Engine 主循环（`Engine::run()`，位于 `src/cpp/src/Engine.cpp`）：
+Engine 主循环（`Engine::run()`，`Engine.cpp:559-645`）：
 
 ```mermaid
 flowchart TD
@@ -170,7 +164,7 @@ graph TD
         ModelRegistry-->FaceDetector["FaceDetector（接口）"]
         ModelRegistry-->Embedder["Embedder（接口）"]
         FaceDetector-->YoloFaceAdapter
-        FaceDetector-->ScrfdNcnnAdapter
+        FaceDetector-->RetinaFaceAdapter
         FaceDetector-->YuNetAdapter
         FaceDetector-->CascadeAdapter
         FaceDetector-->DnnSsdAdapter
@@ -254,30 +248,23 @@ classDiagram
 | 注册 ID | 适配器 | 推荐场景 | 平台限制 |
 |---------|--------|----------|----------|
 | `yolo_face` | YoloFaceAdapter | 高精度 | 通用 |
-| `scrfd_0.5gf` | ScrfdNcnnAdapter | 高速 | ⚠️ 经**注册表**默认构造无法正确解码（见下） |
+| `scrfd_0.5gf` | YoloFaceAdapter | 高速 | 通用 |
+| `retinaface_scrfd` | RetinaFaceAdapter | 高精度（640x） | 通用 |
 | `yunet` | YuNetAdapter | 均衡 | 通用 |
 | `dnn_ssd` | DnnSsdAdapter | 均衡 | Windows only |
 | `cascade_lbp` | CascadeAdapter | 高速 | Windows only |
 | `yolo_face_int8` | YoloFaceAdapter | 高速（INT8） | 条件编译 |
-
-> **`scrfd_0.5gf` 的注册表路径限制**：经注册表装配时，工厂为
-> `make_unique<ScrfdNcnnAdapter>()`（**默认构造**）后只调 `load(modelPath)` 填模型路径；默认
-> `cfg_` 为 `decodeMode=kDelta` + `anchorsPerPos={1,1,1}`，且**不消费任何 profile**。
-> 真实 SCRFD det_10g 需要 `kDistance` + 每位置 2 anchor ⇒ 经此路径取得的实例**必然解错框位**。
-> 正确装配路径是**不经注册表**的 `RealtimeFacePipeline`（经
-> `ScrfdNcnnAdapter::configFromProfile(profile, …)` 消费 profile 后再构造）。出处：
-> `src/cpp/src/ModelRegistry.cpp`。
 
 **特征提取器（Embedder 接口）：**
 
 | 注册 ID | 适配器 | 输出维度 | 推荐场景 | 平台限制 |
 |---------|--------|----------|----------|----------|
 | `arcface` | ArcFaceAdapter | 512 | 高精度 | 通用 |
-| `mobilefacenet` | MobileFaceNetAdapter | 512 | 高速 | 通用 |
+| `mobilefacenet` | MobileFaceNetAdapter | 128 | 高速 | 通用 |
 | `sface` | SFaceAdapter | 128 | 高速 | 通用 |
 | `lbph` | LbphAdapter | — | 高速 | Windows only |
 | `arcface_int8` | ArcFaceAdapter | 512 | 高速（INT8） | 条件编译 |
-| `mobilefacenet_int8` | MobileFaceNetAdapter | 512 | 高速（INT8） | 条件编译 |
+| `mobilefacenet_int8` | MobileFaceNetAdapter | 128 | 高速（INT8） | 条件编译 |
 
 ---
 
@@ -337,7 +324,7 @@ graph TD
 
     subgraph "adapters（子目录）"
         YoloFaceAdapter
-        ScrfdNcnnAdapter
+        RetinaFaceAdapter
         YuNetAdapter
         CascadeAdapter
         DnnSsdAdapter

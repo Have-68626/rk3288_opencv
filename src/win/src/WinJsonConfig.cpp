@@ -16,7 +16,6 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
-#include <iostream>
 #include <optional>
 #include <sstream>
 
@@ -34,47 +33,6 @@ constexpr int kInferenceIntervalMaxMs = 500;
 constexpr const char* kMaskedSentinel = "***";
 
 constexpr std::uintmax_t kMaxConfigFileBytes = 10 * 1024 * 1024;      // 10MB max config file
-
-// ── FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警回传通道 ──
-// 为什么用 thread_local 而不是出参：本批允许改动的文件**不含** src/win/include/rk_win/WinJsonConfig.h，
-//   而 parseAndValidateSettingsDoc 的签名（jsonText, cfgOut, outErr）正是在那里声明的 ⇒ 无法新增出参，
-//   也不能把告警塞进 outErr（它是**失败**原因，调用方按「非空且返回 false」解读；成功路径上非空 outErr
-//   会与 `if (!parseAndValidateSettingsDoc(...))` 的判读习惯冲突）。
-//   三个调用点（initialize / updateFromJsonBody / reloadFromDisk，另有 reloadFromDisk 的 .bak 复验）
-//   **全部**位于本文件，且都是「同一线程内调用 → 立即读取」⇒ 线程局部变量既无跨线程竞争，
-//   也不会跨调用串味；每次 parseAndValidateSettingsDoc 入口清空，语义等价于出参。
-// 通道去向上限（如实登记）：只有 initialize 把它并入 warnOut（⇒ health 的 configWarning +
-//   configStatus=degraded，即用户可见的那条通道；该告警**跨启动持续**，见合并处的登记）。PUT 路径
-//   无可用的对外通道——HTTP 层只在**错误**响应里带 details（JsonEndpointHandlers 的 errJson），改它
-//   超出本批允许改动的文件范围 ⇒ PUT 的规范化告警在对外响应里不可见。
-//   「钳制结果本身可见」只是**部分**成立，分字段说明见 updateFromJsonBody 末尾的 takeNormalizeWarnings
-//   处（log 段钳后值经 GET 可见；identifyThreshold 的 `> 64` 在 PUT 上是 schema **400 拒绝**，
-//   钳制分支不可达）。原注释在此一概而论，已订正。
-thread_local std::string g_normalizeWarnings;
-
-void addNormalizeWarning(std::string msg) {
-    if (msg.empty()) return;
-    if (g_normalizeWarnings.empty()) {
-        g_normalizeWarnings = std::move(msg);
-    } else {
-        g_normalizeWarnings += "; " + msg;
-    }
-}
-
-// 读出即清空（消费一次）：调用方拿到本次 parseAndValidateSettingsDoc 的全部规范化告警。
-std::string takeNormalizeWarnings() {
-    std::string out = std::move(g_normalizeWarnings);
-    g_normalizeWarnings.clear();
-    return out;
-}
-
-// ── FACE-CONFIG-017：log 段 schema 上界的**镜像常量**（只用于「越界值不可送入整数转换」的护栏）──
-// 为什么需要：规范化发生在 schema 校验**之前**，此时 doc 里的数值未经任何约束；对负数或超范围的
-//   JSON number 做 static_cast 是未定义行为。故只对「明确落在 schema 合法区间内」的值做就地修正，
-//   区间外的值一律**不动**，交回既有 schema 判据（保持「既有非法值仍被拒」的语义不被放宽）。
-// ⚠️ 若 JsonSchemaValidator.cpp 的 log 段上界改了，这两个镜像必须同步（否则本闸门会漏纳或误纳）。
-constexpr double kLogSchemaMaxFileBytes = 1073741824.0;  // = schema 的 maxFileBytes.maximum（1 GiB）
-constexpr double kLogSchemaMaxRollFiles = 1000.0;        // = schema 的 maxRollFiles.maximum
 
 bool readFileAll(const std::filesystem::path& p, std::string& out, std::string& err) {
     err.clear();
@@ -151,64 +109,6 @@ bool moveReplaceWriteThrough(const std::filesystem::path& src, const std::filesy
     err = "平台不支持原子替换";
     return false;
 #endif
-}
-
-// 保全证据：把无法装载的 config.json 改名另存。命名对齐 Java 侧
-// FeatureTemplateEncryptedStore.quarantine：<原文件名>.corrupt.<毫秒时间戳>，同目录。
-// ⚠️ 与 Java 版有一处**语义差异，勿想当然**：Java 的 File.renameTo 在 Windows 上走 MoveFileW，
-//    目标已存在时**失败**；而 C++ 的 std::filesystem::rename 按标准**替换**已存在的非目录文件
-//    （MSVC 用 MoveFileExW + MOVEFILE_REPLACE_EXISTING）。所以「不覆盖更早的隔离证据」**不是**
-//    rename 给的，而是下面那句 `exists(dst) → continue` 预探给的——**不要删掉它**。
-// 另一处差异（有意更严）：失败必须回报调用方（Java 版忽略 renameTo 返回值），调用方据此做到
-//    「隔离失败时不落盘默认值」。
-// 返回 false 时 movedTo 无意义，err 说明原因。
-bool quarantineConfigFile(const std::filesystem::path& p, std::filesystem::path& movedTo, std::string& err) {
-    err.clear();
-    movedTo.clear();
-    const auto dir = p.parent_path();
-    const std::string baseName = p.filename().string();
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch())
-                        .count();
-    std::error_code ec;
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        const std::filesystem::path dst = dir / (baseName + ".corrupt." + std::to_string(ms + attempt));
-        // 先探存在性：本平台 rename 会**覆盖**已存在目标（与 Java 的 renameTo 相反），
-        // 故必须自行探测，否则会销毁更早的隔离证据；冲突则换名重试。
-        if (std::filesystem::exists(dst, ec)) continue;
-        std::filesystem::rename(p, dst, ec);
-        if (!ec) {
-            movedTo = dst;
-            return true;
-        }
-        err = "重命名失败: " + ec.message();
-        return false;
-    }
-    err = "无法为隔离文件分配唯一名称（时间戳冲突）";
-    return false;
-}
-
-// 落盘前置闸门：序列化产物必须能通过 settings schema。
-// 为什么必须有：密钥不可用（config.key.dpapi 损坏 / 跨用户复制 / DPAPI 不可用）时，
-//   buildSettingsJson 返回 {"schemaVersion":1,"_error":"..."} 错误 stub。它一旦落盘，
-//   下次启动必被 schema 拒 ⇒ 再隔离一次、再写同一份 stub ⇒ 隔离文件无清理地累积，
-//   且 health 的 configStatus 永久 rejected。拒写非法产物即打断该自持续循环
-//   （下次启动 config.json 不存在，走正常分支）。
-// whyNot 回传具体原因，供 warnOut 做「失败要有可见性」输出。
-static bool serializedDocIsWritable(const std::string& pretty, std::string& whyNot) {
-    whyNot.clear();
-    JsonValue doc;
-    std::string perr;
-    if (!parseJson(pretty, doc, perr)) {
-        whyNot = "序列化产物不是合法 JSON: " + perr;
-        return false;
-    }
-    std::string serr;
-    if (!JsonSchemaValidator::validate(JsonSchemaValidator::buildSettingsDocSchema(), doc, &serr)) {
-        whyNot = "序列化产物未通过 schema: " + serr;
-        return false;
-    }
-    return true;
 }
 
 // --- 加解密字段格式 ---
@@ -381,21 +281,8 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
         r.o["cascadePath"] = JsonValue::makeString(cfg.recognition.cascadePath.string());
         r.o["databasePath"] = JsonValue::makeString(cfg.recognition.databasePath.string());
         r.o["arcFaceModelPath"] = JsonValue::makeString(cfg.recognition.arcFaceModelPath.string());
-        // ArcFace 节点名（FACE-ARCWIN-001）：非路径，原样序列化（不做 resolvePathFromExeDir）。
-        // 默认空串，语义 = OpenCV 自动以首个输入/输出节点兜底。
-        r.o["arcFaceInputName"] = JsonValue::makeString(cfg.recognition.arcFaceInputName);
-        r.o["arcFaceOutputName"] = JsonValue::makeString(cfg.recognition.arcFaceOutputName);
         r.o["minFaceSizePx"] = JsonValue::makeNumber(cfg.recognition.minFaceSizePx);
-        // LBPH 阈值序列化点（FACE-ARCWIN-010）：**出口也钳**，理由与 inference.intervalMs 处一致——
-        //   序列化产物要过 `serializedDocIsWritable` 闸门（落盘前置条件），若 cfg 里带着越界值被写出，
-        //   该闸门会失败 ⇒ 走上「不落盘 / 回退 .bak」臂；钳制使落盘产物**恒**满足运行时 schema。
-        //   钳是幂等的 ⇒ 对已合法值零影响（健康装载的默认 55.0 原样通过，roundtrip 逐字符相等不变量保持）。
-        //   注：本行必须保持「该键**唯一一次**赋值字面量」——config-contract.test.js 的识别段切片
-        //   按下标该形态的字面量计数（重复出现会因「字面量数 ≠ 去重键数」判红），故钳制就地内联。
-        r.o["identifyThreshold"] = JsonValue::makeNumber(clampIdentifyThreshold(cfg.recognition.identifyThreshold));
-        // ArcFace 专用阈值（余弦相似度语义，FACE-ARCWIN-006/007）。与 LBPH 的 identifyThreshold 量纲不同，
-        // 必须独立成键；后者保持 LBPH 语义不动（迁移安全）。
-        r.o["identifyThresholdArcFace"] = JsonValue::makeNumber(cfg.recognition.identifyThresholdArcFace);
+        r.o["identifyThreshold"] = JsonValue::makeNumber(cfg.recognition.identifyThreshold);
         r.o["enrollSamples"] = JsonValue::makeNumber(cfg.recognition.enrollSamples);
         root.o["recognition"] = std::move(r);
     }
@@ -462,14 +349,6 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
             std::vector<std::uint8_t> plainBin(plain.begin(), plain.end());
             AesGcmCiphertext ct;
             std::string e;
-            // ⚠️ **空明文**（= "经 UI 清空 postUrl" 落盘后的形态）依赖一个 MSVC/BCrypt 特例：
-            //   空 vector 的 data() 为 nullptr，而 aes256gcmEncrypt 把它作为 pbInput 传入；CNG 的
-            //   「pbInput 与 pbOutput **同为 NULL** ⇒ 按零长度认证加密处理、tag 经 pPaddingInfo 返回」
-            //   特例使加密成立（否则会落进 size-query 分支、tag 保持全零 ⇒ 重启解密失败 ⇒ 整份 config
-            //   被隔离 ⇒ **清空被静默撤销**）。该依赖**不是**代码显式追求的，故由
-            //   tests/win 的 test_config_empty_post_url_round_trips_and_survives_reload 实测钉住
-            //   （它是这条路径的**唯一**判据）；若该用例在别的 CRT/BCrypt 版本上变红，请先修这里
-            //   （改为传一个非空哑指针），不要改测试。
             if (!aes256gcmEncrypt(*keyOpt, plainBin, ct, e, "poster.postUrl")) {
                 errOut = e;
                 return JsonValue{};
@@ -495,14 +374,8 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
     {
         JsonValue l = JsonValue::makeObject();
         l.o["logDir"] = JsonValue::makeString(cfg.log.logDir.string());
-        // FACE-CONFIG-017：序列化点同样按总预算的**单份均分额**钳制（同 identifyThreshold 的「出口也钳」
-        //   理由——落盘前置闸门 serializedDocIsWritable 要求产物能过运行时 schema，且磁盘占用由这两个值
-        //   的乘积（**再乘文件集份数** kLogFileSetCount：recognition.csv / recognition.jsonl /
-        //   event_log.jsonl / render_metrics.jsonl —— 末者**仅**旧版 UI 目标 win_camera_face_recognition 写）
-        //   决定，故序列化产物必须是**已钳**的）。先钳 maxFileBytes，再用钳后值反推 maxRollFiles 上界。
-        const std::uint64_t logMaxFileBytes = clampLogMaxFileBytes(cfg.log.maxFileBytes);
-        l.o["maxFileBytes"] = JsonValue::makeNumber(static_cast<double>(logMaxFileBytes));
-        l.o["maxRollFiles"] = JsonValue::makeNumber(clampLogMaxRollFiles(logMaxFileBytes, cfg.log.maxRollFiles));
+        l.o["maxFileBytes"] = JsonValue::makeNumber(static_cast<double>(cfg.log.maxFileBytes));
+        l.o["maxRollFiles"] = JsonValue::makeNumber(cfg.log.maxRollFiles);
         root.o["log"] = std::move(l);
     }
 
@@ -582,34 +455,14 @@ static bool getString(const JsonValue& o, const char* k, std::string& out) {
     return true;
 }
 
-// 键级规范化（FACE-ARCWIN-006/007 迁移过渡 + FACE-ARCWIN-010 阈值钳制 / FACE-CONFIG-017 预算钳制 /
-// FACE-CONFIG-018 路径告警）。定义见本文件 parseAndValidateSettingsDoc 之后。
-// 前置声明置于此，仅为保持定义靠近其唯一调用点之外的既有函数布局（定义体含 doc.find 字面量，
-// 放在本处会前移既有静态切片测试的识别段起点）。
-static void normalizeRecognitionKeys(JsonValue& doc);
-static void normalizeLogBudgetKeys(JsonValue& doc);
-static void warnUnsafeConfigPaths(JsonValue& doc);
-
-bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, AppConfig* envFreeOut, std::string& outErr) const {
+bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText, AppConfig& cfgOut, std::string& outErr) const {
     outErr.clear();
     JsonValue doc;
     std::string perr;
-    // 规范化告警通道：本函数是唯一的生产者，每次进入先清空 ⇒ 调用方读到的必是**本次**调用的告警
-    //   （不会串味到上一次解析）。解析失败等提前 return 同样已清空。
-    (void)takeNormalizeWarnings();
     if (!parseJson(jsonText, doc, perr)) {
         outErr = "JSON 解析失败: " + perr;
         return false;
     }
-    // 迁移过渡（FACE-ARCWIN-006/007）：先补齐 recognition 段缺键，再做 required 收束后的 schema 校验。
-    // 否则既有缺 identifyThresholdArcFace 的 config.json 会被拒，进而降级为默认值运行（历史行为更糟：
-    // 穿透 INI 分支覆盖用户配置；FACE-CONFIG-001 已改为先隔离坏文件再以默认值启动）。
-    normalizeRecognitionKeys(doc);
-    // FACE-CONFIG-017：log 段写放大总预算 —— 必须在 schema 校验**前**就地钳制，理由见其定义处。
-    normalizeLogBudgetKeys(doc);
-    // FACE-CONFIG-018：6 个路径字段的强化校验 —— 本处**只告警**（见其定义处的红线说明）；
-    //   真正的「拒绝」只发生在 PUT 路径（updateFromJsonBody 对 patch 内显式携带的写型字段）。
-    warnUnsafeConfigPaths(doc);
     std::string schemaErr;
     if (!JsonSchemaValidator::validate(JsonSchemaValidator::buildSettingsDocSchema(), doc, &schemaErr)) {
         outErr = "Schema 校验失败: " + schemaErr;
@@ -661,20 +514,8 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*r, "cascadePath", s)) cfg.recognition.cascadePath = resolvePathFromExeDir(s);
         if (getString(*r, "databasePath", s)) cfg.recognition.databasePath = resolvePathFromExeDir(s);
         if (getString(*r, "arcFaceModelPath", s)) cfg.recognition.arcFaceModelPath = resolvePathFromExeDir(s);
-        // 节点名不是路径：原样读入，绝不做 resolvePathFromExeDir。
-        // getString 仅要求"键存在且为字符串"（空串亦满足），故显式置空可覆盖 cfg 的旧值；
-        // 键缺失时才保留默认（空串）。
-        if (getString(*r, "arcFaceInputName", s)) cfg.recognition.arcFaceInputName = s;
-        if (getString(*r, "arcFaceOutputName", s)) cfg.recognition.arcFaceOutputName = s;
         if (getNumber(*r, "minFaceSizePx", v)) cfg.recognition.minFaceSizePx = static_cast<int>(v);
-        // LBPH 阈值（FACE-ARCWIN-010）**只此一处读取**；此点**不重复钳制**的理由：本函数入口的
-        // normalizeRecognitionKeys 已在 schema 校验前把该键钳进 [1, 64]，schema 又保证它必须存在且
-        // 落在同区间 ⇒ 这里读到的必是已钳值（重复钳制是死代码，与「极简」相悖）。
-        // 上面三项路径字段的读取同理不在此处判定（路径校验在 warnUnsafeConfigPaths 内对同一个 doc 做，
-        // 判据与 PUT 路径完全同源）。
         if (getNumber(*r, "identifyThreshold", v)) cfg.recognition.identifyThreshold = v;
-        // ArcFace 专用阈值（余弦相似度）。键缺失时保留默认 0.45。
-        if (getNumber(*r, "identifyThresholdArcFace", v)) cfg.recognition.identifyThresholdArcFace = v;
         if (getNumber(*r, "enrollSamples", v)) cfg.recognition.enrollSamples = static_cast<int>(v);
     }
 
@@ -695,9 +536,12 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getString(*d, "modelPath", s)) cfg.dnn.modelPath = resolvePathFromExeDir(s);
         if (getString(*d, "configPath", s)) cfg.dnn.configPath = resolvePathFromExeDir(s);
 
-        // ⚠️ FACE-CONFIG-017：此处**原**有一对冗余的 RK_WCFR_DNN_MODEL / RK_WCFR_DNN_CONFIG env 覆盖
-        //   （与函数末尾同名覆盖重复）。为使「套用 env **之前**的来源快照」真正 env-free，已把它们**删除**——
-        //   唯一取值点收敛到函数末尾那处（cfgOut 的取值不变：末尾覆盖对本块**无条件**生效，故删除是行为中性的）。
+        const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
+        if (!envModel.empty()) cfg.dnn.modelPath = resolvePathFromExeDir(envModel);
+
+        const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
+        if (!envConfig.empty()) cfg.dnn.configPath = resolvePathFromExeDir(envConfig);
+
         if (getNumber(*d, "inputWidth", v)) cfg.dnn.inputWidth = static_cast<int>(v);
         if (getNumber(*d, "inputHeight", v)) cfg.dnn.inputHeight = static_cast<int>(v);
         if (getNumber(*d, "scale", v)) cfg.dnn.scale = v;
@@ -754,20 +598,12 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
                     outErr = "postUrl 解密失败: " + e;
                     return false;
                 }
-                // ⚠️ 空明文（"经 UI 清空 postUrl" 落盘后就是这个形态）时 plain 为空 vector，其 data()
-                //   可能是 nullptr，而标准要求 assign(const char*, n) 的指针非空（n=0 亦然）⇒ 显式判空，
-                //   不依赖实现的宽容（这条路径由 tests/win 的
-                //   test_config_empty_post_url_round_trips_and_survives_reload 钉住）。
-                if (plain.empty()) {
-                    cfg.poster.postUrl.clear();
-                } else {
-                    cfg.poster.postUrl.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
-                }
+                cfg.poster.postUrl.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
             }
         }
 
-        // ⚠️ FACE-CONFIG-017：此处**原**有一条冗余的 RK_WCFR_POST_URL env 覆盖（与函数末尾重复）。为使来源
-        //   快照 env-free，已删除；唯一取值点收敛到函数末尾（cfgOut 取值不变：末尾覆盖无条件生效）。
+        const std::wstring envUrl = getEnvW(L"RK_WCFR_POST_URL");
+        if (!envUrl.empty()) cfg.poster.postUrl = utf8FromWide(envUrl);
         if (getNumber(*p, "throttleMs", v)) cfg.poster.throttleMs = static_cast<int>(v);
         if (getNumber(*p, "backoffMinMs", v)) cfg.poster.backoffMinMs = static_cast<int>(v);
         if (getNumber(*p, "backoffMaxMs", v)) cfg.poster.backoffMaxMs = static_cast<int>(v);
@@ -778,11 +614,6 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         std::string s;
         double v = 0;
         if (getString(*l, "logDir", s)) cfg.log.logDir = resolvePathFromExeDir(s);
-        // FACE-CONFIG-017 的两个读取点：同 identifyThreshold 的处置理由——normalizeLogBudgetKeys 已在
-        //   schema 校验前按总预算的**单份均分额**就地钳制，schema 又保证两者必须存在且落在各自区间内
-        //   ⇒ 这里读到的是已钳值，其乘积**必满足**单份均分额（≤ 总预算）（在此再钳一次是死代码）。
-        //   注：static_cast<std::uint64_t>(v) 的安全性由 schema 的 [1024, 1 GiB] 保证（非有限值 / 负数 /
-        //   超范围值到不了这里）。
         if (getNumber(*l, "maxFileBytes", v)) cfg.log.maxFileBytes = static_cast<std::uint64_t>(v);
         if (getNumber(*l, "maxRollFiles", v)) cfg.log.maxRollFiles = static_cast<int>(v);
     }
@@ -825,28 +656,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
         if (getBool(*a, "enableQualcomm", b)) cfg.acceleration.enableQualcomm = b;
     }
 
-    // ★ FACE-CONFIG-017：**来源快照** —— 在套用下方 RK_WCFR_* 覆盖**之前**，把此时（纯由 JSON 解析而得、
-    //   未受任何 env 影响）的 cfg 留存一份到 envFreeOut。落盘侧一律用该 **env-free 快照**序列化
-    //   （见 WinJsonConfig.h 的 envFreeOut 说明与 envFreeCfg_ 成员注释），故 env 覆盖值不会被静默
-    //   烤进 config.json；内存 cfg_ 仍用下方 env-applied 值（load 时 env 照旧重放）。
-    //   注：本函数早先的 dnn 块内**有两条冗余的 env 覆盖**（RK_WCFR_DNN_MODEL + RK_WCFR_DNN_CONFIG）、
-    //   poster 块内**有一条**（RK_WCFR_POST_URL），均与下方同名覆盖重复；为使此处快照确保 env-free 已删除
-    //   ——删除是**行为中性**的：下方覆盖无条件生效，cfgOut 取值逐位不变。
-    if (envFreeOut) *envFreeOut = cfg;
-
-    // Apply environment variable overrides if present.
-    //
-    // ⚠️ FACE-CONFIG-015 / FACE-CONFIG-017：下面这些 RK_WCFR_* 覆盖（本块 4 个）**只**改写返回的 cfgOut
-    //   （= 内存 cfg_ 的事实源），**不再**进入落盘产物——落盘侧一律用上面那份 env-free 快照。
-    //   · FACE-CONFIG-015（原「已知不对称、本轮不修」的登记）**已由 FACE-CONFIG-017 的上述方案闭合**：
-    //     曾存在的缺口是「序列化侧只看到 env 覆盖后的 cfg、无法回退」⇒ 一次「热重载回滚写回」
-    //     （reloadFromDisk）或 PUT（updateFromJsonBody）会把 env 值烤进 config.json；现两者均改为序列化
-    //     env-free 快照，initialize 的级联迁移落盘 / rotate 重加密落盘 / 各处 lastGoodJsonPretty_ 亦同。
-    //   · ✅ A18 **已闭合**（原「已知残留」）：**INI→JSON 首装/回落落盘**（initialize 走 loadConfigFromIniOrDefault
-    //     那一支）此前不经本函数、且该函数自身套用同名 env 覆盖 ⇒ 该单条写盘路径会把 env 值写进**首次落盘**的
-    //     config.json。A18 已给 loadConfigFromIniOrDefault 增开可选出参 envFreeOut，initialize 的 INI 分支改用该
-    //     env-free 来源快照序列化（见 initialize 内 `AppConfig envFreeIni; loadConfigFromIniOrDefault(&envFreeIni);`）。
-    //   详见 docs/guides/windows-service/config.md。
+    // Apply environment variable overrides if present
     const std::wstring envModel = getEnvW(L"RK_WCFR_DNN_MODEL");
     const std::wstring envConfig = getEnvW(L"RK_WCFR_DNN_CONFIG");
     const std::wstring envPort = getEnvW(L"RK_WCFR_HTTP_PORT");
@@ -865,137 +675,6 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
 
     cfgOut = std::move(cfg);
     return true;
-}
-
-// FACE-ARCWIN-006/007 迁移过渡 + FACE-ARCWIN-010 阈值钳制：recognition 段的键级规范化。
-// 本函数只做两件事：(1) 补 identifyThresholdArcFace 缺键；(2) 把 identifyThreshold 钳进 [1, 64]。
-//
-// (1) 为什么需要补缺键：identifyThresholdArcFace 已进入 schema.required（见 JsonSchemaValidator.cpp），
-// 而既有部署的 config.json 没有该键（它随本批才进入序列化）。若不先补齐，老配置会在启动校验被拒
-// ⇒ 降级为默认值运行。历史行为（修复前）：initialize 在校验失败时并不 return，而是穿透到 INI 迁移分支、
-// 以 INI/默认值**覆盖写 config.json**（仅留一条 warn），用户配置即被丢弃。
-// 现行为（FACE-CONFIG-001）：校验被拒时先把坏配置改名另存再以默认值启动，不再覆盖销毁；但缺键的既有
-// 配置仍会降级运行，故仍须在此补齐，使其走「加载成功」路径。
-//
-// (2) 为什么必须钳 identifyThreshold（FACE-ARCWIN-010）：本批把 schema 的该键上界从 100000 收紧到
-// 64（卡方距离的物理上界）。若不在此**先**就地把越界值钳到上界，任何既有 config.json 里 > 64 的值会
-// 从「合法」突变为「不合法」⇒ 启动校验失败 ⇒ 隔离 + 默认值运行（用户配置被弃用，即红线）。
-// 钳制 ↔ schema 收紧必须**同批**且钳制**在前**。下界同取 1.0（与三方 schema 的 minimum 同值），
-// 使 clamp 输出恒落在 schema 合法区间内 —— 详细取舍见 WinConfig.cpp 的 clampIdentifyThreshold。
-//
-// 边界（刻意的最小改动）：除上述两项外，不推广到 recognition 段其余键——其余 7 个键的接受/拒绝语义
-// 属历史契约，本批不改。若一并补默认，「删除 cascadePath 等必填键」会从「校验失败 ⇒ 回滚 .bak」静默
-// 变成「以默认值接受」——属未声明的行为放宽。补入值与解析侧「键缺失保留结构体默认」同源，故本规范化
-// 不改变任何**已被接受**配置的解析结果，只让新增的 required / 收紧的 maximum 校验能通过。
-static void normalizeRecognitionKeys(JsonValue& doc) {
-    JsonValue* rec = doc.find("recognition");
-    if (!rec || !rec->isObject()) return;
-    if (!rec->find("identifyThresholdArcFace")) {
-        rec->o["identifyThresholdArcFace"] =
-            JsonValue::makeNumber(defaultAppConfig().recognition.identifyThresholdArcFace);
-    }
-    // 只处理「超过物理上界」的值 ⇒ **不**放宽下界的既有拒绝语义（< 1 的值照旧被 schema 拒，与改动前
-    //   一致；只有 > 64 这一侧从「被接受」改判为「钳到 64 并告警」，属不让任何既有配置失效的**收紧**方向）。
-    if (JsonValue* thr = rec->find("identifyThreshold"); thr && thr->isNumber() && thr->n > kIdentifyThresholdMax) {
-        const double raw = thr->n;
-        thr->n = clampIdentifyThreshold(raw);
-        addNormalizeWarning("recognition.identifyThreshold=" + std::to_string(raw) +
-                            " 超过 LBPH 卡方距离的物理上界 " + std::to_string(kIdentifyThresholdMax) +
-                            "（超过该值时「距离 <= 阈值」恒真、阈值形同虚设），已就地钳为 " +
-                            std::to_string(thr->n));
-    }
-}
-
-// FACE-CONFIG-017（S-3）：log 段写放大总预算——**只钳不拒**，且必须在 schema 校验**前**完成。
-// 为什么在 schema 前：落盘面**最多 4 份**文件集（recognition.csv、recognition.jsonl、**event_log.jsonl**
-//   —— 后者复用同一对 cfg.log 上限与同一 logDir，本批起随配置接线 —— 与 render_metrics.jsonl
-//   —— **仅**旧版 UI 目标写）各占 maxFileBytes × (maxRollFiles + 1) 字节；而 schema 本身允许单份
-//   1 GiB × 1001（四份最坏约 4 TiB）⇒ 只靠 schema 拦不住磁盘耗尽。此处把两者钳进 512 MiB 总预算的
-//   **均分额**（kLogPerSetBudgetBytes = 512 MiB / 4 = 134217728 字节）内，schema 校验随后照常执行
-//   （**不动** schema 的 log 段上下界——收紧会让既有合法配置突然失效，即红线；故本项只做运行时
-//   钳制，schema 仍允许大值 ⇒ 「配置声明值 ≠ 生效值」是本项刻意保留的残留）。
-// 为什么在此**不做**「钳后仍不合法」的兜底：钳制只往下压，从不抬升下界；区间外的值（负数 / 0 /
-//   超 schema 上界 / 非有限值）一律不动，交回既有 schema 判据 ⇒ 「既有非法值仍被拒」的语义不变。
-static void normalizeLogBudgetKeys(JsonValue& doc) {
-    JsonValue* lg = doc.find("log");
-    if (!lg || !lg->isObject()) return;
-
-    JsonValue* mfb = lg->find("maxFileBytes");
-    // 只对「均分额内单文件上限 < 值 ≤ schema 上界」这一段做就地修正：落在该区间外时**不做**整数转换
-    //   （对负数 / 非有限值 / 超 u64 范围的 double 做 static_cast 是未定义行为），一律交回 schema 判据。
-    const bool mfbFixable = mfb && mfb->isNumber() && mfb->n > static_cast<double>(kLogMaxFileBytesCap) &&
-                            mfb->n <= kLogSchemaMaxFileBytes;
-    if (mfbFixable) {
-        const std::uint64_t raw = static_cast<std::uint64_t>(mfb->n);
-        const std::uint64_t clamped = clampLogMaxFileBytes(raw);
-        if (clamped != raw) {
-            mfb->n = static_cast<double>(clamped);
-            addNormalizeWarning("log.maxFileBytes=" + std::to_string(raw) + " 超出日志写放大总预算（总预算 " +
-                                std::to_string(kLogBudgetBytes) + " 字节由 " + std::to_string(kLogFileSetCount) +
-                                " 份文件集（recognition.csv / recognition.jsonl / event_log.jsonl，以及"
-                                "旧版 UI 目标的 render_metrics.jsonl）均分 ⇒ 单份上界 " +
-                                std::to_string(kLogPerSetBudgetBytes) +
-                                " 字节 = maxFileBytes × (maxRollFiles + 1)），已就地钳为 " +
-                                std::to_string(clamped));
-        }
-    }
-
-    JsonValue* mrf = lg->find("maxRollFiles");
-    if (!mrf || !mrf->isNumber() || mrf->n < 1.0 || mrf->n > kLogSchemaMaxRollFiles) return;  // 区间外交回 schema
-    // 用**钳后**的 maxFileBytes 反推上界（与 clampLogMaxRollFiles 的约定一致；用原值会算出偏小的上界）。
-    //   maxFileBytes 缺失 / 非数 / 越出可安全转换的区间时，取「均分额内单文件上限」作为保守输入——
-    //   这样转换必安全，且这些形态本就会被 schema 的 required / 上下界拒掉（本闸门不改其判定）。
-    const double mfbSafe = (mfb && mfb->isNumber() && mfb->n >= 0.0 && mfb->n <= kLogSchemaMaxFileBytes)
-                               ? mfb->n
-                               : static_cast<double>(kLogMaxFileBytesCap);
-    const std::uint64_t mfbForBudget = clampLogMaxFileBytes(static_cast<std::uint64_t>(mfbSafe));
-    const int raw = static_cast<int>(mrf->n);  // 已确认落在 [1, 1000] ⇒ 转换安全
-    const int clamped = clampLogMaxRollFiles(mfbForBudget, raw);
-    if (clamped != raw) {
-        mrf->n = clamped;
-        addNormalizeWarning("log.maxRollFiles=" + std::to_string(raw) + " 超出日志写放大总预算（总预算 " +
-                            std::to_string(kLogBudgetBytes) + " 字节由 " + std::to_string(kLogFileSetCount) +
-                            " 份文件集均分 ⇒ 单份上界 " + std::to_string(kLogPerSetBudgetBytes) +
-                            " 字节 = maxFileBytes × (maxRollFiles + 1)），已就地钳为 " +
-                            std::to_string(clamped));
-    }
-}
-
-// FACE-CONFIG-018（S-1）：6 个路径字段的强化校验——**本处只告警**。
-// ⚠️ 红线（最高优先）：本函数在**启动期**（initialize 与热重载都经 parseAndValidateSettingsDoc）运行，
-//   此处**绝不**能返回 false —— 启动校验失败 ⇒ 隔离 + 默认值运行 ⇒ 用户配置被弃用。
-//   故所有路径违规在此一律降级为告警（并入 warnOut ⇒ health 的 configWarning + configStatus=degraded），
-//   真正的「拒绝」只发生在 PUT 路径（updateFromJsonBody 对 patch 内**显式携带**的写型字段）。
-// 为什么对读型字段也只告警、不拒绝（分阶段登记）：读型字段的误伤面与写型相同（绝对路径是官方用法），
-//   而它们的风险（读到别处文件）远低于写型（create_directories + 覆写/滚动删除）；本批只做「可见化」，
-//   把写型先落到 PUT 拒绝。后续若要收紧，应连同可写根白名单一起做（AppConfig 目前没有该字段）。
-static void warnUnsafeConfigPaths(JsonValue& doc) {
-    // 写型字段排在前：其风险含「写入/创建目录/滚动删除」，是本次加固的重点。
-    struct PathField {
-        const char* section;
-        const char* key;
-        bool writeType;
-    };
-    static const PathField kFields[] = {
-        {"recognition", "databasePath", true},   // FaceDatabase::save：create_directories(parent) + 原子替换覆写目标
-        {"log", "logDir", true},                 // StructuredLogger/EventLogger：create_directories + 写固定名文件 + 滚动 rename/remove
-        {"recognition", "cascadePath", false},   // 只读
-        {"recognition", "arcFaceModelPath", false},
-        {"dnn", "modelPath", false},
-        {"dnn", "configPath", false},
-    };
-    for (const PathField& f : kFields) {
-        const JsonValue* sec = doc.find(f.section);
-        if (!sec || !sec->isObject()) continue;
-        const JsonValue* v = sec->find(f.key);
-        if (!v || !v->isString()) continue;
-        std::string why;
-        // 路径按 JSON 里的**原样字符串**构造（与解析侧 resolvePathFromExeDir 的入参同源）：
-        //   `..` 在相对与绝对两种形态下都存在于该字符串中，判别不受是否已拼接 exeDir 影响。
-        if (!checkConfigPath(std::filesystem::path(v->s), PathPolicy::Warn, why)) {
-            addNormalizeWarning(std::string(f.writeType ? "写型" : "读型") + "路径字段 " + f.section + "." + f.key + "：" + why);
-        }
-    }
 }
 
 std::string WinJsonConfigStore::buildSettingsJson(const AppConfig& cfg, bool redacted, bool encryptSensitive) const {
@@ -1060,232 +739,52 @@ bool WinJsonConfigStore::writeAtomicallyWithBackup(const std::string& jsonPretty
 bool WinJsonConfigStore::initialize(std::string& warnOut) {
     warnOut.clear();
 
-    // 本次启动是否因「既有 config.json 无法装载」而降级运行。两条失败路径（不可读 / 被拒）共用此标记。
-    bool loadRejected = false;
-    std::string quarantineName;  // 隔离成功后的文件名（非全路径）
-
-    // FACE-CONFIG-014：清扫上一次进程崩溃残留的回滚临时文件。
-    // reloadFromDisk 的回滚写回用**固定名** config.json.rollback.tmp（writeFileAll → moveReplaceWriteThrough），
-    // 进程若在这两步之间崩溃会残留该文件；此前 initialize 与 writeAtomicallyWithBackup **都不清理**它。
-    // 在启动清扫使其「重启即自愈」，无需人工删除。
-    // 安全性（如实评估）：本类**不承诺多实例并发**（见类注释「多实例同时写会冲突」）；默认落盘目录
-    //   %APPDATA%\rk_wcfr 为单用户单实例服务所用。另一进程若真在写同一目录，则同样固定名的
-    //   config.json.tmp（writeAtomicallyWithBackup）本就有同样的多实例暴露 ⇒ 清理本残留并不比既有
-    //   写盘更激进。误删的后果也**可控**：若删除的是一份正在被另一进程使用的回滚 tmp，对方随后的
-    //   moveReplaceWriteThrough 因源文件缺失而失败 ⇒ 该次回滚「不写回」（与「无可用 .bak」臂一样安全，
-    //   不会损坏 config.json）。删除仅针对**该固定名**（不递归、不遍历目录内容）⇒ 合法 config.json /
-    //   .bak / .corrupt.* 均不受影响（负对照见 tests/win/test_win_json_config.cpp）。
-    {
-        // 本处亦持 mu_（FACE-CONFIG-014）：清扫是对**配置目录**的文件系统变更（删除），使其与同批两处
-        //   initialize 写盘补锁同形态，让「对配置目录的变更统一在 mu_ 下」这条口径**可机械复核**。
-        //   死锁核实（逐字）：本临界区**只**调 std::filesystem::remove（不取 mu_、不回调本类任何成员）
-        //   ⇒ 无递归加锁；initialize 处于启动阶段、本无并发消费者 ⇒ 不引入新的锁竞争。故补锁安全。
-        //   （清扫与随后的读取/写盘各自独立成对临界区，不嵌套 ⇒ 无锁序问题。）
-        std::lock_guard<std::mutex> lock(mu_);
-        std::error_code cleanEc;
-        // 清理失败（残留为目录 / 被杀软占用等）不影响启动：残留无正确性影响，下次回滚以 trunc 覆盖它。
-        std::filesystem::remove(configPath_.parent_path() / L"config.json.rollback.tmp", cleanEc);
-    }
-
     // 读取现有 config.json
     if (std::filesystem::exists(configPath_)) {
         std::string txt, err;
-        if (readFileAll(configPath_, txt, err)) {
+        if (!readFileAll(configPath_, txt, err)) {
+            warnOut = err;
+        } else {
             AppConfig cfg;
-            AppConfig envFree;  // FACE-CONFIG-017：env-free 来源快照（落盘侧的唯一取值来源）
-            if (parseAndValidateSettingsDoc(txt, cfg, &envFree, err)) {
-                // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警**就地取走**：
-                // 本处是它们**唯一用户可见**的出口——并入 warnOut ⇒ initWarning_ ⇒ /api/v1/health 的
-                // configWarning + configStatus=degraded（零新增通道）。健康装载（默认值全部在界内、
-                // 路径无 `..` 段）时该串为空 ⇒ 「正常启动零告警 / stderr 零输出」语义与既有用例
-                // （test_config_healthy_load_not_quarantined / _silent_stderr）保持不变。
-                // 必须在 parseAndValidateSettingsDoc 返回后**立刻**取走：本函数后续还会经 buildSettingsJson
-                // 等路径，但都不会再触发规范化。
-                const std::string normWarn = takeNormalizeWarnings();
-                // 级联路径迁移：命中旧部署路径（tests/data/...）且该旧文件已不存在时改指新路径，并尝试持久化。
-                // ④ 修复：这次写盘此前被 (void) 吞掉，且成功分支无条件 initWarning_.clear()，结果「迁移只改了内存、
-                //   未落到磁盘」却对外报 configStatus=ok（静默）。现把失败并入 warnOut/initWarning_，使其在 health
-                //   上体现为 degraded（键为 configWarning）。⚠️ migrateWarn 仅在写盘**真的失败**时才非空 ⇒ 健康
-                //   装载（不触发本迁移分支）时 warnOut 仍为空，保持「正常启动零告警 / stderr 零输出」语义。
-                std::string migrateWarn;
+            if (parseAndValidateSettingsDoc(txt, cfg, err)) {
                 const auto oldCascade = resolvePathFromExeDir(L"tests/data/lbpcascade_frontalface.xml");
                 if (cfg.recognition.cascadePath == oldCascade && !std::filesystem::exists(cfg.recognition.cascadePath)) {
                     cfg.recognition.cascadePath = resolvePathFromExeDir(L"assets/lbpcascade_frontalface.xml");
-                    // FACE-CONFIG-017：级联路径迁移只改 cascadePath（非 env 字段）⇒ 同步改 env-free 快照，
-                    //   否则落盘会漏掉本次迁移（写回旧路径，下次启动再次进入本分支）。
-                    envFree.recognition.cascadePath = cfg.recognition.cascadePath;
-                    const std::string prettyMigrated = buildSettingsJson(envFree, false, true);
+                    const std::string prettyMigrated = buildSettingsJson(cfg, false, true);
                     std::string writeErr;
-                    // 落盘前置闸门（与下方 INI/默认值落盘那处**同款**，见 serializedDocIsWritable 定义）：序列化
-                    //   产物必须自洽（能过 settings schema）。若**此刻**密钥变为「存在但不可读 / 损坏 / DPAPI 失败」，
-                    //   buildSettingsJson 返回 {"schemaVersion":1,"_error":...} stub；一旦落盘，下次启动必被 schema
-                    //   拒 ⇒ 再隔离一次、再写同一 stub（自持续循环）。它防的是「加载成功、写盘前密钥已失效」这一刻，
-                    //   与密钥的**加载期**校验（parseAndValidateSettingsDoc 内的 ensureOrLoadKey 调用）不同层。
-                    //   ⚠️ **定位订正（勿再去改错地方）**：清单原记「INI→JSON 迁移分支缺闸门」**有误**——INI 那处
-                    //   （下方 loadConfigFromIniOrDefault 之后）**本来就有**闸门；真正缺闸门的是**本处（级联路径迁移落盘）**。
-                    std::string notWritable;
-                    const bool serializable = serializedDocIsWritable(prettyMigrated, notWritable);
-                    if (!serializable) {
-                        // ⚠️ **判别力边界（如实登记，勿高估）**：本 `serializable == false` 分支是**竞态防御**，
-                        //   防的是「配置装载成功、写盘前密钥才失效」这一 TOCTOU 窗口。该窗口**不可确定性构造**：
-                        //   迁移分支仅在 `parseAndValidateSettingsDoc` **成功**后可达，而该函数**成功路径必经**
-                        //   `ensureOrLoadKey`（密钥缺失即生成）⇒ 装载成功蕴含「密钥刚可用」；要在迁移落盘处令密钥
-                        //   失效，只能靠并发改盘 / DPAPI 失败等外部时序 ⇒ **单线程确定性测试构造不出**本分支，故**故意不测**。
-                        //   （口径订正：本 if-块**并非零覆盖**——其**写盘失败**分支由
-                        //   `test_config_cascade_migration_write_failure_degrades` 覆盖且实跑 PASS；真正无判别用例的
-                        //   只是上面这条 false 分支，且类内 4 个测试钩子都不落在 initialize 迁移路径上 ⇒ 无接缝可注入。）
-                        // 闸门不过 ⇒ **不落盘**（否则会把错误 stub 写进 config.json）。只改了内存 cascadePath；
-                        //   磁盘仍是失效的旧路径，下次启动会再次进入本分支；原因经既有 migrateWarn 降级告警出口暴露
-                        //   （不新造日志通道，与「写入 config.json 失败」那条走同一出口）。
-                        migrateWarn = "级联路径迁移未持久化（序列化未通过 schema，密钥不可用或加密失败）: " + notWritable;
-                    } else {
-                        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
-                        //   本处是 initialize 的**迁移落盘**：启动阶段（早于 startWatching / 轮询循环）本无并发消费者，
-                        //   此处持锁是**幂等加固**：使「写盘必须持锁」在每个调用点一致可见，后人新增写盘路径时照抄该形态。
-                        std::lock_guard<std::mutex> lock(mu_);
-                        if (!writeAtomicallyWithBackup(prettyMigrated, writeErr)) {
-                            // 只改了内存 cascadePath；写盘失败 ⇒ 磁盘仍是失效的旧路径，下次启动会再次进入本分支。
-                            migrateWarn = "级联路径迁移未持久化（写入 config.json 失败）: " + writeErr;
-                        }
-                    }
+                    (void)writeAtomicallyWithBackup(prettyMigrated, writeErr);
                 }
 
-                // 规范化告警并入 warnOut（顺序：迁移告警在前、规范化告警在后）。二者语义同级——
-                // 都表示「本次启动**成功但降级**」，故合并进同一条 configWarning 文本。
-                // ⚠️ **跨启动持续、且无自愈路径**（如实登记，本批不改行为）：本成功分支**只读不写**——
-                //   它不把 cfg（含被钳后的值）回写 config.json，磁盘上的越界原值 / 含 `..` 的路径**原封
-                //   不动** ⇒ 同一份「功能完全正常」的配置在**每次启动都复现同一条**告警：重启不收敛，
-                //   只有一次 PUT 或手工编辑磁盘值才会消失。health 的 configStatus 也随之**长期**停在
-                //   degraded（成因清单见 docs/windows-web-spa/openapi.yaml 的 `/api/v1/health`
-                //   → `configStatus` 说明，其「越界值钳制 / 不安全路径」两小节正对应本条）。
-                //   与之对照：上方级联路径迁移分支在**写盘失败**时告警，那条告警带自愈路径（下次启动
-                //   重试写盘），两者的「持续性」不同类。
-                if (!normWarn.empty()) {
-                    migrateWarn = migrateWarn.empty() ? normWarn : (migrateWarn + "; " + normWarn);
-                }
-
-                // FACE-CONFIG-017：落盘/缓存产物一律用 **env-free 快照**（env 覆盖值既不写回磁盘，
-                //   也不进 lastGoodJsonPretty_ 这一 PUT 合并基底；内存 cfg_ 仍用 env-applied 值）。
-                const std::string pretty = buildSettingsJson(envFree, false, true);
+                const std::string pretty = buildSettingsJson(cfg, false, true);
                 std::lock_guard<std::mutex> lock(mu_);
                 cfg_ = cfg;
-                envFreeCfg_ = envFree;
                 lastGoodJsonPretty_ = pretty;
                 std::error_code ec;
                 lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
-                // 诊断字段永远描述**最近一次** initialize：成功路径同样复位上一轮的 rejected / 隔离名；
-                // initWarning_ 仅回填本次迁移告警（健康装载时 migrateWarn 为空 ⇒ 复位为空串），
-                // 否则同一 store 二次 initialize 会残留上一轮的 rejected / warning / 隔离名。
-                configRejectedOnLoad_ = false;
-                initWarning_ = migrateWarn;
-                initQuarantineFileName_.clear();
-                warnOut = migrateWarn;
                 return true;
             }
+            warnOut = err;
         }
-        // 到这里：config.json 存在，但不可读 或 解析/schema 校验被拒 ⇒ 无法装载。
-        // 不变量（**仅限本次 initialize**）：登记为 rejected 时，config.json 要么改名另存、要么原封
-        // 不动——隔离失败就跳过落盘，绝不就地覆盖它。⚠️ 该不变量**不延伸到进程后续生命周期**：
-        // 此后的 PUT（updateFromJsonBody）与热重载（reloadFromDisk 的 .bak 回滚）都会按各自的既有
-        // 语义重写 config.json（PUT 会先备份到 .bak）。故隔离失败且服务继续运行时，那份坏配置
-        // **可能被后续写入替换**——「保全」只保证到本次启动结束。
-        loadRejected = true;
-        warnOut = err;  // 保留原有原因原文（IO 错误 / 解析或 schema 错误）
-
-        std::filesystem::path movedTo;
-        std::string qerr;
-        // 持 mu_（FACE-CONFIG-014 口径补全）：使「对配置目录的变更统一在 mu_ 下」这条口径对 initialize 的
-        //   **隔离改名**也成立（此前只有残留清扫持 mu_，隔离这段不持 ⇒ 该口径对 initialize 的 quarantine 为**假**）。
-        //   死锁核实（逐字）：被调的 quarantineConfigFile 是**自由函数**（std::filesystem::exists / rename），
-        //   **不取 mu_、不回调本类任何成员** ⇒ 无递归加锁；且 initialize 处于启动阶段（两个生产入口均在
-        //   initialize 之后才 startWatching / 进入轮询循环）⇒ 本处无并发消费者、不引入新的锁竞争。故补锁安全。
-        //   （成功分支里 `return true` 之前那处 `lock(mu_)` 在 `return true` 前即随作用域析构，
-        //   失败路径走到本处时**未持锁** ⇒ 非递归。）
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            if (quarantineConfigFile(configPath_, movedTo, qerr)) {
-                quarantineName = movedTo.filename().string();
-                warnOut += "; 原配置已隔离为 " + quarantineName;
-            } else {
-                // 隔离失败 ⇒ 原坏文件仍在，绝不能落盘默认值（那会覆盖销毁它）
-                warnOut += "; 隔离失败（" + qerr + "），已保留原文件、本次不落盘默认值";
-            }
-        }
-    }
-
-    // 独立可见通道：stderr 是 initialize 阶段**唯一**不依赖任何配置来源的输出通道——它只写 fd 2，
-    // 既不读配置，也不需要 EventLogger/StructuredLogger 已打开（那两者此刻尚未初始化，其目录还要由
-    // 随后生效的配置决定）。此处刻意不用 rklog：本服务（src/win/）**根本未接入 rklog**。
-    // 仅装载失败时输出，正常启动零输出（不污染既有测试输出）。
-    if (loadRejected) {
-        std::cerr << "[rk_wcfr] 配置装载失败，本次以默认值降级运行: " << warnOut << std::endl;
     }
 
     // 迁移：从旧 INI 读取（兼容已有流程），然后落盘为 JSON
-    // A18：同时取「套用 RK_WCFR_* 取值覆盖**之前**」的 env-free 来源快照（loadConfigFromIniOrDefault 的出参），
-    //   落盘与 lastGoodJsonPretty_ 一律用它；运行 cfg 仍 env-applied（current() 保留 env 值）。
-    AppConfig envFreeIni;
-    AppConfig cfg = loadConfigFromIniOrDefault(&envFreeIni);
+    AppConfig cfg = loadConfigFromIniOrDefault();
     cfg.configPath = configPath_;
-    envFreeIni.configPath = configPath_;
-    const std::string pretty = buildSettingsJson(envFreeIni, false, true);
-    // 落盘前置闸门：序列化产物必须自洽（能过 settings schema）。密钥不可用时 buildSettingsJson
-    // 返回错误 stub，写盘会让「下次启动必被 schema 拒 ⇒ 再隔离、再写同一 stub」自持续循环。
-    std::string notWritable;
-    const bool serializable = serializedDocIsWritable(pretty, notWritable);
-    // 隔离失败（loadRejected 且未取得隔离文件名）⇒ config.json 仍是那份坏配置，跳过写盘以免覆盖销毁。
-    const bool skipWrite = !serializable || (loadRejected && quarantineName.empty());
-    if (!skipWrite) {
-        std::string writeErr;
-        bool writeOk = false;
-        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
-        //   同迁移分支：initialize 处于启动阶段、无并发消费者，持锁为**幂等加固**（统一约束形态）。
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            writeOk = writeAtomicallyWithBackup(pretty, writeErr);
-        }
-        if (!writeOk) {
-            warnOut = warnOut.empty() ? ("写入默认 JSON 配置失败: " + writeErr) : (warnOut + "; " + writeErr);
-            // 即使落盘失败，也允许继续用内存配置运行
-        }
-    } else if (!serializable) {
-        // 失败要有可见性：把「为何拒写」并入 warnOut（经 initWarning 暴露为 health.configWarning），
-        // 使「密钥不可用」这一状况在诊断上可区分于其它告警。
-        const std::string reason =
-            "默认配置序列化未通过 schema（密钥不可用或加密失败），本次不落盘: " + notWritable;
-        warnOut = warnOut.empty() ? reason : (warnOut + "; " + reason);
+    std::string writeErr;
+    const std::string pretty = buildSettingsJson(cfg, false, true);
+    if (!writeAtomicallyWithBackup(pretty, writeErr)) {
+        warnOut = warnOut.empty() ? ("写入默认 JSON 配置失败: " + writeErr) : (warnOut + "; " + writeErr);
+        // 即使落盘失败，也允许继续用内存配置运行
     }
 
     {
         std::lock_guard<std::mutex> lock(mu_);
         cfg_ = cfg;
-        // FACE-CONFIG-017 / A18：INI 首装/回落分支现由 loadConfigFromIniOrDefault(&envFreeIni) 取得
-        //   env-free 来源快照 ⇒ envFreeCfg_ 与 lastGoodJsonPretty_（示例 pretty 由其序列化而来）均为 env-free，
-        //   不再把 env 覆盖值烤进首次落盘或后续 rotate/回滚写盘（旧残留已闭合）。
-        envFreeCfg_ = envFreeIni;
         lastGoodJsonPretty_ = pretty;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::exists(configPath_) ? std::filesystem::last_write_time(configPath_, ec) : std::filesystem::file_time_type{};
-        configRejectedOnLoad_ = loadRejected;
-        initWarning_ = warnOut;
-        initQuarantineFileName_ = quarantineName;
     }
     return true;
-}
-
-std::string WinJsonConfigStore::initWarning() const {
-    std::lock_guard<std::mutex> lock(mu_);
-    return initWarning_;
-}
-
-bool WinJsonConfigStore::configRejectedOnLoad() const {
-    std::lock_guard<std::mutex> lock(mu_);
-    return configRejectedOnLoad_;
-}
-
-std::string WinJsonConfigStore::initQuarantineFileName() const {
-    std::lock_guard<std::mutex> lock(mu_);
-    return initQuarantineFileName_;
 }
 
 AppConfig WinJsonConfigStore::current() const {
@@ -1300,31 +799,6 @@ uint64_t WinJsonConfigStore::generation() const {
 std::string WinJsonConfigStore::currentRedactedJsonPretty() const {
     std::lock_guard<std::mutex> lock(mu_);
     return buildSettingsJson(cfg_, true, false);
-}
-
-// A6：PUT 的 poster.postUrl **新实际值**的形状判据（后端独立实现，不复用前端代码、但判据同源）。
-//   语义与前端 isValidMaskedPostUrl 对齐：空串（trim 后）= 显式清空 ⇒ 放行；含内嵌空白 ⇒ 拒；
-//   其余仅接受 http/https 且 hostname 非空。
-//   ⚠️ 入参在此**必是已解密的明文**（补丁里的加密对象由调用方先经原解密链路还原）——绝不对 ciphertext 做 scheme 匹配。
-static bool isValidPostUrlScheme(const std::string& raw) {
-    std::size_t b = 0, e = raw.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(raw[b]))) ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
-    const std::string s = raw.substr(b, e - b);
-    if (s.empty()) return true;                                         // 显式清空
-    if (s.find_first_of(" \t\r\n") != std::string::npos) return false;  // 内嵌空白
-    const std::string lower = asciiLower(s);
-    const auto schemeOk = [&](const char* sch) -> bool {
-        const std::size_t n = std::char_traits<char>::length(sch);
-        if (lower.size() < n + 3) return false;
-        if (lower.compare(0, n, sch) != 0) return false;
-        if (lower.compare(n, 3, "://") != 0) return false;
-        const std::size_t hostStart = n + 3;
-        if (hostStart >= s.size()) return false;                        // 无 host
-        const char c = s[hostStart];
-        return c != '/' && c != '?' && c != '#';                        // hostname 非空
-    };
-    return schemeOk("http") || schemeOk("https");
 }
 
 WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const std::string& bodyUtf8) {
@@ -1344,29 +818,16 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
         return r;
     }
 
-    // ★ 单一原子段（项 2）：从「读父代基底」到「提交」整段持 mu_ —— 使「读密钥 → 解密 → 加密 → 写盘 →
-    //   提交」成为**单一原子段**，杜绝「解密时读到的密钥 ≠ 提交时用的密钥」这一并发交错。
-    //   为什么**基底读取也必须纳入**（而非只搬解密）：设 A = lastGoodJsonPretty_（上次写盘产物，用当时的
-    //   密钥 K1 加密）。若 A 在锁外读、而 rotate 在「读 A」与「解密 A」之间把密钥换成 K2 并重写盘，则解密
-    //   A 时读到的是 K2，却去解 K1 的密文 ⇒ poster.postUrl 解密失败 ⇒ 整次 PUT **响亮失败**（非静默、不
-    //   损坏磁盘，但拒绝服务）。把「读 A + 解密 + 加密 + 写盘 + 提交」放进同一临界区后，rotate（同样持 mu_
-    //   才写密钥文件与 config.json）便无法插入 ⇒ A 的密文密钥恒等于解密/加密密钥。
-    //   ⚠️ 代价（如实登记）：本临界区现含合并 / schema 校验 / **密钥文件读取 + DPAPI 解保护 + AES 解密** /
-    //     AES 加密 / 多次文件 I/O，持锁时长比修复前（仅加密 + 写盘）**显著变长** ⇒ 期间 current() / 热重载 /
-    //     rotate 均被阻塞 ≈ 一次完整 PUT。PUT 为低频管理操作，判为可接受。
-    //   ⚠️ 为何可直接扩大 mu_（无死锁）：本段调用的 parseJson / stripMaskedSentinels / checkConfigPath /
-    //     deepMergeObject / JsonSchemaValidator::validate / toJsonString / parseAndValidateSettingsDoc /
-    //     buildSettingsJson / writeAtomicallyWithBackup **均不取 mu_**（逐字核实）⇒ 不会递归加锁；全函数
-    //     仅此一把锁 ⇒ 无锁序问题、无死锁风险。
-    // ✅ FACE-CONFIG-017：该基底现为 **env-free**（**订正**：早先此处写作「含 env 覆盖值」，在 FACE-CONFIG-017
-    //   落地后已不成立）——lastGoodJsonPretty_ 由 parseAndValidateSettingsDoc 回填的 env-free 快照序列化而来，
-    //   故一次 PUT **不会**把当时的 env 值写回 config.json；内存 cfg_ 仍照旧套用 env（GET 可见）。详见
-    //   parseAndValidateSettingsDoc 的 envFreeOut 说明与 docs/guides/windows-service/config.md。
-    std::lock_guard<std::mutex> lock(mu_);
+    // 基于已知落盘的纯净 JSON（解耦环境覆盖项），深度合并 patch，再校验+落盘
+    std::string lastJson;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        lastJson = lastGoodJsonPretty_;
+    }
 
     JsonValue baseDoc;
     std::string err;
-    if (!parseJson(lastGoodJsonPretty_, baseDoc, err)) {
+    if (!parseJson(lastJson, baseDoc, err)) {
         r.httpStatus = 500;
         r.code = "internal_error";
         r.message = "解析落盘配置失败";
@@ -1377,71 +838,6 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     // 脱敏全量回写保护：剔除 patch 中的 "***" 哨兵（语义=不修改，保留 base 既有值）。
     // 否则 GET 脱敏输出被原样回写时，真实密文会被字面量 "***" 覆盖并重加密销毁。
     stripMaskedSentinels(patch);
-
-    // A6：postUrl **独立校验** —— 只对 patch **显式携带**的 poster.postUrl 生效（缺字段 ⇒ 保持来源值；
-    //   "***" 已被 stripMaskedSentinels 剔除 ⇒ 亦保持来源值）。
-    //   为什么只查 patch（而非合并后的 baseDoc）：否则既有 config.json 里已存在的**历史非法值**会让
-    //   **任何** PUT 都被 400（哪怕只改摄像头宽度）而被锁死——与 FACE-CONFIG-018 只查 patch 同因；
-    //   历史非法值仍在装载期只告警（不收紧加载 schema），用户主动改其它字段仍可用。
-    //   为什么加密对象要先解密：只有候选**明文**才携带 scheme；对 ciphertext 做 scheme 匹配会恒拒或恒放。
-    //   ⚠️ 拒绝时**不落盘、不回显 URL**（错误消息/详情不含该值）。
-    if (const JsonValue* posterPatch = patch.find("poster"); posterPatch && posterPatch->isObject()) {
-        if (const JsonValue* pu = posterPatch->find("postUrl"); pu) {
-            std::string candidate;  // 已解密的候选明文（空 = 显式清空）
-            bool needsCheck = true;
-            if (pu->isString()) {
-                candidate = pu->s;
-            } else if (pu->isObject()) {
-                AesGcmCiphertext ct;
-                std::vector<std::uint8_t> key, plain;
-                std::string e;
-                if (!parseEncryptedStringObject(*pu, ct, e) || !ensureOrLoadKey(key, e) ||
-                    !aes256gcmDecrypt(key, ct, plain, e, "poster.postUrl")) {
-                    r.message = "settings 未应用：poster.postUrl 加密对象不可解析/解密";
-                    r.details = {"poster.postUrl 加密对象校验失败"};
-                    return r;  // 400，不落盘
-                }
-                if (!plain.empty()) {
-                    candidate.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
-                }
-            } else {
-                needsCheck = false;  // 非 string/object 交给 schema 校验（保持既有错误文案不变）
-            }
-            if (needsCheck && !isValidPostUrlScheme(candidate)) {
-                r.message = "settings 未应用：poster.postUrl 仅接受 http/https";
-                r.details = {"poster.postUrl：仅接受 http/https 且 hostname 非空的地址"};
-                return r;  // 400，不落盘、不回显 URL
-            }
-        }
-    }
-
-    // FACE-CONFIG-018（S-1）：写型路径字段的**真正强制**只在此处——PUT 是唯一能安全拒绝的路径
-    //   （启动期拒绝会触发 INI 回落清空用户配置，见 WinConfig.h 的「只钳不拒」承重理由）。
-    // 为什么只查 patch 里**显式携带**的字段（而非合并后的 baseDoc）：否则既有 config.json 里已存在
-    //   `..` 的用户会「任何 PUT 都被 400」——哪怕只改摄像头宽度——被锁死在无法保存任何设置的状态
-    //   （不是数据丢失，但同样是拒绝服务）。只查 patch ⇒ 拒绝面恰好等于「用户本次真的写了这个值」。
-    // 为什么只覆盖两个**写型**字段：读型字段（cascadePath 等）本批只做启动期告警（分阶段强度）。
-    // 判据与启动期**完全相同**（checkConfigPath 的 `..` 段判定）——两者的唯一差别是处置（拒 vs 告警）。
-    // ⚠️ 绝对路径**不**在此被拒（官方用法，见 checkConfigPath 的逃生口说明）。
-    {
-        struct WriteTypePath {
-            const char* section;
-            const char* key;
-        };
-        static const WriteTypePath kWriteTypePaths[] = {{"recognition", "databasePath"}, {"log", "logDir"}};
-        for (const WriteTypePath& wt : kWriteTypePaths) {
-            const JsonValue* sec = patch.find(wt.section);
-            if (!sec || !sec->isObject()) continue;
-            const JsonValue* v = sec->find(wt.key);
-            if (!v || !v->isString()) continue;  // 非字符串由 schema 校验负责（保持既有错误文案不变）
-            std::string why;
-            if (!checkConfigPath(std::filesystem::path(v->s), PathPolicy::Strict, why)) {
-                r.message = "settings 未应用：写型路径字段不合法";
-                r.details = {std::string(wt.section) + "." + wt.key + "：" + why};
-                return r;  // r.httpStatus/r.code 已在函数入口初始化为 400 / invalid_request
-            }
-        }
-    }
 
     deepMergeObject(baseDoc, patch);
 
@@ -1474,71 +870,32 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
     // 将 doc 序列化并解析为 AppConfig（会解密密文字段）
     const std::string mergedText = toJsonString(baseDoc, true);
     AppConfig newCfg;
-    AppConfig newEnvFree;  // FACE-CONFIG-017：env-free 来源快照（落盘侧取值来源；内存 cfg_ 用 newCfg）
-#if defined(RK_ENABLE_TEST_SEAMS)
-    // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setPutPreDecryptTestHookForTesting 声明注释）：
-    //   在「读父代基底 / 合并 / schema 校验之后，解密之前」同步触发一次由测试注入的动作。⚠️ 此刻**已持 mu_**
-    //   （本函数自上方单一原子段起即持锁）⇒ 钩子内**绝不可**调用任何会取 mu_ 的公共 API（自锁死），只允许
-    //   「置位 / 通知另一线程」这类不加锁动作（测试据此唤醒一个只**尝试** rotate 的线程并观测它是否被 mu_ 挡住）。
-    //   读取点已在 mu_ 内 ⇒ 直接读成员、不新增锁往返；语义/数据不变；默认未设置 ⇒ 恒假，生产不编译本块。
-    if (putPreDecryptTestHook_) putPreDecryptTestHook_();
-#endif
-    if (!parseAndValidateSettingsDoc(mergedText, newCfg, &newEnvFree, err)) {
+    if (!parseAndValidateSettingsDoc(mergedText, newCfg, err)) {
         r.message = "settings 应用失败";
         r.details.push_back(err);
         return r;
     }
-    // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警：**本路径无对外可见通道**
-    //   （HTTP 层只在**错误**响应里带 details，见 JsonEndpointHandlers 的 errJson；改它超出本批允许
-    //   改动的文件范围）⇒ 此处只**取走**，避免它残留到下一次读取被误当成那一次的告警。
-    //   「钳制结果本身可见（GET settings 返回钳后的生效值）」这句话**只对 log 段成立**，勿推广
-    //   （分字段说明，逐条核实过；原注释一概而论，已订正）——判据用**函数名**而非行号，避免漂移：
-    //   · log.maxFileBytes / log.maxRollFiles：PUT 路径的 schema 对 log 段上下界照旧宽松（1 GiB /
-    //     1000）⇒ 原值通过本函数内那句 `JsonSchemaValidator::validate(...)`（在 deepMergeObject 之后、
-    //     parseAndValidateSettingsDoc 之前），钳制发生在随后那句
-    //     `parseAndValidateSettingsDoc(mergedText, newCfg, &newEnvFree, err)` 内 ⇒ 提交的 cfg_ 是**钳后**值，
-    //     GET settings 可见；但**本次 PUT 的响应**不含告警文本（通道缺口如上，告警被 (void) 丢弃）。
-    //   · recognition.identifyThreshold：PUT 上**不是「钳」而是「拒」**——那句 schema 校验发生在
-    //     parseAndValidateSettingsDoc **之前**，且该键的 maximum 已收紧到 64 ⇒ `> 64` 的 PUT 在 schema
-    //     处就被 **400 拒绝**，normalizeRecognitionKeys 里的钳制分支
-    //     （判据 `> kIdentifyThresholdMax` 才触发）在 PUT 路径**不可达**；该钳制只在启动 / 热重载
-    //     的 JSON 与 INI 读入路径生效（启动期钳制**在前**是刻意的，见其定义处）。
-    //   详见 g_normalizeWarnings 处的通道去向上限登记。
-    (void)takeNormalizeWarnings();
 
-    // 落盘：敏感字段强制加密存储。
-    // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持
-    //   （由本函数上方的**单一原子段**统一持有，覆盖「读基底 → 解密 → 合并 → 校验 → 加密 → 写盘 → 提交」）。
-    // ★ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘与内存提交（cfg_/generation_）必须在**同一** mu_ 临界区内，
-    //   以便与 reloadFromDisk 回滚段的「取快照 → 序列化 → 写回磁盘」互斥，杜绝「回滚线程用旧快照覆盖已提交的
-    //   新 PUT」这一竞态（详见 reloadFromDisk 回滚处的同因注释）。
-    // ★ 密钥/密文同源不变量（项 A + 项 2）：**解密与加密都必须在同一临界区内**——buildSettingsJson /
-    //   parseAndValidateSettingsDoc 均经 ensureOrLoadKey **每次重读密钥文件**；若解密在锁外，并发的
-    //   rotateKeyAndReencrypt 可能在「读基底」与「解密」之间把密钥文件换成新密钥 ⇒ 用新密钥去解旧密钥的密文
-    //   ⇒ 响亮失败。故「读基底 + 解密 + 加密 + 写盘 + 提交」整段纳入同一 mu_ 临界区（见上方单一原子段的登记）。
-    //   ⚠️ 本处**不再**单独加锁：外层已有 std::lock_guard（同一把 mu_）；此处再加会**自锁死**（mu_ 非递归）。
-    //   代价（如实登记）：持锁范围由「仅加密 + 写盘」**扩大**为「读基底 + 合并 + schema 校验 + DPAPI 解保护 +
-    //     AES 解密 + AES 加密 + 写盘」（详见上方单一原子段的代价登记）。
+    // 落盘：敏感字段强制加密存储
+    const std::string prettyEnc = buildSettingsJson(newCfg, false, true);
+    if (prettyEnc.find("\"_error\"") != std::string::npos) {
+        r.httpStatus = 500;
+        r.code = "crypto_error";
+        r.message = "敏感字段加密失败";
+        r.details.push_back(prettyEnc);
+        return r;
+    }
+    if (!writeAtomicallyWithBackup(prettyEnc, err)) {
+        r.httpStatus = 500;
+        r.code = "io_error";
+        r.message = "写入配置失败";
+        r.details.push_back(err);
+        return r;
+    }
+
     {
-        // FACE-CONFIG-017：落盘与 lastGoodJsonPretty_ 一律用 **env-free 快照** newEnvFree（env 覆盖值不写回
-        //   磁盘、也不进 PUT 的合并基底）；内存 cfg_/envFreeCfg_ 仍是 env-applied / env-free 各自的事实源。
-        const std::string prettyEnc = buildSettingsJson(newEnvFree, false, true);
-        if (prettyEnc.find("\"_error\"") != std::string::npos) {
-            r.httpStatus = 500;
-            r.code = "crypto_error";
-            r.message = "敏感字段加密失败";
-            r.details.push_back(prettyEnc);
-            return r;
-        }
-        if (!writeAtomicallyWithBackup(prettyEnc, err)) {
-            r.httpStatus = 500;
-            r.code = "io_error";
-            r.message = "写入配置失败";
-            r.details.push_back(err);
-            return r;
-        }
+        std::lock_guard<std::mutex> lock(mu_);
         cfg_ = newCfg;
-        envFreeCfg_ = newEnvFree;
         lastGoodJsonPretty_ = prettyEnc;
         std::error_code ec;
         lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
@@ -1557,161 +914,97 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
     r.httpStatus = 500;
     r.code = "internal_error";
 
-    // ★ 不变量（承重）：**盘上的 config.json 必须始终能用盘上的密钥文件解开**（同源）。
-    //   实现口径（项 A）：密钥文件与 config.json 内容**只在同一个 mu_ 临界区内、以同一密钥成对写入**
-    //   ——「写新密钥 → 用它加密 → 写 config.json → 提交」整段持锁 ⇒ 其它写盘路径（PUT / 回滚）
-    //   不可能观察到「新密钥 + 旧密文」或「旧密钥 + 新密文」的中间态。
-    //   ⚠️ 修复前的失效模式：`writeFileAll(keyPath_, ...)` 写在 mu_ **之外**，而 PUT 的加密
-    //      （buildSettingsJson → ensureOrLoadKey **每次重读密钥文件**）也在 mu_ 外 ⇒ 某 PUT 可在
-    //      rotate 写入新密钥**之后**读取密钥并加密 config.json，随后 rotate 的代次复核发现变化 ⇒
-    //      冲突分支 restoreOldKey() 把**旧**密钥写回 ⇒ 磁盘密钥=旧、磁盘密文=新 ⇒ 下次启动解密失败。
-    //   修法：① 冲突分支**不触碰任何磁盘状态**（新密钥仅存在于内存，直接丢弃，**不再** restore）；
-    //        ② 密钥文件与 config.json 在同一临界区内、以同一密钥成对写入；③ PUT 的加密也移入其写盘临界区。
-    //   ⚠️ 并发互斥（FACE-CONFIG-010 竞态收口）：写盘 + 提交（cfg_）同处一个 mu_ 临界区，并在同一
-    //      临界区内复核 generation_ 未变 ⇒ 并发 PUT / 热重载提交的新配置不会被 rotate 的旧快照覆盖。
-    //      修法选**代次校验 + 有界重试**：锁内记 generation_，提交前在同一临界区复核；变了则**不写盘**、
-    //      重取快照重试（有界），耗尽返回 409 conflict。generation_ 是可靠信号：PUT 成功与热重载成功
-    //      都会 fetch_add(1)；rotate 自身不变代数。
-    //   ⚠️ 代价（如实登记）：提交临界区含「写密钥文件 + AES 加密 + 写 config.json」；故持锁时长 ≈
-    //      一次写密钥 + 一次加密 + 一次原子写（比「整段持 mu_」短——随机数生成与 DPAPI 保护仍在锁外）。
-    //   ⚠️ 残余（如实登记）：密钥文件与 config.json 是**两个文件**，无法原子同写 ⇒ 「写密钥之后、
-    //      写 config.json 之前」若**进程崩溃**，磁盘仍可能错配（下次启动隔离）。本批只消除**并发交错**
-    //      造成的错配，**不消除**该崩溃窗口。
-    constexpr int kMaxRotateAttempts = 3;
-    std::string conflictMsg;
-    for (int attempt = 0; attempt < kMaxRotateAttempts; ++attempt) {
-        AppConfig cfg;
-        std::uint64_t genAtSnapshot = 0;
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            cfg = cfg_;
-            genAtSnapshot = generation_.load();
-        }
+    AppConfig cfg;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        cfg = cfg_;
+    }
 
-#if defined(RK_ENABLE_TEST_SEAMS)
-        // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setRotateTestHookForTesting 声明注释）：
-        //   在「取快照之后、生成并替换密钥之前」同步触发一次由测试注入的动作（典型：合法 PUT）。此刻
-        //   **未持 mu_** ⇒ 钩子内调 updateFromJsonBody 不会自锁。**必须在本函数替换密钥文件之前**触发：
-        //   否则磁盘上的 postUrl 密文仍是旧密钥加密的，PUT 的解析/解密会失败（那不是本用例要构造的交错）。
-        //   语义/数据不变；本块新增一次 mu_ 获取/释放（安全读钩子用）。默认未设置（空 std::function）⇒ 恒假。
-        {
-            std::function<void()> testHook;
-            {
-                std::lock_guard<std::mutex> lock(mu_);
-                testHook = rotateTestHook_;
-            }
-            if (testHook) testHook();
-        }
-#endif
-
-        // 生成并 DPAPI 保护新密钥：**纯计算 + DPAPI，均在锁外**，且**不触碰磁盘**——密钥文件留到
-        // 提交临界区内才写（这是「密钥/密文同源」的关键：冲突时磁盘密钥从不被这次调用改动）。
-        std::vector<std::uint8_t> newKey;
-        std::string kerr;
-        if (!randomBytes(32, newKey, kerr)) {
-            r.code = "crypto_error";
-            r.message = "生成新密钥失败";
-            r.details.push_back(kerr);
-            return r;
-        }
-        std::vector<std::uint8_t> protectedBin;
-        if (!dpapiProtect(newKey, protectedBin, kerr)) {
-            r.code = "crypto_error";
-            r.message = "DPAPI 保护密钥失败";
-            r.details.push_back(kerr);
-            return r;
-        }
-        std::string newKeyB64;
-        if (!base64Encode(protectedBin, newKeyB64)) {
-            r.code = "crypto_error";
-            r.message = "密钥 base64 编码失败";
-            return r;
-        }
-        std::string ioErr;
-        if (!ensureParentDir(keyPath_, ioErr)) {
+    const bool hadOldKey = std::filesystem::exists(keyPath_);
+    std::string oldKeyB64;
+    std::string ioErr;
+    if (hadOldKey) {
+        if (!readFileAll(keyPath_, oldKeyB64, ioErr)) {
             r.code = "io_error";
-            r.message = "创建密钥目录失败";
+            r.message = "读取旧密钥失败";
             r.details.push_back(ioErr);
             return r;
         }
+    }
 
-        std::string err;
-        bool retry = false;
-        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。
-        // ★ 密钥/密文同源（项 A）：密钥文件与 config.json 内容在**同一临界区**内成对写入。
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            if (generation_.load() != genAtSnapshot) {
-                // 快照已过期：期间 PUT / 热重载提交了新配置。**不触碰任何磁盘状态**（新密钥仅存在于
-                // 内存，直接丢弃）⇒ 磁盘密钥/密文同源不变量保持。重取快照重试（有界）。
-                conflictMsg = "配置在密钥轮换期间被并发修改（PUT / 热重载），已重取快照重试";
-                retry = true;
-            } else {
-                // 读当前磁盘密钥快照，仅供「已写新密钥、提交前失败」的**回滚**（两文件必须同源）。
-                const bool hadOldKey = std::filesystem::exists(keyPath_);
-                std::string oldKeyB64;
-                if (hadOldKey && !readFileAll(keyPath_, oldKeyB64, ioErr)) {
-                    r.code = "io_error";
-                    r.message = "读取旧密钥失败";
-                    r.details.push_back(ioErr);
-                    return r;
-                }
-                const auto restoreOldKey = [&]() {
-                    if (hadOldKey) {
-                        std::string e;
-                        (void)writeFileAll(keyPath_, oldKeyB64, e);
-                    } else {
-                        std::error_code ec;
-                        std::filesystem::remove(keyPath_, ec);
-                    }
-                };
-
-                // ★ 成对写入：写新密钥 → 用新密钥加密（ensureOrLoadKey 读到的即刚写入的新密钥）
-                //   → 写 config.json → 提交。整段持锁，故外部看不到「新密钥 + 旧密文」的中间态。
-                if (!writeFileAll(keyPath_, newKeyB64, ioErr)) {
-                    r.code = "io_error";
-                    r.message = "写入新密钥失败";
-                    r.details.push_back(ioErr);
-                    return r;
-                }
-                // FACE-CONFIG-017：加密落盘用 **env-free** envFreeCfg_（而非 env-applied 的 cfg）——rotate 只
-                //   重加密当前生效配置、不应把 env 覆盖值写回 (读的是成员、此刻已在 mu_ 临界区内且代次未变 ⇒
-                //   与快照一致)；内存提交仍为 cfg_ = cfg（env-applied）。
-                const std::string prettyEnc = buildSettingsJson(envFreeCfg_, false, true);
-                if (prettyEnc.find("\"_error\"") != std::string::npos) {
-                    restoreOldKey();
-                    r.code = "crypto_error";
-                    r.message = "使用新密钥加密失败";
-                    r.details.push_back(prettyEnc);
-                    return r;
-                }
-                if (!writeAtomicallyWithBackup(prettyEnc, err)) {
-                    restoreOldKey();
-                    r.code = "io_error";
-                    r.message = "写入配置失败（已尝试回滚密钥）";
-                    r.details.push_back(err);
-                    return r;
-                }
-                cfg_ = cfg;
-                lastGoodJsonPretty_ = prettyEnc;
-                std::error_code ec;
-                lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
-            }
-        }
-        if (retry) continue;
-
-        r.ok = true;
-        r.httpStatus = 200;
-        r.code = "ok";
-        r.message = "OK";
+    std::vector<std::uint8_t> newKey;
+    std::string kerr;
+    if (!randomBytes(32, newKey, kerr)) {
+        r.code = "crypto_error";
+        r.message = "生成新密钥失败";
+        r.details.push_back(kerr);
+        return r;
+    }
+    std::vector<std::uint8_t> protectedBin;
+    if (!dpapiProtect(newKey, protectedBin, kerr)) {
+        r.code = "crypto_error";
+        r.message = "DPAPI 保护密钥失败";
+        r.details.push_back(kerr);
+        return r;
+    }
+    std::string newKeyB64;
+    if (!base64Encode(protectedBin, newKeyB64)) {
+        r.code = "crypto_error";
+        r.message = "密钥 base64 编码失败";
+        return r;
+    }
+    if (!ensureParentDir(keyPath_, ioErr)) {
+        r.code = "io_error";
+        r.message = "创建密钥目录失败";
+        r.details.push_back(ioErr);
+        return r;
+    }
+    if (!writeFileAll(keyPath_, newKeyB64, ioErr)) {
+        r.code = "io_error";
+        r.message = "写入新密钥失败";
+        r.details.push_back(ioErr);
         return r;
     }
 
-    // 有界重试耗尽：配置在 rotate 期间被**持续**并发修改 ⇒ 放弃本次轮换并如实上报（不静默用旧快照覆盖）。
-    // 不变量仍成立：本函数从未在冲突分支写盘 ⇒ 磁盘上的（密钥，密文）对仍是上一次成功写入时的成对状态。
-    r.httpStatus = 409;
-    r.code = "conflict";
-    r.message = conflictMsg.empty() ? "配置在密钥轮换期间被并发修改，已放弃本次轮换" : conflictMsg;
+    std::string err;
+    const std::string prettyEnc = buildSettingsJson(cfg, false, true);
+    if (prettyEnc.find("\"_error\"") != std::string::npos) {
+        if (hadOldKey) {
+            (void)writeFileAll(keyPath_, oldKeyB64, ioErr);
+        } else {
+            std::error_code ec;
+            std::filesystem::remove(keyPath_, ec);
+        }
+        r.code = "crypto_error";
+        r.message = "使用新密钥加密失败";
+        r.details.push_back(prettyEnc);
+        return r;
+    }
+    if (!writeAtomicallyWithBackup(prettyEnc, err)) {
+        if (hadOldKey) {
+            (void)writeFileAll(keyPath_, oldKeyB64, ioErr);
+        } else {
+            std::error_code ec;
+            std::filesystem::remove(keyPath_, ec);
+        }
+        r.code = "io_error";
+        r.message = "写入配置失败（已尝试回滚密钥）";
+        r.details.push_back(err);
+        return r;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        cfg_ = cfg;
+        lastGoodJsonPretty_ = prettyEnc;
+        std::error_code ec;
+        lastWriteTime_ = std::filesystem::last_write_time(configPath_, ec);
+    }
+
+    r.ok = true;
+    r.httpStatus = 200;
+    r.code = "ok";
+    r.message = "OK";
     return r;
 }
 
@@ -1729,247 +1022,54 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
         wt = std::filesystem::last_write_time(configPath_, ec);
         if (ec) return true;
         if (lastWriteTime_ == wt) return true;
-        if (!readFileAll(configPath_, txt, outErr)) {
-            // ★ **2026-09-28 改**（外部审查 [P2]「一次临时读取失败会使热重载停止重试」+ 独立复核）：
-            //   原行为（`2cf7a0e` 有意引入、并在此处写明理由）记录**已观察到的 mtime**，以避免
-            //   「文件持续不可读时每秒反复重读并失败」。**其副作用**才是真问题：读取失败后
-            //   `lastWriteTime_ == wt` 恒成立 ⇒ 后续每次轮询都在上一行 `lastWriteTime_ == wt` 处早退，
-            //   直到 mtime 变化。而 Windows 上**解除占用 / 放宽 ACL 都不会更新 LastWriteTime**
-            //   （只更新 ChangeTime）⇒ 文件恢复可读后，配置会一直陈旧到**下一次真实写入或重启**，
-            //   期间没有任何用户可见提示。
-            //   ⇒ 改为**不标记**：读取失败不算「已处理」，下次轮询（≤1s）重试。
-            //   **代价（如实登记）**：文件持续不可读期间，每秒一次**失败的 `open()`**。
-            //   ⚠️ 且该 `open()` 发生在**上面那个 mu_ 临界区内**（对抗性代理 A2 指出，初版未登记这一点）：
-            //      若该文件位于慢设备/网络盘上、失败的 open 本身也阻塞，则 PUT 与 `current()` 会被
-            //      **周期性**拖住。改前是「首次失败即标记 ⇒ 之后早退」，**不存在**这种周期性重入
-            //      ⇒ 这是本次修复**新引入**的代价，不是既有行为。
-            //   该分支不做解析、不打日志 ⇒ 噪声仅为 IO；以「每秒一次失败 open」换「恢复后 ≤1s 自动
-            //   重载」，判为更优。（若将来出现病态 IO 噪声，再引入**有界退避**：前 N 次不标记、之后
-            //   退化为旧行为——既保原意图又不牺牲最终一致。本轮**不做**，避免过度设计。）
+        if (!readFileAll(configPath_, txt, outErr)) return false;
+    }
+
+    AppConfig cfg;
+    std::string parseErr;
+    if (!parseAndValidateSettingsDoc(txt, cfg, parseErr)) {
+        // 回滚：尝试使用 .bak
+        outErr = "热重载校验失败，将尝试回滚: " + parseErr;
+        if (std::filesystem::exists(bakPath_)) {
+            std::string bakTxt, e2;
+            if (readFileAll(bakPath_, bakTxt, e2)) {
+                AppConfig bakCfg;
+                if (parseAndValidateSettingsDoc(bakTxt, bakCfg, e2)) {
+                    // 恢复 .bak -> config.json
+                    std::string ioErr;
+                    const std::filesystem::path tmp = configPath_.parent_path() / L"config.json.rollback.tmp";
+                    if (writeFileAll(tmp, bakTxt, ioErr) && moveReplaceWriteThrough(tmp, configPath_, ioErr)) {
+                        cfg = bakCfg;
+                        txt = bakTxt;
+                    } else {
+                        outErr += "; 回滚写入失败: " + ioErr;
+                        return false;
+                    }
+                } else {
+                    outErr += "; .bak 也无效: " + e2;
+                    return false;
+                }
+            } else {
+                outErr += "; 读取 .bak 失败: " + e2;
+                return false;
+            }
+        } else {
             return false;
         }
     }
 
-    AppConfig cfg;
-    AppConfig envFree;  // FACE-CONFIG-017：env-free 来源快照（lastGoodJsonPretty_ / envFreeCfg_ 的取值来源）
-    std::string parseErr;
-    if (!parseAndValidateSettingsDoc(txt, cfg, &envFree, parseErr)) {
-        // 热重载校验失败：与启动路径（initialize）对齐的**证据保全**——先把坏文件改名另存
-        // （config.json.corrupt.<毫秒时间戳>），使其不被随后写盘覆盖。
-        // ⚠️ 该保全**仅限本次处理**（不变量有同样时限）：隔离产物不会被自动清理，但原位置的后续写入
-        //    （PUT / 下一次热重载）仍按各自既有语义进行，故「不被就地覆盖」只保证到本次处理结束。
-        // ★ **2026-09-28 已修**（外部审查 [P2]「热重载可能隔离刚保存的正常配置」+ 独立复核确认可达）：
-        //    原行为是「解析在锁外、隔离也在锁外」，由此存在一条**可达竞态**：
-        //      ① 本函数开头的读锁临界区已**释放 mu_**；② watch 线程在锁外解析 txt 被判坏；
-        //      ③ 此窗口内 HTTP 线程 PUT 成功，写盘合法配置 B 并提交 cfg_=B；
-        //      ④ 本线程随即执行 quarantineConfigFile，把**这份刚写好的合法 B** 改名成
-        //         config.json.corrupt.<ts> ⇒ 凭空伪造一条 corrupt 证据（且下述 outErr 谎称隔离了
-        //         「坏配置」），该证据永不自清；
-        //      ⑤ 再持锁把 cfg_(=B) 写回——在「内存序列化不可写 ⇒ 回退 .bak」那条臂里，磁盘会退成
-        //         **更旧的 .bak** 而内存是 B ⇒ 正是 FACE-CONFIG-010 刚消除的「磁盘/内存分歧」。
-        //    **修法**：把「复核 mtime 未变」与「改名」放进**同一个 mu_ 临界区** —— 与下方成功臂
-        //      （`if (!cec && currentWt != wt) { …放弃本次更新 }`）**完全同款**。PUT 的写盘 + 提交
-        //      持的是同一把 mu_ ⇒ 复核与 rename 之间不存在 **PUT** 插入点，**针对进程内写者的**竞态闭合。
-        //    ⚠️ 措辞收窄（对抗性代理 A2 指出）：上面那个「闭合」**只对进程内写者成立**。对**外部**
-        //      写者，判据仍是 mtime 比对，而文件系统时间戳有粒度（NTFS/卷粒度可粗至 ~15.6ms 或更粗）
-        //      ⇒ 坏文件与合法 B 落在**同一 tick** 时二者 mtime 相同、复核漏判。这是 mtime 判据的
-        //      **固有盲区**（成功臂 `currentWt != wt` 处同款，非本批引入），不要据此认为「任何并发修改都能识别」。
-        //    **行为变化（如实登记）**：① 在「读后到隔离前」被并发修改的交错下**不再隔离** —— 此时该
-        //      路径上已不是坏文件，隔离它本就是错的；② 若存在**持续**触碰 config.json 的外部写者，
-        //      坏文件的隔离会被反复推迟 —— 与成功臂「放弃本次热重载」的既有语义一致。
-        //    ⚠️ 仍**不在** FACE-CONFIG-013「写入内容须持 mu_」的射程内（改名不产生新内容），本处加锁
-        //      是为**身份复核**，不是为了满足那条不变量——两件事的理由不同，勿混。
-        outErr = "热重载校验失败: " + parseErr;
-#if defined(RK_ENABLE_TEST_SEAMS)
-        // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setReloadTestHookForTesting 声明注释）：
-        //   在「解析被拒之后、重新取锁复核 mtime 之前」同步触发一次由测试注入的动作（典型：合法 PUT）。
-        //   此刻**未持 mu_** ⇒ 钩子内调 updateFromJsonBody 不会自锁。默认未设置（空 std::function）⇒ 恒假。
-        //   语义/数据不变；本块新增一次 mu_ 获取/释放（安全读钩子用），读取在 mu_ 下、调用在锁外，
-        //   避免与 setter 的数据竞争。
-        {
-            std::function<void()> testHook;
-            {
-                std::lock_guard<std::mutex> lock(mu_);
-                testHook = reloadTestHook_;
-            }
-            if (testHook) testHook();
-        }
-#endif
-        std::filesystem::path movedTo;
-        std::string qerr;
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            std::error_code cec;
-            const auto curWt = std::filesystem::last_write_time(configPath_, cec);
-            if (cec || curWt != wt) {
-                outErr += "; 配置在本次读取期间已被并发修改 ⇒ 放弃隔离（避免把新内容当作坏文件改名）";
-                return false;
-            }
-#if defined(RK_ENABLE_TEST_SEAMS)
-            // ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件 setReloadIsolationTestHookForTesting
-            //   声明注释）：在「复核 mtime 未变之后、quarantineConfigFile 之前」同步触发一次由测试注入的动作。
-            //   ⚠️ 与**锁外**的那两枚接缝（reload / rotate）的本质差异：**此刻已持 mu_** —— 故钩子内**绝不可**
-            //   调用任何会取 mu_ 的公共 API（mu_ 非递归 ⇒ 自锁死），只允许「置位 / 通知另一线程」这类不加锁
-            //   动作（测试据此唤醒一个只**尝试** PUT 的线程并观测它是否被 mu_ 挡在临界区外）。
-            //   读取点已在 mu_ 内 ⇒ 直接读成员、不新增锁往返；setter 与钩子调用点同取此锁 ⇒ 无数据竞争。
-            //   语义/数据不变；默认未设置（空 std::function）⇒ 恒假，生产构建根本不编译本块。
-            if (reloadIsolationTestHook_) reloadIsolationTestHook_();
-#endif
-            if (!quarantineConfigFile(configPath_, movedTo, qerr)) {
-                // 隔离失败 ⇒ 坏文件仍在原位。记录**已观察到的 mtime**，否则 1 秒轮询会反复重读同一份
-                // 坏文件并反复失败（IO / 日志噪声）。
-                // ⚠️ 已知同类残留（**本轮未改**，如实登记）：与上面 `readFileAll` 失败臂同族 —— 若此后
-                //    该文件的可改名条件恢复而 mtime 未变，本路径同样不会再重试。**不改的理由**：此处的
-                //    重试成本是**完整解析 + DPAPI 解保护**（而非一次 open），且该文件**已知为坏**，
-                //    「配置陈旧」并非本臂的失效形态；用户的修复动作（改写该文件）本身会改 mtime ⇒ 会
-                //    重新进入本函数。
-                outErr += "; 隔离失败（" + qerr + "），保留原文件";
-                std::error_code wec;
-                lastWriteTime_ = std::filesystem::last_write_time(configPath_, wec);
-                return false;
-            }
-        }
-        outErr += "; 原配置已隔离为 " + movedTo.filename().string();
-        // 隔离已把坏文件挪走；随后把**内存中当前生效的配置**写回 config.json，使磁盘与内存**语义一致（非字节一致）**。
-        // FACE-CONFIG-010：为什么不用 .bak —— .bak 是「上一次写入前」的副本，可能比内存中正在生效的
-        //   配置**更旧**（例：用户刚 PUT 过 B，.bak 仍是 A）。把它写回磁盘会得到「磁盘 = 旧 A、内存 = 新 B」
-        //   的不一致，静默回退用户最近一次成功 PUT 的持久化形态，直到下一次真实变更或重启才收敛。
-        //   故首选内存快照；仅当内存序列化不可写时才回退 .bak（保持服务可用），两者都不可用则不写盘。
-        // 为什么用 cfg_ 重新序列化而非缓存的 lastGoodJsonPretty_ —— lastGoodJsonPretty_ **有意可能滞后**
-        //   于 cfg_（成功热重载路径在序列化为错误 stub 时**不**更新它，见下方成功分支），故它不总等于当前
-        //   生效配置；cfg_ 才是「当前生效配置」的事实源（与 configRejectedOnLoad 语义同源）。
-        // 落盘前必须过 serializedDocIsWritable 闸门：密钥不可用时 buildSettingsJson 返回 {"_error":...}
-        //   stub，写盘会污染磁盘（下次启动必被 schema 拒 ⇒ 再隔离 ⇒ 自持续循环）。
-        // 写回方式为「直接写 tmp + moveReplaceWriteThrough」，**不**走 writeAtomicallyWithBackup——
-        //   后者会轮转 .bak（把 config.json.bak 改名为 .bak.1），搅乱本轮「隔离证据 → 回滚」的证据链。
-        // **不采纳**任何回滚内容进内存（不 cfg_ = ...、不 generation+1）：避免一次无关的外部坏写撤销用户
-        //   最近一次成功 PUT 并经 generation 触发整条管线 FullRestart——这是本次修复要保住的语义。
-        // ★ 承重不变量（FACE-CONFIG-013）：任何**写入 config.json 内容**的路径都必须持 mu_（见类级不变量）。本处已持。
-        // ★ 并发互斥（FACE-CONFIG-010 竞态收口；本文件所有写盘调用点统一用 mu_ 串行化）
-        // 以下「取内存快照 → 序列化 → 写回磁盘 → 记录 mtime」**整段**必须在 mu_ 临界区内完成，与
-        // updateFromJsonBody（PUT）及 rotateKeyAndReencrypt 的「写盘 + 内存提交」互斥。
-        // 否则失效时序（三路对抗审查逐字推演，已复核为真实可达）：回滚线程取到旧快照 A → 并发 PUT 成功
-        //   写盘 B 且提交 cfg_=B、generation++ → 回滚线程继续把 A 写回 config.json（**覆盖 B**）→ 再把
-        //   lastWriteTime_ 记为 A 的 mtime ⇒ 下一轮轮询因 mtime 相同早退 ⇒ 磁盘=A、内存=B 的分歧持久不
-        //   收敛，重启读到的就是被撤销的 A。这与 FACE-CONFIG-010 声称消除的失败是**同一个**，只是从确定性
-        //   版变成竞态版。
-        // 为何直接用 mu_ 而非新增专用写锁：mu_ 已是内存态的唯一锁；本段调用的 buildSettingsJson /
-        //   serializedDocIsWritable / writeFileAll / moveReplaceWriteThrough / parseAndValidateSettingsDoc
-        //   均**不取 mu_**（逐字核实）⇒ 不会递归加锁；所有写盘调用点都只用 mu_ 一把锁 ⇒ 无锁序问题、无死锁。
-        //   代价：写盘期间 mu_ 被持有 ⇒ current() 短暂阻塞（本路径只在检测到外部坏写时触发，罕见）。
-        //   ⚠️ 代价不止「一次文件写」：本临界区还含 **AES-256-GCM 加密**（buildSettingsJson 对 poster.postUrl
-        //     重加密）、**DPAPI 解保护**（ensureOrLoadKey）与**多次文件 I/O**（写 tmp + 原子替换；.bak 臂还要
-        //     先读 .bak），故读侧（任何需 cfg_ 的调用，如 current()）最坏阻塞 ≈ **一次完整回滚**，而非单次 write。
-        // rbTmp 为**固定名** `config.json.rollback.tmp`：写入 + moveReplaceWriteThrough 成功即消失；但进程
-        //   若在写盘中途崩溃**会残留**该文件。FACE-CONFIG-014 已修：initialize 启动时会清扫该残留（见其内
-        //   注释与 WinJsonConfig.h），故残留最多存活到下次启动，无需人工处理。残留无正确性影响（下次回滚以
-        //   trunc 覆盖），仅占一份磁盘空间。
-        const std::filesystem::path rbTmp = configPath_.parent_path() / L"config.json.rollback.tmp";
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            // FACE-CONFIG-017：回滚内存写回用 **env-free** envFreeCfg_（而非 env-applied 的 cfg_）——本路径
-            //   本就要让磁盘与内存**语义一致**，而磁盘侧不应含 env 覆盖值（env-free 才是「用户原值」形态）。
-            const std::string memPretty = buildSettingsJson(envFreeCfg_, false, true);
-            std::string memWhyNot;
-            if (serializedDocIsWritable(memPretty, memWhyNot)) {
-                std::string ioErr;
-                if (writeFileAll(rbTmp, memPretty, ioErr) && moveReplaceWriteThrough(rbTmp, configPath_, ioErr)) {
-                    outErr += "; 已用内存中当前生效的配置写回 config.json（本次不应用）";
-                } else {
-                    std::error_code rec;
-                    std::filesystem::remove(rbTmp, rec);
-                    outErr += "; 内存配置写回失败: " + ioErr;
-                }
-            } else {
-                // ② 订正：进入本臂的**现实**原因**不是**「密钥不可用」。.bak 臂先经 parseAndValidateSettingsDoc，
-                //   而该函数**成功路径必经** ensureOrLoadKey ⇒ 密钥不可用时 .bak 会被同判「也无效」⇒ 落到下面
-                //   「.bak 也无效」臂。故「密钥不可用」下**两臂皆不可用 ⇒ 不写盘**。本臂真正可达的场景是
-                //   「密钥可用但加密失败」——即 buildSettingsJson 因 aes256gcmEncrypt 失败返回
-                //   {"_error":"encrypt_error"} stub，此时 .bak 用同一把**可用**密钥仍能解析成功 ⇒ 才真正回退
-                //   .bak。属极罕见分支。
-                outErr += "; 内存配置不可写（" + memWhyNot + "），回退 .bak";
-                if (std::filesystem::exists(bakPath_)) {
-                    std::string bakTxt, e2;
-                    if (readFileAll(bakPath_, bakTxt, e2)) {
-                        AppConfig bakCfg;
-                        // FACE-CONFIG-017：此处仅**原样**写回 .bak 的字节（下面的 writeFileAll(rbTmp, bakTxt)），
-                        //   不做再序列化 ⇒ 不需要 env-free 快照，envFreeOut 传 nullptr。解析结果只用于「.bak 是否有效」。
-                        if (parseAndValidateSettingsDoc(bakTxt, bakCfg, nullptr, e2)) {
-                            std::string ioErr;
-                            if (writeFileAll(rbTmp, bakTxt, ioErr) && moveReplaceWriteThrough(rbTmp, configPath_, ioErr)) {
-                                outErr += "; 已用 .bak 写回 config.json（本次不应用）";
-                            } else {
-                                std::error_code rec;
-                                std::filesystem::remove(rbTmp, rec);
-                                outErr += "; 回滚写入失败: " + ioErr;
-                            }
-                        } else {
-                            outErr += "; .bak 也无效: " + e2;
-                        }
-                    } else {
-                        outErr += "; 读取 .bak 失败: " + e2;
-                    }
-                } else {
-                    // ③ 后果（**可达**：密钥不可用时两臂皆不可用，正是走这里）：坏文件已被隔离 ⇒ config.json
-                    //   **不存在**。下次启动进入「不存在」分支 ⇒ loadRejected=false ⇒ 以默认值运行、configStatus
-                    //   报 ok（密钥也坏时为 degraded）⇒ **用户原配置永远不会被自动恢复**——只能人工把
-                    //   config.json.corrupt.<ts> 改名回 config.json。需人工介入，非自愈。
-                    outErr += "; 无可用 .bak，本次不写盘; 原配置未自动恢复，需人工从 config.json.corrupt.* 改回";
-                }
-            }
-            // 记录**实际**当前 mtime（写回内容时文件已被本次改写；隔离后若未写回则文件不存在、取默认值），
-            // 打断 1 秒轮询的重复重读（否则会每秒重读一份已判定为坏 / 已被替换的文件，产生 IO / 日志噪声）。
-            // ⚠️ 残余不一致（如实登记，非第三种语义）：本路径返回时内存配置保持原样（不应用）。
-            //   · 首选路径（内存快照写回）下磁盘与内存**语义一致（非字节一致）**——buildSettingsJson 会重加密
-            //     postUrl（新 nonce）、对 inference.* 走归一化/钳制、且**不**序列化 AppConfig.configPath，
-            //     故两份 JSON 不是字节等价；这正是 FACE-CONFIG-010 要达到的目标；
-            //   · 回退 .bak 路径下 .bak 可能比内存中生效的配置更旧 ⇒ 「磁盘 = 旧 .bak，内存 = 较新配置」
-            //     短暂不一致，直到下一次真实变更或重启才收敛。该回退仅在「密钥可用但内存加密失败」的极罕见
-            //     分支发生，是为「不应用」语义（不重启管线、不撤销用户最近一次 PUT）付出的代价。
-            std::error_code cec;
-            if (std::filesystem::exists(configPath_)) {
-                lastWriteTime_ = std::filesystem::last_write_time(configPath_, cec);
-            } else {
-                lastWriteTime_ = std::filesystem::file_time_type{};
-            }
-        }
-        return false;  // ★ 不应用：不 cfg_ = cfg、不 generation+1、outApplied 保持 false
-    }
-
-    // FACE-ARCWIN-010 / FACE-CONFIG-017 / FACE-CONFIG-018 的规范化告警（热重载路径）。
-    // ⚠️ 如实登记：热重载**没有**用户可见通道——outErr 是唯一被调用方接走的字符串，而两个生产调用点
-    //   （win_local_service_main / win_camera_face_recognition_main）都只读 outApplied、忽略 err，
-    //   HTTP 层也没有「重载告警」出口（改那些文件超出本批允许范围）。此处并入 outErr 只为让
-    //   测试 / 日志能看到「本次热重载发生了钳制或路径告警」；**用户可见通道仍只有 initialize 的
-    //   warnOut ⇒ health 的 configWarning**。语义代价（已知）：成功路径上 outErr 可能非空
-    //   （outApplied 仍为 true），故读取方**不得**用「outErr 非空」判定失败——既有调用点已如此。
-    const std::string normWarn = takeNormalizeWarnings();
-    if (!normWarn.empty()) {
-        outErr = outErr.empty() ? normWarn : (outErr + "; " + normWarn);
-    }
-
     cfg.configPath = configPath_;
-    // FACE-CONFIG-017：lastGoodJsonPretty_ 用 **env-free** 快照（供后续 PUT 作为 env-free 合并基底）。
-    const std::string pretty = buildSettingsJson(envFree, false, true);
+    const std::string pretty = buildSettingsJson(cfg, false, true);
     {
         std::lock_guard<std::mutex> lock(mu_);
-        std::error_code cec;
-        const auto currentWt = std::filesystem::last_write_time(configPath_, cec);
-        if (!cec && currentWt != wt) {
+        const auto currentWt = std::filesystem::last_write_time(configPath_, ec);
+        if (!ec && currentWt != wt) {
             // 文件在读取后被再次修改，放弃本次更新以避免覆盖
             outErr = "配置在读取期间被外部修改，放弃热重载";
             return false;
         }
         cfg_ = cfg;
-        envFreeCfg_ = envFree;  // FACE-CONFIG-017：与 cfg_ 成对更新（同一 mu_ 临界区）
-        // 序列化产物若为错误 stub（密钥运行期失效 ⇒ buildSettingsJson 返回 {"_error":...}），不得
-        // 记为「最近良好序列化」——否则后续 PUT 会以该 stub 为 base 合并（updateFromJsonBody 对自身
-        // 产物另有 "_error" 检查，此处对齐同一闸门）。
-        if (pretty.find("\"_error\"") == std::string::npos) {
-            lastGoodJsonPretty_ = pretty;
-        }
-        // 本路径未写盘，wt 仍是当前 mtime（上面已确认读取期间无外部修改），直接沿用即可；
-        // 写入 lastWriteTime_ 使下一次轮询在同一 mtime 上早退（避免每秒重读同一份内容）。
+        lastGoodJsonPretty_ = pretty;
         lastWriteTime_ = wt;
         generation_.fetch_add(1);  // 外部写入成功 reload：配置代数 +1
     }
@@ -1980,29 +1080,6 @@ bool WinJsonConfigStore::reloadFromDisk(bool& outApplied, std::string& outErr) {
 bool WinJsonConfigStore::pollReloadOnce(bool& outApplied, std::string& outErr) {
     return reloadFromDisk(outApplied, outErr);
 }
-
-#if defined(RK_ENABLE_TEST_SEAMS)
-// ★ 测试接缝（编译期开关，仅 win_unit_tests 定义；见头文件声明注释）。生产构建不编译本段 ⇒ 无副作用。
-void WinJsonConfigStore::setReloadTestHookForTesting(std::function<void()> hook) {
-    std::lock_guard<std::mutex> lock(mu_);
-    reloadTestHook_ = std::move(hook);
-}
-
-void WinJsonConfigStore::setRotateTestHookForTesting(std::function<void()> hook) {
-    std::lock_guard<std::mutex> lock(mu_);
-    rotateTestHook_ = std::move(hook);
-}
-
-void WinJsonConfigStore::setReloadIsolationTestHookForTesting(std::function<void()> hook) {
-    std::lock_guard<std::mutex> lock(mu_);
-    reloadIsolationTestHook_ = std::move(hook);
-}
-
-void WinJsonConfigStore::setPutPreDecryptTestHookForTesting(std::function<void()> hook) {
-    std::lock_guard<std::mutex> lock(mu_);
-    putPreDecryptTestHook_ = std::move(hook);
-}
-#endif
 
 bool WinJsonConfigStore::startWatching() {
     stopWatching();

@@ -8,14 +8,10 @@ using namespace rk_core;
 #include "ModelRegistry.h"
 #include "NativeLog.h"
 #include "YoloFaceDetector.h"
-// INT8 链的 `arcface_int8` 分支需要对适配器做具体类型注入（详见 computeEmbedding 内注释）。
-#include "adapters/ArcFaceAdapter.h"
 
 #include <opencv2/imgcodecs.hpp>
 
-#include <atomic>
 #include <chrono>
-#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -233,12 +229,85 @@ FaceInferStageStatus FaceInferStages::detectFaces(const FaceInferRequest& req, F
         return okStatus();
     }
 
-    // §I3：装配集中在 runFaceInferOnce（FaceInferencePipeline.cpp）——本阶段**只消费注入实例**。
-    // 未注入（含装配失败）时带出真实装配错误，**不再**自行 createDetector / 回落：
-    // 原「同路径 INT8 候选队列」与「按 yoloBackend 查注册表的第二套逻辑」已按本轮显式决策删除
-    // （替代关系由 §I3/A16 决策确立：一个明确模型 ID 绑定当前单一路径，加载失败明确报错）。
-    return failStatus("yolo_load",
-                      ctx.detectorLoadError.empty() ? "detector_unavailable" : ctx.detectorLoadError);
+    // Fallback: 创建临时检测器（无缓存，兼容旧调用方）
+    std::string detErr;
+
+    // INT8 量化模型优先选择
+    if (req.int8Enabled) {
+        std::string loadErr;
+        ModelRegistry::ensureBuiltinRegistered();
+        auto int8Det = ModelRegistry::instance().createDetector("yolo_face_int8");
+        if (int8Det && int8Det->load(req.yoloModelPath, loadErr)) {
+            ctx.yoloBackendName = std::string(int8Det->name()) + " (INT8)";
+            const auto td0 = std::chrono::steady_clock::now();
+            ctx.faces = int8Det->detect(ctx.img, detErr);
+            const auto td1 = std::chrono::steady_clock::now();
+            m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+            if (detErr.empty()) return okStatus();
+        }
+        rklog::logWarn("FaceInferStages", "detectFaces", "INT8 detector failed: " + loadErr + ", falling back to FP32");
+    }
+
+    if (req.yoloBackend == "opencv" || req.yoloBackend == "opencv_dnn" || req.yoloBackend == "ncnn") {
+        ModelRegistry::ensureBuiltinRegistered();
+        auto adapter = ModelRegistry::instance().createDetector(req.yoloBackend);
+        if (!adapter) {
+            return failStatus("yolo_load", "detector_not_found: " + req.yoloBackend);
+        }
+        std::string loadErr;
+        if (!adapter->load(req.yoloModelPath, loadErr)) {
+            return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
+        }
+        ctx.yoloBackendName = adapter->name();
+        const auto td0 = std::chrono::steady_clock::now();
+        ctx.faces = adapter->detect(ctx.img, detErr);
+        const auto td1 = std::chrono::steady_clock::now();
+        m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+        if (!detErr.empty()) {
+            return failStatus("yolo_detect", detErr);
+        }
+        return okStatus();
+    } else if (req.yoloBackend == "qualcomm") {
+        rklog::logInfo("FaceInferStages", "yoloBackend", "Qualcomm SDK fallback to CPU... 待补测");
+        std::unique_ptr<YoloFaceDetector> det = CreateOpenCvDnnYoloFaceDetector();
+        YoloFaceModelSpec spec;
+        spec.modelPath = req.yoloModelPath;
+        spec.configPath = req.yoloConfigPath;
+        spec.framework = req.yoloFramework;
+        spec.outputName = req.yoloOutputName;
+
+        YoloFaceOptions opt;
+        opt.inputW = req.yoloInputW;
+        opt.inputH = req.yoloInputH;
+        opt.scoreThreshold = req.yoloScoreThreshold;
+        opt.nmsIouThreshold = req.yoloNmsIouThreshold;
+        opt.enableKeypoints5 = req.yoloEnableKeypoints5;
+        opt.letterbox = req.yoloLetterbox;
+        opt.swapRB = req.yoloSwapRB;
+        opt.scale = req.yoloScale;
+        opt.meanB = req.yoloMeanB;
+        opt.meanG = req.yoloMeanG;
+        opt.meanR = req.yoloMeanR;
+        opt.opencvBackend = req.yoloOpenCvBackend;
+        opt.opencvTarget = req.yoloOpenCvTarget;
+
+        std::string loadErr;
+        if (!det->load(spec, opt, loadErr)) {
+            return failStatus("yolo_load", loadErr.empty() ? "yolo_load_failed" : loadErr);
+        }
+
+        ctx.yoloBackendName = det->backendName();
+        const auto td0 = std::chrono::steady_clock::now();
+        ctx.faces = det->detect(ctx.img, detErr);
+        const auto td1 = std::chrono::steady_clock::now();
+        m.msDetect = std::chrono::duration_cast<std::chrono::milliseconds>(td1 - td0).count();
+        if (!detErr.empty()) {
+            return failStatus("yolo_detect", detErr);
+        }
+        return okStatus();
+    } else {
+        return failStatus("yolo_load", "yolo_backend_unsupported");
+    }
 }
 
 void FaceInferStages::selectMainFace(const FaceInferRequest& req, FaceInferContext& ctx) {
@@ -280,51 +349,114 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
         ctx.embeddingFake = true;
         const auto te1 = std::chrono::steady_clock::now();
         m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-        // ⚠️ 同形状登记（2026-09-26 验收 A2 指出，**非本轮引入、本轮不改**）：本行先算 `embeddingOk`
-        //    再**无条件**返回 ok，属**潜伏**的「失败静默」形态（当前不可触发：`makeFakeEmbedding512`
-        //    恒返回 `kDim`）；将来若该函数返回维度变化，须按下方注入分支的做法把原因写进 err 并走失败
-        //    路径，保持一致口径。
         return okStatus();
     }
 
-    // §I3：装配集中在 runFaceInferOnce（FaceInferencePipeline.cpp），本阶段**只消费注入的
-    // Embedder 实例**。统一接口 `Embedder::embed()` **不保证** 512 维（旧 `ArcFaceEmbedder*`
-    // 的「has_value() 蕴含 512 维」静态保证对派生实现不再成立）⇒ 必须**显式校验维度**：
-    // 不符即失败（不静默）、返回不含身份，避免下游把错维向量当成功继续检索。
+    // 使用外部注入的嵌入器实例（调用方管理生命周期，每帧复用避免重复加载模型）
     if (ctx.embedder) {
         std::string embedErr;
-        auto e = ctx.embedder->embed(ctx.aligned112, embedErr);
+        auto e = ctx.embedder->embedAlignedFaceBgr(ctx.aligned112, &embedErr);
         if (e.has_value()) {
-            if (e->size() == static_cast<size_t>(ArcFaceEmbedding::kDim)) {
-                ctx.embedding = std::move(*e);
-                ctx.embeddingOk = true;
-                ctx.arcBackendName = ctx.embedder->name();
-                const auto te1 = std::chrono::steady_clock::now();
-                m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
-                return okStatus();
-            }
-            return failStatus("arc_embed",
-                              "embedding_dim_mismatch（实际 " + std::to_string(e->size()) + "）");
+            ctx.embedding = std::move(e->values);
+            ctx.embeddingOk = true;
+            ctx.arcBackendName = req.arcBackend;
+            const auto te1 = std::chrono::steady_clock::now();
+            m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+            return okStatus();
         }
         return failStatus("arc_embed", embedErr.empty() ? "arc_embed_failed" : embedErr);
     }
 
-    // §I3：未注入（含装配失败）时带出真实装配错误，**不再**自行 createEmbedder / 回落 FP32/INT8。
-    // 原「同路径 INT8 候选队列（arcface_int8 → mobilefacenet_int8）+ FP32 回落链」已按本轮显式
-    // 决策删除（替代关系见 §I3/A16：一个明确模型 ID 绑定当前单一路径，加载失败明确报错；
-    // 绝不把同一文件依次交给 ArcFace、MobileFaceNet）。
-    return failStatus("arc_init",
-                      ctx.embedderLoadError.empty() ? "embedder_unavailable" : ctx.embedderLoadError);
+    // Fallback: 创建临时嵌入器（无缓存，兼容旧调用方）
+
+    // INT8 量化模型优先选择
+    if (req.int8Enabled) {
+        ModelRegistry::ensureBuiltinRegistered();
+        // 按优先级尝试 INT8 识别器
+        const char* int8EmbedderIds[] = {"arcface_int8", "mobilefacenet_int8"};
+        for (const char* eId : int8EmbedderIds) {
+            auto int8Emb = ModelRegistry::instance().createEmbedder(eId);
+            if (int8Emb) {
+                std::string loadErr;
+                if (int8Emb->load(req.arcModelPath, loadErr)) {
+                    std::string embedErr;
+                    auto e = int8Emb->embed(ctx.aligned112, embedErr);
+                    if (e.has_value()) {
+                        ctx.embedding = std::move(*e);
+                        ctx.embeddingOk = (ctx.embedding.size() == static_cast<size_t>(ArcFaceEmbedding::kDim));
+                        ctx.embeddingFake = false;
+                        ctx.arcBackendName = std::string(int8Emb->name()) + " (INT8)";
+                        const auto te1 = std::chrono::steady_clock::now();
+                        m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+                        return okStatus();
+                    }
+                }
+                rklog::logWarn("FaceInferStages", "computeEmbedding", "INT8 embedder failed, falling back to FP32");
+            }
+        }
+    }
+
+    ArcFaceEmbedderConfig cfg;
+    cfg.inputW = req.arcInputW;
+    cfg.inputH = req.arcInputH;
+    cfg.modelVersion = req.arcModelVersion;
+    cfg.preprocessVersion = req.arcPreprocessVersion;
+    cfg.opencvModel = req.arcModelPath;
+    cfg.opencvConfig = req.arcConfigPath;
+    cfg.opencvFramework = req.arcFramework;
+    cfg.opencvOutput = req.arcOutputName;
+    cfg.opencvInput = req.arcInputName;
+
+    if (req.arcBackend == "opencv" || req.arcBackend == "opencv_dnn") {
+        cfg.backend = ArcFaceEmbedderConfig::BackendType::OpenCvDnn;
+    } else if (req.arcBackend == "ncnn") {
+        cfg.backend = ArcFaceEmbedderConfig::BackendType::Ncnn;
+        cfg.ncnnParam = req.arcNcnnParam;
+        cfg.ncnnBin = req.arcNcnnBin;
+        cfg.ncnnInput = req.arcNcnnInput;
+        cfg.ncnnOutput = req.arcNcnnOutput;
+        cfg.ncnnThreads = req.arcNcnnThreads;
+        cfg.ncnnLightmode = req.arcNcnnLightmode;
+    } else if (req.arcBackend == "qualcomm") {
+        cfg.backend = ArcFaceEmbedderConfig::BackendType::Qualcomm;
+        cfg.qualcommModel = req.arcModelPath;
+    } else {
+        return failStatus("arc_init", "arc_backend_unsupported");
+    }
+
+    ArcFaceEmbedder emb;
+    std::string initErr;
+    if (!emb.initialize(cfg, &initErr)) {
+        return failStatus("arc_init", initErr.empty() ? "arc_init_failed" : initErr);
+    }
+
+    if (cfg.backend == ArcFaceEmbedderConfig::BackendType::OpenCvDnn) {
+        ctx.arcBackendName = "opencv_dnn";
+    } else if (cfg.backend == ArcFaceEmbedderConfig::BackendType::Ncnn) {
+        ctx.arcBackendName = "ncnn";
+    } else if (cfg.backend == ArcFaceEmbedderConfig::BackendType::Qualcomm) {
+        ctx.arcBackendName = "qualcomm";
+    } else {
+        ctx.arcBackendName = "unknown";
+    }
+
+    {
+        auto e = emb.embedAlignedFaceBgr(ctx.aligned112, &initErr);
+        if (e.has_value()) {
+            ctx.embedding = std::move(e->values);
+            ctx.embeddingOk = true;
+        }
+    }
+
+    if (!ctx.embeddingOk) {
+        return failStatus("arc_embed", "arc_embed_failed");
+    }
+    const auto te1 = std::chrono::steady_clock::now();
+    m.msEmbed = std::chrono::duration_cast<std::chrono::milliseconds>(te1 - te0).count();
+    return okStatus();
 }
 
 FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, FaceInferContext& ctx) {
-    // §I3：内存快照优先——req.gallerySnapshot 非空时直接绑定该不可变索引，**不读磁盘**
-    //（Android 侧已解密并经 replaceGalleryForSpace 建立的内存图库）。旧明文目录夹具仅保留
-    // 研究兼容；不得把 Android 加密目录交给 loadGalleryDir。
-    if (req.gallerySnapshot) {
-        ctx.gallerySnapshot = req.gallerySnapshot;
-        return okStatus();
-    }
     std::string galleryErr;
     if (!loadGalleryDir(req.galleryDir, ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
         ctx.galleryEntries.clear();
@@ -338,31 +470,6 @@ FaceInferStageStatus FaceInferStages::searchTopK(const FaceInferRequest& req, Fa
 
     std::string searchErr;
     const auto ts0 = std::chrono::steady_clock::now();
-
-    // §I3：内存快照直接检索其**不可变**索引，不重复复制模板。
-    if (ctx.gallerySnapshot) {
-        if (ctx.gallerySnapshot->size() > 0) {
-            FaceSearchOptions opt;
-            opt.assumeL2Normalized = req.assumeL2Normalized;
-            ctx.hits = ctx.gallerySnapshot->searchTopK(ctx.embedding, req.topK, opt, searchErr);
-            if (!searchErr.empty()) {
-                const auto ts1 = std::chrono::steady_clock::now();
-                m.msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
-                return failStatus("search", searchErr);
-            }
-        }
-        const auto ts1 = std::chrono::steady_clock::now();
-        m.msSearch = std::chrono::duration_cast<std::chrono::milliseconds>(ts1 - ts0).count();
-        if (!ctx.hits.empty()) {
-            ctx.bestScore = ctx.hits[0].score;
-            ctx.hasCandidate = true;
-        } else {
-            ctx.bestScore = -1.0f;
-            ctx.hasCandidate = false;
-        }
-        return okStatus();
-    }
-
     // Copy entries so a failed reset() doesn't leave galleryEntries empty for a retry
     auto entries = ctx.galleryEntries;
     if (!ctx.index.reset(std::move(entries), static_cast<size_t>(ArcFaceEmbedding::kDim), searchErr)) {

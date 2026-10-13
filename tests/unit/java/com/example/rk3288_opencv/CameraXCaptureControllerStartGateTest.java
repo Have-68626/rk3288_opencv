@@ -22,7 +22,7 @@ public class CameraXCaptureControllerStartGateTest {
     @Test
     public void staleFutureCompletionAfterRestartIsIgnored() {
         // 场景：启动 → 过期 Future 延迟完成 → 再启动新流程
-        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
+        CameraXCaptureController.StartSessionGate gate = new CameraXCaptureController.StartSessionGate();
 
         // 第一次启动：异步 Future 尚未完成，捕获本次会话代次
         long firstStart = gate.enter();
@@ -37,48 +37,28 @@ public class CameraXCaptureControllerStartGateTest {
     @Test
     public void stopInvalidatesInFlightBind() {
         // 启动后 stop()：尚未完成的异步绑定过期（旧回调不得重新拉起相机）
-        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
+        CameraXCaptureController.StartSessionGate gate = new CameraXCaptureController.StartSessionGate();
 
         long start = gate.enter();
         assertTrue(gate.isCurrent(start));
 
-        gate.advance();
+        gate.invalidate();
         assertFalse(gate.isCurrent(start));
     }
 
     @Test
     public void currentSessionWithoutInterruptionStillProceeds() {
         // 无并发/无 stop 的正常流程：当前代次始终放行，避免修复引入回归
-        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
+        CameraXCaptureController.StartSessionGate gate = new CameraXCaptureController.StartSessionGate();
 
         long epoch = gate.enter();
         assertTrue(gate.isCurrent(epoch));
 
-        gate.advance();
+        gate.invalidate();
         assertFalse(gate.isCurrent(epoch));
 
         // 再次启动后，新代次重新放行
         long again = gate.enter();
         assertTrue(gate.isCurrent(again));
-    }
-
-    /**
-     * P1-4：旧代次排队帧被丢弃。
-     * analyzer 绑定（setAnalyzer）时捕获会话代次，帧送达时以该捕获值校验；stop/切换源
-     * 推进代次后，stop 前排队的 ImageProxy 携带旧捕获值，analyze 入口 isCurrent 为 false
-     * → 整帧丢弃（不推送、不统计）。修复前 analyze 无代次校验，旧帧仍会被推送/统计。
-     */
-    @Test
-    public void staleQueuedFrameEpochIsDropped() {
-        CaptureSourceEpochGate gate = new CaptureSourceEpochGate();
-        long bindEpoch = gate.enter();          // start：bind analyzer 时捕获会话代次
-        assertTrue("绑定时的会话帧应放行", gate.isCurrent(bindEpoch));
-
-        gate.advance();                         // stop：使在途/排队的旧帧过期
-        assertFalse("stop 后旧 analyzer 捕获的代次应失效", gate.isCurrent(bindEpoch));
-
-        long newEpoch = gate.enter();           // 再次 start：新会话
-        assertFalse("旧会话排队帧不得在新会话被放行", gate.isCurrent(bindEpoch));
-        assertTrue("新会话绑定帧应放行", gate.isCurrent(newEpoch));
     }
 }

@@ -36,7 +36,7 @@ type OkEnv = { ok: true; data: ServerSettingsDoc }
 const BASE: ServerSettingsDoc = {
   schemaVersion: 1,
   camera: { preferredDeviceId: '', width: 640, height: 480, fps: 30 },
-  recognition: { cascadePath: '', databasePath: '', minFaceSizePx: 100, identifyThreshold: 0.6, identifyThresholdArcFace: 0.45, enrollSamples: 5, arcFaceModelPath: '', arcFaceInputName: '', arcFaceOutputName: '' },
+  recognition: { cascadePath: '', databasePath: '', minFaceSizePx: 100, identifyThreshold: 0.6, enrollSamples: 5, arcFaceModelPath: '' },
   inference: { throttleMode: 'interval', intervalMs: 100 },
   dnn: { enable: false, modelPath: '', configPath: '', inputWidth: 640, inputHeight: 640, scale: 1, meanB: 0, meanG: 0, meanR: 0, swapRB: false, confThreshold: 0.5, backend: 0, target: 0 },
   model: { detection: '', recognition: '', backend: '', detectorBackend: '', recognitionBackend: '', autoFallback: true, int8Enabled: false },

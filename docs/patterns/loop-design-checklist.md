@@ -1,11 +1,6 @@
-<!-- DOCSYNC_DOC
-type=process
-status=living
-as_of=2026-08-13
--->
-
 # Loop 设计检查清单
 
+**最后更新：2026-08-10**
 **适用对象**: 新增或调整 Claude Code Loop 配置时逐项核对
 
 ---

@@ -1,12 +1,8 @@
-<!-- DOCSYNC_DOC
-type=design
-status=living
-as_of=2026-09-26
--->
-
 # INT8 量化工具链设计文档
 
+**日期**: 2026-06-21
 
+**最后复核**: 2026-07-21
 
 **优先级**: P0（加速方案落地）
 
@@ -19,7 +15,7 @@ as_of=2026-09-26
 - `ModelRegistry`、`FaceInferStages`、`test_int8_quantization.cpp` 与 `ncnn_precision_test.cpp` 仍使用 `yolo_face_int8` 和 `models/yolo_face*_ncnn`。这属于尚未完成的历史兼容路径，不能表述为已与 SCRFD 统一。
 - `model.int8Enabled` 已进入 Windows 配置序列化和运行时选择逻辑；模型缺失时仍走既有回退路径。
 - 测试在模型文件缺失时返回跳过；“测试通过”不等于完成 FP32/INT8 精度验证。独立精度测试的 ArcFace 余弦相似度阈值为 0.90。
-- Windows CI 的量化命令曾传入脚本未定义的 `--size` 参数（原缺陷：该参数在 `scripts/quantize_ncnn_int8.py` 的 argparse 表中根本不存在）；本批已从 CI 删除该无效参数（本次修正）。但量化与精度两个步骤仍为 `continue-on-error: true`（非阻断），因此当前 CI **仍不能**证明量化成功或精度达标。
+- 当前 Windows CI 的量化命令包含脚本未定义的 `--size` 参数，且量化与精度步骤均为非阻断。因此当前 CI 不能证明量化成功或精度达标。
 
 ## 2. 实际流水线
 

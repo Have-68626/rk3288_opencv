@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=security
-status=living
-as_of=2026-07-21
--->
-
 # CivetWeb SSL 验证归档说明
 
 **快照事实**: `src/win/third_party/civetweb/civetweb.c:18341` 使用 `SSL_VERIFY_NONE`。

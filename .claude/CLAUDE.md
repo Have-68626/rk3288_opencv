@@ -1,11 +1,6 @@
-<!-- DOCSYNC_DOC
-type=process
-status=living
-as_of=2026-09-15
--->
-
 # graphify
-用户输入 `/graphify` 时，先加载 graphify skill 再执行任何其他操作。知识图谱的查询/更新规则见根目录 `CLAUDE.md` 的 graphify 一节。
+- **graphify** (`.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
 
 # 项目持久记忆（所有会话必须读取）
 本项目的跨会话记忆位于 `C:\Users\19842\.claude\projects\D--19842-Documents-GitHub-rk3288-opencv\memory\`，`MEMORY.md` 为索引。

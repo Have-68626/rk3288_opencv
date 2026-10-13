@@ -93,17 +93,9 @@ set(RK_ENGINE_TARGETS
     core_unit_tests rk3288_cli opencv_verify_cli native-lib
     win_local_service win_camera_face_recognition
     face_infer_unit_tests ncnn_precision_test
-    inference_bench_cli win_face_eval_cli win_face_bench_cli win_replay_export_cli
+    inference_bench_cli win_face_eval_cli win_face_bench_cli
     win_unit_tests win_face_database_perf
 )
-
-# ── 基准预算覆盖（§10.11 D4b）────────────────────────
-# 覆盖 RealtimeBenchmarkConfig.enforceBudget 的平台默认值。
-# ★ 留空 = **不注入**该宏 ⇒ .cpp 的 kDefaultEnforceBudget 回落到 __aarch64__ 判定 ⇒ **零行为变化**
-#   （唯测试 target `core_unit_tests` 例外，见 `cmake/core.cmake`）。
-#   此处刻意不用布尔 option(OFF)：固定 OFF 会静默改变 Android arm64 行为（超预算从「拒绝发布」变「照发」）。
-set(RK_BENCH_ENFORCE_BUDGET "" CACHE STRING "强制/关闭基准预算判定；留空 = 按架构回落（见 RealtimeFacePipeline.cpp）")
-set_property(CACHE RK_BENCH_ENFORCE_BUDGET PROPERTY STRINGS "" ON OFF)
 
 # ── libyuv 选项 ────────────────────────────────────
 if(ANDROID)
@@ -172,7 +164,6 @@ add_executable(rk3288_cli
     "src/win/src/FaceDetector.cpp"
     "src/win/src/LbphEmbedder.cpp"
     "src/win/src/DnnSsdFaceDetector.cpp"
-    "src/win/src/JsonLite.cpp"
 )
 target_include_directories(rk3288_cli PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
@@ -228,12 +219,9 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         "src/win/src/DnnSsdFaceDetector.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
-        "src/win/src/JsonLite.cpp"
         "src/cpp/src/pipeline/ResultPublisher.cpp"
         "src/cpp/src/pipeline/PerfReporter.cpp"
         "src/cpp/src/pipeline/TrackCoordinator.cpp"
-        "src/cpp/src/pipeline/FacePostProcessor.cpp"
-        "src/cpp/src/pipeline/ScrfdDecoder.cpp"
     )
     target_include_directories(face_infer_unit_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
@@ -244,11 +232,9 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     if(MSVC)
         target_compile_options(face_infer_unit_tests PRIVATE /utf-8)
     endif()
-    target_compile_definitions(face_infer_unit_tests PRIVATE
-            RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
     if(WIN32)
         target_compile_definitions(face_infer_unit_tests PRIVATE
-            NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_MPP=0)
+            NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
     endif()
     target_link_libraries(face_infer_unit_tests ${RK_OPENCV_FULL_LIBS})
     if(TARGET GTest::gtest)
@@ -266,15 +252,7 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     # build 才会解析失败。设源码根使 fixture 契约独立于 build 位置（B15-001）。
     add_test(NAME face_infer_unit_tests COMMAND face_infer_unit_tests
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    # 超时保护：与 win_unit_tests 同策略 —— 该 target 内若有阻塞会无限挂起整个 ctest，
-    # 故设 120s 把「挂起」降级为一次可观测的 Timeout 失败。
-    # ⚠️ 归因订正（2026-09-28，与 cmake/windows.cmake 的同名订正配套）：原注释把成因写作
-    #    「（B06-014）」—— **B06-014 实为 FramePipeline 运行时所有权并发的 UAF**（模型热重载
-    #    释放处理线程正在使用的对象），与本处挂起无关；本超时实为**模板式复制**。
-    #    ⇒ 两处注释此前互相矛盾（windows.cmake 已改、此处未改），现已同步。
-    # ⚠️ 数值**不再与 `win_unit_tests` 同值**（2026-09-28 用户拍板）：那边因「负载下正常时长可达
-    #    ~118s」已上调 **120 → 180**；本 target 正常时长 **~1.5s**、120s 余量充足 ⇒ **保持 120 不变**。
-    #    勿再因「同策略」把两者改齐。
+    # 并发死锁保护：与 win_unit_tests 同策略，超时防卡死挂起整个 ctest（B06-014）
     set_tests_properties(face_infer_unit_tests PROPERTIES TIMEOUT 120)
 endif()
 
@@ -319,12 +297,6 @@ if(NOT ANDROID)
     add_executable(core_gtest_tests
         "tests/cpp/test_engine.cpp" "tests/cpp/test_bioauth.cpp"
         "tests/cpp/test_motion.cpp" "tests/cpp/test_adapters.cpp"
-        "tests/cpp/test_arcface_contract.cpp"
-        "tests/cpp/test_face_runtime_profile.cpp"
-        "tests/cpp/test_scrfd_decoder.cpp"
-        "tests/cpp/test_scrfd_ncnn_adapter.cpp"
-        "tests/cpp/test_frame_transform.cpp"
-        "src/win/src/JsonLite.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         ${RK_PIPELINE_SOURCES}
         "src/win/src/DnnSsdFaceDetector.cpp" "src/win/src/FaceDetector.cpp"
@@ -337,65 +309,16 @@ if(NOT ANDROID)
     if(MSVC)
         target_compile_options(core_gtest_tests PRIVATE /utf-8)
     endif()
-    target_compile_definitions(core_gtest_tests PRIVATE
-        RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
     if(WIN32)
         target_compile_definitions(core_gtest_tests PRIVATE
-            NOMINMAX WIN32_LEAN_AND_MEAN RK_HAVE_MPP=0)
+            NOMINMAX WIN32_LEAN_AND_MEAN
+            RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0> RK_HAVE_MPP=0)
     endif()
-    # 测试接缝编译期开关（第四轮审查 M3）：仅本 target 需要——它编译 test_engine.cpp 的
-    # BarrierEngine（覆写 Engine::onBeforeRenderPublish）且在同一 target 内编译 Engine.cpp，
-    # 宏对二者一致故无 ODR/布局不一致；生产构建不定义 → Engine 无虚函数、无 vptr（ABI 稳定）。
-    # 不全局定义：core_unit_tests 等 target 不编译 test_engine.cpp/Engine.cpp，无需该宏。
-    target_compile_definitions(core_gtest_tests PRIVATE RK_ENABLE_TEST_SEAMS)
-    # §10.11 D4b：基准预算覆盖宏。core_gtest_tests 同 /EHsc、RK_ENABLE_TEST_SEAMS 一样**不走公共
-    # 循环、也不链接 rk_core**，故在此单独补注入（它同样经 ${RK_FACE_INFER_CORE_SOURCES} 编译
-    # RealtimeFacePipeline.cpp）。留空 = 不注入 ⇒ 零行为变化（见上方 option 注释）。
-    if(NOT RK_BENCH_ENFORCE_BUDGET STREQUAL "")
-        target_compile_definitions(core_gtest_tests PRIVATE
-            "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
-    endif()
-    # test_arcface_contract.cpp::LoadEmbedderConsumesManifestEmbedderBinWiring 的接线守卫需读仓内
-    # 源码文本（src/cpp/src/pipeline/RealtimeFacePipeline.cpp）⇒ 必须定义源码根（与 core_unit_tests
-    # 同口径，见 cmake/core.cmake 中 core_unit_tests 的 RK_TEST_SOURCE_ROOT 定义）。该守卫不依赖模型/OpenCV/ncnn，故 CI 恒跑（windows job 的
-    # `ctest -R "unit_tests|core_gtest_tests"`）。缺此定义时该文件的 `#else #error` 会让构建**响亮失败**
-    # （而非让守卫静默消失）——范式同 test_log_rate_limiter.cpp / test_track_coordinator.cpp。
-    target_compile_definitions(core_gtest_tests PRIVATE RK_TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(core_gtest_tests GTest::gtest_main ${RK_OPENCV_FULL_LIBS})
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
     endif()
-    # 源码根作为 WORKING_DIRECTORY —— 双代理审计（A1/A2）+ 子代理 3/4 复核共同定位的缺口：
-    # `test_adapters.cpp::MobileFaceNetDefaultsMatchShippedModelFiles`（本批新增）用**相对路径**
-    # `models/...` 判断模型是否存在。不设本属性时 `ctest` 从**构建目录**起算 ⇒ 它在 ctest 下
-    # **静默 GTEST_SKIP**，本机这条守卫形同虚设（已实测：设属性前 ctest 下 SKIP、设属性后 OK）。
-    # ⚠️ **修好 cwd 只解决一半，不要把这条读成「CI 已守住」**（子代理 4 S1 与子代理 3 各自独立指出）：
-    #    `models/*` 是 gitignored 的二进制（`git ls-files models/` 仅 7 个文本文件、无任何 `.param`），
-    #    CI 全新检出后**这些模型根本不存在** ⇒ 即便 cwd 正确，该用例在 CI 上**仍会 SKIP**。
-    #    ⇒ 「适配器默认值 ↔ **真实模型**」这条对齐校验**本质上只能在有模型的本机跑**。
-    #    CI 侧真正守住的是它的**另一半**：`MobileFaceNetNodeNamesAndDimAreConfigurable`
-    #    （无任何跳过条件、恒运行）把默认值钉死为 in0/out0/512 ⇒ **常量漂移在 CI 可被拦**。
-    # ⚠️ 同处更正（子代理 3/4 各指出一次）：`AdapterLoadsRealInt8ModelWithInjectedNames` **不是**因 cwd
-    #    才跳过 —— 它在本机（模型存在）仍 SKIP，原因是 `RK_HAVE_NCNN=0`（本机构建与 CI 均未启用 ncnn）。
-    #    修 cwd 对它是必要不充分；它真正缺的前置是「一个启用 ncnn 的构建」。
-    # ⚠️ 另一处更正：「本 target 其余用例均不依赖 cwd」**不成立**：`AdapterTest.ModelRegistryListAllEmpty`
-    #    依赖 `ModelRegistry` 的**惰性注册**，而注册用的正是相对路径 `models/*.param` ⇒ 一旦将来有用例
-    #    先触发注册，cwd=源根（本机有模型）就会让该断言翻红。当前无触发者，属**潜在脆弱**，此处留档。
-    add_test(NAME core_gtest_tests COMMAND core_gtest_tests
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    # P8/D8：run() 同线程重入拒绝的**行为**测试。该 GTest 默认禁用（DISABLED_ 前缀）⇒ 上面的
-    # core_gtest_tests（无 --gtest_also_run_disabled_tests）**不跑它**，避免守卫失效时的阻塞形态把
-    # 整套拖成超时。此处以独立 CTest 显式启用该单条并加 TIMEOUT：超时只终止**子进程**，
-    # **不给生产加看门狗**（生产构建不定义 RK_ENABLE_TEST_SEAMS，无此用例）。
-    # CI 覆盖：.github/workflows/ci.yml 的 windows job ctest 过滤已扩为
-    #    `-R "unit_tests|core_gtest_tests|engine_run_reentry_behavior"` ⇒ 本 CTest 已由 CI 覆盖。
-    add_test(NAME engine_run_reentry_behavior
-        COMMAND core_gtest_tests
-            --gtest_also_run_disabled_tests
-            --gtest_filter=EngineTest.DISABLED_RunReentryFromEmitGateReturnsImmediately
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    set_tests_properties(engine_run_reentry_behavior PROPERTIES TIMEOUT 15)
+    add_test(NAME core_gtest_tests COMMAND core_gtest_tests)
 
     # win_unit_tests contains GTest files (test_http_faces_server.cpp), need GTest::gtest (no _main to avoid main() conflict)
     if(WIN32 AND TARGET win_unit_tests AND TARGET GTest::gtest)
@@ -438,34 +361,7 @@ foreach(t ${RK_ENGINE_TARGETS})
     endif()
 endforeach()
 
-# ── 基准预算覆盖注入（§10.11 D4b）────────────────────────
-# 仅当 RK_BENCH_ENFORCE_BUDGET 被**显式设置**（ON/OFF 皆算，空串不算）时注入。判据刻意用
-# `NOT ... STREQUAL ""` 而非 `if(...)`：后者会把 OFF 当作假值，导致「显式关闭」在 Android arm64
-# 上静默失效（超预算仍拒绝发布）。
-#   · 主注入点 = rk_core 的 INTERFACE 定义：rk_core 是 INTERFACE 库，链它的 target 自动获得；
-#     本仓其唯一消费者 core_unit_tests 正好编译 RealtimeFacePipeline.cpp。
-#   · 以下 target 同样编译 RealtimeFacePipeline.cpp，却**不链接 rk_core**，故显式补注入：
-#     rk3288_cli / face_infer_unit_tests（本文件）与 native-lib（cmake/android.cmake，仅 Android 存在）。
-#   · core_gtest_tests 已在其实义处单独注入（它不走公共循环）。
-# 统一性由 rk_assert_bench_budget_uniformity() 在配置期强制。
-if(NOT RK_BENCH_ENFORCE_BUDGET STREQUAL "")
-    target_compile_definitions(rk_core INTERFACE
-        "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
-    foreach(t rk3288_cli face_infer_unit_tests native-lib)
-        if(TARGET ${t})
-            target_compile_definitions(${t} PRIVATE
-                "RK_BENCH_ENFORCE_BUDGET=$<BOOL:${RK_BENCH_ENFORCE_BUDGET}>")
-        endif()
-    endforeach()
-endif()
-
 # 编译器契约 — 在所有 target 定义之后统一应用
 rk_apply_compiler_contract()
 # 配置期断言（RW8 ①）— 契约应用后独立读回 COMPILE_OPTIONS，验证 flag 已落到 target
 rk_assert_contract_flags()
-# 配置期断言（FACE-CLEAN-019）— 锁定测试接缝宏只出现在允许的 target 上（两个方向都查）
-rk_assert_test_seam_boundary()
-# 配置期断言（§10.8）— 锁定测试接缝宏 RK_ENABLE_TRACK_RESET_SEAM 只出现在 core_unit_tests 上
-rk_assert_track_reset_seam_boundary()
-# 配置期断言（§10.11 D4b）— 凡编译 RealtimeFacePipeline.cpp 的 target 必须统一携带基准预算宏
-rk_assert_bench_budget_uniformity()

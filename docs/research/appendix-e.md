@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=research
-status=snapshot
-as_of=2026-08-13
--->
-
 ## 附录 E. 性能优化与故障排障研究
 
 > **快照说明**：本文档为深度研究与专项文档（原内嵌于 DEVELOP.md「深度研究与专项文档」章节）的独立快照，

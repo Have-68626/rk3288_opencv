@@ -35,18 +35,6 @@ void registerCameraMethods(JniMethodRegistry& registry);
 void registerEngineMethods(JniMethodRegistry& registry);
 void registerPreviewMethods(JniMethodRegistry& registry);
 void registerConfigMethods(JniMethodRegistry& registry);
-// 人脸运行时 / 注册域（NativeFaceBridge 静态方法组，任务13）
-void registerFaceBridgeMethods(JniMethodRegistry& registry);
-
-/**
- * 补激活待处理的实时管线（定义在 jni/native_face_bridge.cpp）。
- *
- * 时序原因：NativeFaceBridge.activateRuntime 可能早于 Engine 创建（nativeInit）被调用，
- * 此时只能把 (manifest, baseDir, abi, galleryDir) 暂存在 FaceBridgeState；Engine 创建后
- * 由 jni/engine.cpp 调用本函数消费 pending 参数并完成 setRealtimePipeline + reload。
- * 未挂起或无 Engine 时为空操作。
- */
-void applyPendingFaceRuntimeActivation();
 
 // ========== 全局注册入口（定义在 jni/registry.cpp） ==========
 jint registerAllNativeMethods(JNIEnv* env);

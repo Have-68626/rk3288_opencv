@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=security
-status=living
-as_of=2026-08-13
--->
-
 # 安全策略（Security Policy）
 
 > 本文档是仓库级安全治理的事实源（治理任务 S-SEC-B10-007 / SEC-16）。
@@ -40,15 +34,18 @@ as_of=2026-08-13
 
 ## 安全功能清单与默认状态
 
-**唯一事实源**：[docs/security/enablement-plan.md](docs/security/enablement-plan.md) 的「默认开/关清单」一节 —— 含每项功能的当前状态、是否可关闭，以及对照 `HttpFacesServer.cpp` / `FaceDatabase.cpp` 源码的核实说明。本节**不重复**该表，只列要点。
+| 安全功能 | 规格来源 | 默认状态 | 启用方式 |
+|---|---|---|---|
+| REST API 认证（Bearer token） | `docs/security/auth-model.md`（SEC-02） | **关闭（兼容模式，匿名放行）** | 设置环境变量 `RK_WCFR_HTTP_AUTH_TOKEN` 后重启服务 |
+| CSRF 防护（写方法 POST/PUT/DELETE） | `auth-model.md` §3.5（SEC-07） | **开启（无条件，兼容模式下仍生效）** | 无需配置 |
+| 人脸特征库加密（AES-256-GCM + DPAPI） | `docs/security/face-db-encryption.md`（SEC-03） | **开启（无条件，save 一律加密、load 自动迁移）** | 无需配置 |
+| 日志敏感字段脱敏 | S-SEC-B07-001（NativeLog） | 开启 | 无需配置 |
+| 日志 URI userinfo 脱敏 | S-SEC-B07-002（sanitizeUriForLog） | 开启 | 无需配置 |
+| JNI/整数溢出防护（32 位 checked arithmetic） | S-SEC-B09-003 | 开启 | 无需配置 |
+| CivetWeb TLS 证书校验（`SSL_VERIFY_PEER`） | `docs/security/civetweb-ssl-note.md` | 不适用（CivetWeb 未编入构建） | 重新接入前强制改为 `SSL_VERIFY_PEER` |
 
-- 默认**关闭**、需显式启用的只有 **1 项**：REST API 认证（Bearer token），设置环境变量 `RK_WCFR_HTTP_AUTH_TOKEN` 后重启服务。
-- 默认**无条件开启**且不可关闭：CSRF 防护（写方法）、人脸特征库加密（AES-256-GCM + DPAPI）、日志脱敏（敏感字段与 URI userinfo）、JNI 整数溢出防护。
-- CivetWeb TLS 证书校验：不适用（CivetWeb 未编入构建；重新接入前必须改为 `SSL_VERIFY_PEER`）。
-
-> 默认关闭的功能必须按最小启用方案显式启用；默认开启的功能不得在不更新对应锁定规格
-> 的前提下关闭（认证 / 加密 / CSRF 规格已锁定，见 `docs/security/auth-model.md` 与
-> `docs/security/face-db-encryption.md` 的「规格状态」说明）。
+> 默认关闭的功能必须按最小启用方案显式启用；默认开启的功能不得在不更新对应冻结规格
+> 的前提下关闭（认证/加密/CSRF 规格已冻结，见各文档"状态：已冻结"）。
 
 ## 文档映射
 

@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=reference
-status=living
-as_of=2026-07-06
--->
-
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -16,47 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 与 Native 核心层的彻底重构，项目进入了实质性的 Beta 测试阶段。为了准确反映项目当前的成熟度与演进主线，版本号已从 `v0.1beta0` 开始重新校准，并统一收敛了全端的版本口径。
 
 ## [Unreleased]
-
-> **本节按主题归纳 2026-07-22 之后的变更**（该区间共 160 个提交，逐条明细见 `git log`）。
-
-### Added — Android 注册与实时识别闭环（2026-09，任务 11–19）
-
-- **实时管线**：`RealtimeFacePipeline` 统一实时路径，Android 迁移至该管线（任务 11/12）
-- **JNI 桥接**：`NativeFaceBridge` 及逐帧注册 API，打通注册闭环（任务 13、开箱即用）
-- **注册会话**：`EnrollmentSession` 八样本注册会话（任务 17）
-- **加密人员仓库**：`AndroidEnrollmentRepository`，注册表落盘崩溃安全与 `.bak` 恢复
-- **显示名加密**：显示名由明文 SharedPreferences 改为 KeyStore AES-GCM 加密存储（独立密钥与 AAD 域，与模板互不可换用）；采集期仅存内存、注册成功后才落盘（取消/失败无残留），含一次性明文迁移与孤儿清理
-- **模型管理**：Android 模型管理器与 SAF 导入（任务 14），APK 不内置模型
-- **UI 接线**：状态区、注册与人员管理界面接线；状态区增加模型来源与加速契约展示（任务 15/18）
-- **识别结果**：JSON 增 `personId` / `displayName`（任务 18）
-- **检测关键点**：透传至统一框结构，支撑注册采集对齐
-
-### Fixed — 稳定性与并发（2026-09，三轮审查）
-
-- **轨迹身份**：图库/身份变更时精准撤销，删除人员后不再输出 `VERIFIED`；未确认轨迹不输出
-- **模型回滚**：同名覆盖失败回滚旧模型、切换失败保留旧配置；回滚改 intent-first 意图标记，失败文案按落盘状态如实上报；主线程改读状态快照
-- **注册**：重复注册检查失败即阻止注册
-- **引擎发布**：发布路径最终校验与事件发射同门原子化
-- **帧输入**：帧回调捕获 epoch 阻断旧帧，代次门改 `AtomicLong`
-- **坐标变换**：修正 `mapRect` 半开区间导致的 1px 偏移
-
-### Added / Changed — 文档治理（2026-09）
-
-- **文档规范**：新增 `docs/DOC_STANDARD.md` —— 元数据块（`type`/`status`/`as_of`）、放置规则、单一事实源、引用纪律
-- **门禁修复**：`git log --merges` 基准在 squash-merge 仓库中冻结 31 天，产生 45 个假阳性 high 缺陷；改用「最近一次代码变更」基准，`version` 降为 low（复核清单）
-- **门禁新增**：`doc-meta`（元数据块合法性）与 `doc-index`（索引完整性）两条阻断规则；`refpath`（路径存在性）与 `format`（全角字符）为提示级
-- **关闭后门**：豁免由「文档放在哪个目录」改为「文档自述的 `status`」——挪进 `docs/research/` 不再能免检
-- **元数据迁移**：全部 67 份项目文档补齐 `DOCSYNC_DOC` 块
-- **目录重构**：`docs/superpowers/{plans,specs}` → `docs/plans`、`docs/specs`；新增 `docs/guides/`；6 份根级审计快照归档至 `docs/audits/archive/`
-- **内容更正**：README 的 Gradle 版本与 CI 描述、`docs/index.md` 的路径与收录、`cpp-engine.md` 的行号引用等 10 处过期内容；测试框架口径由 4 处 3 种收敛为单一权威表；架构契约表述由「项目遵循」更正为「目标契约，5/5 待修复」
-- **审计报告**：`docs/audits/2026-09-15-documentation-audit.md`
-
-### Added — 工程与流程（2026-09）
-
-- **回归脚本**：`scripts/run-android-face-regression.ps1`（任务 19）
-- **loop 脚手架**：根目录 5 份未定制模板填充为项目实际内容
-- **.gitignore**：补充 OS/编辑器、Python venv、前端产物与备份文件规则
-- **CI**：workflow Action SHA 锁定与安全治理门禁；`docs-audit` 测试步骤改用 glob（此前 docs-only PR 上两个测试文件均不执行）
 
 ### Added
 - **架构契约**: ARCHITECTURE.md — 5 条跨子系统规则 (RAII/纯函数管线/原子提交/错误通道/接口隔离) (#444)

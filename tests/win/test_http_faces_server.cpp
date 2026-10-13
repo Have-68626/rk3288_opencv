@@ -1,6 +1,5 @@
 #include "rk_win/HttpFacesServerPath.h"
 #include "rk_win/HttpFacesServer.h"
-#include "rk_win/JsonLite.h"  // reload 响应体按顶层键解析（断言 data.ok 存在性，见 HttpFacesRuntimeStatus ④）
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -11,7 +10,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -147,7 +145,6 @@ TEST(StaticFileToctouIntegration, OpensRelativeToPinnedRootWithoutReparsePoints)
 // 依赖（Linux 下不显式链接 pthread），故非该目标时全部 GTEST_SKIP。
 #if defined(_WIN32) && !defined(RK_SKIP_OPENCV)
 #include "rk_win/FramePipeline.h"
-#include "rk_win/JsonEndpointHandlers.h"  // FACE-ARCWIN-003：直调 health / reload handler
 #include "rk_win/WinJsonConfig.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -403,48 +400,6 @@ std::unique_ptr<rk_win::WinJsonConfigStore> makeAuthConfigStore(const std::wstri
     return store;
 }
 
-// FACE-CONFIG-011：先写入一份无法装载的 config.json（截断的非法 JSON），再初始化 store，
-// 复现「既有 config.json 存在但无法装载 ⇒ 改名另存证据 + 以默认值启动」的被拒路径。
-// 用于验证 health 的独立可见通道在被拒启动时确实暴露诊断（configStatus=rejected）。
-std::unique_ptr<rk_win::WinJsonConfigStore> makeRejectedConfigStore(const std::wstring& name) {
-    const auto base = std::filesystem::temp_directory_path() / L"rk3288_opencv_win_auth_tests" / name;
-    std::error_code ec;
-    std::filesystem::remove_all(base, ec);
-    std::filesystem::create_directories(base, ec);
-    const auto cfgPath = base / L"config.json";
-    {
-        std::ofstream ofs(cfgPath, std::ios::binary);
-        ofs << "{ \"http\": { \"port\": 8090 ";  // 截断：非良构 JSON ⇒ 无法装载
-    }
-    AuthEnvGuard cfgGuard(L"RK_WCFR_CONFIG", cfgPath.c_str());
-    auto store = std::make_unique<rk_win::WinJsonConfigStore>();
-    std::string warn;
-    (void)store->initialize(warn);
-    return store;
-}
-
-// FACE-CONFIG-011：构造「装载**成功但存在告警**」（降级）的 store——写入一份存在但 base64 非法的密钥文件
-// （**不写** config.json），使默认配置序列化得到 {"_error":...} stub 而被落盘前闸门拒写 ⇒ initWarning 非空
-// 且 configRejectedOnLoad=false。用于验证 health 暴露 configStatus:"degraded"
-// （修复前会错误地报 "ok"：装载成功 ≠ 无告警）。
-std::unique_ptr<rk_win::WinJsonConfigStore> makeDegradedConfigStore(const std::wstring& name) {
-    const auto base = std::filesystem::temp_directory_path() / L"rk3288_opencv_win_auth_tests" / name;
-    std::error_code ec;
-    std::filesystem::remove_all(base, ec);
-    std::filesystem::create_directories(base, ec);
-    const auto cfgPath = base / L"config.json";
-    {
-        // 存在但 base64 非法的密钥文件：ensureOrLoadKey 的 base64Decode 失败 ⇒ 序列化 stub ⇒ 闸门拒写。
-        std::ofstream ofs(base / L"config.key.dpapi", std::ios::binary);
-        ofs << "!!!not-base64!!!";
-    }
-    AuthEnvGuard cfgGuard(L"RK_WCFR_CONFIG", cfgPath.c_str());
-    auto store = std::make_unique<rk_win::WinJsonConfigStore>();
-    std::string warn;
-    (void)store->initialize(warn);
-    return store;
-}
-
 }  // namespace
 
 // exploit 证据（兼容模式）：未配置 token 时，无 Authorization 头的管理写请求先成功。
@@ -508,22 +463,12 @@ TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
 }
 
 // 匿名白名单：health / acceleration 在启用认证后仍无需 token。
-// 唯一经**真实 HTTP 请求**且 store=nullptr 请求 health 的用例，故在此钉死 configStatus:"unknown"
-// （ctx.settings 为空 ⇒ 状态未知，不得回落 "ok"）。
-// 注：HttpFacesRuntimeStatus 组的用例也传 settings=nullptr，但它们**直调 handler**（不经 socket），
-// 与本用例的「真实服务端 + 匿名白名单」路径不重叠，故上句的「唯一」限定为 HTTP 路径。
 TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
     {
         const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
         const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 200) << r.response;
-        // 「无法判定配置状态」与「配置已校验正常」是两种语义：store 为 nullptr 时必须报
-        // unknown，混同为 ok 会让「配置被拒」在监控侧静默通过。
-        EXPECT_NE(r.response.find("\"configStatus\":\"unknown\""), std::string::npos) << r.response;
-        // 判空不得吞掉既有字段：name/port 仍须出现。
-        EXPECT_NE(r.response.find("\"name\":\"rk_wcfr\""), std::string::npos) << r.response;
-        EXPECT_NE(r.response.find("\"port\":"), std::string::npos) << r.response;
     }
     {
         const std::string req = "GET /api/v1/acceleration HTTP/1.1\r\nHost: t\r\n\r\n";
@@ -531,54 +476,6 @@ TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 200) << r.response;
     }
-}
-
-// FACE-CONFIG-001 独立可见通道（正常装载侧）：从空目录初始化 store（无 config.json ⇒
-// 落入默认值分支，configRejectedOnLoad=false），health 必须恒带 configStatus:"ok"。
-// 断言 configStatus 的存在性即证明旧配置被拒时的监控语义可与「对端旧版本」区分。
-TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
-    auto store = makeAuthConfigStore(L"health_ok_config");
-    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
-    const auto r = runHttpRequest(nullptr, req, store.get());
-    ASSERT_TRUE(r.connected);
-    EXPECT_EQ(r.status, 200) << r.response;
-    EXPECT_NE(r.response.find("\"configStatus\":\"ok\""), std::string::npos) << r.response;
-    // 正常装载无告警/无隔离 ⇒ 按需字段不出现。
-    EXPECT_EQ(r.response.find("\"configWarning\""), std::string::npos) << r.response;
-    EXPECT_EQ(r.response.find("\"configQuarantinedTo\""), std::string::npos) << r.response;
-}
-
-// FACE-CONFIG-001 独立可见通道（被拒侧）：config.json 存在但无法装载 ⇒ 以默认值启动，
-// health 必须暴露 configStatus:"rejected"、configWarning（告警文本）与 configQuarantinedTo
-// （被改名另存为证据的坏文件名）。注意：该用例依赖 IMP-CFG-core 冻结接口的实现语义，
-// 若其实现改变（例如解析失败不触发隔离），此处会如实变红。
-TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
-    auto store = makeRejectedConfigStore(L"health_rejected_config");
-    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
-    const auto r = runHttpRequest(nullptr, req, store.get());
-    ASSERT_TRUE(r.connected);
-    EXPECT_EQ(r.status, 200) << r.response;
-    EXPECT_NE(r.response.find("\"configStatus\":\"rejected\""), std::string::npos) << r.response;
-    EXPECT_NE(r.response.find("\"configWarning\""), std::string::npos) << r.response;
-    EXPECT_NE(r.response.find("\"configQuarantinedTo\""), std::string::npos) << r.response;
-}
-
-// FACE-CONFIG-011 独立可见通道（**降级侧**）：装载完成但本次启动存在告警（密钥不可用 ⇒ 默认配置序列化
-// 未通过 schema 被拒写）⇒ configRejectedOnLoad=false 而 initWarning 非空 ⇒ health 必须报
-// configStatus:"degraded"。修复前该场景被错误地报成 "ok"（装载成功被当作无问题），与三态原则口径不一致：
-// 「装载成功」与「装载成功且无告警」不是同一语义。判别力：把 handler 的判据退回仅看 configRejectedOnLoad
-// ⇒ 本用例红。
-TEST(HttpFacesAuth, HealthExposesDegradedConfigStatus) {
-    auto store = makeDegradedConfigStore(L"health_degraded_config");
-    ASSERT_FALSE(store->configRejectedOnLoad()) << "前置：降级场景不得被误判为 rejected";
-    ASSERT_FALSE(store->initWarning().empty()) << "前置：降级场景必须有告警文本";
-    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
-    const auto r = runHttpRequest(nullptr, req, store.get());
-    ASSERT_TRUE(r.connected);
-    EXPECT_EQ(r.status, 200) << r.response;
-    EXPECT_NE(r.response.find("\"configStatus\":\"degraded\""), std::string::npos) << r.response;
-    // 降级同时暴露告警文本（供监控定位）。
-    EXPECT_NE(r.response.find("\"configWarning\""), std::string::npos) << r.response;
 }
 
 // RED→GREEN：SSE 流（StreamSessionRunner 旁路）在启用认证后必须 401。
@@ -838,17 +735,6 @@ bool makeLoopbackSocketPair(SOCKET& serverSock, SOCKET& clientSock) {
     SOCKET s = accept(ls, nullptr, nullptr);
     closesocket(ls);
     if (s == INVALID_SOCKET) { closesocket(c); return false; }
-    // ★ 与服务端生产口径对齐（2026-09-28 补）：HttpFacesServer.cpp 对每个 accept 到的连接都设
-    //   SO_SNDTIMEO（kSocketTimeoutMs = 5000），因为 StreamSessionRunner::writeRaw 的 `::send`
-    //   是**阻塞**调用、自身无超时。本 helper 原先**不设**这一项 ⇒ 一旦读者停止消费，
-    //   无界阻塞就完全交给 `th.join()` 承担，表现为 ctest 的 `TIMEOUT 120`（读数看起来像 flake，
-    //   实际是阻塞）。补上后，最坏情况退化为「5s 后 writeRaw 返回 false、会话自行终止」，
-    //   即**把无界挂起变成有界可观测的失败**。
-    {
-        const DWORD sndTimeoutMs = 5000;
-        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
-                   reinterpret_cast<const char*>(&sndTimeoutMs), sizeof(sndTimeoutMs));
-    }
     serverSock = s;
     clientSock = c;
     return true;
@@ -899,18 +785,9 @@ TEST(HttpFacesStreamQuota, MjpegFpsThrottle) {
     const std::string data = recvUntilDeadline(clientSock, std::chrono::milliseconds(1500));
 
     running = false;
-    // ★ 顺序：先关**客户端** socket，再 join（2026-09-28 修）。此刻本线程已停止 recv，
-    //   runner 的写入原语是阻塞 `::send`（StreamSessionRunner.cpp 的 writeRaw 循环；本文件的
-    //   socket 对另有 `SO_SNDTIMEO = 5000` 兜底）⇒ 若服务端正卡在 send 上，`running = false`
-    //   **无法**令其返回；join 只能靠「send 报错」或「5s 发送超时」才有可能返回。
-    //   ⚠️ 原写「而原先**唯一**能解塞的动作（closesocket(clientSock)）」——**该全称句不成立**：
-    //     关 serverSock 同样能让阻塞的 send 立即失败（实测 0ms），且上面的 `SO_SNDTIMEO` 也会兜底
-    //     （有界 5s）。准确说法是：**关掉对端是「最快」的解塞手段**，把它排在 join 之后会让它来得
-    //     太晚 —— 超过本用例的判据窗口。
-    //   关掉对端 ⇒ send 立刻失败 ⇒ writeRaw 返回 false ⇒ 线程退出 ⇒ join 返回。
-    closesocket(clientSock);
     th.join();
     closesocket(serverSock);
+    closesocket(clientSock);
     WSACleanup();
 
     // 帧边界计数：multipart 每帧部分以 "--rk_boundary\r\n" 开头（响应头仅含
@@ -959,18 +836,9 @@ TEST(HttpFacesStreamQuota, MjpegByteQuotaTerminatesSession) {
     }
 
     running = false;
-    // ★ 顺序：先关**客户端** socket，再 join（2026-09-28 修）。此刻本线程已停止 recv，
-    //   runner 的写入原语是阻塞 `::send`（StreamSessionRunner.cpp 的 writeRaw 循环；本文件的
-    //   socket 对另有 `SO_SNDTIMEO = 5000` 兜底）⇒ 若服务端正卡在 send 上，`running = false`
-    //   **无法**令其返回；join 只能靠「send 报错」或「5s 发送超时」才有可能返回。
-    //   ⚠️ 原写「而原先**唯一**能解塞的动作（closesocket(clientSock)）」——**该全称句不成立**：
-    //     关 serverSock 同样能让阻塞的 send 立即失败（实测 0ms），且上面的 `SO_SNDTIMEO` 也会兜底
-    //     （有界 5s）。准确说法是：**关掉对端是「最快」的解塞手段**，把它排在 join 之后会让它来得
-    //     太晚 —— 超过本用例的判据窗口。
-    //   关掉对端 ⇒ send 立刻失败 ⇒ writeRaw 返回 false ⇒ 线程退出 ⇒ join 返回。
-    closesocket(clientSock);
     th.join();
     closesocket(serverSock);
+    closesocket(clientSock);
 
     // 会话被字节配额终止（资源有界，而非依赖 running=false 外力停止）
     EXPECT_TRUE(runnerDone.load()) << "字节配额未生效：会话未自行终止";
@@ -1020,98 +888,15 @@ TEST(HttpFacesStreamQuota, SseDurationTerminatesSession) {
     const bool terminatedByTimeout = runnerDone.load();
 
     running = false;  // 兜底：确保线程可退出（未自行终止时）
-    // ★ 同前：必须先关客户端 socket 再 join，否则「服务端卡在阻塞 send」时 join 自锁。
-    closesocket(clientSock);
     th.join();
     closesocket(serverSock);
+    closesocket(clientSock);
 
     // 超时终止生效（独立于全局 ConnectionQuota 的流级时长限制）
     EXPECT_TRUE(terminatedByTimeout) << "会话超时未生效：SSE 会话未自行终止";
     // 正常流可用：终止前已正常送出 SSE 响应头
     EXPECT_NE(data.find("HTTP/1.1 200 OK"), std::string::npos) << "SSE 未收到响应头";
     EXPECT_NE(data.find("text/event-stream"), std::string::npos) << "SSE 响应头缺 event-stream";
-    WSACleanup();
-}
-
-// RED→GREEN 判别 4：读者停止消费 + 关掉对端时，runner 线程**必须能退出**（不得让 join 自锁）。
-// 机制（见 StreamSessionRunner.cpp 的 writeRaw）：写入原语是**阻塞 `::send`**。当「单帧 JPEG 体积 >
-// 客户端接收缓冲 + 服务端发送缓冲」且读者**完全不再 recv** 时，`::send` 会阻塞，`running = false`
-// **不能**令其返回（循环体卡在 send 里，退出条件根本没机会被求值）。此时若把 `th.join()` 排在
-// 「关掉对端」**之前**，join 在判据窗口内就不会返回 —— 这正是本用例要判别的形态。
-//   ⚠️ 前提必须带上（增量核查指出，本注释原写成无前提的全称句）：**帧要足够大**才会阻塞。
-//      实测本机：1080p 噪声帧 q80 编码 ≈1.32 MiB，而回环默认容量 ≈1.0 MiB ⇒ 首帧被吞下、次帧阻塞。
-//   ⚠️ 也**不要**写成「没有任何动作能解塞 / 必然无界挂起」：本文件的 socket 对已由
-//      makeLoopbackSocketPair 设了 `SO_SNDTIMEO = 5000`，即便无人关 socket，阻塞的 send 最迟
-//      **5s 后也会自行失败**（即有界）。⇒ 准确说法是：**关掉对端能把「有界 5s」压到近 0ms**
-//      （实测 0ms），而**本用例的判据是 3s** ⇒ 它判别的正是「有没有在等待之前先关掉对端」这一步。
-//   ⚠️ 兜底的 `joiner.wait()` **本身不可超时**：它的有界性完全依赖上面那条 `SO_SNDTIMEO`
-//      （以及本平台 `closesocket` 能唤醒阻塞 `send` 的语义）。⇒ 谁若删掉那个 setsockopt，且平台
-//      语义不同（POSIX 下 `close` 不保证唤醒阻塞 send），兜底就会退回**无界挂起**。
-// ★ 覆盖面（依据是一次**落盘变异**，过程与还原见本次改动对应的提交信息，不在本文件内）：
-//   上方三条 stream 用例的参数（48×64 小帧 / 读者持续或短窗口消费 / 会话自终止）都**不足以**
-//   制造出阻塞态 ⇒ 它们**不覆盖**本路径（该变异把 close/join 改回旧序并删掉 `SO_SNDTIMEO` 后，
-//   那三条仍全绿、无 hang）。⇒ 本用例补上的是**此前无人覆盖**的那条路径。
-// ★ 前置锚（见下）：先只置 `running = false` 并等一小段，确认它**没有**自行退出 —— 以此证明
-//   「阻塞态确实被制造出来了」。否则本用例会因「帧太小 / 缓冲没填满」而**静默失去判别力**。
-TEST(HttpFacesStreamQuota, RunnerExitsWhenReaderStopsAndPeerCloses) {
-    WSADATA wsaData;
-    ASSERT_EQ(WSAStartup(MAKEWORD(2, 2), &wsaData), 0);
-    SOCKET serverSock = INVALID_SOCKET, clientSock = INVALID_SOCKET;
-    ASSERT_TRUE(makeLoopbackSocketPair(serverSock, clientSock));
-    setRecvTimeoutMs(clientSock, 50);
-
-    // 高熵大帧（1080p 噪声、固定种子 ⇒ 内容可复现）：编码后体积须**大于**回环缓冲容量，才能在
-    // 「读者不读」时把服务端卡在 send 上（实测本机：q80 编码 ≈1.32 MiB vs 默认回环容量 ≈1.0 MiB）。
-    // （**不可**改用小帧或纯色帧：实测 48×64 纯色仅 **677 B**、1080p 纯色 q80 也仅 **≈32 KB**，
-    //  都装得进缓冲 ⇒ 根本不会阻塞 ⇒ 本用例会**静默失去判别力**。）
-    cv::Mat frame(1080, 1920, CV_8UC3);
-    {
-        std::uint32_t s = 0x12345678u;
-        uchar* p = frame.data;
-        const std::size_t n = frame.total() * frame.elemSize();
-        for (std::size_t i = 0; i < n; ++i) {
-            s = s * 1664525u + 1013904223u;
-            p[i] = static_cast<uchar>(s >> 24);
-        }
-    }
-
-    std::atomic<bool> running{true};
-    std::atomic<bool> runnerExited{false};
-    rk_win::StreamLimits limits;
-    limits.mjpegMaxFps = 0;  // 不限速（0 ⇒ 帧间最小间隔 0），确保迅速填满发送缓冲
-    rk_win::StreamSessionRunner runner(
-        running, [&](cv::Mat& out) { out = frame; return true; }, limits);
-
-    std::thread th([&]() {
-        runner.run(static_cast<std::uintptr_t>(serverSock), rk_win::StreamType::Mjpeg);
-        runnerExited = true;
-    });
-
-    // 故意**完全不 recv**：客户端接收缓冲 → 服务端发送缓冲依次填满 ⇒ 服务端卡在 ::send。
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-
-    // ——— 前置锚：只停 running，**先不关 socket** ———
-    running = false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    const bool blockedInSend = !runnerExited.load();
-
-    // ——— 判别点：先关客户端 socket，再 join ———
-    closesocket(clientSock);
-    // join 自身不可超时 ⇒ 放进 async 里 wait_for：这样「自锁」表现为**断言失败**，
-    // 而不是把整个测试进程挂死（旧写法正是如此，最终以 ctest 超时收场）。
-    auto joiner = std::async(std::launch::async, [&]() { th.join(); });
-    const bool exited = joiner.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
-    if (!exited) {
-        // 兜底：连服务端 socket 一起关，强制阻塞中的 send 失败，避免留下 joinable 线程。
-        closesocket(serverSock);
-        joiner.wait();
-        serverSock = INVALID_SOCKET;
-    }
-    EXPECT_TRUE(exited) << "runner 在读者停止消费 + 对端关闭后仍未退出（阻塞 ::send ⇒ join 自锁）";
-    if (serverSock != INVALID_SOCKET) closesocket(serverSock);
-    EXPECT_TRUE(blockedInSend)
-        << "前置锚未成立：runner 在读者停读后已自行退出 ⇒ 本配置未制造出阻塞态，本用例无判别力"
-           "（环境差异：发送缓冲过大而大帧仍未填满；此时应调大帧尺寸或调小 SO_SNDBUF）";
     WSACleanup();
 }
 
@@ -1380,201 +1165,6 @@ TEST(StaticFileToctou, ReadFileWithinRootMissingFileReturnsFalse) {
     std::string out;
     EXPECT_FALSE(rk_win::readFileWithinRoot(root, std::filesystem::path(L"no-such.txt"), out));
 }
-
-// ── FACE-ARCWIN-003：运行时**装配**状态的可观测性（health / reload）────────────────
-// 背景：装配失败信号此前被三层各吞一口（RuntimeBootstrap 降为 warning → FramePipeline::initialize
-// 只写 render_.status 且恒 return true → main 不检查返回值）；对外可见的只剩「模型快照的
-// status=failed」（Web 设置页的「模型状态」区读的是它，模型列表端点也只暴露 status/计数，不暴露
-// warning），而 **warning 文本本身无任何读取通道**。
-// ⚠️ 如实口径（本次订正；原注释称「承载 warning 的 render_.status **写而不读**（三处 tryGetRenderState
-//    调用点都只取帧）⇒ 告警从不上线」，**不实**）：全仓 `tryGetRenderState` 共 **4** 处调用点——
-//    其中 3 处确实只取帧（JsonEndpointHandlers 的 handlePreviewJpg、StreamSession 的帧提供器、
-//    AbcTestRunner 的轮询），但第 4 处**读它**：win_camera_face_recognition_main.cpp 的 WM_TIMER
-//    渲染分支里 `if (!rs.status.empty())` 把该文本（节流 250 ms）写进窗口标题 ⇒ 装配告警在
-//    **相机 UI 应用**里确实上线。真正「从不上线」的只是 **HTTP / Web 通道**——那正是本组用例新增的
-//    发布面（health 的 status/reasonCode/warning/degradedSince/availableFeatures 与 reload 的
-//    ok/warning），二者并列、不替代（详见 FramePipeline.h 对 RenderState::status 的同因订正）。
-// 本组用例还**钉住红线**：degraded 不得映射为任何非 2xx。
-// 本组用例直调 handler（不经真实 socket），故判别与网络环境无关。
-
-namespace {
-
-// 构造一个「装配失败」的 FramePipeline：cascadePath 指向**必然不存在**的文件，并显式选 LBPH 分支
-// （`model.recognition != "arcface"`）。该分支的失败路径已核实：FaceRecognizer::initialize →
-// detector_.loadCascade(不存在的路径) 返回 false ⇒ recognizerOk=false ⇒ BootstrapResult::ok=false。
-// 选 LBPH 而非 ArcFace 是为了不引入「节点名/识别模型文件」等额外前置条件，令失败判定确定。
-// 用 reloadRuntime 而非 initialize 注入：reloadRuntime 不建线程、不开相机、不写日志文件，
-// 且同样会建立 runtime_ 快照（⟺ runtimeReady() 为真），语义等价而副作用面最小。
-bool makeDegradedPipeline(rk_win::FramePipeline& pipe, std::filesystem::path& cascadePathOut) {
-    const auto base = std::filesystem::temp_directory_path() / L"rk3288_opencv_win_runtime_status_tests";
-    std::error_code ec;
-    std::filesystem::remove_all(base, ec);
-    std::filesystem::create_directories(base, ec);
-    if (ec) return false;
-    const auto cascade = base / L"no-such-cascade.xml";
-    if (std::filesystem::exists(cascade)) return false;  // 前置：该路径必须不存在，否则判据失效
-
-    rk_win::AppConfig cfg;
-    cfg.model.recognition = "lbph";  // 固定走已验证失败路径的分支（见上方注释）
-    cfg.recognition.cascadePath = cascade;
-    cfg.dnn.enable = false;          // DNN 与判据无关，关掉以免引入额外告警文本；这**同时**是本用例
-                                     // availableFeatures 为空的原因（见 ① 的前置断言注释），勿误读成
-                                     // 「识别器失败 ⇒ availableFeatures 必空」
-    pipe.reloadRuntime(cfg);
-    cascadePathOut = cascade;
-    return true;
-}
-
-rk_win::HttpFacesServer::HttpRequest makeGetHealthReq() {
-    rk_win::HttpFacesServer::HttpRequest req;
-    req.method = "GET";
-    req.path = "/api/v1/health";
-    req.httpVersion = "HTTP/1.1";
-    return req;
-}
-
-}  // namespace
-
-// ① 降级态发布：装配失败时 health 必须报 status:"degraded" + reasonCode + warning + degradedSince。
-// 判别力：把新增字段块删掉（回到修复前）⇒ 本用例红。
-TEST(HttpFacesRuntimeStatus, HealthReportsDegradedWithReasonCode) {
-    rk_win::FramePipeline pipe;
-    std::filesystem::path cascade;
-    ASSERT_TRUE(makeDegradedPipeline(pipe, cascade));
-    const auto deg = pipe.degraded();
-    ASSERT_TRUE(deg.active) << "前置：cascade 指向不存在的文件，识别器装配必须失败";
-    ASSERT_EQ(deg.reasonCode, "runtime_init_failed");
-    ASSERT_EQ(deg.availableFeatures.size(), static_cast<std::size_t>(0))
-        << "前置：本用例的 cfg.dnn.enable=false ⇒ dnn_face_detector 快照非 loaded，cascade 快照因装配"
-           "失败亦非 loaded ⇒ availableFeatures 为空";
-    // ⚠️ 如实口径（本次订正）：availableFeatures 取自 `activeModels_` 里 `status=="loaded"` 的 id
-    //   （FramePipeline::updateDegradedState），**不是**「识别器失败的必然推论」。生产降级启动时
-    //   `cfg.dnn.enable` 默认为 **true** ⇒ 完全可能是 ["dnn_face_detector"]。本用例之所以为空，
-    //   是 makeDegradedPipeline 显式把 dnn.enable 关掉所致 ⇒ 勿把「识别器失败 ⇒ availableFeatures
-    //   必空」当作一般规律（这正是旧注释的失真处）。
-
-    rk_win::EndpointContext ctx;
-    ctx.pipe = &pipe;
-    ctx.settings = nullptr;  // 配置侧状态未知；用于验证两字段并存而非互相覆盖
-    ctx.port = 8080;
-    const auto resp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), ctx);
-    // 红线：degraded **不得**改变 HTTP 语义（仍是 200，仍匿名可读）。
-    ASSERT_EQ(resp.status, 200) << resp.body;
-    EXPECT_NE(resp.body.find("\"status\":\"degraded\""), std::string::npos) << resp.body;
-    EXPECT_NE(resp.body.find("\"reasonCode\":\"runtime_init_failed\""), std::string::npos) << resp.body;
-    EXPECT_NE(resp.body.find("\"warning\":"), std::string::npos) << resp.body;
-    EXPECT_NE(resp.body.find("\"degradedSince\":"), std::string::npos) << resp.body;
-    EXPECT_NE(resp.body.find("\"availableFeatures\":[]"), std::string::npos) << resp.body;
-}
-
-// ② 两个量并存：configStatus（**配置装载**）与 status（**运行时装配**）是不同量，不得合并/互相覆盖。
-// 本用例构造「配置完全合法（configStatus=ok）+ 运行时装配失败（status=degraded）」这一组合
-// —— 这正是只看 configStatus 会静默漏报的场景。判别力：把 status 实现成 configStatus 的副本
-// （或反之覆盖）⇒ 两者不可能同时取到 ok 与 degraded ⇒ 本用例红。
-TEST(HttpFacesRuntimeStatus, HealthKeepsConfigStatusAlongsideRuntimeStatus) {
-    rk_win::FramePipeline pipe;
-    std::filesystem::path cascade;
-    ASSERT_TRUE(makeDegradedPipeline(pipe, cascade));
-    auto store = makeAuthConfigStore(L"health_runtime_status_coexist");
-
-    rk_win::EndpointContext ctx;
-    ctx.pipe = &pipe;
-    ctx.settings = store.get();
-    ctx.port = 8080;
-    const auto resp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), ctx);
-    ASSERT_EQ(resp.status, 200) << resp.body;
-    EXPECT_NE(resp.body.find("\"configStatus\":\"ok\""), std::string::npos) << resp.body;
-    EXPECT_NE(resp.body.find("\"status\":\"degraded\""), std::string::npos) << resp.body;
-}
-
-// ③ 未装配（starting）既不是降级也不是正常：未装配的 pipe 与未挂载的 pipe 都必须回落 starting，
-// 且按需字段不得出现（避免把「未知」当「降级」）。同时覆盖 ctx.pipe==nullptr 的判空兜底
-// （空指针解引用会砸掉整个服务）。
-TEST(HttpFacesRuntimeStatus, HealthReportsStartingWhenNotAssembled) {
-    rk_win::FramePipeline pipe;  // 从未 initialize / reloadRuntime
-    ASSERT_FALSE(pipe.runtimeReady());
-
-    rk_win::EndpointContext ctx;
-    ctx.pipe = &pipe;
-    ctx.settings = nullptr;
-    ctx.port = 8080;
-    const auto resp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), ctx);
-    ASSERT_EQ(resp.status, 200) << resp.body;
-    EXPECT_NE(resp.body.find("\"status\":\"starting\""), std::string::npos) << resp.body;
-    // 恒出现字段仍在（未装配 ≠ 缺字段）。
-    EXPECT_NE(resp.body.find("\"availableFeatures\":[]"), std::string::npos) << resp.body;
-    EXPECT_EQ(resp.body.find("\"reasonCode\""), std::string::npos) << resp.body;
-    EXPECT_EQ(resp.body.find("\"degradedSince\""), std::string::npos) << resp.body;
-
-    // pipeline 未挂载（测试 / 降级挂载路径）：同样 starting，且不得崩。
-    rk_win::EndpointContext nullCtx;
-    nullCtx.pipe = nullptr;
-    nullCtx.port = 0;
-    const auto nullResp = rk_win::handlers::handleGetHealth(makeGetHealthReq(), nullCtx);
-    EXPECT_EQ(nullResp.status, 200) << nullResp.body;
-    EXPECT_NE(nullResp.body.find("\"status\":\"starting\""), std::string::npos) << nullResp.body;
-}
-
-// ④ 重载响应回归钉住：**新增** ok/warning 两键，而 status 仍恒为 "reloaded"。
-// status 的恒值属既有对外契约（既有消费者按字面值判断），把它改成受成败影响是破坏性变更，
-// 本用例即为该变更的防线：把 status 改成 "ok"/"failed" 之类 ⇒ 本用例红。
-TEST(HttpFacesRuntimeStatus, ReloadResponseKeepsReloadedStatusAndAddsOutcome) {
-    rk_win::FramePipeline pipe;
-    std::filesystem::path cascade;
-    ASSERT_TRUE(makeDegradedPipeline(pipe, cascade));
-    auto store = makeAuthConfigStore(L"reload_response_shape");
-
-    rk_win::HttpFacesServer::HttpRequest req;
-    req.method = "POST";
-    req.path = "/api/v1/models/reload";
-    req.httpVersion = "HTTP/1.1";
-    // 该 id 由 RuntimeBootstrap 恒写入 activeModels_ ⇒ 恒通过 reload 端点的存在性门槛。
-    req.body = "{\"id\":\"cascade_frontalface\"}";
-
-    rk_win::EndpointContext ctx;
-    ctx.pipe = &pipe;
-    ctx.settings = store.get();  // reload 端点要求 settings 非空（否则 503）
-    ctx.port = 8080;
-    const auto resp = rk_win::handlers::handleReloadModel(req, ctx);
-    ASSERT_EQ(resp.status, 200) << resp.body;
-
-    // status 取值域不得被改动；generation 仍随响应返回。
-    EXPECT_NE(resp.body.find("\"status\":\"reloaded\""), std::string::npos) << resp.body;
-    EXPECT_NE(resp.body.find("\"generation\":"), std::string::npos) << resp.body;
-
-    // 新增键 ok（位于 `data` 内，与 Envelope 根部恒为 true 的 ok **语义不同**）须**恒出现**，且其值
-    // 必须与**重载后** pipe 的真实降级态一致。
-    //
-    // ⚠️ 如实口径（本次订正）：原注释称「ok 恒出现…断言…又不依赖环境」，两句都**失实**：
-    //   (a) `ok` 的**存在性从未被断言**：原断言只比较取值，一个完全不输出该键的实现也能通过
-    //       （彼时 bodySaysNotOk 恒 false，只要重载后未降级即恒真）。
-    //   (b) 原断言在本机**退化为恒真**：reloadRuntime 用的是 settings 存储里的配置，其 cascadePath
-    //       默认是 `resolvePathFromExeDir("assets/lbpcascade_frontalface.xml")`（= **测试可执行文件所在
-    //       目录**下的 assets/，而 win_local_service 的 POST_BUILD 会把该 XML 拷到构建输出目录）⇒
-    //       本机该文件**存在**，重载后恒 `degAfter.active==false`，恒走「未降级」那一侧；CI 只构建
-    //       `win_unit_tests` 等测试 target、**不**构建 win_local_service ⇒ 该 assets 不存在，走另一侧。
-    //       即同一用例在两环境下命中的分支**不同**，判别力也不同。
-    //   故下方补一条**存在性断言**（解析响应体、要求顶层 `data.ok` 存在且为布尔）——它与降级与否
-    //   无关，是两环境下都成立的那一半；取值一致性一条保留（它只在降级环境下具备判别力）。
-    rk_win::JsonValue reloadDoc;
-    std::string reloadParseErr;
-    ASSERT_TRUE(rk_win::parseJson(resp.body, reloadDoc, reloadParseErr))
-        << "reload 响应体不是良构 JSON: " << reloadParseErr << " body=" << resp.body;
-    ASSERT_TRUE(reloadDoc.isObject()) << resp.body;
-    const rk_win::JsonValue* reloadData = reloadDoc.find("data");
-    ASSERT_NE(reloadData, nullptr) << "reload 响应缺 data 层（Envelope 形状被改？）: " << resp.body;
-    ASSERT_TRUE(reloadData->isObject()) << resp.body;
-    const rk_win::JsonValue* dataOk = reloadData->find("ok");
-    ASSERT_NE(dataOk, nullptr)
-        << "reload 的 data 必须**恒含** ok 键（与是否降级无关）: " << resp.body;
-    ASSERT_TRUE(dataOk->isBool()) << resp.body;
-
-    const auto degAfter = pipe.degraded();
-    EXPECT_EQ(!dataOk->b, degAfter.active) << resp.body;
-    EXPECT_EQ(resp.body.find("\"warning\"") != std::string::npos,
-              degAfter.active && !degAfter.warning.empty())
-        << resp.body;
-}
 #else
 TEST(ClientThreadPool, ReclaimsFinishedThreads) {
     GTEST_SKIP() << "std::thread 用例仅在 win_unit_tests (Windows + OpenCV) 下运行";
@@ -1604,15 +1194,6 @@ TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
     GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
-    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
-}
-TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
-    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
-}
-TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
-    GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
-}
-TEST(HttpFacesAuth, HealthExposesDegradedConfigStatus) {
     GTEST_SKIP() << "HTTP 认证用例需要真实 Winsock 服务端，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesAuth, UnauthenticatedStreamRejectedWhenAuthEnabled) {
@@ -1664,9 +1245,6 @@ TEST(HttpFacesStreamQuota, MjpegByteQuotaTerminatesSession) {
     GTEST_SKIP() << "流配额用例需要真实 Winsock socket 对，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(HttpFacesStreamQuota, SseDurationTerminatesSession) {
-    GTEST_SKIP() << "流配额用例需要真实 Winsock socket 对，仅在 win_unit_tests (Windows + OpenCV) 下运行";
-}
-TEST(HttpFacesStreamQuota, RunnerExitsWhenReaderStopsAndPeerCloses) {
     GTEST_SKIP() << "流配额用例需要真实 Winsock socket 对，仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
 TEST(StaticFileToctou, ValidatedPathSwappedOutsideIsReadableByRawOpen) {
@@ -1770,19 +1348,5 @@ TEST(StaticFileToctou, ReadFileWithinRootRejectsInsideSymlink) {
 }
 TEST(StaticFileToctou, ReadFileWithinRootMissingFileReturnsFalse) {
     GTEST_SKIP() << "TOCTOU 用例需要 Windows symlink API，仅在 win_unit_tests 下运行";
-}
-// FACE-ARCWIN-003 运行时装配状态用例：依赖 FramePipeline（std::thread / OpenCV 识别器装配），
-// 仅在 win_unit_tests（Windows + OpenCV）下运行。
-TEST(HttpFacesRuntimeStatus, HealthReportsDegradedWithReasonCode) {
-    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
-}
-TEST(HttpFacesRuntimeStatus, HealthKeepsConfigStatusAlongsideRuntimeStatus) {
-    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
-}
-TEST(HttpFacesRuntimeStatus, HealthReportsStartingWhenNotAssembled) {
-    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
-}
-TEST(HttpFacesRuntimeStatus, ReloadResponseKeepsReloadedStatusAndAddsOutcome) {
-    GTEST_SKIP() << "运行时装配状态用例需要 FramePipeline 与真实识别器装配，仅在 win_unit_tests 下运行";
 }
 #endif

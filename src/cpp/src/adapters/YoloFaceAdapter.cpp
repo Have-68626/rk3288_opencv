@@ -22,60 +22,10 @@ YoloFaceAdapter::YoloFaceAdapter() {
 
 YoloFaceAdapter::~YoloFaceAdapter() = default;
 
-void YoloFaceAdapter::configureOpenCv(const YoloFaceModelSpec& spec, const YoloFaceOptions& opt) {
-    configuredBackend_ = ConfiguredBackend::kOpenCv;
-    ocvSpec_ = spec;
-    opt_ = opt;
-}
-
-#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-void YoloFaceAdapter::configureNcnn(const NcnnYoloFaceModelSpec& spec, const YoloFaceOptions& opt) {
-    configuredBackend_ = ConfiguredBackend::kNcnn;
-    ncnnSpec_ = spec;
-    opt_ = opt;
-}
-#endif
-
 bool YoloFaceAdapter::load(const std::string& modelPath, std::string& err) {
     loaded_ = false;
     inner_.reset();
 
-    // §I3：显式配置后强制使用指定后端/spec，不再按扩展名覆盖。
-    if (configuredBackend_ == ConfiguredBackend::kOpenCv) {
-        YoloFaceModelSpec spec = ocvSpec_;
-        if (spec.modelPath.empty()) spec.modelPath = modelPath;
-        inner_ = CreateOpenCvDnnYoloFaceDetector();
-        if (!inner_) {
-            err = "opencv_detector_factory_failed";
-            return false;
-        }
-        if (!inner_->load(spec, opt_, err)) {
-            // 不回落其它后端：后端由装配期显式决定，错配应明确失败。
-            return false;
-        }
-        currentName_ = "opencv_dnn";
-        loaded_ = true;
-        return true;
-    }
-#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-    if (configuredBackend_ == ConfiguredBackend::kNcnn) {
-        inner_ = CreateNcnnYoloFaceDetector(ncnnSpec_);
-        if (!inner_) {
-            err = "ncnn_detector_factory_failed";
-            return false;
-        }
-        YoloFaceModelSpec dummy;
-        if (!inner_->load(dummy, opt_, err)) {
-            rklog::logWarn("YoloFaceAdapter", "load", "ncnn failed: " + err);
-            return false;
-        }
-        currentName_ = "ncnn";
-        loaded_ = true;
-        return true;
-    }
-#endif
-
-    // 未配置：历史兼容——按扩展名选择后端。
     std::string ext = std::filesystem::path(modelPath).extension().string();
 
     if (ext == ".param" || ext == ".bin") {

@@ -1,9 +1,3 @@
-<!-- DOCSYNC_DOC
-type=research
-status=placeholder
-as_of=2026-08-13
--->
-
 ## 附录 H. 稳定性治理分阶段执行报告
 <a id="附录-h-稳定性治理分阶段执行报告"></a>
 

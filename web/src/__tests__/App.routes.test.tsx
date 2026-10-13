@@ -79,7 +79,6 @@ const routeSpy = vi.hoisted(() => ({
   splash: vi.fn(),
   home: vi.fn(),
   preview: vi.fn(),
-  faces: vi.fn(),
   settings: vi.fn(),
   layout: vi.fn(),
 }))
@@ -125,12 +124,6 @@ vi.mock('../app/pages/PreviewPage', () => ({
 vi.mock('../app/pages/SettingsPage', () => ({
   SettingsPage: () => {
     routeSpy.settings()
-    return null
-  },
-}))
-vi.mock('../app/pages/FacesPage', () => ({
-  FacesPage: () => {
-    routeSpy.faces()
     return null
   },
 }))
@@ -336,7 +329,6 @@ describe('App.tsx 路由（HashRouter，SEC-11 / S-SEC-B10-002）', () => {
       routeSpy.splash,
       routeSpy.home,
       routeSpy.preview,
-      routeSpy.faces,
       routeSpy.settings,
       routeSpy.layout,
     ]) {
@@ -385,15 +377,6 @@ describe('App.tsx 路由（HashRouter，SEC-11 / S-SEC-B10-002）', () => {
     expect(routeSpy.home).not.toHaveBeenCalled()
     expect(routeSpy.preview).not.toHaveBeenCalled()
     expect(m.hash()).toBe('#/settings')
-  })
-
-  it('hash=#/faces 渲染 FacesPage', async () => {
-    const m = await mountApp('/faces')
-    expect(routeSpy.faces).toHaveBeenCalledTimes(1)
-    expect(routeSpy.home).not.toHaveBeenCalled()
-    expect(routeSpy.preview).not.toHaveBeenCalled()
-    expect(routeSpy.settings).not.toHaveBeenCalled()
-    expect(m.hash()).toBe('#/faces')
   })
 
   it('未知路径重定向到 #/（SplashPage）', async () => {

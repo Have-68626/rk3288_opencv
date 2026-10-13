@@ -181,63 +181,19 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         req.a.push_back(JsonValue::makeString("arcFaceModelPath"));
         req.a.push_back(JsonValue::makeString("minFaceSizePx"));
         req.a.push_back(JsonValue::makeString("identifyThreshold"));
-        // 已加入 required（FACE-ARCWIN-006/007 收束）：配套的键级规范化
-        // （normalizeRecognitionKeys）保证既有缺键配置在启动校验前先被补齐默认值。
-        req.a.push_back(JsonValue::makeString("identifyThresholdArcFace"));
         req.a.push_back(JsonValue::makeString("enrollSamples"));
         r.o["required"] = std::move(req);
         JsonValue rp = JsonValue::makeObject();
         rp.o["cascadePath"] = objStr();
         rp.o["databasePath"] = objStr();
         rp.o["arcFaceModelPath"] = objStr();
-        // ArcFace 节点名（FACE-ARCWIN-001）：可选，默认空串=OpenCV 自动。
-        // 保持不加入 required——空串是合法默认值，仅当用户显式覆盖图命名时才需设置。
-        // 与 identifyThresholdArcFace 不同：后者的「合法默认」由键级规范化补齐，
-        // 故已收束进 required；节点名无此语义，继续可选。
-        rp.o["arcFaceInputName"] = objStr();
-        rp.o["arcFaceOutputName"] = objStr();
         rp.o["minFaceSizePx"] = objBoolInt(true, 10, 10000);
         {
-            // FACE-ARCWIN-010：**LBPH 卡方距离**阈值的物理值域 [1, 64]。
-            // 上界 64 的推导：LbphEmbedder 每 cell 归一化（Σ=1，共 gridX*gridY = 64 个 cell），
-            //   chiSquareDistance = 0.5·Σ(a−b)²/(a+b)；由 (a−b)² ≤ (a+b)² 得单 cell 项 ≤ 2 ⇒ 全局上界 64。
-            //   取 > 64 时 `distance <= thr` 恒真、阈值形同虚设（此前 max=100000 正是该形态）。
-            // 与 docs/windows-web-spa/config.schema.json 的 `recognition.identifyThreshold`、
-            //   docs/windows-web-spa/openapi.yaml 的 `RecognitionSettings.identifyThreshold` **三方同值**
-            //   （1 / 64；逐处核对过），改这里必须同步改那两处。
-            //   ★ 三处一律按**键名 / 组件名**引用（本仓规则：行号易漂移、应以符号为锚点）——旧版本注释
-            //     用的是行号，且其中 openapi 那处已漂到别的键（写 `:655`，实际那是 `arcFaceInputName`），
-            //     本次订正为符号引用。
-            // ✅ **值域已有机械对拍**（如实口径；与本注释旧版的说法相反，勿再据旧说法断言「无对拍」）：
-            //   tests/scripts/config-contract.test.js 的 FACE-VALUE-RANGE 用例
-            //   「值域：config.schema.json ↔ openapi.yaml ↔ JsonSchemaValidator 运行时 schema 逐键对拍
-            //   minimum/maximum」把上述三处的「带界键 → (min, max)」映射**逐键**比对
-            //   （当前 31 个带界键 × 3 处），并另加三处**数量相等**、**锚键非空**（含
-            //   `recognition.identifyThreshold`；防「提取器与源码写法脱节 ⇒ 空 == 空」静默通过）
-            //   与**本键专项 [1, 64] 断言**。⇒ 任一处漏改 min/max、或三处键集不同步，CI 即变红，
-            //   不再是「三方值域漂移只能靠人工同步」。
-            //   ⚠️ **本注释旧版曾声称「值域目前无机械对拍 / 全仓搜 `minimum`、`maximum` 零命中」——
-            //   该主张已失效**（该用例由同批补入；此前该文件确实只对拍键集与 required 集），在此订正。
-            // ⚠️ 收紧 schema 会让「既有 config.json 里 > 64 的值」从「合法」变为「不合法」⇒ 启动校验失败
-            //   ⇒ 隔离 + 默认值运行（用户配置被弃用）。故收紧必须与 WinJsonConfig.cpp 的
-            //   normalizeRecognitionKeys（校验**前**把越界值钳到 [1, 64] 并告警）**同批**落地：
-            //   钳制在前 ⇒ 永不因本键被拒 ⇒ 不会清空用户配置。
             JsonValue t = JsonValue::makeObject();
             t.o["type"] = JsonValue::makeString("number");
             t.o["minimum"] = JsonValue::makeNumber(1.0);
-            t.o["maximum"] = JsonValue::makeNumber(64.0);
+            t.o["maximum"] = JsonValue::makeNumber(100000.0);
             rp.o["identifyThreshold"] = std::move(t);
-        }
-        {
-            // ArcFace 专用阈值（余弦相似度，FACE-ARCWIN-006/007）：值域取 [0,1]。
-            // 与 LBPH 的 identifyThreshold 量纲不同，故独立成键。
-            // 已加入 required（见上方 req 数组）：配套的键级规范化保证既有缺键 config.json
-            // 在启动校验前先被补齐默认值 0.45，避免升级即被拒。
-            JsonValue t = JsonValue::makeObject();
-            t.o["type"] = JsonValue::makeString("number");
-            t.o["minimum"] = JsonValue::makeNumber(0.0);
-            t.o["maximum"] = JsonValue::makeNumber(1.0);
-            rp.o["identifyThresholdArcFace"] = std::move(t);
         }
         rp.o["enrollSamples"] = objBoolInt(true, 1, 1000);
         r.o["properties"] = std::move(rp);
