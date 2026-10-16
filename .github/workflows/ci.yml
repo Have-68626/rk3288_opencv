@@ -767,7 +767,7 @@ jobs:
           $env:RK_PRECISION_TOOL_NCNN2INT8 = Join-Path $env:NCNN_ROOT "bin/ncnn2int8.exe"
           $env:RK_PUBLIC_CASCADE_PATH = Join-Path $env:OPENCV_ROOT "data/lbpcascades/lbpcascade_frontalface.xml"
           $env:PATH = "$env:RK_PRECISION_TOOLS_DIR;$env:PATH"
-          python -m pytest tests/scripts/test_precision_tools_behavior.py -q
+          python -m pytest tests/scripts/test_precision_tools_behavior.py tests/scripts/test_ncnn_cmake_behavior.py -q
           if ($LASTEXITCODE -ne 0) { throw "precision tool behavior regression failed" }
 
       - name: Check for model/quantize changes

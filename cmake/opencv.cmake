@@ -103,7 +103,13 @@ if(RK_ENABLE_NCNN)
         endif()
     endif()
 
-    find_package(ncnn CONFIG QUIET)
+    # 安装根位于 NDK sysroot 外；仅搜索指定根，避免静默漏掉按 ABI 提供的包。
+    if(NCNN_DIR)
+        find_package(ncnn CONFIG QUIET PATHS "${NCNN_DIR}"
+            NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    else()
+        find_package(ncnn CONFIG QUIET)
+    endif()
 
     if(NOT ncnn_FOUND AND RK_NCNN_FETCHCONTENT)
         include(FetchContent)
@@ -125,6 +131,20 @@ if(RK_ENABLE_NCNN)
     elseif(TARGET ncnn)
         set(RK_HAVE_NCNN ON)
         set(RK_NCNN_TARGET ncnn)
+    endif()
+
+    if(ANDROID AND RK_HAVE_NCNN)
+        # 预编译包关闭的是 ncnn 自身的 RTTI/异常，不能据此禁止项目及 OpenCV 消费方使用。
+        get_target_property(_rk_ncnn_options_target ${RK_NCNN_TARGET} ALIASED_TARGET)
+        if(NOT _rk_ncnn_options_target)
+            set(_rk_ncnn_options_target ${RK_NCNN_TARGET})
+        endif()
+        get_target_property(_rk_ncnn_options ${_rk_ncnn_options_target} INTERFACE_COMPILE_OPTIONS)
+        if(_rk_ncnn_options)
+            list(REMOVE_ITEM _rk_ncnn_options -fno-rtti -fno-exceptions)
+            set_property(TARGET ${_rk_ncnn_options_target} PROPERTY
+                INTERFACE_COMPILE_OPTIONS "${_rk_ncnn_options}")
+        endif()
     endif()
 endif()
 

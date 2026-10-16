@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-10-13
+as_of=2026-10-16
 -->
 
 # 文档索引
@@ -112,6 +112,7 @@ as_of=2026-10-13
 | `plans/2026-07-03-triple-refactor-plan.md` | snapshot | 三层重构实施计划 |
 | `plans/2026-10-13-pr495-review-fixes.md` | living | PR #495 九项审查修复、回归与变异验证计划 |
 | `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
+| `plans/2026-10-16-android-ncnn-build-remediation.md` | living | Android ncnn 路径查找、消费方编译选项及双 ABI 编译/链接验证 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |
