@@ -14,7 +14,7 @@ as_of=2026-10-16
 
 每项记录落地、回归与变异证据；恢复变异后才做统一检查和独立复核。缓存内账本记录原始条目、裁定与证据，原始审计报告不覆盖。构建只验证 Windows/MSVC 和 Android；Linux 保留参考 CI。
 
-2026-10-16 检查点：用户已明确接回工作区并批准样例上报地址清空、MobileFaceNet指定父模型及预处理统一。Engine空间竞态和Windows跨运行时登记/清库/旧身份发布已修；F32已通过可复现转换及六项精准变异，不能再列为等待规范。同空间重载的数据库快照登记丢失已实证并由本轮修复：reloadRuntime 持 databaseMutationMu_ 覆盖候选整库 load 与提交，processLoop 仅对会写库的命令取同锁并在 run() 后立即释放（锁序 lifecycleMu_ → databaseMutationMu_ → publicationMu_）；两条真实 FramePipeline.reload 门控回归先 RED（137 通过 / 2 失败）后 GREEN（141/141）；精准变异 M1/M2 各致 4 条确定红、M3（取锁后运行时复核）致 1 条确定红——该复核此前无判别锚，本轮已补 `pipeline_stale_command_does_not_run_after_reload_wait` 锚定，并含前提自检防静默漏检。统一检查：全目标构建 rc=0、ctest 6/6、node --test 202/202、Web 156 条、docs H0/M0/L10、仓库卫生 rc=0 均通过；图谱已刷新。已知边界：Cypress 二进制启动仍受阻，未作真机/真人精度/外网推流验收。本轮尚未 commit，不 push。
+2026-10-16 接续复核：基线 HEAD 为 `dceff75`；`9c499f0` 和 `dceff75` 为接续方本地提交，未推送。本轮修正 M3 测试假通过，使用旧快照持有与新帧发布正向确认；正式 Windows 测试通过。当前真实生产链四项聚焦基线4/4，M1/M2/M3分别4/4/1条失败，原始日志见 `resume-2026-10-16/database-mutants/`；700ms受控调度对照两轮均区分修复态与缺守卫变异。此前139/141和RED数量仅为历史报告，不冒充本轮全套变异。F32已按用户认可规格修复，转换复现和重新登记边界不变。适用正式CTest六目标通过，M3替换后Windows目标再次通过；其他未改模块保留源绑定的既有验证。Cypress仍在二进制启动阶段崩溃，完整E2E未通过，需用户处理运行环境；未作真机/真人精度/外网推流验收。图谱已AST刷新，旧health副产物失效，不作当前证据。
 
 ## 逐项账本
 
@@ -32,7 +32,7 @@ as_of=2026-10-16
 | F-0010 | CONFIRMED_DEFECT | P2 | CI 依赖审计门禁只枚举 high 严重度，Critical 漏洞不阻断 | 用户已批准并落地；实际门禁 11 条与旧缺陷变异通过 |
 | F-0011 | CONFIRMED_DEFECT | P2 | 依赖审计门禁在 pnpm audit 输出 schema 变化时静默报 Audit OK | 用户已批准并落地；schema 漂移明确阻断，实际门禁 11 条通过 |
 | F-0012 | CONFIRMED_DEFECT | P2 | int8Enabled 仅为 manifest 声明布尔，无量化层/运行时/编译支持校验；头注释声称的一致性判据不存在 | 结构/编译/实际后端一致性已修并抽共享guard；本轮正式推理/精度契约通过，既有变异保留 |
-| F-0013 | CONFIRMED_DEFECT | P2 | templateSpaceId 全无生产消费（空间路由未接线）；两处 C++ 注释引用不存在的 replaceGalleryForSpace | 空间路由、Engine竞态及Windows命令/输出屏障已修；同空间重载的候选整库 load 与在途登记/清库帧的 saveDb 竞争（登记丢失/清库复活）由独立复核实证并已修复：reloadRuntime 持 databaseMutationMu_ 覆盖候选装配与提交，processLoop 仅对会写库的命令取同锁、run() 后立即释放（锁序 lifecycleMu_ → databaseMutationMu_ → publicationMu_）；两条真实 FramePipeline.reload 门控回归 RED(137/2)→GREEN，精准变异 M1/M2 各致 3 条确定红。见 enrollment-database-lock/ |
+| F-0013 | CONFIRMED_DEFECT | P2 | templateSpaceId 全无生产消费（空间路由未接线）；两处 C++ 注释引用不存在的 replaceGalleryForSpace | 空间路由、Engine竞态及Windows命令/输出屏障已修；同空间重载的数据库load/save竞争已以databaseMutationMu_互斥。当前正式Windows测试通过；本轮NCNN=1真实生产链四项聚焦回归4/4，移除处理侧锁/重载侧锁/取锁后复核分别触发4/4/1条失败，原始日志保留。M3测试改用旧快照持有和新帧发布确认处理完成，700ms调度对照连续两轮检出旧测试漏检。见resume-2026-10-16/database-mutants/及win-review/；旧报告仅作历史来源 |
 | F-0014 | CONFIRMED_DEFECT | P3 | .pre-encrypt 留存口径：文档与实现（A11）相反 | 已同步回读验证后删除本次副本及历史副本保护文档 |
 | F-0015 | CONFIRMED_DEFECT | P3 | HttpFacesPoster 把完整 postUrl 明文写入 event_log.jsonl | 生命周期日志全脱敏；真实Poster回归和恢复明文日志精准变异均通过 |
 | F-0016 | CONFIRMED_DEFECT | P3 | Android 侧日志身份掩码缺口：MainActivity 明文记录 personId | 已修复；日志链路回归与变异通过，Gradle 编译修正后通过 |
@@ -42,7 +42,7 @@ as_of=2026-10-16
 | F-0020 | CONFIRMED_DEFECT | P3 | 注释失真：test_face_infer_pipeline.cpp 描述已删除的 INT8 回落链 | 已更正旧INT8回落链注释，与当前显式装配一致 |
 | F-0021 | CONFIRMED_DEFECT | P3 | Cypress E2E 断言已失效且从不连真实后端，属「空心端到端」 | mock 冒烟已修复；真实 Chrome 验证通过，Cypress 二进制启动受阻 |
 | F-0022 | REVIEW_CANDIDATE | P2 | Windows reloadRuntime 失败不保留旧运行态（与「load 失败旧状态保持」相悖） | 失败保旧运行态、首次失败和HTTP本次结果已修；正式Windows及精准变异通过 |
-| F-0023 | REVIEW_CANDIDATE | P2 | profile/模型切换不隔离内存图库空间 ⇒ 跨嵌入空间复用模板 | 空间路由、Engine竞态及Windows命令/输出屏障已修；同空间重载的候选整库 load 与在途登记/清库帧的 saveDb 竞争（登记丢失/清库复活）由独立复核实证并已修复：reloadRuntime 持 databaseMutationMu_ 覆盖候选装配与提交，processLoop 仅对会写库的命令取同锁、run() 后立即释放（锁序 lifecycleMu_ → databaseMutationMu_ → publicationMu_）；两条真实 FramePipeline.reload 门控回归 RED(137/2)→GREEN，精准变异 M1/M2 各致 3 条确定红。见 enrollment-database-lock/ |
+| F-0023 | REVIEW_CANDIDATE | P2 | profile/模型切换不隔离内存图库空间 ⇒ 跨嵌入空间复用模板 | 空间路由、Engine竞态及Windows命令/输出屏障已修；同空间重载的数据库load/save竞争已以databaseMutationMu_互斥。当前正式Windows测试通过；本轮NCNN=1真实生产链四项聚焦回归4/4，移除处理侧锁/重载侧锁/取锁后复核分别触发4/4/1条失败，原始日志保留。M3测试改用旧快照持有和新帧发布确认处理完成，700ms调度对照连续两轮检出旧测试漏检。见resume-2026-10-16/database-mutants/及win-review/；旧报告仅作历史来源 |
 | F-0024 | REVIEW_CANDIDATE | P3 | 检索只挡 NaN 不挡 Inf：Inf 分量可致分数为 NaN，排序退化为索引序 | 已修复；实际检索回归与旧缺陷变异通过 |
 | F-0025 | REVIEW_CANDIDATE | P3 | 身份哨兵大小写不一致：LBPH 的 "unknown" 小写不被 TrackCoordinator 视作未认证 | 已修复；小写未知身份回归与变异通过 |
 | F-0026 | REVIEW_CANDIDATE | P3 | 已确认的框在身份累计中（1-2/3）时被上报为 AUTH_FAIL Unknown | pending/隐藏轨迹已修；两个旧缺陷变异及后续正式Engine/推理回归通过 |
@@ -87,9 +87,9 @@ as_of=2026-10-16
 
 | 编号 | 来源 | 问题 | 裁定 |
 |---|---|---|---|
-| N-01 | 独立复核（审计外） | 同 templateSpaceId 重载时候选整库 load 与在途登记/清库帧的 saveDb 无互斥 ⇒ 登记丢失 / 清库复活 | **已修复**（`reloadRuntime` 持 `databaseMutationMu_` 覆盖候选装配与提交；`processLoop` 仅对会写库的命令取同锁、`run()` 后立即释放；锁序 `lifecycleMu_ → databaseMutationMu_ → publicationMu_`）。两条真实 `FramePipeline.reload` 门控回归 RED→GREEN，M1/M2 变异各致 3 条确定红。证据 `cache/audit-fixes-2026-10-13/enrollment-database-lock/` |
+| N-01 | 独立复核（审计外） | 同 templateSpaceId 重载时整库 load/save 竞争导致登记丢失或清库复活 | **已修复并重验**：生产锁序不变；本轮四项真实生产链基线4/4，M1/M2各触发4条失败；正式Windows通过。原始日志见 `resume-2026-10-16/database-mutants/` |
 | N-02 | 独立复核（审计外） | `test_pipeline_initialize_rejects_live_threads` 只定义未注册 ⇒ 死测试、零覆盖（自 enrollment-runtime 轮次起） | **已修复**：补注册进 `win_unit_tests_main.cpp`，转为真执行 |
-| N-03 | 独立复核（审计外） | `processLoop` 取锁后的运行时复核（`rt != runtimeSnapshot()`）此前无任何用例可确定性判别 | **已闭合**：新增判别锚 `pipeline_stale_command_does_not_run_after_reload_wait`（移除该行 ⇒ 恰好 1 条确定红）；未新增生产接缝，观测放在测试文件内的 `FramePipelineTestAccess`。见同目录报告 §5 |
+| N-03 | 独立复核（审计外） | 取数据库锁后的运行时复核缺少可靠测试；旧测试在处理结束前缓存判据导致假通过 | **已修复并重验**：正向确认旧快照持有和新帧发布，检查旧识别器零调用；缺守卫M3触发1条失败。700ms受控调度两轮修复态PASS、变异FAIL；正式Windows通过。见 `resume-2026-10-16/win-review/clean-results.json` |
 
 ## 交付标准
 

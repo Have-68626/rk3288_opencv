@@ -41,12 +41,6 @@ struct FramePipelineTestAccess {
         return false;
     }
     static bool running(FramePipeline& pipeline) { return pipeline.running_.load(); }
-    // 确定性时序观测（仅测试）：确认 processLoop 已把注入帧取走。processLoop 取帧与"捕获 rt/命令"
-    // 之间没有任何阻塞点（取帧 → 统计 → 命令快照 → 取数据库锁），故一旦取走即已捕获命令。
-    static bool frameConsumed(FramePipeline& pipeline) {
-        std::lock_guard<std::mutex> lock(pipeline.frameMu_);
-        return !pipeline.hasFrame_;
-    }
     static std::unique_lock<std::mutex> lockConfig(FramePipeline& pipeline) {
         return std::unique_lock<std::mutex>(pipeline.mu_);
     }
@@ -1048,11 +1042,8 @@ bool test_pipeline_reload_shutdown_and_publication_lock_order() {
     return lifecycleFirst && stopping && reloaded && stopped;
 }
 
-// 取锁后必须复核运行时仍是当前快照（此前**无判别锚**的那一行）：processLoop 先捕获 rt 与命令、
-// 再阻塞在数据库锁上，若期间重载成功提交，那条已作废的命令**绝不能**再交给旧快照执行 ——
-// 否则旧识别器会把被取消的登记写回同空间库（其"结果"虽会被发布屏障丢弃，但**副作用已经发生**）。
-// 时序全部靠正向观测固定，不靠 sleep 抢跑：测试占住 publicationMu_ ⇒ 重载装配完成后必然卡在提交
-// 门前，且这期间**持续持有** databaseMutationMu_ ⇒ 注入的帧必然被挡在这把锁上。
+// 先正向确认处理线程持有旧快照，再以新帧发布证明旧帧已退场；
+// 缺少取数据库锁后的运行时复核时，旧登记副作用必须被检出。
 bool test_pipeline_stale_command_does_not_run_after_reload_wait() {
     RuntimeTestStorage storage;
     auto cfg = storage.config();
@@ -1060,43 +1051,31 @@ bool test_pipeline_stale_command_does_not_run_after_reload_wait() {
     if (!pipeline.initialize(cfg)) return false;
     auto stale = std::make_shared<RuntimeCommandRecognizer>();
     pipeline.setRecognizerForTest(stale);
-
+    auto oldRuntime = rk_win::FramePipelineTestAccess::runtime(pipeline);
     auto publication = rk_win::FramePipelineTestAccess::lockPublication(pipeline);
     std::atomic<bool> reloadDone{false}, reloadOk{false};
     std::thread reload([&] { reloadOk = pipeline.reloadRuntime(cfg); reloadDone = true; });
-    // 正向确认重载已持数据库锁（装配中，或已停在提交门前等 publicationMu_）。
     const bool dbLocked = waitUntil([&] {
         return rk_win::FramePipelineTestAccess::databaseMutationHeld(pipeline);
     }, 5000);
     if (!dbLocked) { publication.unlock(); reload.join(); pipeline.shutdown(); return false; }
-
-    // 提交前注入登记帧：命令取到的是**重载前**的 rt 与 enroll 请求。
-    const std::uint64_t seqBefore = pipeline.currentFacesSeq();
     pipeline.requestEnroll("synthetic_stale_request");
     pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
-    // 正向确认该帧已被 processLoop 取走。取帧 → 统计 → 命令快照 → 取数据库锁 这段路径上没有 sleep/IO，
-    // 且此场景下 mu_/runtimeMu_ 无争用（重载正卡在 publicationMu_ 上，两把锁都不持有）⇒ 取走后随即捕获命令。
-    const bool captured = waitUntil([&] {
-        return rk_win::FramePipelineTestAccess::frameConsumed(pipeline);
-    }, 2000);
+    // 基线只有runtime_与测试引用；新增引用证明处理线程持有旧快照。
+    // 命令字段仍在同一mu_/runtimeMu_临界区，重载提交无法插入其中。
+    const bool captured = waitUntil([&] { return oldRuntime.use_count() > 2; }, 2000);
     if (!captured) { publication.unlock(); reload.join(); pipeline.shutdown(); return false; }
-    // 被挡住期间旧识别器一次都不该被调用（命令还没拿到数据库锁）。
     const bool blockedBeforeCommit = stale->enrolls.load() == 0;
-
-    // 放行提交：重载完成并释放数据库锁，被挡住的旧命令随即拿到锁并进入复核分支。
     publication.unlock();
     reload.join();
-    // 有界负向等待做判别：缺复核时旧命令会在微秒级拿到锁并真的调用旧识别器 ⇒ 该窗口内必然观察到
-    // enrolls>0；有复核时它**恒不执行**（与机器快慢无关，不是"更慢"，故不会假红）。
-    const bool staleRan = waitUntil([&] { return stale->enrolls.load() > 0; }, 500);
-    const bool staleNeverRan = !staleRan && stale->identifies.load() == 0 &&
-        reloadOk.load() && reloadDone.load();
-    // 前提自检：若命令其实是在重载提交**之后**才被捕获（调度器把 processLoop 在整个取帧→捕获区间
-    // 挂起），则该命令已被重载作废（enrollRequested 被清）⇒ 不取数据库锁、快照仍是当前 ⇒ 这帧会被
-    // **正常发布**，facesSeq 必然前进。把它一并纳入判据，可把这种"前提不成立"从静默漏检变成响亮失败。
-    const bool premiseHeld = pipeline.currentFacesSeq() == seqBefore;
+    // 单处理线程必须先退出旧帧才能处理推进帧，以正向完成事件替代负向超时判据。
+    const auto before = pipeline.currentFacesSeq();
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    std::uint64_t after = 0;
+    const bool advanced = pipeline.waitFacesSeqChanged(before, 5000, after);
+    const bool staleNeverRan = stale->enrolls.load() == 0 && stale->identifies.load() == 0;
     pipeline.shutdown();
-    return dbLocked && captured && blockedBeforeCommit && staleNeverRan && premiseHeld;
+    return dbLocked && captured && blockedBeforeCommit && reloadOk && reloadDone && advanced && staleNeverRan;
 }
 
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
