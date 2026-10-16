@@ -19,12 +19,12 @@ struct PersonEntry {
 // A11：明文 YAML → 加密容器迁移的**可观察结果**。
 // 为什么需要它：load() 的返回 bool 只表达「库是否可读」，**不表达**迁移是否成功清理了本次明文副本
 //   ⇒ 「密文已成功落盘但清理失败」与「完全成功」在原有的 bool 上不可区分，调用方（装配链）无从知晓。
-//   本枚举把四态显式化，供测试与诊断观察（不改动 load() 的既有 bool 契约）。
+//   本枚举显式区分迁移与清理状态，供测试与诊断观察（不改动 load() 的既有 bool 契约）。
 enum class MigrationOutcome {
     NotAttempted,             // 未发生迁移（库不存在 / 已是加密容器 / 常量路径）
     Success,                  // 加密落盘 + 回读逐项等价验证通过 + 本次明文副本已删除
     VerifyFailed,             // 加密已替换主库，但回读校验不等价 ⇒ 本次副本保留（失败）
-    CleanupFailed,            // 加密与校验均通过，但删除本次明文副本失败 ⇒ 密文可用、副本保留（清理告警）
+    CleanupFailed,            // 密文可读，但本次删除失败或重启发现遗留 pending 副本（清理告警）
     HistoricalBackupPresent,  // 已存在历史同名 .pre-encrypt 副本 ⇒ 迁移中止、未做任何改动（不覆写不删）
     Aborted,                  // 其它中止（密钥不可用 / 加密失败 / 备份失败 / 替换失败），旧明文原样保留
 };
@@ -36,7 +36,7 @@ enum class MigrationOutcome {
 // base64 落盘到 <数据库路径>.key.dpapi（与 WinJsonConfig 的 config.key.dpapi 布局一致）。
 // 复用 WinCrypto 公开原语（base64/dpapi/AES-256-GCM/randomBytes），密钥文件管理为本地最小辅助。
 //
-// 迁移：load() 检测到旧明文 YAML 时自动加密迁移（先写临时文件、备份 <path>.pre-encrypt、
+// 迁移：load() 检测到旧明文 YAML 时自动加密迁移（先写临时文件、备份 <path>.pre-encrypt.pending、
 // 原子替换）；迁移任一步失败即中止，旧明文保持原样可回滚。错误密钥/损坏密文 → GCM tag
 // 校验失败 → load 受控返回 false（不崩溃、不写明文）。密钥文件丢失/损坏 = 数据库不可恢复。
 class FaceDatabase {

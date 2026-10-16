@@ -171,8 +171,9 @@ bool FaceSearchLinearIndex::reset(std::vector<FaceSearchEntry>&& entries, std::s
             return false;
         }
         for (float v : e.embedding) {
-            if (std::isnan(v)) {
-                err = "FaceSearchLinearIndex: embedding 包含 NaN";
+            if (!std::isfinite(v)) {
+                err = std::isnan(v) ? "FaceSearchLinearIndex: embedding 包含 NaN"
+                                    : "FaceSearchLinearIndex: embedding 包含 Inf";
                 return false;
             }
         }
@@ -199,8 +200,9 @@ std::vector<FaceSearchHit> FaceSearchLinearIndex::searchTopK(const std::vector<f
         return {};
     }
     for (float v : query) {
-        if (std::isnan(v)) {
-            err = "FaceSearchLinearIndex: query 包含 NaN";
+        if (!std::isfinite(v)) {
+            err = std::isnan(v) ? "FaceSearchLinearIndex: query 包含 NaN"
+                                : "FaceSearchLinearIndex: query 包含 Inf";
             return {};
         }
     }

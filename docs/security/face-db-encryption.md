@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-09-26
+as_of=2026-10-13
 -->
 
 # FaceDatabase 加密安全规格（S-SEC-B09-002）
@@ -54,17 +54,16 @@ offset 39: ciphertext   （AES-256-GCM，AAD = 前 11 字节头部）
 ### 3.1 迁移（load 时自动）
 1. `load(path)` 检测到旧明文 YAML → 先用既有 `cv::FileStorage` 逻辑读明文；
 2. 序列化→加密→写临时文件 `<path>.enc.tmp`；
-3. 备份旧明文到 `<path>.pre-encrypt`（回滚点）；
+3. 备份旧明文到 `<path>.pre-encrypt.pending`；若崩溃后该副本与主库逐字节一致，可复用并重试；
 4. 原子替换临时文件 → `<path>`（`MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`）；
-5. 迁移后 `save()` 一律写加密容器。
+5. 回读密文主库并逐项逐值验证；成功后删除本次 pending 明文副本，后续 `save()` 一律写加密容器。
 
 ### 3.2 回滚保证
-- 迁移**任一步失败即中止**，旧明文文件保持原样（`.pre-encrypt` 与替换前原路径双保留）；
+- 原子替换前失败，旧明文主库保持原样；替换后回读校验失败，保留 pending 副本并报告 `VerifyFailed`；
 - `load` 仍返回内存数据成功（只读兼容），不因迁移失败而拒绝读取；
-- 人工回滚 = 用 `<path>.pre-encrypt` 覆盖 `<path>` 并删除加密文件/密钥文件。
-- **明文备份留存（P3-1 S3 CONFIRMED）**：`.pre-encrypt` 是完整明文库副本（身份+特征向量），
-  迁移成功后**永久留存磁盘**（回滚点），即威胁模型 §1 所述的明文残留。属有意保留（回滚保证），
-  须由运维人工删除，或稳定运行期后增加"验证后删除"选项；不做默认自动删除（会破坏回滚契约）。
+- 本次副本仅在回读验证成功后自动删除；删除失败或重启发现遗留 pending 副本，报告 `CleanupFailed`，不静默丢弃恢复材料。
+- 历史 `<path>.pre-encrypt` 的归属无法判断，存在时报告 `HistoricalBackupPresent` 并中止迁移，绝不自动覆写或删除。人工恢复、清理须核验并另行授权。
+- pending 与明文主库不一致时报告 `Aborted`，保持主库、副本及临时文件原样。日志只输出固定结果码，不包含身份、模板或文件路径。
 
 ### 3.3 错误密钥/损坏密文
 - 加密容器解密时 GCM tag 校验失败 → **受控失败**：`load` 返回 false、`persons()` 为空、

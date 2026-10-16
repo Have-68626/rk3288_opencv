@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=process
 status=living
-as_of=2026-09-30
+as_of=2026-10-13
 -->
 
 # RK3288 AI Engine — Agent Guide
@@ -45,7 +45,7 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
   删除会让每个 PR 永久卡在「Expected — waiting for status to be reported」。它仍以
   `RK_SKIP_OPENCV=ON` 提供 `core_unit_tests` 的快通道（1–2 分钟出结果）。
 - 覆盖不丢——`windows` job 同样构建并运行 `core_unit_tests`。
-- 相应地，该 job 中 `g++` 对 `src/win/src/*.cpp` 的跨平台编译检查**不再作为验收依据**；
+- 相应地，该 job 中 `g++` 仅编译检查 `FaceDetector.cpp`、`LbphEmbedder.cpp`、`DnnSsdFaceDetector.cpp`，**不再作为验收依据**；
   新增 C++ 代码只须在 Windows（MSVC）与 Android 两侧验证。
 - ⚠️ **不要**把 `CMakeLists.txt:121` 的 `if(UNIX AND NOT APPLE)` 当作 Linux 残留删掉——
   **Android 也是 UNIX**，该分支在为 Android 加 `-fPIE -pie` 安全加固，删掉会让加固静默失效。
@@ -143,7 +143,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 
 1. **changes**（`classify-changes`）—— 比对变更路径并输出 `docs_only`；纯 `docs/` + `*.md` 变更时为 `true`。无法可靠比对时（手动触发、首个 push）保守地置 `false`。
 2. **repo-hygiene** —— `node scripts/clean-repo-junk.js scan --ci`，另跑 `node --test tests/scripts/*.test.js` 与量化配对 pytest。
-3. **unit-tests** —— **非门禁**（job 级 `continue-on-error: true`）：Linux CMake + Ninja，`RK_SKIP_OPENCV=ON`，构建并运行 `core_unit_tests`，同时对 `src/win/src/*.cpp` 做 `g++` 跨平台编译检查。
+3. **unit-tests** —— **非门禁**（job 级 `continue-on-error: true`）：Linux CMake + Ninja，`RK_SKIP_OPENCV=ON`，构建并运行 `core_unit_tests`；`g++` 仅检查 Windows 的 `FaceDetector.cpp`、`LbphEmbedder.cpp`、`DnnSsdFaceDetector.cpp`。
 4. **docs-audit** —— `node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit`。门禁要求 high=0 且 medium=0，不满足时以退出码 2 阻断。**本 job 不因 `docs_only` 跳过**——docs 变更正是它的审查对象（其余 job 在 pure-docs 变更时全部跳过）。
 5. **web** —— `pnpm install` → `lint` → `build` → `e2e:run:coverage`（E2E 失败非阻断）。
 6. **android** —— `./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`（Temurin Java 21）。

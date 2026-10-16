@@ -30,7 +30,7 @@ using namespace rk_core;
 #include "FaceInferStages.h"
 #include "FaceProfileRequest.h"
 #include "ModelRegistry.h"
-#include "NcnnParamGuard.h"
+#include "NcnnPrecisionGuard.h"
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/ScrfdNcnnAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
@@ -111,65 +111,7 @@ static int errorCodeForStage(const std::string& stage) {
     return 1;
 }
 
-#if RK_CPP_HAS_OPENCV
-// 文件名和 manifest precision 不能证明量化；只认真实权重层的 ncnn int8_scale_term。
-// ncnn 允许混合图，故只要求至少一个卷积/全连接权重层带量化标志。
-static bool satisfiesInt8Requirement(const std::string& backend, const std::string& paramPath,
-                                    std::string& err) {
-    if (backend != "ncnn") {
-        err = "int8_requires_ncnn";
-        return false;
-    }
-    std::ifstream file(paramPath, std::ios::binary);
-    if (!file) {
-        err = "int8_param_unreadable";
-        return false;
-    }
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    const std::string text = buffer.str();
-    if (file.bad() || !validateNcnnParamText(text, err)) return false;
-    std::istringstream lines(text);
-    std::string line;
-    std::getline(lines, line);  // magic 由后续 ncnn loader 校验。
-    std::getline(lines, line);
-    int layerCount = 0, blobCount = 0;
-    std::istringstream header(line);
-    if (!(header >> layerCount >> blobCount) || layerCount <= 0 || blobCount <= 0) {
-        err = "int8_param_invalid_header";
-        return false;
-    }
-    int parsedLayers = 0;
-    // loader 只加载声明层数，尾部未加载的量化声明不能作为精度证据。
-    while (parsedLayers < layerCount && std::getline(lines, line)) {
-        if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
-        ++parsedLayers;
-        std::istringstream fields(line);
-        std::string type, name, token;
-        int bottoms = 0, tops = 0;
-        if (!(fields >> type >> name >> bottoms >> tops) || bottoms < 0 || tops < 0) continue;
-        for (int i = 0; i < bottoms && fields; ++i) fields >> token;
-        for (int i = 0; i < tops && fields; ++i) fields >> token;
-        if (type != "Convolution" && type != "ConvolutionDepthWise" && type != "InnerProduct") continue;
-        int scaleTerm = 0;
-        while (fields >> token) {
-            std::istringstream value(token);
-            int key = 0, term = 0;
-            char equal = 0, trailing = 0;
-            // ncnn 的 %d= 接受前导零和正号；遇到非参数内容即停止，不能扫描注释中的假标志。
-            if (!(value >> key >> equal) || equal != '=') break;
-            // 数组参数不能证明标量量化开关。
-            if (key == -23308) { scaleTerm = 0; continue; }
-            if (key != 8) continue;
-            // ParamDict 对重复 key 采用最后一个值，不能把前面的 8>0 误作最终量化声明。
-            scaleTerm = ((value >> term) && !(value >> trailing)) ? term : 0;
-        }
-        if (scaleTerm > 0) return true;
-    }
-    err = "int8_required_param_not_quantized";
-    return false;
-}
-#endif
+
 
 // 当前进程编译 ABI 字符串（用于 profile 的 supportedAbis 校验）。
 // 与 §I5 单图 JNI 同一口径：按**编译期**宏判断，不以设备列表/运行态 ABI 代替。
@@ -196,6 +138,16 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
     FaceInferOutcome out;
     const long long tsMs = nowEpochMillis();
     try {
+        // 单帧没有跨调用状态，不能接受一个永远无法累计完成的连续帧要求。
+        if (reqIn.consecutivePassesToTrigger > 1) {
+            out.stage = "request";
+            out.message = "single_frame_consecutive_requires_one";
+            out.errorCode = errorCodeForStage(out.stage);
+            out.auditDir = "ErrorLog";
+            out.auditFilename = "face_infer_" + std::to_string(tsMs) + ".json";
+            out.json = buildSimpleErrorJson(false, out.errorCode, out.stage, out.message, tsMs, reqIn.imagePath);
+            return out;
+        }
         // §I3：profile 模式在装配前一次性派生请求字段（detectorId/embedderId/双后端/模型绝对路径/节点/
         // 尺寸/阈值/int8Enabled）并取回 profile 供 SCRFD 解码语义消费。失败时 req 不变、直接失败。
         FaceInferRequest req = reqIn;

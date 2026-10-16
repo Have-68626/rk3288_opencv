@@ -85,6 +85,33 @@ test("auditAgentGuides 接受与配置一致的镜像", () => {
   }
 });
 
+test("精度运行器不再使用 TestCase 时仍保留其他真实自定义框架事实", () => {
+  const root = createFixture();
+  try {
+    write(root, "tests/cpp/ncnn_precision_test.cpp", "int main() { return 77; }\n");
+    write(root, "AGENTS.md", guide("共享规则"));
+    write(root, "CLAUDE.md", guide("共享规则"));
+    assert.equal(auditAgentGuides(root).defects.length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("全部自定义运行器缺失时不得仍宣称存在该测试框架", () => {
+  const root = createFixture();
+  try {
+    for (const file of ["tests/cpp/face_infer_unit_tests_main.cpp", "tests/win/win_unit_tests_main.cpp", "tests/cpp/ncnn_precision_test.cpp"]) {
+      write(root, file, "int main() { return 0; }\n");
+    }
+    write(root, "AGENTS.md", guide("共享规则"));
+    write(root, "CLAUDE.md", guide("共享规则"));
+    assert.equal(auditAgentGuides(root).expectedFacts.test_frameworks, "unknown");
+    assert.ok(auditAgentGuides(root).defects.some(d => d.rule === "agent_guide_fact_drift"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("auditAgentGuides 报告事实与共享正文漂移", () => {
   const root = createFixture();
   try {

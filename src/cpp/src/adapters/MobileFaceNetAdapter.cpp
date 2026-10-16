@@ -110,7 +110,9 @@ std::optional<std::vector<float>> MobileFaceNetAdapter::embed(const cv::Mat& ali
 
     ncnn::Mat in = ncnn::Mat::from_pixels(src.data, ncnn::Mat::PIXEL_BGR2RGB, inputW_, inputH_);
 
-    float meanVals[3] = {0.0f, 0.0f, 0.0f};
+    // 指定父图 w600k_mbf（SHA256 9cc6e4a7…）不含输入归一化；沿用官方 RGB、(x−127.5)/127.5。
+    // 旧 mean=0 生成的模板属于不同空间，切换前须重登记，禁止复用旧图库。
+    float meanVals[3] = {127.5f, 127.5f, 127.5f};
     float normVals[3] = {1.0f / 127.5f, 1.0f / 127.5f, 1.0f / 127.5f};
     in.substract_mean_normalize(meanVals, normVals);
 

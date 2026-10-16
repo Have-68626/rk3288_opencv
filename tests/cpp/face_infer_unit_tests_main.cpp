@@ -55,6 +55,10 @@ bool test_face_infer_outcome_json_no_face();
 bool test_face_infer_outcome_json_hit_identity_edges();
 
 bool test_video_manager_is_url_source_valid_urls();
+bool test_video_manager_consumes_latest_frame_once();
+bool test_video_manager_close_discards_pending_frame();
+bool test_mpp_nv12_conversion_preserves_uv_and_strides();
+bool test_mpp_nv12_conversion_rejects_invalid_layout();
 bool test_video_manager_is_url_source_local_paths();
 bool test_video_manager_is_url_source_edge_cases();
 
@@ -94,6 +98,8 @@ bool test_gallery_cache_repeated_call();
 bool test_publisher_emits_no_face_on_empty_tracks();
 bool test_publisher_throttles_repeated_calls();
 bool test_publisher_concurrent_set_and_publish();
+bool test_publisher_distinguishes_pending_identity_from_auth_failure();
+bool test_face_infer_rejects_multiframe_consecutive_requirement();
 // §I3 单次管线统一装配的判别用例（见 test_face_infer_pipeline.cpp）。
 bool test_face_infer_routes_embedder_id_and_configures_arcface();
 bool test_face_infer_routes_detector_id_and_calls_load();
@@ -111,19 +117,37 @@ bool test_face_infer_embed_failure_carries_differential_err();
 // 统一 Embedder 接口不得把「输出维度不符」当成功（失败静默）。
 bool test_face_infer_embedder_dim_mismatch_is_not_silent();
 bool test_face_infer_profile_uses_manifest_identity_threshold();
+bool test_face_infer_profile_rejects_anonymous_gallery_snapshot();
+bool test_face_infer_gallery_template_space_isolation();
 bool test_face_infer_int8_rejects_real_opencv_backend();
 bool test_face_infer_int8_rejects_fp32_param_and_nonweight_flags();
 bool test_face_infer_scrfd_cache_reloads_complete_decode_contract();
 bool test_face_infer_int8_accepts_real_quantized_and_mixed_graphs();
+bool test_perf_reporter_nearest_rank_and_stage_totals();
+bool test_perf_reporter_rss_uses_batch_maximum();
+bool test_perf_reporter_rss_preserves_peak_across_batches();
+bool test_perf_reporter_counts_dropped_samples();
+bool test_perf_reporter_shutdown_drains_pending_samples();
+bool test_perf_reporter_shutdown_wakes_idle_worker();
 
 int main() {
     using namespace rk_face_infer_test;
     const TestCase cases[] = {
+        {"publisher_distinguishes_pending_identity_from_auth_failure", test_publisher_distinguishes_pending_identity_from_auth_failure},
+        {"face_infer_rejects_multiframe_consecutive_requirement", test_face_infer_rejects_multiframe_consecutive_requirement},
         {"face_infer_profile_uses_manifest_identity_threshold", test_face_infer_profile_uses_manifest_identity_threshold},
+        {"face_infer_profile_rejects_anonymous_gallery_snapshot", test_face_infer_profile_rejects_anonymous_gallery_snapshot},
+        {"face_infer_gallery_template_space_isolation", test_face_infer_gallery_template_space_isolation},
         {"face_infer_int8_rejects_real_opencv_backend", test_face_infer_int8_rejects_real_opencv_backend},
         {"face_infer_int8_rejects_fp32_param_and_nonweight_flags", test_face_infer_int8_rejects_fp32_param_and_nonweight_flags},
         {"face_infer_scrfd_cache_reloads_complete_decode_contract", test_face_infer_scrfd_cache_reloads_complete_decode_contract},
         {"face_infer_int8_accepts_real_quantized_and_mixed_graphs", test_face_infer_int8_accepts_real_quantized_and_mixed_graphs},
+        {"perf_reporter_nearest_rank_and_stage_totals", test_perf_reporter_nearest_rank_and_stage_totals},
+        {"perf_reporter_rss_uses_batch_maximum", test_perf_reporter_rss_uses_batch_maximum},
+        {"perf_reporter_rss_preserves_peak_across_batches", test_perf_reporter_rss_preserves_peak_across_batches},
+        {"perf_reporter_counts_dropped_samples", test_perf_reporter_counts_dropped_samples},
+        {"perf_reporter_shutdown_drains_pending_samples", test_perf_reporter_shutdown_drains_pending_samples},
+        {"perf_reporter_shutdown_wakes_idle_worker", test_perf_reporter_shutdown_wakes_idle_worker},
         {"face_infer_image_load_failure", test_face_infer_image_load_failure},
         {"face_infer_yolo_load_failure", test_face_infer_yolo_load_failure},
         {"face_infer_concurrent_model_key_switch", test_face_infer_concurrent_model_key_switch},
@@ -174,6 +198,10 @@ int main() {
         {"publisher_throttles_repeated_calls", test_publisher_throttles_repeated_calls},
         {"publisher_concurrent_set_and_publish", test_publisher_concurrent_set_and_publish},
         {"video_manager_is_url_source_valid_urls", test_video_manager_is_url_source_valid_urls},
+        {"video_manager_consumes_latest_frame_once", test_video_manager_consumes_latest_frame_once},
+        {"video_manager_close_discards_pending_frame", test_video_manager_close_discards_pending_frame},
+        {"mpp_nv12_conversion_preserves_uv_and_strides", test_mpp_nv12_conversion_preserves_uv_and_strides},
+        {"mpp_nv12_conversion_rejects_invalid_layout", test_mpp_nv12_conversion_rejects_invalid_layout},
         {"video_manager_is_url_source_local_paths", test_video_manager_is_url_source_local_paths},
         {"video_manager_is_url_source_edge_cases", test_video_manager_is_url_source_edge_cases},
         {"video_manager_sanitize_uri_hides_userinfo", test_video_manager_sanitize_uri_hides_userinfo},

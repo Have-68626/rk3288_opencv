@@ -20,6 +20,14 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <limits>
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__ANDROID__)
+#include <fstream>
+#include <unistd.h>
+#endif
 #ifdef __linux__
 #include <sys/resource.h>
 #endif
@@ -27,12 +35,6 @@
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
 #include <libyuv/convert_argb.h>
 #include <libyuv/convert_from.h>
-#endif
-
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-#include <rk_mpi.h>
-#include <mpp.h>
-#include <mpp_err.h>
 #endif
 
 using namespace rk_core;
@@ -224,7 +226,7 @@ static bool fillI420FromYuv420888(const ExternalFrame& f, cv::Mat& outYuvI420, s
     return true;
 }
 
-static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& err) {
+static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& err, bool& usedLibyuv) {
     const int w = f.width;
     const int h = f.height;
     if (w <= 0 || h <= 0) {
@@ -300,6 +302,7 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
     if (r != 0) {
         return fallbackOpencvNv21();
     }
+    usedLibyuv = true;
     return true;
     }
     return fallbackOpencvNv21();
@@ -308,7 +311,8 @@ static bool toBgrFromNv21(const ExternalFrame& f, cv::Mat& outBgr, std::string& 
 #endif
 }
 
-static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std::string& err) {
+static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std::string& err, bool& usedLibyuv) {
+    usedLibyuv = false;
     if (f.width <= 0 || f.height <= 0) {
         err = "非法尺寸";
         return false;
@@ -321,7 +325,7 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
     }
 
     if (f.format == ExternalFrameFormat::NV21) {
-        if (!toBgrFromNv21(f, outBgr, err)) {
+        if (!toBgrFromNv21(f, outBgr, err, usedLibyuv)) {
             return false;
         }
     } else {
@@ -355,6 +359,7 @@ static bool toBgrFromExternalFrame(const ExternalFrame& f, cv::Mat& outBgr, std:
                 h
             );
             converted = (r == 0);
+            usedLibyuv = converted;
         }
 #endif
         if (!converted) {
@@ -391,44 +396,10 @@ static long long steadyNowMs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// [Qualcomm/MPP Backend Feature Placeholder]
-// 待补充代码接入: Qualcomm SDK inference delegate initialization
+// 当前尚未接入 Qualcomm 推理句柄，SDK 头可用不能证明后端已运行。
 static bool initQualcommDelegate(bool requested) {
-#if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
-    if (!requested) {
-        rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK disabled by user config.");
-        return false;
-    }
-    rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK detected, preparing to load backend...");
-    return true;
-#else
-    rklog::logInfo("Engine", "initQualcommDelegate", "Qualcomm SDK fallback to CPU... (RK_HAVE_QUALCOMM not defined or 0)");
+    if (requested) rklog::logWarn("Engine", "initQualcommDelegate", "Qualcomm 推理后端未接入，继续使用 CPU");
     return false;
-#endif
-}
-
-static bool initMppDecoder(bool requested) {
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-    if (!requested) {
-        rklog::logInfo("Engine", "initMppDecoder", "RK MPP disabled by user config.");
-        return false;
-    }
-    rklog::logInfo("Engine", "initMppDecoder", "RK MPP detected, probing decoder...");
-    MppCtx ctx = nullptr;
-    MppApi* mpi = nullptr;
-    MPP_RET ret = mpp_create(&ctx, &mpi);
-    if (ret == MPP_OK && ctx) {
-        mpp_destroy(ctx);
-        rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoder probe successful");
-        return true;
-    }
-    rklog::logWarn("Engine", "initMppDecoder", "MPP probe failed: ret=" + std::to_string(ret) + ", fallback to CPU");
-    return false;
-#else
-    (void)requested;
-    rklog::logInfo("Engine", "initMppDecoder", "MPP hardware decoding fallback to CPU... (unsupported platform or RK_HAVE_MPP not defined or 0)");
-    return false;
-#endif
 }
 
 static bool getEnvBool(const char* envName) {
@@ -479,7 +450,7 @@ Engine::Engine(std::unique_ptr<VideoManager> vm,
     bool useMpp = getEnvBool("RK_USE_MPP");
 
     initQualcommDelegate(useQualcomm);
-    initMppDecoder(useMpp);
+    videoManager_->setUseMpp(useMpp);
 
     bool useOpencl = false;
     if (const char* envOcl = std::getenv("RK_USE_OPENCL")) {
@@ -626,6 +597,13 @@ bool Engine::initCommon(const std::string& cascadePath, const std::string& stora
         rklog::logError("Engine", __func__, "Failed to init BioAuth with cascade: " + cascadePath);
         return false;
     }
+    // 安装后的工作目录通常没有 tests/metrics；与其他运行数据一起使用应用私有存储。
+    const std::string metricsDirectory = base + "metrics";
+    if (Storage::ensureDirectory(metricsDirectory)) {
+        perfReporter_ = std::make_unique<pipeline::PerfReporter>(metricsDirectory);
+    } else {
+        rklog::logWarn("Engine", __func__, "性能CSV目录不可用，保留标准输出统计");
+    }
     return true;
 }
 
@@ -727,7 +705,14 @@ void Engine::run() {
                 ExternalFrame ef;
                 if (externalInput_->waitPop(ef, 30)) {
                     std::string err;
-                    if (toBgrFromExternalFrame(ef, frame, err)) {
+                    bool usedLibyuv = false;
+                    // 先撤销上一帧证据；转换抛异常或回落时都不能沿用旧的成功状态。
+                    const bool previouslyEffective = libyuvLastEffective_.exchange(false);
+                    const bool converted = toBgrFromExternalFrame(ef, frame, err, usedLibyuv);
+                    if (converted && usedLibyuv) libyuvConvertedFrames_.fetch_add(1);
+                    libyuvLastEffective_.store(converted && usedLibyuv);
+                    if (previouslyEffective != (converted && usedLibyuv)) performAccelSelfCheck();
+                    if (converted) {
                         decodeMs = 0.0;  // 外部帧不计解码耗时
                         processed = true;
                     } else {
@@ -736,6 +721,7 @@ void Engine::run() {
                 }
             }
             if (!processed && videoManager_->getLatestFrame(frame)) {
+                if (libyuvLastEffective_.exchange(false)) performAccelSelfCheck();
                 processed = true;
             }
 
@@ -771,10 +757,15 @@ void Engine::run() {
 }
 
 bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
+    currentStats_ = {};
+    currentStats_.decodeMs = decodeMs;
+    const auto preStart = std::chrono::steady_clock::now();
     // 3. 预处理：resize + 统一变换（FrameTransform::applyImage，仅此一次）。
     // 变换后的 processedFrame_ 同时作为「推理输入」与「渲染输出」，检测框天然处于
     // 同一坐标系，无需二次映射（任务1 统一变换语义）。
     if (!preprocessFrame(rawFrame)) return false;
+    currentStats_.preMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - preStart).count();
 
     // 4. 分支：启用实时路径后（Android 默认 / 已注入管线），检测/识别/跟踪由
     //    RealtimeFacePipeline 产出；否则保持 BioAuth::verifyMulti 兼容路径。
@@ -786,7 +777,10 @@ bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
 
     // 兼容路径：检测 + 识别（委托 BioAuth，LBPH）
     std::vector<BioAuth::FaceAuthResult> results;
+    const auto inferStart = std::chrono::steady_clock::now();
     bioAuth_->verifyMulti(processedFrame_, results, 4, true);
+    const auto postStart = std::chrono::steady_clock::now();
+    currentStats_.inferMs = std::chrono::duration<double, std::milli>(postStart - inferStart).count();
 
     // 5. 转化为 DetectedFace + 跟踪（委托 TrackCoordinator）
     std::vector<pipeline::DetectedFace> faces;
@@ -802,10 +796,14 @@ bool Engine::processFrame(const cv::Mat& rawFrame, double decodeMs) {
     // 兼容路径每帧都实际执行了 BioAuth 检测，故 detectionRan=true（任务5 消失规则生效）
     // 兼容路径不经图库覆盖匹配，传 kNoGalleryGuard 表示不做图库代次作废。
     trackFaces(faces, true, kNoGalleryGuard);
+    currentStats_.postMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - postStart).count();
 
     // 6-7. 渲染 + 性能统计
-    currentStats_.decodeMs = decodeMs;
+    const auto renderStart = std::chrono::steady_clock::now();
     renderResults();
+    currentStats_.renderMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - renderStart).count();
     collectStats();
     return true;
 }
@@ -814,16 +812,18 @@ bool Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline)
     // FACE-PIPE-015：本 API 会取 tracksMu_。若从结果回调（持发射门）同步重入，将与撤销路径构成
     // ABBA 死锁；入口检测命中即拒绝执行（返回 false + 固定 reason），绝不进入取锁流程。
     if (reenteredFromIdentityEmitGate(__func__)) return false;
+    // 与换库共用提交锁，避免空间校验后、图库提交前插入另一次模型切换。
+    // realtimeMu_ 在等待发射门前释放，结果回调仍可读取运行时生效状态。
+    std::unique_lock<std::mutex> trackLock(tracksMu_);
     bool enabled = false;
     bool changed = false;
     {
         std::lock_guard<std::mutex> lock(realtimeMu_);
-        // 幂等判定（第四轮审查 M1）：按**指向对象**比较新旧 shared_ptr（get()），而非控制块。
-        // 同对象重复注入（宿主配置刷新/重复激活）不构成「换模型」，据此跳过下表的重置与撤销，
-        // 避免在途稳定身份被抹、需重新累计 stableFrames、画面短暂回退 Unknown，并使紧随其后的
-        // injectGalleryToEngine(keepIds) 的精准撤销无物可保。启停（null ↔ 非 null）与换到新对象
-        // 均视为变化，仍走完整撤销——「换模型必撤销」语义不变。
-        changed = (realtimePipeline_.get() != pipeline.get());
+        // 同对象重复提交同一快照才幂等；原地 reload 发布新快照也必须撤销旧身份。
+        const auto candidateSnapshot = pipeline ? pipeline->snapshot() : nullptr;
+        changed = realtimePipeline_.get() != pipeline.get() ||
+            committedRealtimeSnapshot_.get() != candidateSnapshot.get();
+        committedRealtimeSnapshot_ = candidateSnapshot;
         realtimePipeline_ = std::move(pipeline);
         enabled = (realtimePipeline_ != nullptr);
     }
@@ -831,13 +831,13 @@ bool Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline)
     if (changed) {
         // 仅在管线真正变化时执行。锁序固定 tracksMu_ → realtimeGalleryMu_（与 applyGalleryUpdate
         // 一致，避免形成环）。
-        std::lock_guard<std::mutex> trackLock(tracksMu_);
         {
             // 重置图库覆盖：新管线经 loadGallery 钩子提供自身图库，旧覆盖必须丢弃，
             // 否则换管线后会继续用上一套图库做身份匹配（陈旧身份）。
             // 一并递增图库代次：使在途帧据旧覆盖得出的认证结论在提交点作废（见 trackFaces）。
             std::lock_guard<std::mutex> lock(realtimeGalleryMu_);
             realtimeGallery_.reset();
+            realtimeGallerySpaceId_.clear();
             galleryGeneration_.fetch_add(1, std::memory_order_release);
         }
         // 换管线 = 换模型：新旧模型嵌入空间不同，旧模型下得出的 stableId 一律失效（即便新库
@@ -853,6 +853,8 @@ bool Engine::setRealtimePipeline(std::shared_ptr<RealtimeFacePipeline> pipeline)
         std::lock_guard<std::mutex> lock(realtimeReasonMu_);
         realtimeReason_.clear();
     }
+    trackLock.unlock();
+    performAccelSelfCheck();
     rklog::logInfo("Engine", __func__,
                    std::string("实时推理管线") + (enabled ? "已注入/启用" : "已清除，回退兼容路径") +
                    (changed ? "" : "（同对象重复注入，幂等跳过撤销）"));
@@ -909,7 +911,8 @@ void Engine::noteEmbedError(const char* site, const std::string& err) {
 }
 
 bool Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
-                                const std::vector<std::string>& keepIds) {
+                                const std::vector<std::string>& keepIds,
+                                const std::string& templateSpaceId) {
     // FACE-PIPE-015：本 API 会取 tracksMu_（并在其内等待 identityEmitMu_）。若从结果回调（持发射门）
     // 同步重入，将与撤销路径构成 ABBA 死锁；入口检测命中即拒绝执行（返回 false + 固定 reason），绝不
     // 进入取锁流程。该路径当前生产不可达，故对现有使用者零行为变化。
@@ -923,9 +926,17 @@ bool Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gal
     std::size_t count = 0;
     {
         std::lock_guard<std::mutex> trackLock(tracksMu_);
+        std::string activeSpace;
+        {
+            std::lock_guard<std::mutex> runtimeLock(realtimeMu_);
+            const auto active = realtimePipeline_ ? realtimePipeline_->snapshot() : nullptr;
+            if (active && active->effective) activeSpace = active->profile.templateSpaceId;
+        }
+        if (activeSpace != templateSpaceId) return false;
         {
             std::lock_guard<std::mutex> galLock(realtimeGalleryMu_);
             realtimeGallery_ = std::move(gallery);
+            realtimeGallerySpaceId_ = templateSpaceId;
             // 换库与代次递增同锁，保证 assign 侧读到的 (gallery, generation) 一致。
             galleryGeneration_.fetch_add(1, std::memory_order_release);
             count = realtimeGallery_ ? realtimeGallery_->size() : 0;
@@ -943,18 +954,17 @@ bool Engine::applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gal
 void Engine::revokeTrackIdentitiesLocked(const std::vector<std::string>& keepIds) {
     // 调用方须已持 tracksMu_。trackCoordinator_ 是身份真相持有者；currentTracks_ 是逐帧派生的
     // 对外快照，二者都要按有效身份撤销，否则对外视图会残留旧身份直到下一帧。
-    if (trackCoordinator_) trackCoordinator_->resetIdentitiesExcept(keepIds);
-    for (auto& v : currentTracks_) {
-        // 与 coordinator 同规则：保留 keepIds 中的身份，其余清为 Unknown；保留 trackId/bbox
-        //（不清空 currentTracks_——否则多人场景会连同其他人的框一起丢）。
-        if (v.stableId == "Unknown") continue;
-        bool keep = false;
-        for (const auto& id : keepIds) {
-            if (v.stableId == id) { keep = true; break; }
-        }
-        if (!keep) {
-            v.stableId = "Unknown";
-            v.stableConfidence = 0.0f;
+    if (trackCoordinator_) {
+        trackCoordinator_->resetIdentitiesExcept(keepIds);
+        // 同步候选与稳定身份；只更新现存可见轨迹，不能复活检测失败时已隐藏的历史框。
+        const auto revoked = trackCoordinator_->views();
+        for (auto& view : currentTracks_) {
+            const auto current = std::find_if(revoked.begin(), revoked.end(), [&view](const auto& track) {
+                return track.trackId == view.trackId;
+            });
+            view.stableId = current == revoked.end() ? "Unknown" : current->stableId;
+            view.stableConfidence = current == revoked.end() ? 0.0f : current->stableConfidence;
+            view.identityPending = current != revoked.end() && current->identityPending;
         }
     }
     // 身份已（可能）变更：递增身份版本号，使在途 renderResults 在发布点作废旧快照身份
@@ -1210,10 +1220,16 @@ bool Engine::processFrameOnce(const cv::Mat& rawFrame, double decodeMs) {
 }
 
 bool Engine::processFrameRealtime(double decodeMs) {
+    (void)decodeMs;  // decode/pre 已在公共入口记录，不能在分支中清零。
     std::vector<pipeline::DetectedFace> faces;
     bool detectionRan = false;
-    if (runRealtimeDetect(processedFrame_, faces, detectionRan)) {
-        // 传入本帧读库所用代次：若换库发生在读库与提交之间，trackFaces 会作废本帧认证结论。
+    const auto inferStart = std::chrono::steady_clock::now();
+    const bool detected = runRealtimeDetect(processedFrame_, faces, detectionRan);
+    const auto postStart = std::chrono::steady_clock::now();
+    // 实时推理整体包含检测、对齐、嵌入与内部后处理；下面的 post 只计跟踪提交，避免重复计时。
+    currentStats_.inferMs = std::chrono::duration<double, std::milli>(postStart - inferStart).count();
+    if (detected) {
+        // 传入检测前绑定的代次：若模型或图库在检测与提交之间被替换，作废本帧认证结论。
         trackFaces(faces, detectionRan, frameGalleryGeneration_);
     } else {
         // 模型/管线不可用：继续预览（发布当前帧）但显式 reason（missing_model 等），
@@ -1221,8 +1237,12 @@ bool Engine::processFrameRealtime(double decodeMs) {
         std::lock_guard<std::mutex> lock(tracksMu_);
         currentTracks_.clear();
     }
-    currentStats_.decodeMs = decodeMs;
+    currentStats_.postMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - postStart).count();
+    const auto renderStart = std::chrono::steady_clock::now();
     renderResults();
+    currentStats_.renderMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - renderStart).count();
     collectStats();
     return true;
 }
@@ -1234,17 +1254,21 @@ bool Engine::runRealtimeDetect(const cv::Mat& frame,
     detectionRan = false;
 
     std::shared_ptr<RealtimeFacePipeline> pipe;
+    std::shared_ptr<const RealtimePipelineSnapshot> snap;
     {
-        std::lock_guard<std::mutex> lock(realtimeMu_);
+        // 与模型/图库提交共用 tracks 锁，只绑定快照和代次，耗时推理全部在锁外执行。
+        std::lock_guard<std::mutex> trackLock(tracksMu_);
+        std::lock_guard<std::mutex> runtimeLock(realtimeMu_);
         pipe = realtimePipeline_;
+        snap = pipe ? pipe->snapshot() : nullptr;
+        frameGalleryGeneration_ = galleryGeneration_.load(std::memory_order_acquire);
     }
     if (!pipe) {
         setRealtimeReason("runtime_init_failed");
         return false;
     }
 
-    // 快照不可用（模型未加载/装配失败）→ 显式 reason，继续预览，不进入 BioAuth。
-    const std::shared_ptr<const RealtimePipelineSnapshot> snap = pipe->snapshot();
+    // 快照不可用时仅预览；不进入兼容识别器。
     if (!snap || !snap->effective || !snap->detector) {
         setRealtimeReason((snap && !snap->reason.empty()) ? snap->reason : std::string("missing_model"));
         return false;
@@ -1252,7 +1276,7 @@ bool Engine::runRealtimeDetect(const cv::Mat& frame,
 
     std::vector<RealtimeFaceBox> boxes;
     std::string err;
-    if (!pipe->detect(frame, boxes, err)) {
+    if (!snap->detector->detect(frame, boxes, err)) {
         setRealtimeReason(err.empty() ? "runtime_init_failed" : err);
         return false;
     }
@@ -1345,11 +1369,9 @@ void Engine::assignRealtimeIdentities(const cv::Mat& frame,
     std::shared_ptr<const FaceSearchLinearIndex> gallery;
     {
         std::lock_guard<std::mutex> lock(realtimeGalleryMu_);
-        gallery = realtimeGallery_;
-        // 记录本帧读库所用代次：trackFaces 提交前在 tracksMu_ 内比对，若图库在「读库」与
-        // 「提交轨迹」之间被替换（applyGalleryUpdate），则本帧据旧库得出的认证结论作废
-        //（#4 残留竞态闭合）。与 gallery 同锁读取，保证 (gallery, generation) 一致。
-        frameGalleryGeneration_ = galleryGeneration_.load(std::memory_order_acquire);
+        // 管线可原地 reload；即使覆盖尚未清除，也只能消费与本帧模型空间一致的模板。
+        if (realtimeGallerySpaceId_ == snap.profile.templateSpaceId) gallery = realtimeGallery_;
+        // 代次已在检测前绑定；此处不能用新代次覆盖旧模型在途帧的标记。
     }
     if (!gallery) gallery = snap.gallery;
 
@@ -1481,6 +1503,7 @@ namespace {
 // 把快照内的稳定身份清为 "Unknown"（保留 trackId/bbox），语义与 revokeTrackIdentitiesLocked 一致。
 void clearStableIdentities(std::vector<pipeline::TrackView>& tracks) {
     for (auto& v : tracks) {
+        v.identityPending = false;
         if (v.stableId != "Unknown") {
             v.stableId = "Unknown";
             v.stableConfidence = 0.0f;
@@ -1565,6 +1588,20 @@ void Engine::renderResults() {
 }
 
 void Engine::collectStats() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
+        currentStats_.rssBytes = static_cast<long long>(counters.WorkingSetSize);
+    }
+#elif defined(__ANDROID__)
+    long long pages = 0, residentPages = 0;
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    std::ifstream statm("/proc/self/statm");
+    if (pageSize > 0 && (statm >> pages >> residentPages) && residentPages >= 0 &&
+        residentPages <= std::numeric_limits<long long>::max() / pageSize) {
+        currentStats_.rssBytes = residentPages * pageSize;
+    }
+#endif
     perfReporter_->submit(currentStats_);
 }
 
@@ -1672,128 +1709,83 @@ void Engine::setOnResultCallback(std::function<void(std::string)> callback) {
     }
 }
 
-void Engine::performAccelSelfCheck() {
-    RKLOG_ENTER("Engine");
-
-    // ncnn
-    logAccelSelfCheckStatus({
-        "ncnn",
+std::vector<rk_accel::AccelContractStatus> Engine::accelerationStatuses() const {
+    std::vector<rk_accel::AccelContractStatus> statuses;
+    std::shared_ptr<RealtimeFacePipeline> pipeline;
+    {
+        std::lock_guard<std::mutex> lock(realtimeMu_);
+        pipeline = realtimePipeline_;
+    }
+    const auto snapshot = pipeline ? pipeline->snapshot() : nullptr;
+    const std::string detector = snapshot && snapshot->detector ? snapshot->detector->name() : "none";
+    const std::string embedder = snapshot && snapshot->embedder ? snapshot->embedder->name() : "none";
+    const bool ncnnBackend = detector.find("ncnn") != std::string::npos || embedder.find("ncnn") != std::string::npos;
+    const bool ncnnRequested = pipeline && (!snapshot || ncnnBackend);
 #if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
-        true,
-        true,
-        "ok",
-        "RK_HAVE_NCNN=1"
+    const bool ncnnEffective = ncnnBackend && snapshot && snapshot->requested && snapshot->effective &&
+        snapshot->reason == "ok" && snapshot->detector && snapshot->embedder;
+    const std::string ncnnReason = ncnnEffective ? "ok" :
+        (ncnnRequested ? (snapshot ? "runtime_init_failed" : "missing_model") : "build_disabled");
 #else
-        false,
-        false,
-        "build_disabled",
-        "RK_HAVE_NCNN=0"
+    const bool ncnnEffective = false;
+    const std::string ncnnReason = "build_disabled";
 #endif
-    });
+    statuses.push_back({"ncnn", ncnnRequested, ncnnEffective, ncnnReason,
+        "detector=" + detector + " embedder=" + embedder + " generation=" +
+        std::to_string(snapshot ? snapshot->generation : 0)});
 
-    // MPP
-    {
-        const bool requested = getEnvBool("RK_USE_MPP");
-        const bool effective =
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-            requested;
-#else
-            false;
-#endif
-        logAccelSelfCheckStatus({
-            "mpp",
-            requested,
-            effective,
-            effective ? "ok" :
+    const bool mppRequested = videoManager_ && videoManager_->mppRequested();
+    const bool mppEffective = mppRequested && videoManager_->mppEffective();
 #if defined(_WIN32)
-                "unsupported_platform",
+    const std::string mppReason = "unsupported_platform";
 #elif defined(RK_HAVE_MPP) && RK_HAVE_MPP
-                (requested ? "runtime_init_failed" : "build_disabled"),
+    const std::string mppReason = mppEffective ? "ok" : (mppRequested ? "runtime_init_failed" : "build_disabled");
 #else
-                (requested ? "missing_dependency" : "build_disabled"),
+    const std::string mppReason = mppRequested ? "missing_dependency" : "build_disabled";
 #endif
-#if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-            "RK_HAVE_MPP=1"
-#elif defined(_WIN32)
-            "platform=windows"
-#else
-            "RK_HAVE_MPP=0"
-#endif
-        });
-    }
+    statuses.push_back({"mpp", mppRequested, mppEffective, mppReason,
+        "decoded_frames=" + std::to_string(videoManager_ ? videoManager_->mppDecodedFrames() : 0)});
 
-    // Qualcomm
-    {
-        const bool requested = getEnvBool("RK_USE_QUALCOMM");
-        const bool effective =
+    const bool qualcommRequested = getEnvBool("RK_USE_QUALCOMM");
 #if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
-            requested;
+    const std::string qualcommReason = qualcommRequested ? "runtime_init_failed" : "build_disabled";
 #else
-            false;
+    const std::string qualcommReason = qualcommRequested ? "missing_dependency" : "build_disabled";
 #endif
-        logAccelSelfCheckStatus({
-            "qualcomm",
-            requested,
-            effective,
-            effective ? "ok" : (requested ? "missing_dependency" : "build_disabled"),
-#if defined(RK_HAVE_QUALCOMM) && RK_HAVE_QUALCOMM
-            "RK_HAVE_QUALCOMM=1"
-#else
-            "RK_HAVE_QUALCOMM=0"
-#endif
-        });
-    }
+    statuses.push_back({"qualcomm", qualcommRequested, false, qualcommReason, "runtime_backend=not_implemented"});
 
-    // OpenCL
-    bool oclRequested = false;
-    if (const char* envOcl = std::getenv("RK_USE_OPENCL")) {
-        std::string s;
-        for (char c : std::string(envOcl)) {
-            s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-        }
-        oclRequested = (s == "1" || s == "true" || s == "yes" || s == "on");
-    }
-    bool oclEffective = cv::ocl::useOpenCL();
-    bool oclHave = cv::ocl::haveOpenCL();
+    const bool oclRequested = getEnvBool("RK_USE_OPENCL");
+    const bool oclEffective = cv::ocl::useOpenCL();
+    const bool oclHave = cv::ocl::haveOpenCL();
     std::string oclEvidence = "useOpenCL=" + std::to_string(oclEffective) +
         " haveOpenCL=" + std::to_string(oclHave);
     if (oclHave) {
         try {
-            cv::ocl::Device dev = cv::ocl::Device::getDefault();
-            oclEvidence += " device=" + dev.name() + " vendor=" + dev.vendorName();
-        } catch (const std::exception& e) {
-            rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常: " + std::string(e.what()));
+            const cv::ocl::Device device = cv::ocl::Device::getDefault();
+            oclEvidence += " device=" + device.name() + " vendor=" + device.vendorName();
+        } catch (const std::exception& error) {
+            rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常: " + std::string(error.what()));
         } catch (...) {
             rklog::logWarn("Engine", "performAccelSelfCheck", "OpenCL device info 获取异常 (unknown)");
         }
     }
-    logAccelSelfCheckStatus({
-        "opencl",
-        oclRequested,
-        oclEffective,
+    statuses.push_back({"opencl", oclRequested, oclEffective,
         oclEffective ? "ok" : (oclRequested ? "missing_dependency" : "build_disabled"),
-        oclEvidence
-    });
+        oclEvidence});
 
-    // libyuv
-    {
-        const bool requested = getEnvBool("RK_USE_LIBYUV");
-        const bool effective =
+    const bool libyuvRequested = getEnvBool("RK_USE_LIBYUV");
 #if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-            requested;
+    const bool libyuvEffective = libyuvRequested && isRunning_.load() && externalInputEnabled_.load() && libyuvLastEffective_.load();
+    const std::string libyuvReason = libyuvEffective ? "ok" : (libyuvRequested ? "unsupported_input" : "build_disabled");
 #else
-            false;
+    const bool libyuvEffective = false;
+    const std::string libyuvReason = libyuvRequested ? "missing_dependency" : "build_disabled";
 #endif
-        logAccelSelfCheckStatus({
-            "libyuv",
-            requested,
-            effective,
-            effective ? "ok" : (requested ? "missing_dependency" : "build_disabled"),
-#if defined(RK_HAVE_LIBYUV) && RK_HAVE_LIBYUV
-            "RK_HAVE_LIBYUV=1"
-#else
-            "RK_HAVE_LIBYUV=0"
-#endif
-        });
-    }
+    statuses.push_back({"libyuv", libyuvRequested, libyuvEffective, libyuvReason,
+        "converted_frames=" + std::to_string(libyuvConvertedFrames_.load())});
+    return statuses;
+}
+
+void Engine::performAccelSelfCheck() {
+    for (const auto& status : accelerationStatuses()) logAccelSelfCheckStatus(status);
 }

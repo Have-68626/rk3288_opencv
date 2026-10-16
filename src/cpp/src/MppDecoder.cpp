@@ -3,7 +3,6 @@
 
 #if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
 #include <rk_mpi.h>
-#include <mpp.h>
 #include <mpp_err.h>
 #endif
 
@@ -42,6 +41,20 @@ MppDecoder::MppDecoder()
 
 MppDecoder::~MppDecoder() {
     close();
+}
+
+bool MppDecoder::convertNv12ToBgr(const uint8_t* data, int width, int height,
+                                 int horizontalStride, int verticalStride, cv::Mat& outBgr) {
+    if (!data || width <= 0 || height <= 0 || width > 4096 || height > 4096 ||
+        width % 2 != 0 || height % 2 != 0 || horizontalStride < width || verticalStride < height) {
+        return false;
+    }
+    // UV 从完整 Y 平面之后开始；两个可见平面各自保留行 stride，避免把 padding 当像素。
+    const auto uvOffset = static_cast<std::size_t>(horizontalStride) * verticalStride;
+    cv::Mat y(height, width, CV_8UC1, const_cast<uint8_t*>(data), horizontalStride);
+    cv::Mat uv(height / 2, width / 2, CV_8UC2, const_cast<uint8_t*>(data + uvOffset), horizontalStride);
+    cv::cvtColorTwoPlane(y, uv, outBgr, cv::COLOR_YUV2BGR_NV12);
+    return !outBgr.empty();
 }
 
 bool MppDecoder::init() {
@@ -123,24 +136,24 @@ bool MppDecoder::read(cv::Mat& outBgr) {
     // Decode loop: read chunk, feed to MPP, collect frames
     while (true) {
         MppPacket packet = nullptr;
-        mpp_packet_new(&packet);
-
+        std::shared_ptr<std::vector<uint8_t>> buf;
+        size_t bytesRead = 0;
         int64_t readPos = 0;
         if (mpp_->fileHandle && !mpp_->eos) {
             readPos = std::ftell(mpp_->fileHandle);
-            auto buf = std::make_shared<std::vector<uint8_t>>(kChunkSize);
-            size_t bytesRead = std::fread(buf->data(), 1, kChunkSize, mpp_->fileHandle);
+            buf = std::make_shared<std::vector<uint8_t>>(kChunkSize);
+            bytesRead = std::fread(buf->data(), 1, kChunkSize, mpp_->fileHandle);
             if (bytesRead > 0) {
                 fileReadOffset_ += static_cast<int64_t>(bytesRead);
-                mpp_packet_set_data(packet, buf->data());
-                mpp_packet_set_size(packet, bytesRead);
-                mpp_packet_set_length(packet, bytesRead);
-                pendingBufs_.push_back(std::move(buf));
             }
             if (std::feof(mpp_->fileHandle) || bytesRead == 0) {
                 mpp_->eos = true;
             }
         }
+
+        // set_data 不会同步 pos；SDK 从 pos 复制数据，必须一次性初始化四个数据字段。
+        if (mpp_packet_init(&packet, bytesRead ? buf->data() : nullptr, bytesRead) != MPP_OK) return false;
+        if (bytesRead) pendingBufs_.push_back(std::move(buf));
 
         if (mpp_->eos) {
             mpp_packet_set_eos(packet);
@@ -150,7 +163,7 @@ bool MppDecoder::read(cv::Mat& outBgr) {
 
         if (putRet == MPP_ERR_BUFFER_FULL) {
             // MPP input buffer full — rewind file to pre-read position, drain frames, retry
-            mpp_packet_destroy(packet);
+            mpp_packet_deinit(&packet);
             pendingBufs_.clear();
             if (mpp_->fileHandle && readPos >= 0) {
                 fileReadOffset_ -= (std::ftell(mpp_->fileHandle) - readPos);
@@ -168,7 +181,8 @@ bool MppDecoder::read(cv::Mat& outBgr) {
             continue;
         }
 
-        mpp_packet_destroy(packet);
+        // 未设置 MppBuffer 时 SDK 在 decode_put_packet 返回前已同步复制裸数据。
+        mpp_packet_deinit(&packet);
         pendingBufs_.clear();
 
         if (putRet != MPP_OK) {
@@ -201,9 +215,8 @@ bool MppDecoder::read(cv::Mat& outBgr) {
                 MppBuffer buf = mpp_frame_get_buffer(frame);
                 if (buf) {
                     uint8_t* data = static_cast<uint8_t*>(mpp_buffer_get_ptr(buf));
-                    cv::Mat nv12(verStride * 3 / 2, horStride, CV_8UC1, data);
                     cv::Mat bgr;
-                    cv::cvtColor(nv12(cv::Rect(0, 0, w, h)), bgr, cv::COLOR_YUV2BGR_NV12);
+                    convertNv12ToBgr(data, w, h, horStride, verStride, bgr);
                     if (!bgr.empty()) {
                         bgr.copyTo(latestBgr_);
                         hasFrame_ = true;

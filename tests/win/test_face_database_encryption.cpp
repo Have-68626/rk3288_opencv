@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,14 @@ bool writeKeyFile(const std::filesystem::path& keyPath, const std::vector<std::u
     ofs << b64;
     return ofs.good();
 }
+
+struct LogCapture {
+    std::ostringstream lines;
+    std::streambuf* previous;
+
+    LogCapture() : previous(std::cerr.rdbuf(lines.rdbuf())) {}
+    ~LogCapture() { std::cerr.rdbuf(previous); }
+};
 
 }  // namespace
 
@@ -146,7 +155,7 @@ bool test_face_db_migration_encrypts_legacy() {
     if (file.find("%YAML") != std::string::npos) return false;      // 无明文 YAML 头
 
     // A11：迁移成功并经**回读逐项等价**验证后，**本次**生成的明文副本必须被删除（不再留作回滚点）。
-    const auto bak = dbPath.string() + ".pre-encrypt";
+    const auto bak = dbPath.string() + ".pre-encrypt.pending";
     if (std::filesystem::exists(bak)) {
         std::cerr << "[migrate] 迁移成功后本次 .pre-encrypt 副本仍在（应验证通过后删除）" << std::endl;
         return false;
@@ -214,6 +223,93 @@ bool test_face_db_migration_historical_backup_aborts() {
         return false;
     }
     return true;
+}
+
+bool test_face_db_migration_failure_emits_sanitized_warning() {
+    const std::string identity = "private_identity_fixture";
+    for (bool historical : {false, true}) {
+        const auto dir = makeTempDir(historical ? "migration_warning_history" : "migration_warning_abort");
+        const auto path = dir / "db.yml";
+        writeLegacyYaml(path, identity, {0.1f, 0.2f}, 1);
+        const auto original = readFileBytes(path);
+        {
+            std::ofstream blocker(historical ? path.string() + ".pre-encrypt"
+                                             : rk_win::FaceDatabase::keyPathFor(path).string());
+            blocker << (historical ? "HISTORICAL-RECOVERY-EVIDENCE" : "%%%INVALID%%%");
+        }
+        LogCapture capture;
+        rk_win::FaceDatabase db;
+        if (!db.load(path) || readFileBytes(path) != original) return false;
+        const auto expected = historical ? rk_win::MigrationOutcome::HistoricalBackupPresent
+                                         : rk_win::MigrationOutcome::Aborted;
+        const auto code = historical ? "HistoricalBackupPresent" : "Aborted";
+        if (db.lastMigrationOutcome() != expected) return false;
+        const std::string warning = capture.lines.str();
+        if (warning.find("face_database_migration") == std::string::npos ||
+            warning.find(code) == std::string::npos || warning.find(identity) != std::string::npos) {
+            std::cerr << "[migration_warning] 迁移失败必须记录结果码且不能输出人员原值" << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_face_db_migration_resumes_matching_pending_copy() {
+    const auto dir = makeTempDir("migration_pending_resume");
+    const auto path = dir / "db.yml";
+    writeLegacyYaml(path, "pending_fixture", {0.1f, -0.2f}, 3);
+    const auto pending = path.string() + ".pre-encrypt.pending";
+    const auto scratch = path.string() + ".enc.tmp";
+    // 重建备份完成、原子替换之前崩溃的文件现场；所有数据均为合成夹具。
+    std::filesystem::copy_file(path, pending);
+    { std::ofstream interrupted(scratch); interrupted << "INTERRUPTED-CIPHER-SCRATCH"; }
+
+    rk_win::FaceDatabase db;
+    if (!db.load(path) || db.lastMigrationOutcome() != rk_win::MigrationOutcome::Success) return false;
+    if (readFileBytes(path).rfind("RKFDBCRY", 0) != 0 || std::filesystem::exists(pending) ||
+        std::filesystem::exists(scratch)) return false;
+    rk_win::FaceDatabase reloaded;
+    if (!reloaded.load(path)) return false;
+    const auto persons = reloaded.persons();
+    const auto found = persons.find("pending_fixture");
+    return found != persons.end() && found->second.count == 3 &&
+           found->second.mean == std::vector<float>({0.1f, -0.2f});
+}
+
+bool test_face_db_migration_rejects_mismatched_pending_copy() {
+    const auto dir = makeTempDir("migration_pending_mismatch");
+    const auto path = dir / "db.yml";
+    writeLegacyYaml(path, "pending_fixture", {0.1f, 0.2f}, 1);
+    const auto original = readFileBytes(path);
+    const auto pending = path.string() + ".pre-encrypt.pending";
+    const auto scratch = path.string() + ".enc.tmp";
+    { std::ofstream copy(pending); copy << "UNRELATED-RECOVERY-EVIDENCE"; }
+    { std::ofstream copy(scratch); copy << "EXISTING-SCRATCH-EVIDENCE"; }
+    rk_win::FaceDatabase db;
+    if (!db.load(path) || db.lastMigrationOutcome() != rk_win::MigrationOutcome::Aborted) return false;
+    return readFileBytes(path) == original && readFileBytes(pending) == "UNRELATED-RECOVERY-EVIDENCE" &&
+           readFileBytes(scratch) == "EXISTING-SCRATCH-EVIDENCE";
+}
+
+bool test_face_db_migration_retained_pending_is_visible_on_encrypted_load() {
+    const auto dir = makeTempDir("migration_pending_after_replace");
+    const auto path = dir / "db.yml";
+    writeLegacyYaml(path, "pending_fixture", {0.1f, 0.2f}, 1);
+    const auto plain = readFileBytes(path);
+    rk_win::FaceDatabase migrated;
+    if (!migrated.load(path)) return false;
+    const auto encrypted = readFileBytes(path);
+    const auto pending = path.string() + ".pre-encrypt.pending";
+    { std::ofstream copy(pending, std::ios::binary); copy << plain; }
+
+    // 替换后未完成校验/清理的副本不能被静默删除，重启读取须发出可见清理告警。
+    LogCapture capture;
+    rk_win::FaceDatabase db;
+    if (!db.load(path) || db.lastMigrationOutcome() != rk_win::MigrationOutcome::CleanupFailed) return false;
+    return readFileBytes(path) == encrypted && readFileBytes(pending) == plain &&
+           capture.lines.str().find("face_database_migration") != std::string::npos &&
+           capture.lines.str().find("CleanupFailed") != std::string::npos &&
+           capture.lines.str().find("pending_fixture") == std::string::npos;
 }
 
 // 迁移失败必须中止且不损坏旧库：密钥文件非法 → 迁移不做，load 仍返回数据，旧明文保持原样。

@@ -17,8 +17,9 @@ public class SensitiveDataUtil {
     //      组合键须以完整词形列出，值才能被捕获。
     //   2) 值前缀可选 "Bearer<空白>"：Authorization: Bearer <jwt> 场景掩掉 JWT 主体而保留 Bearer 前缀；
     //      该前缀并入捕获组 2（分隔符），值仍为组 3，避免 appendReplacement 整体替换时丢弃前缀。
+    //   3) 身份键覆盖驼峰、下划线和连字符，避免显示名迁移告警留下人员原始标识。
     private static final Pattern SENSITIVE_KV = Pattern.compile(
-            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key)\\b"
+            "(?i)\\b(password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|authorization|bearer|secret[_-]?key|client[_-]?secret|secret|api[_-]?key|person[_-]?id)\\b"
             + "(\\s*[:=]\\s*(?:Bearer[ \\t\\r\\n]+)?)"
             + "([^ \\t\\r\\n,;&]+)"
     );

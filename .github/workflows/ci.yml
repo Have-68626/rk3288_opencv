@@ -206,16 +206,17 @@ jobs:
             let out='';
             try{out=execSync('pnpm audit --audit-level high --json --registry=https://registry.npmjs.org',{encoding:'utf8',stdio:['ignore','pipe','ignore']});}catch(e){out=String(e.stdout||'');}
             const d=JSON.parse(out);
-            const adv=d.advisories||{};
+            if(!d||typeof d.advisories!=='object'||d.advisories===null||Array.isArray(d.advisories)){console.error('Audit schema 不受支持：期望 advisories 对象');process.exit(2);}
+            const adv=d.advisories;
             const exempt=new Set(['GHSA-jmr9-qjv8-65gv','GHSA-7pqw-9j4j-h8q3']);
             let nonExemptHigh=[];
             for(const [id,a] of Object.entries(adv)){
-              if(a.severity==='high'){
+              if(a.severity==='high'||a.severity==='critical'){
                 const ghsa=((a.url||'')+(a.references||'')).match(/GHSA-[a-z0-9]+(?:-[a-z0-9]+)*/i)?.[0]||'';
-                if(!exempt.has(ghsa)) nonExemptHigh.push(id+': '+ghsa+' '+a.title);
+                if(a.severity==='critical'||!exempt.has(ghsa)) nonExemptHigh.push(id+': '+ghsa+' '+a.title);
               }
             }
-            if(nonExemptHigh.length){console.error('High 漏洞（含非豁免）: '+JSON.stringify(nonExemptHigh));process.exit(1);}
+            if(nonExemptHigh.length){console.error('High/Critical 漏洞（含非豁免）: '+JSON.stringify(nonExemptHigh));process.exit(1);}
             console.log('Audit OK: high 仅豁免 extract-zip（无修复版本，dev 工具链）');
           "
 
@@ -307,7 +308,7 @@ jobs:
           echo "systemProp.org.gradle.internal.http.connectionTimeout=60000" >> ~/.gradle/gradle.properties
           echo "systemProp.org.gradle.internal.http.socketTimeout=60000" >> ~/.gradle/gradle.properties
       - name: Build and Test (Skip OpenCV)
-        run: ./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --no-daemon
+        run: ./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:checkApkFaceModels :app:testDebugUnitTest :app:lintDebug --no-daemon
 
       # 八个 JNI 源文件的语法检查（非阻断）——闭合「真实 JNI 实现从未被任何 CI job 编译」的盲区。
       # 清单对应 cmake/android.cmake 中 `if(NOT RK_SKIP_OPENCV)` 块内 add_library(native-lib ...) 所列的
@@ -655,6 +656,33 @@ jobs:
           Write-Host "OPENCV_ROOT=$opencvDir"
           Write-Host "OPENCV_CONTRIB_ROOT=$opencvContribDir"
 
+      - name: Build pinned ncnn with static CRT
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ncnnRef = "e956fbf9bd97fe945df35d736747dc816f8b5f42"
+          $ncnnSource = Join-Path $env:GITHUB_WORKSPACE "$env:DEPS_DIR/ncnn-source"
+          $ncnnBuild = Join-Path $env:GITHUB_WORKSPACE "$env:DEPS_DIR/ncnn-build"
+          $ncnnInstall = Join-Path $env:GITHUB_WORKSPACE "$env:DEPS_DIR/ncnn-mt"
+          if (-not (Test-Path (Join-Path $ncnnSource ".git"))) {
+            git clone --filter=blob:none --no-checkout https://github.com/Tencent/ncnn.git $ncnnSource
+            if ($LASTEXITCODE -ne 0) { throw "ncnn clone failed" }
+          }
+          git -C $ncnnSource fetch --depth 1 origin $ncnnRef
+          if ($LASTEXITCODE -ne 0) { throw "ncnn fetch failed" }
+          git -C $ncnnSource checkout --detach $ncnnRef
+          if ($LASTEXITCODE -ne 0) { throw "ncnn checkout failed" }
+          cmake -S $ncnnSource -B $ncnnBuild -G "$env:CMAKE_GENERATOR" -A $env:CMAKE_PLATFORM `
+            -DNCNN_BUILD_WITH_STATIC_CRT=ON -DNCNN_SHARED_LIB=OFF -DNCNN_VULKAN=OFF `
+            -DNCNN_BUILD_TOOLS=ON -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF `
+            -DNCNN_INT8=ON -DNCNN_VERSION=20260113 -DCMAKE_INSTALL_PREFIX="$ncnnInstall"
+          if ($LASTEXITCODE -ne 0) { throw "ncnn configure failed" }
+          cmake --build $ncnnBuild --config Release --target install -- /m
+          if ($LASTEXITCODE -ne 0) { throw "ncnn build/install failed" }
+          "NCNN_DIR=$ncnnInstall" >> $env:GITHUB_ENV
+          "NCNN_ROOT=$ncnnInstall" >> $env:GITHUB_ENV
+          (Join-Path $ncnnInstall "bin") >> $env:GITHUB_PATH
+
       - name: Configure (CMake)
         shell: pwsh
         run: |
@@ -663,7 +691,9 @@ jobs:
           cmake -S . -B $env:BUILD_DIR -G "$env:CMAKE_GENERATOR" -A $env:CMAKE_PLATFORM `
             -DOPENCV_ROOT="$env:OPENCV_ROOT" `
             -DOPENCV_CONTRIB_ROOT="$env:OPENCV_CONTRIB_ROOT" `
-            -DBUILD_LIST="$env:OPENCV_BUILD_LIST"
+            -DBUILD_LIST="$env:OPENCV_BUILD_LIST" `
+            -DRK_ENABLE_NCNN=ON -DNCNN_DIR="$env:NCNN_DIR" `
+            -Dncnn_DIR="$env:NCNN_DIR/lib/cmake/ncnn"
 
       - name: Build unit tests
         shell: pwsh
@@ -675,7 +705,7 @@ jobs:
           # 为何纳入这个 CLI：它是「视频 → 检测序列」导出器，源码不被任何单测 target 引用
           # （其序列化器部分由 core_unit_tests 覆盖，CLI 外壳自身没有）。不在此编译，它的
           # 编译期错误会一路静默到有人本地全量构建——本 job 已具备完整 OpenCV，增量成本低。
-          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests win_replay_export_cli -- /m
+          cmake --build $env:BUILD_DIR --config $env:CMAKE_BUILD_CONFIG --target core_unit_tests win_unit_tests face_infer_unit_tests core_gtest_tests win_replay_export_cli ncnn_precision_test ncnn_calibration_images inference_bench_cli win_face_bench_cli win_face_database_perf -- /m
 
       # 单独编译 rk3288_cli（非阻断）。为何独立成 step 而不并入上面主构建行的 --target 清单：
       # GitHub Actions 中一个 step 失败会中止整个 job，排在其后的测试 step 会被跳过——若 rk3288_cli
@@ -726,6 +756,20 @@ jobs:
           # engine_run_reentry_behavior 是 DISABLED_ 用例，须由独立 CTest 显式启用（见 CMakeLists.txt）
           ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior" --output-on-failure
 
+      - name: Run precision tool behavior regressions with synthetic assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --quiet pytest
+          if ($LASTEXITCODE -ne 0) { throw "pytest install failed" }
+          $env:RK_PRECISION_TOOLS_DIR = Join-Path $env:GITHUB_WORKSPACE "$env:BUILD_DIR/bin/Release"
+          $env:RK_PRECISION_TOOL_NCNN2TABLE = Join-Path $env:NCNN_ROOT "bin/ncnn2table.exe"
+          $env:RK_PRECISION_TOOL_NCNN2INT8 = Join-Path $env:NCNN_ROOT "bin/ncnn2int8.exe"
+          $env:RK_PUBLIC_CASCADE_PATH = Join-Path $env:OPENCV_ROOT "data/lbpcascades/lbpcascade_frontalface.xml"
+          $env:PATH = "$env:RK_PRECISION_TOOLS_DIR;$env:PATH"
+          python -m pytest tests/scripts/test_precision_tools_behavior.py -q
+          if ($LASTEXITCODE -ne 0) { throw "precision tool behavior regression failed" }
+
       - name: Check for model/quantize changes
         id: changed-int8
         shell: pwsh
@@ -766,7 +810,9 @@ jobs:
             --fp32-dir "models/scrfd_ncnn" `
             --calib-dir "deps/WIDER_train/WIDER_train/images" `
             --output-dir "models/scrfd_int8_ncnn" `
-            --num-samples 50
+            --num-samples 50 `
+            --calib-preprocessor "$env:BUILD_DIR/bin/Release/ncnn_calibration_images.exe"
+          if ($LASTEXITCODE -ne 0) { throw "INT8 quantization failed or unverified" }
 
       - name: Run INT8 precision tests
         if: steps.changed-int8.outputs.changed == 'true'
@@ -774,7 +820,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R face_infer --output-on-failure
+          # 指定模式只验证本步骤刚产出的 SCRFD 同父模型，不以结构测试冒充精度。
+          & "$env:BUILD_DIR/bin/Release/ncnn_precision_test.exe" --root "$env:GITHUB_WORKSPACE" `
+            --mode scrfd --images "deps/WIDER_train/WIDER_train/images"
+          if ($LASTEXITCODE -eq 77) {
+            Write-Warning "INT8 precision UNVERIFIED: 缺少模型/量化证据/评估图片"
+            "INT8 precision: **UNVERIFIED**（缺少资产，未通过精度验收）" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          if ($LASTEXITCODE -ne 0) { throw "INT8 precision failed" }
+
 
       - name: Upload Test Reports
         if: always()

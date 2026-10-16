@@ -5,9 +5,12 @@
 #include "rk_win/FramePipeline.h"
 
 #ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "ws2_32.lib")
 #endif
 
 #include <algorithm>
@@ -24,6 +27,27 @@ std::wstring wFromUtf8(const std::string& s) {
     std::wstring out(n, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
     return out;
+}
+
+bool isValidDestination(const std::string& value) {
+    // INI、环境变量不经过 JSON PUT 校验，发送入口必须独立收口。
+    if (value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char c) {
+        return c <= 0x20 || c == 0x7f;
+    })) return false;
+    const std::wstring url = wFromUtf8(value);
+    URL_COMPONENTS parts{};
+    parts.dwStructSize = sizeof(parts);
+    parts.dwHostNameLength = static_cast<DWORD>(-1);
+    if (url.empty() || !WinHttpCrackUrl(url.c_str(), 0, 0, &parts) || parts.dwHostNameLength == 0 ||
+        parts.nPort == 0 || (parts.nScheme != INTERNET_SCHEME_HTTP && parts.nScheme != INTERNET_SCHEME_HTTPS)) return false;
+    // WinHTTP 只拆分 URL，方括号内的内容仍须验证为 IPv6 字面量。
+    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+    if (host.find_first_of(L"[]") != std::wstring::npos) {
+        if (host.size() < 3 || host.front() != L'[' || host.back() != L']') return false;
+        IN6_ADDR address{};
+        return InetPtonW(AF_INET6, host.substr(1, host.size() - 2).c_str(), &address) == 1;
+    }
+    return true;
 }
 
 bool httpPostJson(const std::string& urlUtf8, const std::string& body, int timeoutMs, int& statusOut) {
@@ -91,7 +115,11 @@ HttpFacesPoster::~HttpFacesPoster() {
 bool HttpFacesPoster::start(FramePipeline* pipe, EventLogger* events, const std::string& postUrl, int throttleMs, int backoffMinMs, int backoffMaxMs) {
     stop();
     if (!pipe) return false;
-    if (postUrl.empty()) return false;
+#ifdef _WIN32
+    if (!isValidDestination(postUrl)) return false;
+#else
+    return false;
+#endif
     pipe_ = pipe;
     events_ = events;
     postUrl_ = postUrl;
@@ -110,7 +138,7 @@ void HttpFacesPoster::stop() {
 
 void HttpFacesPoster::run() {
 #ifdef _WIN32
-    if (events_) events_->append("post_start", "url=" + postUrl_);
+    if (events_) events_->append("post_start", "url=[已脱敏]");
 
     std::uint64_t lastSeqSent = 0;
     std::uint64_t pendingSeq = 0;
@@ -151,7 +179,7 @@ void HttpFacesPoster::run() {
         }
     }
 
-    if (events_) events_->append("post_stop", "url=" + postUrl_);
+    if (events_) events_->append("post_stop", "url=[已脱敏]");
 #endif
 }
 

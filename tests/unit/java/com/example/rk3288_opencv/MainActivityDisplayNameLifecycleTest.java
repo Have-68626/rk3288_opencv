@@ -82,10 +82,11 @@ public class MainActivityDisplayNameLifecycleTest {
     @Test
     public void encryptedPersistHappensInCommitPathDecoupledFromGallery() throws IOException {
         String text = source();
-        int save = text.indexOf("displayNameStore().save(");
+        // 会话固定准备时的空间存储，模型切换后也不能把旧模板的显示名写入新库。
+        int save = text.indexOf("names.save(");
         assertTrue("应存在显示名加密写入调用", save >= 0);
 
-        int addOk = text.indexOf("AndroidEnrollmentRepository.Result add = enrollmentRepository().add(");
+        int addOk = text.indexOf("AndroidEnrollmentRepository.Result add = repo.add(");
         assertTrue("应存在仓库写入调用", addOk >= 0);
         assertTrue("显示名落盘必须在仓库写入（add）之后", save > addOk);
 
@@ -96,8 +97,8 @@ public class MainActivityDisplayNameLifecycleTest {
                 save < galleryFailBranch);
 
         // 仅此一处落盘调用（防止有人又在采集开始前加一次）
-        assertTrue("显示名加密写入应只有一处调用点，实际=" + count(text, "displayNameStore().save("),
-                count(text, "displayNameStore().save(") == 1);
+        assertTrue("显示名加密写入应只有一处调用点，实际=" + count(text, "names.save("),
+                count(text, "names.save(") == 1);
     }
 
     /**
@@ -301,14 +302,16 @@ public class MainActivityDisplayNameLifecycleTest {
         String text = source();
         assertTrue("应存在 displayNameStore() accessor（判据升级为全文后仍确保该 accessor 仍在）",
                 text.contains("private PersonDisplayNameStore displayNameStore()"));
-        // FACE-JAVA-003 收口：判据由「accessor 方法体内」升级为「全文」——已只读核实 MainActivity 全文件
-        // 无任何真实建目录调用（mkdir/mkdirs/createDirectories 仅出现在 javadoc 注释里，被剥离）。
-        // 该核实是**时点事实**（2026-09-23）：文件演进使其失效时本用例会真红，那正是它的作用。
-        // 剥离注释与字符串/字符字面量后，整个 MainActivity 源码不得含建目录字面量。
+        // 拍照输出现在明确创建 FileProvider 专用子目录；它与显示名 accessor 的副作用契约无关。
+        // 仅排除这一个已授权入口，其他位置仍沿用原有全文守卫。
         String code = stripCommentsAndLiterals(text);
-        assertFalse("MainActivity 全文不得创建目录（File.mkdir/mkdirs，FACE-JAVA-002/003）",
+        int capture = code.indexOf("private File createImageFile()");
+        int captureEnd = code.indexOf("private void handleSystemCameraResult()", capture);
+        assertTrue(capture >= 0 && captureEnd > capture);
+        code = code.substring(0, capture) + code.substring(captureEnd);
+        assertFalse("拍照入口以外不得创建目录（File.mkdir/mkdirs，FACE-JAVA-002/003）",
                 code.contains("mkdir"));
-        assertFalse("MainActivity 全文不得创建目录（java.nio.file.Files.createDirectories，FACE-JAVA-002/003）",
+        assertFalse("拍照入口以外不得创建目录（java.nio.file.Files.createDirectories，FACE-JAVA-002/003）",
                 code.contains("createDirectories"));
     }
 

@@ -28,9 +28,12 @@ struct FaceInferRequest {
     // 并通过 profile 为 SCRFD 提供解码语义。空 ⇒ 走旧的显式参数路径。
     std::string faceProfileDir;
 
-    // 已解密并绑定的**不可变**内存图库快照（Android 侧经 replaceGalleryForSpace 建立）。
+    // 已解密并绑定的**不可变**内存图库快照（Android 侧经 replaceGallery 显式绑定空间）。
     // 非空时 loadGallery 直接绑定该快照、不读磁盘；searchTopK 直接检索该索引，不重复复制模板。
     std::shared_ptr<const ::FaceSearchLinearIndex> gallerySnapshot;
+    // 空串保留旧图库；非空空间必须与内存快照标签一致，避免同维度模板跨模型混用。
+    std::string templateSpaceId;
+    std::string gallerySnapshotSpaceId;
 
     std::string yoloBackend = "opencv";
     std::string yoloModelPath;
@@ -116,6 +119,7 @@ struct FaceInferOutcome {
     std::string auditFilename;
 };
 
+// 单帧调用不保留跨帧身份会话；consecutivePassesToTrigger > 1 返回 request 错误。
 FaceInferOutcome runFaceInferOnce(const FaceInferRequest& req);
 
 } // namespace rk_core

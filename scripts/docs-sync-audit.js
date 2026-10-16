@@ -384,7 +384,8 @@ function detectAgentGuideFacts(repoRoot) {
     "tests/win/win_unit_tests_main.cpp",
     "tests/cpp/ncnn_precision_test.cpp",
   ];
-  const hasCustomBool = customRunners.every((file) => /TestCase/.test(read(file)));
+  // 这是仓库内框架的集合事实，单个工具改为独立 main 不会消除其他 bool 运行器。
+  const hasCustomBool = customRunners.some((file) => /TestCase/.test(read(file)));
   const coreUnitMain = read("tests/cpp/core_unit_tests_main.cpp");
   const hasGoogleTest = /#include\s*<gtest\/gtest\.h>/.test(coreUnitMain) &&
     /RUN_ALL_TESTS\s*\(/.test(coreUnitMain) &&

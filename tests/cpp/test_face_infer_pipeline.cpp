@@ -85,24 +85,9 @@ struct FakeDetector final : public FaceDetector {
     const char* name() const override { return "FakeDetector"; }
 };
 
-// —— INT8 回落链的生产/消费可达性 + ArcFace 分支节点名注入 ——
-// 背景：`FaceInferRequest::int8Enabled` 此前**全仓无任何调用点置真**（该链恒不可达）。生产者落地后
-// （`rk3288_cli --int8 1|0`，见 src/cpp/main.cpp），本用例在流水线层面钉住两件事：
-//   (a) 该开关确实是链条的**开关**：置 true 才会去 `createEmbedder("arcface_int8")`；
-//   (b) `arcface_int8` 分支拿到的是**注入后的 `in0`/`out0`** 而不是 `ArcFaceEmbedderConfig` 的
-//       默认 `data`/`output`（本仓两个 INT8 ncnn 模型的真实节点名；默认名走 ncnn 必在
-//       `ex.input()` 处按返回码失败 ⇒ 该支被跳过、优先级反转；只多一行 warn，不改变返回值）。
-// 判别力来源：捕获发生在**替身适配器的 load() 内**，而非断言实现细节。
-//   · 若注入回退成默认 ⇒ 读到 `data`/`output`，断言 (b) 红；
-//   · 若注入被挪到 load() 之后（契约违反） ⇒ 同样读到默认值，断言 (b) 红；
-//   · 若 `int8Enabled` 不再被消费 ⇒ 替身 load() 永不被调用，`g_int8LoadCalls == 0`，断言 (a) 红。
-// 不依赖任何真实模型：「开」侧路径（`.param`）不存在 ⇒ 基类 `ArcFaceAdapter::load` 经
-// `ArcFaceEmbedder::initialize` 的 ncnn 分支失败并**返回 false**，两种构建下都不是异常 / 崩溃 ——
-// 未启用 ncnn（`RK_HAVE_NCNN=0`）时由 `ArcFaceEmbedder::initialize` 的 Ncnn 分支直接以
-// 「当前构建未启用 ncnn」返回 false；启用 ncnn 时先过 `validateNcnnParamFile`（打不开文件即返回
-// false），都到不了 `ex.input()`。
-// 本用例只读注入进去的节点名。（对照侧 `.onnx` 走 OpenCvDnn：`readNet` 的 cv::Exception 已被
-// `ArcFaceEmbedder::initOpenCvDnn` 捕获 ⇒ 同样只是返回 false。）
+// 节点注入必须先于显式 ArcFace 装配；在替身 load() 内捕获，能发现注入丢失或顺序错误。
+// 当前按 embedderId 选择单一适配器，加载失败明确返回，不再尝试 INT8/FP32 回落候选队列。
+// 夹具不依赖真实权重；INT8 资产与后端真实性由下方专门用例验证。
 static std::mutex g_int8Mu;
 static int g_int8LoadCalls = 0;
 static std::string g_int8InputName;
@@ -155,6 +140,20 @@ bool test_face_infer_image_load_failure() {
     if (!contains(out.json, "\"msLoad\":")) return false;
     if (!contains(out.json, "\"msTotal\":")) return false;
     return true;
+}
+
+bool test_face_infer_rejects_multiframe_consecutive_requirement() {
+    const auto dir = makeTempDir("single_frame_consecutive");
+    FaceInferRequest request;
+    request.imagePath = writeTestImage(dir, "image.jpg").string();
+    request.fakeDetect = true;
+    request.fakeEmbedding = true;
+    request.consecutivePassesToTrigger = 3;
+    const auto unsupported = runFaceInferOnce(request);
+    if (unsupported.ok || unsupported.stage != "request" ||
+        !contains(unsupported.message, "single_frame_consecutive_requires_one")) return false;
+    request.consecutivePassesToTrigger = 1;
+    return runFaceInferOnce(request).ok;
 }
 
 bool test_face_infer_yolo_load_failure() {
@@ -926,6 +925,59 @@ bool test_face_infer_profile_uses_manifest_identity_threshold() {
     req.acceptThresholdExplicit = true;
     const auto overridden = runFaceInferOnce(req);
     return decisionMatches(overridden, 0.35, true);
+}
+
+bool test_face_infer_profile_rejects_anonymous_gallery_snapshot() {
+    const auto dir = makeTempDir("profile_gallery_space");
+    if (!writeProfileDir(dir, "windows-x64", "fp32", "fp32")) return false;
+    const auto manifestPath = dir / "manifest.json";
+    std::ifstream input(manifestPath);
+    std::string manifest((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    input.close();
+    manifest.insert(1, "\"templateSpaceId\":\"" + std::string(64, 'a') + "\",");
+    std::ofstream(manifestPath) << manifest;
+    FaceInferRequest req;
+    req.imagePath = writeTestImage(dir, "image.jpg").string();
+    req.faceProfileDir = dir.string();
+    req.fakeDetect = true;
+    req.fakeEmbedding = true;
+    req.gallerySnapshot = std::make_shared<FaceSearchLinearIndex>();
+    const auto result = runFaceInferOnce(req);
+    return !result.ok && result.stage == "gallery_load" && result.message == "gallery_space_mismatch";
+}
+
+bool test_face_infer_gallery_template_space_isolation() {
+    const auto dir = makeTempDir("gallery_space_isolation");
+    const std::string spaceA(64, 'a'), spaceB(64, 'b');
+    std::filesystem::create_directories(dir / "spaces" / spaceA);
+    std::filesystem::create_directories(dir / "spaces" / spaceB);
+    FaceTemplate value;
+    value.embedding.assign(512, 0.0f);
+    value.embedding[0] = 1.0f;
+    const auto bytes = serializeFaceTemplate(value);
+    if (!writeAllBytes(dir / "legacy.bin", bytes) ||
+        !writeAllBytes(dir / "spaces" / spaceA / "space_a.bin", bytes) ||
+        !writeAllBytes(dir / "spaces" / spaceB / "space_b.bin", bytes)) return false;
+    FaceInferRequest request;
+    request.galleryDir = dir.string();
+    for (const std::string& space : {std::string(), spaceA, spaceB, std::string(64, 'c')}) {
+        request.templateSpaceId = space;
+        FaceInferContext context;
+        if (!FaceInferStages::loadGallery(request, context).ok) return false;
+        if (space == std::string(64, 'c')) {
+            if (!context.galleryEntries.empty()) return false;
+        } else if (context.galleryEntries.size() != 1 || context.galleryEntries[0].id !=
+                (space.empty() ? "legacy" : space == spaceA ? "space_a" : "space_b")) return false;
+    }
+    request.gallerySnapshot = std::make_shared<const FaceSearchLinearIndex>();
+    request.templateSpaceId = spaceA;
+    for (const std::string& label : {std::string(), spaceB, spaceA}) {
+        request.gallerySnapshotSpaceId = label;
+        FaceInferContext context;
+        const auto result = FaceInferStages::loadGallery(request, context);
+        if (result.ok != (label == spaceA)) return false;
+    }
+    return std::filesystem::is_regular_file(dir / "legacy.bin");
 }
 
 bool test_face_infer_int8_rejects_real_opencv_backend() {

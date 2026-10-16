@@ -248,6 +248,45 @@ public class OrphanTemplateRecoveryTest {
         assertFalse("选出的名字必须尚不存在", picked.exists());
     }
 
+    @Test
+    public void recoveredCompleteBackupOnlyAllowsViewingOrphans() throws Exception {
+        AndroidEnrollmentRepository repo = repositoryWithCorruptMainAndStaleBackup();
+        AndroidEnrollmentRepository.ListResult registry = repo.list();
+        assertTrue("完整副本仍可读取", registry.isOk());
+        assertTrue("副本结构完整不等于权威主表", registry.isEnumerationComplete());
+        assertFalse(registry.authoritative);
+
+        AndroidEnrollmentRepository.OrphanListResult listed = repo.listOrphanTemplates();
+        assertTrue(listed.isOk());
+        assertTrue("陈旧副本漏掉的活模板只可作为待核实项查看",
+                listed.fileNames.contains(repo.templateFileFor("later").getName()));
+        assertFalse("非权威副本不能授权旁置仍可能在册的模板", listed.quarantineAllowed);
+    }
+
+    @Test
+    public void directQuarantineRejectsNonAuthoritativeRecoveredBackup() throws Exception {
+        AndroidEnrollmentRepository repo = repositoryWithCorruptMainAndStaleBackup();
+        File template = repo.templateFileFor("later");
+        byte[] original = Files.readAllBytes(template.toPath());
+        AndroidEnrollmentRepository.Result result = repo.quarantineOrphanTemplate(template.getName());
+
+        assertEquals("写入口必须独立复核权威性", AndroidEnrollmentRepository.Status.CORRUPTED, result.status);
+        assertTrue("被拒绝后原模板必须仍在活目录", template.isFile());
+        assertArrayEquals(original, Files.readAllBytes(template.toPath()));
+        assertFalse("不得先创建恢复目录再拒绝", recoveryDir(repo).exists());
+    }
+
+    private AndroidEnrollmentRepository repositoryWithCorruptMainAndStaleBackup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertTrue(repo.add("seed", templateBytes(40, 15), MV, TSV).isOk());
+        byte[] oldRegistry = Files.readAllBytes(repo.registryFile().toPath());
+        assertTrue(repo.add("later", templateBytes(40, 16), MV, TSV).isOk());
+        Files.write(new File(repo.scopeDir(), AndroidEnrollmentRepository.REGISTRY_FILE_NAME + ".bak").toPath(),
+                oldRegistry);
+        Files.write(repo.registryFile().toPath(), "CORRUPTED\n".getBytes(StandardCharsets.UTF_8));
+        return repo;
+    }
+
     // ---------- 工具 ----------
 
     private static File recoveryDir(AndroidEnrollmentRepository repo) {

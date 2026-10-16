@@ -398,7 +398,10 @@ public class CameraFragment extends Fragment {
     private File createImageFile() throws java.io.IOException {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
         String imageFileName = "mock_capture_" + timeStamp + "_";
-        File storageDir = appContext.getCacheDir();
+        File storageDir = new File(appContext.getCacheDir(), "captured_images");
+        if (!storageDir.isDirectory() && !storageDir.mkdirs()) {
+            throw new java.io.IOException("无法创建拍照缓存目录");
+        }
         File image = File.createTempFile(
             imageFileName,
             ".jpg",

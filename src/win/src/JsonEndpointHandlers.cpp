@@ -181,7 +181,7 @@ HttpResp handleReloadModel(const HttpReq& req, EndpointContext& ctx) {
     // 的 fetch_add 不判成败）⇒ 「generation 变了」只证明重载确实执行过，**不证明装配成功**；
     // 装配成败看下方新增的 ok 键。
     if (!ctx.settings) return errJson(503, "settings_unavailable", "settings 存储未初始化");
-    ctx.pipe->reloadRuntime(ctx.settings->current());
+    const bool reloaded = ctx.pipe->reloadRuntime(ctx.settings->current());
 
     JsonValue o = JsonValue::makeObject();
     o.o["id"] = JsonValue::makeString(*id);
@@ -193,10 +193,10 @@ HttpResp handleReloadModel(const HttpReq& req, EndpointContext& ctx) {
     // 新增（只增不改）：重载后的**装配**成败。修复前重载失败与成功在响应上完全无差别，
     // 调用方无法感知识别器其实没装配起来（FACE-ARCWIN-003 的缺口）。
     // ⚠️ data.ok 与 Envelope 根部的 ok **语义不同**：根部 ok = 「HTTP 业务调用成功」，
-    //    本键 = 「重载后运行时装配成功」。warning 仅在降级且文本非空时出现。
-    const FramePipeline::DegradedState deg = ctx.pipe->degraded();
-    o.o["ok"] = JsonValue::makeBool(!deg.active);
-    if (deg.active && !deg.warning.empty()) o.o["warning"] = JsonValue::makeString(deg.warning);
+    //    本键 = 「本次装配成功」。失败时旧运行时可能仍健康，不能从 health 降级状态倒推本次结果。
+    o.o["ok"] = JsonValue::makeBool(reloaded);
+    const auto warning = ctx.pipe->runtimeReloadWarning();
+    if (!reloaded && !warning.empty()) o.o["warning"] = JsonValue::makeString(warning);
     return okJson(std::move(o));
 }
 
@@ -490,7 +490,7 @@ HttpResp handleGetOpenApi(const HttpReq&, EndpointContext&) {
 HttpResp handleGetFaces(const HttpReq&, EndpointContext& ctx) {
     if (!ctx.pipe) return errJson(503, "pipeline_unavailable", "Pipeline 不可用");
     FacesSnapshot snap;
-    if (!ctx.pipe->snapshotFaces(snap)) return errJson(503, "pipeline_unavailable", "Pipeline 不可用");
+    if (!ctx.pipe->snapshotFaces(snap)) return errJson(503, "frame_unavailable", "暂无可用帧");
     HttpResp r;
     r.status = 200;
     r.reason = "OK";

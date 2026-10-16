@@ -94,6 +94,7 @@ bool applyFaceProfileToRequest(const std::string& profileDir, const std::string&
 
     // 全部派生先落到局部 eff，最后一次性提交（保证失败路径不改 req）。
     FaceInferRequest eff = req;
+    eff.templateSpaceId = parsed.templateSpaceId;
     eff.detectorId = "scrfd_0.5gf";
     eff.embedderId = "arcface";
     eff.yoloBackend = "ncnn";

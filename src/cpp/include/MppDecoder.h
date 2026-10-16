@@ -25,6 +25,10 @@ public:
     void close();
     bool isOpened() const;
 
+    // 硬件帧的 UV 起点由垂直 stride 决定，不能先按可见高度裁剪整张 NV12。
+    static bool convertNv12ToBgr(const uint8_t* data, int width, int height,
+                                 int horizontalStride, int verticalStride, cv::Mat& outBgr);
+
 private:
     struct MppState;
     std::unique_ptr<MppState> mpp_;

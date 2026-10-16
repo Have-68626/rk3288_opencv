@@ -195,28 +195,23 @@ jboolean preview_nativeRenderFrameToSurface(JNIEnv* /* env */, jobject /* this *
     return JNI_TRUE;
 }
 
-// ========== nativeGetFrame ==========
-jboolean preview_nativeGetFrame(JNIEnv* env, jobject /* this */, jobject bitmap) {
-    if (!g_engine) return false;
+// 独立消费者只共享像素转换，不能共享序号，否则推流会抢走 Bitmap 预览的帧。
+jboolean copyRenderFrameToBitmap(JNIEnv* env, jobject bitmap,
+                                std::mutex& seqMu, uint64_t& lastSeq) {
+    if (!g_engine || !bitmap) return false;
 
     cv::Mat frame;
     uint64_t seq = 0;
     if (!g_engine->getRenderFrame(frame, seq)) {
         return false;
     }
-    {
-        static std::mutex seqMu;
-        static uint64_t lastSeqGlob = static_cast<uint64_t>(-1);
-        std::lock_guard<std::mutex> lock(seqMu);
-        if (seq == lastSeqGlob) {
-            return false;
-        }
-        lastSeqGlob = seq;
-    }
+    std::lock_guard<std::mutex> lock(seqMu);
+    if (seq == lastSeq) return false;
 
     AndroidBitmapInfo info;
     if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) return false;
-    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return false;
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || info.width == 0 || info.height == 0
+            || static_cast<uint64_t>(info.stride) < static_cast<uint64_t>(info.width) * 4) return false;
 
     ScopedBitmapLock lockedBitmap(env, bitmap);
     if (!lockedBitmap.isLocked()) return false;
@@ -229,11 +224,24 @@ jboolean preview_nativeGetFrame(JNIEnv* env, jobject /* this */, jobject bitmap)
         tmp = frame;
     }
 
-    cv::Mat rgbaFrame(info.height, info.width, CV_8UC4, pixels);
+    cv::Mat rgbaFrame(info.height, info.width, CV_8UC4, pixels, info.stride);
     cv::cvtColor(tmp, rgbaFrame, cv::COLOR_BGR2RGBA);
+    lastSeq = seq;
 
     // ScopedBitmapLock 析构自动 unlockPixels
     return true;
+}
+
+jboolean preview_nativeGetFrame(JNIEnv* env, jobject /* this */, jobject bitmap) {
+    static std::mutex seqMu;
+    static uint64_t lastSeq = static_cast<uint64_t>(-1);
+    return copyRenderFrameToBitmap(env, bitmap, seqMu, lastSeq);
+}
+
+jboolean preview_nativeGetRtmpFrame(JNIEnv* env, jobject /* this */, jobject bitmap) {
+    static std::mutex seqMu;
+    static uint64_t lastSeq = static_cast<uint64_t>(-1);
+    return copyRenderFrameToBitmap(env, bitmap, seqMu, lastSeq);
 }
 
 } // anonymous namespace
@@ -246,5 +254,7 @@ void registerPreviewMethods(JniMethodRegistry& registry) {
          reinterpret_cast<void*>(preview_nativeRenderFrameToSurface)},
         {"nativeGetFrame", "(Landroid/graphics/Bitmap;)Z",
          reinterpret_cast<void*>(preview_nativeGetFrame)},
+        {"nativeGetRtmpFrame", "(Landroid/graphics/Bitmap;)Z",
+         reinterpret_cast<void*>(preview_nativeGetRtmpFrame)},
     });
 }

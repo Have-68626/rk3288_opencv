@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-07-06
+as_of=2026-10-13
 -->
 
 # Changelog

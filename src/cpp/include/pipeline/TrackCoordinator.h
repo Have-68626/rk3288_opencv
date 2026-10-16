@@ -27,6 +27,8 @@ struct TrackView {
     std::string stableId;          // 稳定后的身份 ID，"Unknown" 表示未认证
     float stableConfidence = 0.0f;
     long long lastSeenMs = 0;
+    // 有合法身份候选但尚未累计满三次，与识别失败/未注册的 Unknown 区分。
+    bool identityPending = false;
 };
 
 struct TrackConfig {
@@ -112,6 +114,9 @@ public:
 
     int trackCount() const { return static_cast<int>(tracks_.size()); }
 
+    // 只读确认轨迹快照；与 update/resetIdentitiesExcept 同步使用时，Engine 调用方须持 tracksMu_。
+    std::vector<TrackView> views() const;
+
 private:
     static float iou(const cv::Rect& a, const cv::Rect& b);
 
@@ -119,8 +124,6 @@ private:
     // 任务 C2：由匿名 namespace 的常量化自由函数改为**成员函数**，以便读取 config_ 里的阈值
     // （阈值现为可注入配置；默认值与原常量相同）。
     bool centerSizeMatched(const cv::Rect& ref, const cv::Rect& det) const;
-
-    std::vector<TrackView> views() const;
 
     // 内部轨迹状态：对外 TrackView + 确认/缺失计数（任务5 确认与消失规则）
     struct InternalTrack {

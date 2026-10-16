@@ -325,6 +325,7 @@ add_executable(win_unit_tests
     "src/win/src/MfCamera.cpp"
     "src/win/src/EndpointRegistry.cpp"
     "src/win/src/HttpFacesServer.cpp"
+    "src/win/src/HttpFacesPoster.cpp"
     "src/win/src/StreamSessionRunner.cpp"
     "src/win/src/StreamSession.cpp"
     "src/win/src/JsonEndpointHandlers.cpp"
@@ -490,3 +491,31 @@ endif()
 if(TARGET win_replay_export_cli)
     install(TARGETS win_replay_export_cli RUNTIME DESTINATION bin)
 endif()
+
+# profile 装配链供服务、旧版 UI 与同源单测复用；未启用 ncnn 时明确报告 build_disabled。
+set(RK_WINDOWS_PROFILE_SOURCES
+    "src/win/src/ProfileWinRecognizer.cpp"
+    "src/cpp/src/FaceRuntimeProfile.cpp"
+    "src/cpp/src/FaceAlign.cpp"
+    "src/cpp/src/pipeline/RealtimeFacePipeline.cpp"
+    "src/cpp/src/pipeline/ScrfdDecoder.cpp"
+    "src/cpp/src/pipeline/FacePostProcessor.cpp"
+    "src/cpp/src/adapters/ScrfdNcnnAdapter.cpp"
+    "src/cpp/src/adapters/ArcFaceAdapter.cpp")
+foreach(profile_target win_local_service win_camera_face_recognition win_unit_tests)
+    if(TARGET ${profile_target})
+        target_sources(${profile_target} PRIVATE ${RK_WINDOWS_PROFILE_SOURCES})
+        target_compile_definitions(${profile_target} PRIVATE RK_HAVE_NCNN=$<IF:$<BOOL:${RK_HAVE_NCNN}>,1,0>)
+        if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
+            target_link_libraries(${profile_target} ${RK_NCNN_TARGET})
+        endif()
+    endif()
+endforeach()
+if(TARGET win_camera_face_recognition)
+    target_sources(win_camera_face_recognition PRIVATE
+        "src/win/src/ArcFaceWinRecognizer.cpp"
+        "src/cpp/src/ArcFaceEmbedder.cpp"
+        "src/cpp/src/FileHash.cpp"
+        "src/cpp/src/NativeLog.cpp")
+endif()
+target_sources(win_unit_tests PRIVATE "tests/win/test_profile_runtime.cpp")

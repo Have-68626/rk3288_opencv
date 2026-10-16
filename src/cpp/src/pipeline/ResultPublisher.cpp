@@ -45,7 +45,12 @@ void ResultPublisher::publish(FrameOutcome&& outcome) {
             }
         } else {
             const auto& t = outcome.tracks[0];
-            if (t.stableId != "Unknown") {
+            if (t.identityPending) {
+                if (now - lastPendingMs_ > 800) {
+                    lastPendingMs_ = now;
+                    cb("RECOGNIZING");
+                }
+            } else if (t.stableId != "Unknown") {
                 if (now - lastVerifiedMs_ > 800) {
                     lastVerifiedMs_ = now;
                     cb("VERIFIED " + t.stableId + " " +

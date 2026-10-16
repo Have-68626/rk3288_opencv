@@ -91,9 +91,10 @@ final class NativeFaceBridge {
      * ByteBuffer 且长度精确 2048 字节；条目数 ≤ {@link #GALLERY_CAPACITY}；personId 非空。
      * 全部校验通过后才替换（否则保留旧库）。
      *
+     * @param templateSpaceId 当前生效模型的空间；空串仅兼容旧模型，失配时保留旧库
      * @return 成功 {@code {"ok":true,"count":N,"dim":512}}；失败返回错误 JSON
      */
-    static native String replaceGallery(String[] personIds, ByteBuffer[] embeddings);
+    static native String replaceGallery(String templateSpaceId, String[] personIds, ByteBuffer[] embeddings);
 
     /**
      * 开始一次注册会话：暂存 personId 与该人的 512 维 embedding（仅驻内存，不落日志、不落盘），

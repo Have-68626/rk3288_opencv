@@ -199,6 +199,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private Button btnPushRtmp;
     private Button btnStopRtmp;
     private final FfmpegRtmpPusher rtmpPusher = new FfmpegRtmpPusher();
+    private RtmpCameraInput rtmpCameraInput;
+    private long rtmpUiGeneration;
 
     // 任务18 / #1：模型管理与人员注册接入（视图在 settings 面板中，直接 findViewById 绑定，
     // 不经过 MainScreenBinder，避免改动该绑定类的既有契约）。
@@ -228,6 +230,13 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private volatile FaceModelManager faceModelManager;
     /** 同类懒加载（UI/后台线程并发首次调用），按同一策略一并加固为 volatile + 双检锁。 */
     private volatile AndroidEnrollmentRepository enrollmentRepository;
+    private volatile String templateSpaceId = "";
+    private AndroidEnrollmentRepository enrollmentSessionRepository;
+    private PersonDisplayNameStore enrollmentSessionNameStore;
+    private final AtomicLong singleImageGeneration = new AtomicLong();
+    private volatile boolean templateSpaceNeedsEnrollment;
+    private volatile boolean galleryRoutingReady;
+    private final AtomicBoolean modelChangeInProgress = new AtomicBoolean();
 
     /** 显示名加密存储 + 内存缓存（任务 B）。解密不能上 UI 线程，UI 侧只读其缓存。 */
     private volatile PersonDisplayNameStore displayNameStore;
@@ -1773,18 +1782,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         if (!engineInitialized) return;
         String detMode = normalizeInferenceThrottleMode(detectionThrottleMode);
         int detInterval = clampDetectionIntervalMs(effectiveDetectionIntervalMs);
-        try {
-            NativeBridge.nativeSetDetectionThrottle(detMode, detInterval);
-        } catch (Throwable t) {
-            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetDetectionThrottle 失败", t);
-        }
-
         String recMode = normalizeInferenceThrottleMode(inferenceThrottleMode);
         int recInterval = clampInferenceIntervalMs("auto".equals(recMode) ? effectiveInferenceIntervalMs : inferenceIntervalMs);
         try {
-            NativeBridge.nativeSetRecognitionThrottle(recMode, recInterval);
+            NativeBridge.nativeSetInferenceThrottle(recMode, recInterval);
+            // 兼容入口会同时更新两级节流，恢复界面单独设置的检测间隔。
+            NativeBridge.nativeSetDetectionThrottle(detMode, detInterval);
         } catch (Throwable t) {
-            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetRecognitionThrottle 失败", t);
+            AppLog.e("MainActivity", "applyInferenceThrottleToNative", "nativeSetInferenceThrottle 失败", t);
         }
 
         if (!"auto".equals(recMode)) {
@@ -1895,6 +1900,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     public native void nativeSetFlip(boolean flipX, boolean flipY);
     public native long nativeGetFlipGeneration();
     public native boolean nativeGetFrame(Bitmap bitmap);
+    public native boolean nativeGetRtmpFrame(Bitmap bitmap);
     public native void nativeSetPreviewSurface(Surface surface);
     public native boolean nativeRenderFrameToSurface();
     public native void nativeConfigureExternalInput(boolean enabled, int backpressureMode, int queueCapacity);
@@ -2300,7 +2306,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private File createImageFile() throws IOException {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
         String imageFileName = "mock_capture_" + timeStamp + "_";
-        File storageDir = getCacheDir();
+        File storageDir = new File(getCacheDir(), "captured_images");
+        if (!storageDir.isDirectory() && !storageDir.mkdirs()) {
+            throw new IOException("无法创建拍照缓存目录");
+        }
         File image = File.createTempFile(
             imageFileName,  /* prefix */
             ".jpg",         /* suffix */
@@ -2319,12 +2328,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         AppLog.i("MainActivity", "handleSystemCameraResult", "Photo captured: " + mockFilePath);
         Toast.makeText(this, "Photo Captured", Toast.LENGTH_SHORT).show();
 
-        if (isRunning) {
-            stopMonitoring();
-            scheduleStartMonitoring(500);
-        } else {
-            initEngine();
-        }
+        inferSelectedImage(mockFilePath);
         revokePhotoUriPermission(); // 消费完成，及时撤销跨 UID 授权（Q-CQ-B07-009）
     }
 
@@ -2341,6 +2345,30 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         } finally {
             currentPhotoUri = null; // 无论成败都清空引用，保证只撤销一次
         }
+    }
+
+    /** 图像经单次管线识别；代次、媒体路径和模型空间共同作废迟到结果。 */
+    private void inferSelectedImage(@NonNull String path) {
+        if (isRunning) stopMonitoring();
+        final long generation = singleImageGeneration.incrementAndGet();
+        final String space = templateSpaceId;
+        Toast.makeText(this, "正在识别图片…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String summary;
+            try {
+                String json = NativeBridge.nativeInferFaceFromImage(path, 5);
+                summary = SingleImageResult.summary(json);
+            } catch (Throwable t) {
+                summary = "图片识别不可用，请先启动预览并激活模型";
+            }
+            final String result = summary;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed() || isStopped || generation != singleImageGeneration.get()
+                        || !path.equals(mockFilePath) || !space.equals(templateSpaceId)) return;
+                new AlertDialog.Builder(this).setTitle("图片识别结果").setMessage(result)
+                        .setPositiveButton("确定", null).show();
+            });
+        }, "FaceImageInfer").start();
     }
 
     private void handleMockFileSelection(Uri uri) {
@@ -2520,6 +2548,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 long finalCopied = copied;
                 String finalDisplayName = displayName;
                 String finalOutPath = outFile.getAbsolutePath();
+                BitmapFactory.Options imageBounds = new BitmapFactory.Options();
+                imageBounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(finalOutPath, imageBounds);
+                final boolean stillImage = imageBounds.outWidth > 0 && imageBounds.outHeight > 0;
                 runOnUiThread(() -> {
                     try { progressDialog.dismiss(); } catch (Throwable ignored) {}
                     if (!finalOk) {
@@ -2543,7 +2575,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                             "Mock file ready: " + finalOutPath + " copied=" + finalCopied + " name=" + finalDisplayName);
                     Toast.makeText(MainActivity.this, "Mock 源已就绪: " + finalDisplayName, Toast.LENGTH_SHORT).show();
 
-                    if (isRunning) {
+                    if (stillImage) {
+                        inferSelectedImage(finalOutPath);
+                    } else if (isRunning) {
                         stopMonitoring();
                         scheduleStartMonitoring(500);
                     } else {
@@ -2969,6 +3003,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     private void stopMonitoring() {
+        singleImageGeneration.incrementAndGet();
         AppLog.enter("MainActivity", "stopMonitoring");
         dispatchMonitoringDecision(monitoringCoordinator.onStopRequested(snapshotMonitoringInputs(), null));
     }
@@ -3453,7 +3488,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * <p>兼容两种契约：
      * <ul>
      *   <li>实时路径纯文本（{@code ResultPublisher}）：{@code VERIFIED <personId> <pct>%} /
-     *       {@code AUTH_FAIL Unknown} / {@code NO_FACE} / {@code FACES n ...}。</li>
+     *       {@code RECOGNIZING} / {@code AUTH_FAIL Unknown} / {@code NO_FACE} / {@code FACES n ...}。</li>
      *   <li>JSON 结果（FaceInferOutcomeJson 契约，含 {@code TopK.hits[].personId/displayName}）：
      *       优先取 hits 的 displayName，缺失时用 personId 映射本地展示名。</li>
      * </ul>
@@ -3488,6 +3523,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             }
             return s;
         }
+        if ("RECOGNIZING".equals(s)) return "识别中";
         if (s.startsWith("AUTH_FAIL")) return "未识别（Unknown）";
         if ("NO_FACE".equals(s)) return "无人脸";
         if (s.startsWith("FACES ")) {
@@ -3664,31 +3700,68 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             return;
         }
         
-        String input;
+        final long generation = ++rtmpUiGeneration;
+        stopRtmpCameraInput();
+        rtmpPusher.stop();
+        final RtmpCameraInput cameraInput;
+        final String input;
         if (selectedCameraId == null && mockFilePath != null) {
             input = mockFilePath;
+            cameraInput = null;
         } else {
-            // Camera source - Use Pipe (requires native implementation)
-            // For now, we pass "pipe:0" to test command construction, 
-            // but show warning that stream won't flow without JNI pipe feed.
-            input = "pipe:0";
-            if (selectedCameraId != null) {
-                 Toast.makeText(this, "Camera push requires native pipe (Not fully implemented)", Toast.LENGTH_LONG).show();
-            } else {
-                 Toast.makeText(this, "请先设置 Mock 源或选择摄像头", Toast.LENGTH_SHORT).show();
-                 return;
+            if (selectedCameraId == null || !engineInitialized || !isRunning) {
+                Toast.makeText(this, "请先启动摄像头或设置 Mock 源", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            try {
+                cameraInput = new RtmpCameraInput(new RtmpCameraInput.FrameSource() {
+                    private final Bitmap bitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888);
+                    @Override public boolean readFrame(byte[] rgba) {
+                        if (!nativeGetRtmpFrame(bitmap)) return false;
+                        bitmap.copyPixelsToBuffer(ByteBuffer.wrap(rgba));
+                        return true;
+                    }
+                    @Override public void close() { bitmap.recycle(); }
+                }, 640, 480, 15, () -> runOnUiThread(() -> {
+                    RtmpCameraInput current = rtmpCameraInput;
+                    if (generation == rtmpUiGeneration && current != null && current.hasFailed()) rtmpPusher.stop();
+                }));
+                rtmpCameraInput = cameraInput;
+                input = cameraInput.inputUrl();
+            } catch (java.io.IOException | RuntimeException | LinkageError e) {
+                Toast.makeText(this, "相机推流初始化失败", Toast.LENGTH_LONG).show();
+                return;
             }
         }
-        
-        Toast.makeText(this, "开始推流: " + url, Toast.LENGTH_SHORT).show();
-        rtmpPusher.start(input, url, (success, code) -> runOnUiThread(() -> {
-            Toast.makeText(this, "推流结束 success=" + success + " code=" + code, Toast.LENGTH_LONG).show();
-        }));
+
+        // 地址中的 userinfo、路径流密钥和查询参数均可能敏感，界面不回显目标地址。
+        Toast.makeText(this, cameraInput == null ? "正在启动推流"
+                : "正在启动相机画面推流（含当前叠加，无音频）", Toast.LENGTH_SHORT).show();
+        FfmpegRtmpPusher.Callback completion = (success, code) -> runOnUiThread(() -> {
+            if (cameraInput != null) {
+                cameraInput.close();
+                if (rtmpCameraInput == cameraInput) rtmpCameraInput = null;
+            }
+            if (generation != rtmpUiGeneration || isFinishing() || isDestroyed()) return;
+            boolean inputFailed = cameraInput != null && cameraInput.hasFailed();
+            Toast.makeText(this, "推流结束 success=" + (success && !inputFailed)
+                    + " code=" + (inputFailed ? "CAMERA_INPUT_FAILED" : code), Toast.LENGTH_LONG).show();
+        });
+        if (cameraInput == null) rtmpPusher.start(input, url, completion);
+        else rtmpPusher.startCamera(input, 640, 480, 15, url, completion);
     }
 
     private void stopRtmpPush() {
+        ++rtmpUiGeneration;
+        stopRtmpCameraInput();
         rtmpPusher.stop();
         Toast.makeText(this, "已请求停止推流", Toast.LENGTH_SHORT).show();
+    }
+
+    private void stopRtmpCameraInput() {
+        RtmpCameraInput current = rtmpCameraInput;
+        rtmpCameraInput = null;
+        if (current != null) current.close();
     }
 
     private void toggleFullscreen() {
@@ -3773,12 +3846,25 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             synchronized (this) {
                 repo = enrollmentRepository;
                 if (repo == null) {
-                    repo = AndroidEnrollmentRepository.forDefaultGallery(getApplicationContext());
+                    repo = AndroidEnrollmentRepository.forTemplateSpace(getApplicationContext(), templateSpaceId);
                     enrollmentRepository = repo;
                 }
             }
         }
         return repo;
+    }
+
+    /** 只在后台完成模型恢复/提交后调用；缓存与显示名清理均限定在同一空间。 */
+    private void routeGalleryForActiveProfile() {
+        String space = modelManager().activeTemplateSpaceId(currentAbi());
+        synchronized (this) {
+            if (!space.equals(templateSpaceId)) {
+                templateSpaceId = space;
+                enrollmentRepository = null;
+                displayNameStore = null;
+            }
+            galleryRoutingReady = true;
+        }
     }
 
     /** 绑定 settings 面板中的模型/人员管理控件（直接 findViewById，不改动 MainScreenBinder 契约）。 */
@@ -3838,7 +3924,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     modelStatusRefreshInFlight.set(false);
                 }
                 // lambda 捕获要求 effectively final：先求值到 text，再转 final 供 UI 线程使用
-                final String summary = text;
+                final String summary = text + (templateSpaceNeedsEnrollment
+                        ? "\n当前模型空间尚无人员模板，请重新注册；旧库保留。" : "");
                 final String ambiguousId = ambiguous;
                 runOnUiThread(() -> {
                     // #2：Activity 已销毁时丢弃陈旧 UI 回调，避免窗口 token 失效。
@@ -3927,20 +4014,19 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * <p>此前生产 Java 零 {@code activate} 调用，导致「导入过的模型重启后不生效（恒 missing_model
      * 仅预览）」；同时重启后内存图库为空，已注册人员无法被识别。此处：
      * <ol>
-     *   <li>先从加密仓库重建内存图库并 {@code replaceGallery}（喂入 native gallery 槽）；</li>
      *   <li>先调 {@code recoverForStartup()} 完成目录事务恢复，**再**取回恢复后的
      *       {@code active_profile}——恢复未完成则停止自动激活并如实报错（约束 2-1，勿改回
      *       「先读指针再 activate」：那样恢复会被随后写回的旧值抵消）。</li>
      *   <li>取到目标后调用 {@code activate(target, currentAbi, true)}
      *       绑定实时管线（Engine 未创建时 native 侧登记待激活，创建后自动补激活）。</li>
+     *   <li>按已提交模型的 templateSpaceId 路由并解密图库，替换时由 native 再核对生效空间。</li>
      * </ol>
      * 全程后台线程执行、失败不阻塞启动；结果只更新状态区文本，reason 如实展示。
      */
     private void restoreActiveProfileOnStartup() {
         final String abi = currentAbi();
         new Thread(() -> {
-            // 步骤 1：重建图库（先于 activate，使 native reload 的 loadGallery 钩子能取到该快照）。
-            final boolean galleryOk = refreshGalleryFromRepository();
+            boolean restoredGallery = true;
 
             // 约束 2-1（外部审查 P1 #2）：**先完成目录事务恢复，再重新读取激活指针**。
             // 原实现先 activeProfileId() 拿目标、再 activate()，而恢复发生在 activate() 内部——
@@ -3951,7 +4037,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 sr = modelManager().recoverForStartup();
             } catch (Throwable t) {
                 runOnUiThread(() -> {
-                    showModelStatusToUser(buildRestoreNote("模型启动恢复失败：状态读取异常", galleryOk), true);
+                    showModelStatusToUser("模型启动恢复失败：状态读取异常", true);
                 });
                 return;
             }
@@ -3959,7 +4045,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 // 恢复未完成 → **停止**自动激活并如实报错，绝不猜测哪个配置该生效。
                 runOnUiThread(() -> {
                     showModelStatusToUser(buildRestoreNote(
-                            "模型启动恢复未完成：" + sr.blockedReason, galleryOk), true);
+                            "模型启动恢复未完成：" + sr.blockedReason, false), true);
                     refreshModelManagementStatus();
                     refreshRuntimeStatusIfDue(true);
                     updateDiagnosticsText();
@@ -3971,19 +4057,21 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 // 未导入：保持未导入态，交由「导入模型」入口引导。
                 runOnUiThread(() -> {
                     refreshModelManagementStatus();
-                    if (!galleryOk) {
-                        showModelStatusToUser("已注册图库恢复失败（重启后可能无法识别已注册人员）", true);
-                    }
                 });
                 return;
             }
             FaceModelManager.Result result = null;
             try {
                 result = modelManager().activate(active, abi, true);
+                if (result.isOk()) {
+                    routeGalleryForActiveProfile();
+                    restoredGallery = refreshGalleryFromRepository();
+                }
             } catch (Throwable ignored) {
                 // 恢复失败不阻塞启动：下面按失败展示 reason。
             }
             final FaceModelManager.Result r = result;
+            final boolean galleryOk = restoredGallery;
             runOnUiThread(() -> {
                 if (r == null) {
                     showModelStatusToUser(buildRestoreNote("模型启动恢复失败：管理器不可用", galleryOk), true);
@@ -4038,6 +4126,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     /** 后台导入 ZIP（FaceModelManager.importZip 内部完成安全校验、原子启用与实时管线激活）。 */
     private void importModelZip(@NonNull final Uri uri) {
+        if (!modelChangeInProgress.compareAndSet(false, true)) return;
+        invalidateModelDependentWork();
         final ProgressDialog dialog = new ProgressDialog(this);
         dialog.setMessage("正在导入模型…");
         dialog.setCancelable(false);
@@ -4053,8 +4143,14 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                     throw new IOException("无法打开所选文件");
                 }
                 result = modelManager().importZip(in, abi, true);
+                if (result.isOk()) {
+                    routeGalleryForActiveProfile();
+                    refreshGalleryFromRepository();
+                }
             } catch (Throwable ignored) {
                 // 统一按失败展示，不泄露底层路径/内容。
+            } finally {
+                modelChangeInProgress.set(false);
             }
             final FaceModelManager.Result r = result;
             runOnUiThread(() -> {
@@ -4112,12 +4208,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     /** 后台切换 profile；失败保留原配置并在状态区显示 reason。 */
     private void activateProfile(@NonNull final String profileId) {
+        if (!modelChangeInProgress.compareAndSet(false, true)) return;
+        invalidateModelDependentWork();
         final String abi = currentAbi();
         new Thread(() -> {
             FaceModelManager.Result result = null;
             try {
                 result = modelManager().activate(profileId, abi, true);
+                if (result.isOk()) {
+                    routeGalleryForActiveProfile();
+                    refreshGalleryFromRepository();
+                }
             } catch (Throwable ignored) {
+            } finally {
+                modelChangeInProgress.set(false);
             }
             final FaceModelManager.Result r = result;
             runOnUiThread(() -> {
@@ -4134,6 +4238,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 updateDiagnosticsText();
             });
         }, "FaceModelSwitch").start();
+    }
+
+    private void invalidateModelDependentWork() {
+        singleImageGeneration.incrementAndGet();
+        enrollmentGeneration++;
+        if (enrollmentInProgress) cancelEnrollmentInternal();
     }
 
     /**
@@ -4181,6 +4291,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     /** 校验输入 -> 后台准备 8 样本会话 -> 250ms 轮询进度。 */
     private void startEnrollment() {
         if (regPersonIdInput == null || regStatusText == null || enrollmentInProgress) return;
+        if (!galleryRoutingReady || modelChangeInProgress.get()) {
+            regStatusText.setText("模型人员库尚未恢复或正在切换，请稍后重试");
+            return;
+        }
         final String personId = regPersonIdInput.getText() == null ? "" : regPersonIdInput.getText().toString().trim();
         final String displayName = regDisplayNameInput == null || regDisplayNameInput.getText() == null
                 ? "" : regDisplayNameInput.getText().toString().trim();
@@ -4269,6 +4383,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 lastEnrollmentRejectReason = "";
                 enrollmentRegistryWarning = warn;
                 enrollmentSession = session;
+                enrollmentSessionRepository = repo;
+                enrollmentSessionNameStore = displayNameStore();
                 enrollmentInProgress = true;
                 // #1 打通注册闭环：接通 native 逐帧特征源（开启失败不阻断会话，仅提示等待）。
                 startNativeEnrollmentCapture();
@@ -4466,6 +4582,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     private void completeEnrollment() {
         final EnrollmentSession session = enrollmentSession;
         if (session == null) return;
+        final AndroidEnrollmentRepository repo = enrollmentSessionRepository;
+        final PersonDisplayNameStore names = enrollmentSessionNameStore;
         enrollmentInProgress = false;
         stopEnrollmentPoller();
         stopNativeEnrollmentCapture();  // #1 先断开 native 特征源，再取模板
@@ -4480,7 +4598,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 if (template == null || template.length != NativeFaceBridge.EMBEDDING_BYTES) {
                     error = "模板生成失败（维度不符）";
                 } else {
-                    AndroidEnrollmentRepository.Result add = enrollmentRepository().add(
+                    AndroidEnrollmentRepository.Result add = repo.add(
                             personId, template, ENROLL_MODEL_VERSION, ENROLL_TEMPLATE_SCHEMA_VERSION);
                     if (!add.isOk()) {
                         error = "加密写入失败（" + add.status + "）：" + add.message;
@@ -4491,7 +4609,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                         // 失败不阻断注册（可降级为 personId），仅记日志。
                         String pendingName = pendingEnrollmentDisplayName;
                         if (pendingName != null && !pendingName.trim().isEmpty()
-                                && !displayNameStore().save(personId, pendingName)) {
+                                && !names.save(personId, pendingName)) {
                             AppLog.w("MainActivity", "completeEnrollment",
                                     "显示名加密写入失败（注册仍成功，显示名降级为 personId）");
                         }
@@ -4574,7 +4692,15 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         //   （本方法此前没有 finally；验收代理指出异常路径会留下未清的堆外副本）。
         List<ByteBuffer> embeddings = new ArrayList<>();
         try {
-            AndroidEnrollmentRepository.ListResult list = enrollmentRepository().list();
+            final AndroidEnrollmentRepository repo;
+            final String space;
+            final PersonDisplayNameStore store;
+            synchronized (this) {
+                repo = enrollmentRepository();
+                space = templateSpaceId;
+                store = displayNameStore();
+            }
+            AndroidEnrollmentRepository.ListResult list = repo.list();
             if (!list.isOk()) return false;
             List<String> ids = new ArrayList<>();
             // 注册表的**完整**人员集合：与 ids 不同——ids 只含成功解码模板的条目，而本集合含全部
@@ -4588,7 +4714,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 try {
                     AndroidEnrollmentRepository.Result rr;
                     try {
-                        rr = enrollmentRepository().readTemplate(e.userId, pt -> {
+                        rr = repo.readTemplate(e.userId, pt -> {
                             float[] emb = EnrollmentSession.decodeLe(pt);
                             if (emb != null) {
                                 decoded[0] = emb;
@@ -4625,6 +4751,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 return false;
             }
             String resp = NativeFaceBridge.replaceGallery(
+                    space,
                     ids.toArray(new String[0]), embeddings.toArray(new ByteBuffer[0]));
             // ★ 2026-09-28 修（同 [P2]）：JNI 已把数据**复制**进 native 侧，Java 侧这份直接缓冲区
             //   用毕即擦（原先不清零，内容留到 GC/Cleaner）。
@@ -4634,6 +4761,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 zeroDirectBuffer(bb);
             }
             boolean ok = jsonGetBool(resp, "ok", false);
+            if (ok && space.equals(templateSpaceId)) {
+                templateSpaceNeedsEnrollment = !space.isEmpty() && ids.isEmpty();
+            }
             if (skipped > 0) {
                 AppLog.w("MainActivity", "refreshGalleryFromRepository",
                         "图库重建跳过损坏条目 skipped=" + skipped + "（成功 " + ids.size() + " 条）");
@@ -4641,7 +4771,6 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
             // 任务 B：显示名的预取与孤儿清理**共用同一权威性前提**（A4 对称化）。
             // 传入的是**注册表完整集合** allRegisteredIds，而非成功解码子集 ids —— 见其声明处注释。
             // 本方法在后台线程调用，符合 PersonDisplayNameStore 的线程约定。
-            PersonDisplayNameStore store = displayNameStore();
             // 仅在注册表条目集**权威**（无损坏行、未从 .bak 恢复、且确实存在注册表文件）时才预取 / 清孤儿：
             //   * removeOrphans 是**破坏性**的 —— 非权威时差集里会混入「仍在册但本次没读到」的人，其
             //     显示名会被误删（A2 审计 H2）；
@@ -4671,10 +4800,12 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     /** 本地人员列表；点击人员进入删除二次确认。 */
     private void showPersonManagementDialog() {
+        final AndroidEnrollmentRepository repo = enrollmentRepository();
+        final PersonDisplayNameStore names = displayNameStore();
         new Thread(() -> {
             final AndroidEnrollmentRepository.ListResult list;
             try {
-                list = enrollmentRepository().list();
+                list = repo.list();
             } catch (Throwable t) {
                 runOnUiThread(() -> Toast.makeText(this, "人员列表读取失败", Toast.LENGTH_SHORT).show());
                 return;
@@ -4685,7 +4816,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 if (!list.isOk()) {
                     // 整份不可读（头损坏 / IO 错误）：不再只弹一句 Toast 就断头 —— 提供**非破坏性**的
                     // 「旁置 + 新建空表」恢复入口（外部审查 [P2]「H：注册表全损坏时界面无恢复入口」）。
-                    promptRegistryRecovery("人员列表读取失败：" + list.message);
+                    promptRegistryRecovery("人员列表读取失败：" + list.message, repo);
                     return;
                 }
                 final List<AndroidEnrollmentRepository.Entry> entries = list.entries;
@@ -4700,7 +4831,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 if (entries.isEmpty()) {
                     if (skipped > 0) {
                         // 死角：entries 为空 ⇒ 没有可删条目；走非破坏性的旁置恢复，而不是只报「无出路」。
-                        promptRegistryRecovery("注册表有 " + skipped + " 行损坏已被跳过，且没有可删除的人员条目");
+                        promptRegistryRecovery("注册表有 " + skipped + " 行损坏已被跳过，且没有可删除的人员条目", repo);
                         return;
                     }
                     // 空表也可能遗留模板，必须保留孤儿恢复入口以释放重复人员标识。
@@ -4708,16 +4839,16 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 String[] items = new String[entries.size()];
                 for (int i = 0; i < entries.size(); i++) {
                     AndroidEnrollmentRepository.Entry e = entries.get(i);
-                    String name = displayNameFor(e.userId);
+                    String name = names.get(e.userId);
                     items[i] = (name.equals(e.userId) ? e.userId : (name + "（" + e.userId + "）"))
                             + "  模板 " + e.templateFileSize + "B";
                 }
                 AlertDialog.Builder builder = new AlertDialog.Builder(this)
                         .setTitle("人员列表（点击删除，需二次确认）")
-                        .setItems(items, (d, which) -> confirmDeletePerson(entries.get(which)))
+                        .setItems(items, (d, which) -> confirmDeletePerson(entries.get(which), repo, names))
                         // A15：孤儿模板旁置入口（逐个二次确认；只旁置、不删除）。
                         .setNeutralButton(getString(R.string.ui_orphan_templates_entry),
-                                (d, w) -> showOrphanTemplateRecovery())
+                                (d, w) -> showOrphanTemplateRecovery(repo))
                         .setNegativeButton("关闭", null);
                 if (skipped > 0) {
                     TextView warning = new TextView(this);
@@ -4740,35 +4871,35 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * 完成后给出旁置文件的绝对路径供事后手工取回。真正的文件操作与错误通道全部委托给仓库层的
      * {@link AndroidEnrollmentRepository#quarantineCorruptRegistry()}（不在 UI 里直接做文件 IO）。
      */
-    private void promptRegistryRecovery(@NonNull String reason) {
+    private void promptRegistryRecovery(@NonNull String reason, AndroidEnrollmentRepository repo) {
         new AlertDialog.Builder(this)
                 .setTitle("注册表损坏")
                 .setMessage(reason + "\n\n可通过「旁置损坏注册表」恢复：\n"
                         + "· 原文件不会被删除，只会改名保留为 <原文件名>.corrupt.<时间戳>；\n"
                         + "· 随后新建一张空注册表，之后可正常注册新人员；\n"
                         + "· 完成后界面会给出原文件的完整路径，供你事后手工取回。")
-                .setPositiveButton("旁置损坏注册表…", (d, w) -> confirmQuarantineRegistry())
+                .setPositiveButton("旁置损坏注册表…", (d, w) -> confirmQuarantineRegistry(repo))
                 .setNegativeButton("取消", null)
                 .show();
     }
 
     /** 旁置操作的**二次确认**：恢复后新表为空，须用户显式确认，默认不执行。 */
-    private void confirmQuarantineRegistry() {
+    private void confirmQuarantineRegistry(AndroidEnrollmentRepository repo) {
         new AlertDialog.Builder(this)
                 .setTitle("确认旁置损坏注册表？")
                 .setMessage("将把当前注册表文件改名旁置并新建空表。\n"
                         + "原文件不会被删除，但新建的空表不包含任何已注册人员"
                         + "（损坏内容无法自动还原）。\n\n确认继续？")
-                .setPositiveButton("确认旁置", (d, w) -> quarantineRegistry())
+                .setPositiveButton("确认旁置", (d, w) -> quarantineRegistry(repo))
                 .setNegativeButton("取消", null)
                 .show();
     }
 
     /** 后台执行旁置恢复；成功后弹窗给出旁置文件路径，失败经既有错误通道（Result.status/message）如实上报。 */
-    private void quarantineRegistry() {
+    private void quarantineRegistry(AndroidEnrollmentRepository repo) {
         new Thread(() -> {
             final AndroidEnrollmentRepository.Result result =
-                    enrollmentRepository().quarantineCorruptRegistry();
+                    repo.quarantineCorruptRegistry();
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 if (result.isOk()) {
@@ -4800,10 +4931,10 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * {@link AndroidEnrollmentRepository#quarantineOrphanTemplate(String)}
      *（不在 UI 里直接做文件 IO）。
      */
-    private void showOrphanTemplateRecovery() {
+    private void showOrphanTemplateRecovery(AndroidEnrollmentRepository repo) {
         new Thread(() -> {
             final AndroidEnrollmentRepository.OrphanListResult r =
-                    enrollmentRepository().listOrphanTemplates();
+                    repo.listOrphanTemplates();
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 if (!r.isOk()) {
@@ -4835,7 +4966,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 new AlertDialog.Builder(this)
                         .setTitle(getString(R.string.ui_orphan_templates_title) + "（点击旁置，需二次确认）")
                         .setView(warning)
-                        .setItems(items, (d, which) -> confirmQuarantineOrphan(r.fileNames.get(which)))
+                        .setItems(items, (d, which) -> confirmQuarantineOrphan(r.fileNames.get(which), repo))
                         .setNegativeButton("关闭", null)
                         .show();
             });
@@ -4843,20 +4974,20 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     /** 孤儿旁置的**二次确认**：只旁置、不删除，须用户显式确认，默认不执行。 */
-    private void confirmQuarantineOrphan(@NonNull final String fileName) {
+    private void confirmQuarantineOrphan(@NonNull final String fileName, AndroidEnrollmentRepository repo) {
         new AlertDialog.Builder(this)
                 .setTitle(getString(R.string.ui_orphan_templates_confirm_title))
                 .setMessage(getString(R.string.ui_orphan_templates_confirm_message))
-                .setPositiveButton("确认旁置", (d, w) -> quarantineOrphan(fileName))
+                .setPositiveButton("确认旁置", (d, w) -> quarantineOrphan(fileName, repo))
                 .setNegativeButton("取消", null)
                 .show();
     }
 
     /** 后台执行单项孤儿旁置；成功/失败经既有错误通道（Result.status/message）如实上报。 */
-    private void quarantineOrphan(@NonNull final String fileName) {
+    private void quarantineOrphan(@NonNull final String fileName, AndroidEnrollmentRepository repo) {
         new Thread(() -> {
             final AndroidEnrollmentRepository.Result result =
-                    enrollmentRepository().quarantineOrphanTemplate(fileName);
+                    repo.quarantineOrphanTemplate(fileName);
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 if (result.isOk()) {
@@ -4871,20 +5002,22 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     }
 
     /** 删除二次确认（不可逆操作必须显式确认）。 */
-    private void confirmDeletePerson(@NonNull final AndroidEnrollmentRepository.Entry entry) {
+    private void confirmDeletePerson(@NonNull final AndroidEnrollmentRepository.Entry entry,
+            AndroidEnrollmentRepository repo, PersonDisplayNameStore names) {
         new AlertDialog.Builder(this)
                 .setTitle("删除人员")
-                .setMessage("确认删除「" + displayNameFor(entry.userId) + "」及其加密模板？\n"
+                .setMessage("确认删除「" + names.get(entry.userId) + "」及其加密模板？\n"
                         + "删除后运行中图库会同步移除该人员，此操作不可恢复。")
-                .setPositiveButton("确认删除", (d, w) -> deletePerson(entry.userId))
+                .setPositiveButton("确认删除", (d, w) -> deletePerson(entry.userId, repo, names))
                 .setNegativeButton("取消", null)
                 .show();
     }
 
     /** 后台删除人员；成功后同步从其重建图库（失败不更新运行中图库）。 */
-    private void deletePerson(@NonNull final String userId) {
+    private void deletePerson(@NonNull final String userId,
+            AndroidEnrollmentRepository repo, PersonDisplayNameStore names) {
         new Thread(() -> {
-            AndroidEnrollmentRepository.Result result = enrollmentRepository().remove(userId);
+            AndroidEnrollmentRepository.Result result = repo.remove(userId);
             boolean galleryOk = false;
             if (result.isOk()) {
                 // A4-Low：removeDisplayName 内部只吞 SecurityException（见 PersonDisplayNameStore.remove），
@@ -4892,7 +5025,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 // 执行 ⇒ **成功/失败 Toast 都不弹**（安全无碍，缓存已由 remove 的 finally 清；仅 UX 问题）。
                 // 故在此兜住并如实记一条日志，保证后续 Toast 与图库刷新照常执行。
                 try {
-                    removeDisplayName(userId);
+                    removeDisplayName(userId, names);
                 } catch (Exception t) {
                     AppLog.w("MainActivity", "deletePerson",
                             "显示名清理异常（不影响本地模板删除结果）: " + t);
@@ -4934,7 +5067,8 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
                 if (s == null) {
                     // 与模板目录分开：孤儿清理只扫本目录，构造上不可能误删模板文件。
                     // 仅构造路径对象；目录由写入路径惰性创建（见方法 javadoc）。
-                    s = new PersonDisplayNameStore(new File(getFilesDir(), "face_names"));
+                    File root = new File(getFilesDir(), "face_names");
+                    s = new PersonDisplayNameStore(AndroidEnrollmentRepository.templateSpaceDir(root, templateSpaceId));
                     displayNameStore = s;
                 }
             }
@@ -4952,7 +5086,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         return displayNameStore().get(personId);
     }
 
-    private void removeDisplayName(@NonNull String personId) {
+    private void removeDisplayName(@NonNull String personId, PersonDisplayNameStore names) {
         // 返回值 = 显示名文件是否**确认已删**（PersonDisplayNameStore.remove）。本类作为平台层消费它并
         // 落日志：store 侧刻意不依赖 android.util.Log——它在 PersonDisplayNameStoreTest 里是**纯 JVM**
         // 构造的（无 Robolectric、未开 returnDefaultValues），记日志会抛 "not mocked"；故「报告」与
@@ -4960,7 +5094,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
         //
         // 日志**不带 personId**：本类既有日志没有记录人员标识符的先例，不借此新开一个持久化标识面；
         // 需定位时可按时间对齐同一次 deletePerson 流程的其它日志。
-        if (!displayNameStore().remove(personId)) {
+        if (!names.remove(personId)) {
             AppLog.w("MainActivity", "removeDisplayName",
                     "显示名文件未确认删除（被拒或静默未生效）—— 内存缓存已清；"
                             + "残留为加密件，待后续权威 list() 的孤儿清理回收");
@@ -5031,6 +5165,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
      * <p><b>必须在后台线程调用</b>（含文件 IO 与加解密）。
      */
     private void migrateLegacyDisplayNames() {
+        if (!templateSpaceId.isEmpty()) return;
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         if (prefs.getBoolean(PREF_NAME_MIGRATED, false)) return;
         if (!displayNameStore().isSupported()) {
@@ -5245,6 +5380,7 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
 
     @Override
     protected void onStop() {
+        singleImageGeneration.incrementAndGet();
         // 置位停止门：后台后终止 surface 轮询续排与排程回调，闭合误启动窗口
         isStopped = true;
         if (isRunning) {
@@ -5267,6 +5403,9 @@ public class MainActivity extends AppCompatActivity implements CaptureObserver {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        ++rtmpUiGeneration;
+        stopRtmpCameraInput();
+        rtmpPusher.stop();
         // 任务 B：销毁即丢弃采集期的内存显示名（从未落盘，故无存储残留需要清理）。
         pendingEnrollmentDisplayName = null;
         monitoringCoordinator.onActivityDestroyed(snapshotMonitoringInputs());  // 递增代次使排程任务失效

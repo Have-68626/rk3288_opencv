@@ -214,6 +214,9 @@ final class AppLog {
                containsIgnoreCase(msg, "auth") ||
                containsIgnoreCase(msg, "key") ||
                containsIgnoreCase(msg, "secret") ||
+                containsIgnoreCase(msg, "personId") ||
+                containsIgnoreCase(msg, "person_id") ||
+                containsIgnoreCase(msg, "person-id") ||
                containsIgnoreCase(msg, "bearer");
     }
 
@@ -234,10 +237,7 @@ final class AppLog {
                     @NonNull String function,
                     @NonNull String msg,
                     @Nullable Throwable t) {
-        // [RK3288] Log Strategy:
-        // DEBUG/VERBOSE logs are masked before writing to disk to prevent credential leaks.
-        // INFO/WARN/ERROR: Keep concise. Masking is applied for non-DEBUG builds or if configured.
-        // See docs/RK3288_CONSTRAINTS.md and README.md for disclaimer.
+        // INFO 及以上统一脱敏；低级日志先预筛，避免无敏感字段时承担正则开销。
 
         if (level.ordinal() < minLevel.ordinal()) return;
         
@@ -259,7 +259,9 @@ final class AppLog {
             sb.append('\n').append(android.util.Log.getStackTraceString(t));
         }
 
-        String logLine = sb.toString();
+        // 在日志分流前脱敏，避免文件已保护而 Logcat 仍泄漏同一身份字段。
+        String logLine = level.ordinal() >= Level.I.ordinal() || needsMasking(msg, t)
+                ? SensitiveDataUtil.maskSensitiveData(sb.toString()) : sb.toString();
 
         // 1. Output to Android Logcat
         android.util.Log.println(level.androidLevel, module, logLine);

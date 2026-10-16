@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -32,7 +33,7 @@ MODEL_PRESETS = {
     #    精度对不上。本轮按生产契约对齐（§I1.2），**不要**再改回经验值：
     #    · SCRFD 生产：RGB、mean=127.5×3、norm=1/128、640×640（居中 letterbox，pad=0）。
     #    · ArcFace 生产：RGB、mean=127.5×3、norm=1/127.5、112×112。
-    #    MobileFaceNet 保留原预设（来源未定，不在本任务顺手修改）。
+    #    · MobileFaceNet：已认可 w600k_mbf 父图，RGB、mean=127.5×3、norm=1/127.5、112×112。
     "scrfd": {
         "mean": [127.5, 127.5, 127.5],
         "norm": [1.0 / 128.0] * 3,
@@ -47,7 +48,7 @@ MODEL_PRESETS = {
     },
     "mobilefacenet": {
         "mean": [127.5, 127.5, 127.5],
-        "norm": [0.0078125, 0.0078125, 0.0078125],
+        "norm": [1.0 / 127.5] * 3,
         "shape": [112, 112, 3],
         "pixel": "RGB",
     },
@@ -99,6 +100,35 @@ def write_imagelist(images: list[str], path: str):
         for img in images:
             f.write(f"{img}\n")
     print(f"图片列表已写入: {path}")
+
+
+def prepare_scrfd_images(images: list[str], output_dir: Path, tool_path: str) -> str:
+    """ncnn2table 双正 shape 会拉伸，先以生产 OpenCV 几何生成无损校准图。"""
+    source_list = str(output_dir / "calib_source_imagelist.txt")
+    output_list = str(output_dir / "calib_imagelist.txt")
+    write_imagelist([str(Path(p).resolve()) for p in images], source_list)
+    result = subprocess.run([tool_path, source_list, output_list, "640", "640"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        print("错误：SCRFD letterbox 校准图准备失败", file=sys.stderr)
+        sys.exit(1)
+    return output_list
+
+
+def file_sha256(filename: str) -> str:
+    digest = hashlib.sha256()
+    with open(filename, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def calibration_contract(model: str, preset: dict, param: str, binary: str, table: str) -> dict:
+    """校准表必须绑定父模型与几何；分步量化不能凭模型名补写不存在的证据。"""
+    return {"model": model, "preprocessing": preset,
+            "geometry": "letterbox_center_pad0" if model == "scrfd" else "resize",
+            "fp32_param_sha256": file_sha256(param),
+            "fp32_bin_sha256": file_sha256(binary), "table_sha256": file_sha256(table)}
 
 
 def run_ncnn2table(tool_path: str, fp32_param: str, fp32_bin: str,
@@ -163,6 +193,13 @@ def run_ncnn2int8(tool_path: str, fp32_param: str, fp32_bin: str,
         "int8_bin_size": int8_size,
         "compression_ratio": round(fp32_size / int8_size, 2) if int8_size > 0 else 0,
     }
+    # 精度程序核对四个文件摘要，把 INT8 产物绑定到本次量化的同一父模型。
+    report_dir = Path(output_param).resolve().parent
+    for key, filename in (("fp32_param", fp32_param), ("fp32_bin", fp32_bin),
+                          ("int8_param", output_param), ("int8_bin", output_bin)):
+        artifact = Path(filename).resolve()
+        report[key] = os.path.relpath(artifact, report_dir).replace(os.sep, "/")
+        report[key + "_sha256"] = file_sha256(str(artifact))
     return report
 
 
@@ -220,6 +257,8 @@ def main():
                         help="仅用已有校准表量化，不重新生成")
     parser.add_argument("--table-path",
                         help="--quant-only 时指定已有校准表路径")
+    parser.add_argument("--calib-preprocessor",
+                        help="SCRFD letterbox 工具 ncnn_calibration_images 路径（也可放 PATH）")
     args = parser.parse_args()
 
     preset = MODEL_PRESETS[args.model]
@@ -243,11 +282,17 @@ def main():
             sys.exit(1)
         ncnn2table = find_tool("ncnn2table")
         images = collect_calib_images(args.calib_dir, args.num_samples)
-        imagelist_path = str(output_dir / "calib_imagelist.txt")
-        write_imagelist(images, imagelist_path)
+        if args.model == "scrfd":
+            preprocessor = args.calib_preprocessor or find_tool("ncnn_calibration_images")
+            imagelist_path = prepare_scrfd_images(images, output_dir, preprocessor)
+        else:
+            imagelist_path = str(output_dir / "calib_imagelist.txt")
+            write_imagelist(images, imagelist_path)
         table_path = str(output_dir / f"{args.model}.table")
         run_ncnn2table(ncnn2table, fp32_param, fp32_bin,
                        imagelist_path, table_path, preset, args.num_threads)
+        table_contract = calibration_contract(args.model, preset, fp32_param, fp32_bin, table_path)
+        Path(table_path + ".json").write_text(json.dumps(table_contract, indent=2), encoding="utf-8")
     else:
         # --quant-only 模式：使用已有校准表
         table_path = args.table_path or str(output_dir / f"{args.model}.table")
@@ -255,6 +300,13 @@ def main():
             print(f"错误：校准表不存在: {table_path}", file=sys.stderr)
             sys.exit(1)
         print(f"使用已有校准表: {table_path}")
+        # 没有几何/来源证据的旧表须重新校准，不能补写未经验证的生产口径。
+        contract_path = Path(table_path + ".json")
+        table_contract = json.loads(contract_path.read_text(encoding="utf-8")) if contract_path.is_file() else None
+        expected_contract = calibration_contract(args.model, preset, fp32_param, fp32_bin, table_path)
+        if table_contract != expected_contract:
+            print("错误：校准表缺少或不匹配父模型/预处理证据，请先重新执行 --table-only", file=sys.stderr)
+            sys.exit(1)
 
     if args.table_only:
         print(f"\n--- 校准表已就绪: {table_path} ---")
@@ -272,7 +324,10 @@ def main():
 
     # ---- 写入报告 ----
     report_path = output_dir / "quantize_report.json"
-    with open(report_path, "w") as f:
+    report["model"] = args.model
+    report["preprocessing"] = preset
+    report["geometry"] = table_contract["geometry"]
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     print(f"\n量化完成，报告: {report_path}")
     print(f"  FP32: {report['fp32_bin_size']} bytes")

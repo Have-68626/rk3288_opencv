@@ -1,0 +1,108 @@
+package com.example.rk3288_opencv;
+
+import com.arthenica.ffmpegkit.FFmpegKit;
+import java.net.Socket;
+import java.net.URI;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+// 仅替换 Android 与 JNI 边界；推流方法由测试运行器直接载入当前生产源码。
+public final class MainActivity {
+    private final FfmpegRtmpPusher rtmpPusher = new FfmpegRtmpPusher();
+    private RtmpCameraInput rtmpCameraInput;
+    private long rtmpUiGeneration;
+    private EditText etRtmpUrl = new EditText();
+    private String selectedCameraId;
+    private String mockFilePath = "synthetic.mp4";
+    private boolean engineInitialized = true;
+    private boolean isRunning = true;
+    private boolean isFinishing() { return false; }
+    private boolean isDestroyed() { return false; }
+    private boolean deferUi;
+    private final List<Runnable> pendingUi = new ArrayList<>();
+    private void runOnUiThread(Runnable callback) {
+        if (deferUi) pendingUi.add(callback);
+        else callback.run();
+    }
+    private void flushUi() {
+        for (Runnable callback : new ArrayList<>(pendingUi)) callback.run();
+        pendingUi.clear();
+    }
+    private boolean nativeGetRtmpFrame(Bitmap bitmap) {
+        Arrays.fill(bitmap.pixels, (byte) 42);
+        return true;
+    }
+    private boolean nativeGetFrame(Bitmap bitmap) {
+        throw new AssertionError("RTMP 不得消耗 Bitmap 预览序列");
+    }
+
+    private static final class EditText {
+        String text = "rtmp://synthetic-user:synthetic-value@localhost/live/synthetic-key?token=synthetic";
+        String getText() { return text; }
+    }
+
+    private static final class Toast {
+        static final int LENGTH_SHORT = 0;
+        static final int LENGTH_LONG = 1;
+        static final List<String> messages = new ArrayList<>();
+        final String message;
+        private Toast(String message) { this.message = message; }
+        static Toast makeText(MainActivity activity, String message, int duration) { return new Toast(message); }
+        void show() { messages.add(message); }
+    }
+
+    private static final class Bitmap {
+        enum Config { ARGB_8888 }
+        final byte[] pixels;
+        private Bitmap(int width, int height) { pixels = new byte[width * height * 4]; }
+        static Bitmap createBitmap(int width, int height, Config config) { return new Bitmap(width, height); }
+        void copyPixelsToBuffer(ByteBuffer buffer) { buffer.put(pixels); }
+        void recycle() { }
+    }
+
+__RTMP_METHODS__
+
+    private static void check(boolean condition, String message) {
+        if (!condition) throw new AssertionError(message);
+    }
+
+    public static void main(String[] args) throws Exception {
+        MainActivity activity = new MainActivity();
+        activity.startRtmpPush();
+        check(Toast.messages.size() == 1, "UI 必须等待实际会话结束");
+        FFmpegKit.session.result = 7;
+        FFmpegKit.callback.apply(FFmpegKit.session);
+        check(Toast.messages.get(1).contains("success=false") && Toast.messages.get(1).contains("code=7"),
+                "UI 必须显示真实会话失败");
+        activity.deferUi = true;
+        activity.startRtmpPush();
+        FFmpegKit.session.result = 0;
+        FFmpegKit.callback.apply(FFmpegKit.session);
+        int beforeRestart = Toast.messages.size();
+        activity.startRtmpPush();
+        activity.flushUi();
+        check(Toast.messages.size() == beforeRestart + 1, "陈旧完成不得污染重启后的 UI");
+        activity.deferUi = false;
+        activity.selectedCameraId = "synthetic-camera";
+        activity.startRtmpPush();
+        List<String> command = Arrays.asList(FFmpegKit.arguments);
+        check(command.contains("rgba") && command.contains("640x480") && command.contains("15"),
+                "相机参数必须与实际 RGBA 帧匹配");
+        URI input = URI.create(command.get(command.indexOf("-i") + 1));
+        try (Socket consumer = new Socket(input.getHost(), input.getPort())) {
+            consumer.setSoTimeout(2000);
+            byte[] frame = consumer.getInputStream().readNBytes(640 * 480 * 4);
+            check(frame.length == 640 * 480 * 4 && frame[0] == 42 && frame[frame.length - 1] == 42,
+                    "MainActivity 必须把实际采集帧交给推流输入器");
+            activity.stopRtmpPush();
+        }
+        for (String message : Toast.messages) {
+            check(!message.contains("synthetic-user") && !message.contains("synthetic-value")
+                    && !message.contains("synthetic-key") && !message.contains("token="),
+                    "界面不得回显地址凭据、流密钥或鉴权查询参数");
+        }
+        System.out.println("RTMP_UI_BEHAVIOR_PASS");
+    }
+}

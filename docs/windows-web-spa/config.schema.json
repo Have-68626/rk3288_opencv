@@ -91,6 +91,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "faceProfileDir": { "type": "string", "description": "manifest.json 所在目录；空串保留旧模型与数据库路径，非空时按已验证 templateSpaceId 隔离加密模板库" },
         "detection": { "type": "string" },
         "recognition": { "type": "string" },
         "backend": { "type": "string" },

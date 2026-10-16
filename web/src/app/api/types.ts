@@ -61,6 +61,7 @@ export interface ServerSettingsDoc {
     target: number
   }
   model: {
+    faceProfileDir: string
     detection: string
     recognition: string
     backend: string
@@ -131,7 +132,7 @@ export interface ActiveModelInfo {
   resolvedPath?: string
   backend: string
   hash?: string
-  status: 'loaded' | 'failed' | 'missing'
+  status: 'loaded' | 'failed' | 'missing' | 'disabled'
   isInUse: boolean
   modelVersion?: string
   lastError?: string

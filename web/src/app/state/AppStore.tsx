@@ -111,8 +111,8 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
           details: env.error.details,
         })
       }
-      // 过期响应：后续已发起更新代次的请求，状态由新代次写入，不再重复覆盖
-      if (gen !== settingsGenRef.current) return true
+      // 布尔结果供启动页决定导航；被新请求淘汰的刷新没有生效，不能报告成功。
+      if (gen !== settingsGenRef.current) return false
       setServerSettings({ status: 'ready', data: env.data })
       if (!silent) notify.success('操作成功')
       return true

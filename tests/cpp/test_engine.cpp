@@ -37,8 +37,8 @@ constexpr auto kInterleaveWait = std::chrono::seconds(5);
 // ── 任务12 实时路径测试替身 ──
 
 // 与 test_realtime_face_pipeline.cpp 同构的合法 manifest v1（9 输出 + 512 维）。
-std::string rtManifest() {
-    return
+std::string rtManifest(const std::string& space = "") {
+    std::string manifest =
         "{\"schemaVersion\":1,"
         "\"profileId\":\"rk3288_light\",\"displayName\":\"RK3288 Light\","
         "\"supportedAbis\":[\"armeabi-v7a\",\"arm64-v8a\"],"
@@ -53,17 +53,46 @@ std::string rtManifest() {
         " \"embeddingDim\":512},"
         "\"detectionConfidence\":0.55,\"nmsIou\":0.40,\"identitySimilarity\":0.45,"
         "\"modelVersion\":\"1\",\"licenseId\":\"apache-2.0\"}";
+    if (!space.empty()) {
+        manifest.pop_back();
+        manifest += ",\"templateSpaceId\":\"" + space + "\"}";
+    }
+    return manifest;
 }
 
 // 可脚本化检测器：boxes 即本次返回的检测框（空 = 实际空检测）。
 class ScriptedDetector : public IRealtimeDetector {
 public:
     std::vector<RealtimeFaceBox> boxes;
-    bool detect(const cv::Mat&, std::vector<RealtimeFaceBox>& out, std::string&) override {
+    bool fail = false;
+    int delayMs = 0;
+    bool detect(const cv::Mat&, std::vector<RealtimeFaceBox>& out, std::string& err) override {
+        if (fail) {
+            err = "runtime_init_failed";
+            return false;
+        }
+        if (delayMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         out = boxes;
         return true;
     }
     const char* name() const override { return "scripted"; }
+};
+
+class BlockingDetector : public ScriptedDetector {
+public:
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool entered = false;
+    bool released = false;
+    bool detect(const cv::Mat& frame, std::vector<RealtimeFaceBox>& out, std::string& err) override {
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true;
+            cv.notify_all();
+            cv.wait(lock, [this] { return released; });
+        }
+        return ScriptedDetector::detect(frame, out, err);
+    }
 };
 
 // 内容感知检测器：扫描画面中的白色标记并返回其外接框（仅依赖 cv::Mat，无 imgproc）。
@@ -214,7 +243,8 @@ std::shared_ptr<RealtimeFacePipeline> makeRtPipeline(
     std::shared_ptr<IRealtimeDetector> det,
     std::shared_ptr<const FaceSearchLinearIndex> gallery = nullptr,
     bool reload = true,
-    std::shared_ptr<IRealtimeEmbedder> embedder = nullptr) {
+    std::shared_ptr<IRealtimeEmbedder> embedder = nullptr,
+    const std::string& space = "") {
     RealtimePipelineHooks h;
     h.verifyFiles = [](const FaceRuntimeProfile&, const std::string&, std::string&) { return true; };
     h.loadDetector = [det](const FaceRuntimeProfile&, const std::string&, std::string&)
@@ -230,7 +260,7 @@ std::shared_ptr<RealtimeFacePipeline> makeRtPipeline(
                      double& p95, std::string&) { p95 = 1.0; return true; };
     auto pipe = std::make_shared<RealtimeFacePipeline>(h);
     if (reload) {
-        pipe->reload(rtManifest(), "", "arm64-v8a", "");
+        pipe->reload(rtManifest(space), "", "arm64-v8a", "");
     }
     return pipe;
 }
@@ -852,10 +882,226 @@ TEST(EngineTest, SetRealtimePipelineSameObjectIsIdempotent) {
     EXPECT_GT(after[0].bbox.area(), 0);
 }
 
+TEST(EngineTest, RuntimeSwitchDuringDetectionDoesNotCountOldSpaceIdentity) {
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(index->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err));
+    auto oldDetector = std::make_shared<BlockingDetector>();
+    oldDetector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    Engine engine;
+    ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(oldDetector, index, true, nullptr, std::string(64, 'a'))));
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(50, 50, 50));
+    std::thread inFlight([&] { engine.processFrameOnce(frame); });
+    bool entered;
+    {
+        std::unique_lock<std::mutex> lock(oldDetector->mutex);
+        entered = oldDetector->cv.wait_for(lock, std::chrono::seconds(2), [&] { return oldDetector->entered; });
+    }
+    auto nextDetector = std::make_shared<ScriptedDetector>();
+    nextDetector->boxes = oldDetector->boxes;
+    const bool switched = engine.setRealtimePipeline(makeRtPipeline(nextDetector, index, true, nullptr, std::string(64, 'b')));
+    {
+        std::lock_guard<std::mutex> lock(oldDetector->mutex);
+        oldDetector->released = true;
+    }
+    oldDetector->cv.notify_all();
+    inFlight.join();
+    ASSERT_TRUE(entered);
+    ASSERT_TRUE(switched);
+    auto tracks = engine.getTrackViews();
+    // 首次检测尚未达到几何轨迹三帧确认门槛，允许对外视图为空。
+    for (const auto& track : tracks) EXPECT_FALSE(track.identityPending);
+    for (int i = 0; i < 2; ++i) ASSERT_TRUE(engine.processFrameOnce(frame));
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "Unknown");
+    ASSERT_TRUE(engine.processFrameOnce(frame));
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "alice");
+}
+
+TEST(EngineTest, SamePipelineReloadedToAnotherSpaceRevokesCommittedIdentity) {
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(index->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err));
+    auto detector = std::make_shared<ScriptedDetector>();
+    detector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    auto pipeline = makeRtPipeline(detector, index, true, nullptr, std::string(64, 'a'));
+    Engine engine;
+    ASSERT_TRUE(engine.setRealtimePipeline(pipeline));
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(engine.processFrameOnce(frame));
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "alice");
+    ASSERT_TRUE(pipeline->reload(rtManifest(std::string(64, 'b')), "", "arm64-v8a", "").ok);
+    ASSERT_TRUE(engine.setRealtimePipeline(pipeline));
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "Unknown");
+    EXPECT_FALSE(engine.getTrackViews()[0].identityPending);
+    for (int i = 0; i < 2; ++i) ASSERT_TRUE(engine.processFrameOnce(frame));
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "Unknown");
+    ASSERT_TRUE(engine.processFrameOnce(frame));
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "alice");
+}
+
 // ── 第三波审查 #4 残留竞态：合并 API applyGalleryUpdate ──
 
 // 合并 API 语义：applyGalleryUpdate 必须在**单次调用**内同时完成「换图库覆盖 + 精准撤销身份」，
 // 两项效果均来自这一次调用，不存在「图库已换但身份未撤」/「身份已撤但图库未换」的可观测中间态。
+TEST(EngineTest, GalleryReplacementRejectsAnotherTemplateSpaceWithoutChangingIdentity) {
+    const std::string spaceA(64, 'a'), spaceB(64, 'b');
+    auto first = std::make_shared<FaceSearchLinearIndex>();
+    auto other = std::make_shared<FaceSearchLinearIndex>();
+    std::string error;
+    ASSERT_TRUE(first->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, error));
+    ASSERT_TRUE(other->reset({{"alice", std::vector<float>(512, -1.0f)}}, 512, error));
+    auto detector = std::make_shared<ScriptedDetector>();
+    detector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    Engine engine;
+    ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(detector, first, true, nullptr, spaceA)));
+    ASSERT_TRUE(engine.applyGalleryUpdate(first, {"alice"}, spaceA));
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(engine.processFrameOnce(frame));
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "alice");
+    EXPECT_FALSE(engine.applyGalleryUpdate(other, {"alice"}, spaceB));
+    EXPECT_FALSE(engine.applyGalleryUpdate(other, {"alice"}));
+    ASSERT_TRUE(engine.processFrameOnce(frame));
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "alice");
+}
+
+TEST(EngineTest, GallerySpaceChangeRevokesSamePersonAndRejectsOldGallery) {
+    const std::string spaceA(64, 'a'), spaceB(64, 'b');
+    auto gallery = std::make_shared<FaceSearchLinearIndex>();
+    std::string error;
+    ASSERT_TRUE(gallery->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, error));
+    auto detector = std::make_shared<ScriptedDetector>();
+    detector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    Engine engine;
+    ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(detector, gallery, true, nullptr, spaceA)));
+    cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(engine.processFrameOnce(frame));
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "alice");
+    ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(detector, nullptr, true, nullptr, spaceB)));
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "Unknown");
+    EXPECT_FALSE(engine.getTrackViews()[0].identityPending);
+    EXPECT_FALSE(engine.applyGalleryUpdate(gallery, {"alice"}, spaceA));
+    ASSERT_TRUE(engine.applyGalleryUpdate(gallery, {"alice"}, spaceB));
+    ASSERT_TRUE(engine.processFrameOnce(frame));
+    EXPECT_EQ(engine.getTrackViews()[0].stableId, "Unknown");
+    EXPECT_TRUE(engine.getTrackViews()[0].identityPending);
+}
+
+TEST(EngineTest, PerformanceCsvMeasuresActualStagesAndResidentMemory) {
+    struct WorkingDirectory {
+        std::filesystem::path previous = std::filesystem::current_path();
+        std::filesystem::path directory = std::filesystem::temp_directory_path() /
+            ("rk_engine_perf_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        WorkingDirectory() {
+            std::filesystem::create_directories(directory / "tests/metrics");
+            std::filesystem::current_path(directory);
+        }
+        ~WorkingDirectory() { std::filesystem::current_path(previous); }
+    } working;
+    {
+        Engine engine;
+        auto detector = std::make_shared<ScriptedDetector>();
+        detector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+        detector->delayMs = 30;
+        engine.setRealtimePipeline(makeRtPipeline(detector));
+        engine.setOnResultCallback([](const std::string&) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        });
+        cv::Mat frame(480, 640, CV_8UC3, cv::Scalar(50, 50, 50));
+        ASSERT_TRUE(engine.processFrameOnce(frame, 7.0));
+    }
+    // 析构已排空Reporter；检查真实Engine输出，防止各字段只在测试里人为填充而生产仍恒为0。
+    std::ifstream csv(working.directory / "tests/metrics/engine_perf.csv");
+    ASSERT_TRUE(csv.is_open());
+    std::string line;
+    ASSERT_TRUE(static_cast<bool>(std::getline(csv, line)));
+    std::replace(line.begin(), line.end(), ',', ' ');
+    double decode = 0, pre = 0, infer = 0, post = 0, render = 0;
+    long long rss = 0;
+    std::istringstream fields(line);
+    ASSERT_TRUE(static_cast<bool>(fields >> decode >> pre >> infer >> post >> render >> rss));
+    EXPECT_DOUBLE_EQ(decode, 7.0);
+    EXPECT_GT(pre, 0.0);
+    EXPECT_GE(infer, 25.0);
+    EXPECT_GT(post, 0.0);
+    EXPECT_GE(render, 25.0);
+    EXPECT_GT(rss, 0);
+}
+
+TEST(EngineTest, InitializedPerformanceCsvUsesPrivateStorageWithoutPrecreatedMetrics) {
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("rk_engine_private_perf_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto cascade = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+        "app/src/main/assets/lbpcascade_frontalface.xml";
+    ASSERT_TRUE(std::filesystem::is_regular_file(cascade));
+    ASSERT_FALSE(std::filesystem::exists(directory / "metrics"));
+    {
+        Engine engine;
+        ASSERT_TRUE(engine.initialize(-1, cascade.string(), directory.string()));
+        ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(std::make_shared<ScriptedDetector>())));
+        ASSERT_TRUE(engine.processFrameOnce(cv::Mat(480, 640, CV_8UC3, cv::Scalar(50, 50, 50)), 4.0));
+    }
+    std::ifstream csv(directory / "metrics/engine_perf.csv");
+    ASSERT_TRUE(csv.is_open()) << "正式初始化必须在应用私有存储中创建性能输出目录";
+    std::string row;
+    ASSERT_TRUE(static_cast<bool>(std::getline(csv, row)));
+    EXPECT_EQ(std::count(row.begin(), row.end(), ','), 5);
+}
+
+TEST(EngineTest, GalleryUpdateDoesNotReshowTracksHiddenAfterDetectionFailure) {
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(index->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err)) << err;
+    Engine engine;
+    auto detector = std::make_shared<ScriptedDetector>();
+    detector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    engine.setRealtimePipeline(makeRtPipeline(detector, index));
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(50, 50, 50));
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(engine.processFrameOnce(frame));
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "alice");
+    detector->fail = true;
+    ASSERT_TRUE(engine.processFrameOnce(frame));
+    ASSERT_TRUE(engine.getTrackViews().empty());
+
+    // 检测失败时隐藏轨迹；图库更新只能撤销身份，不能重新展示未被当前帧确认的旧框。
+    ASSERT_TRUE(engine.applyGalleryUpdate(index, {"alice"}));
+    EXPECT_TRUE(engine.getTrackViews().empty());
+}
+
+TEST(EngineTest, ApplyGalleryUpdateRevokesPendingIdentityImmediately) {
+    auto index = std::make_shared<FaceSearchLinearIndex>();
+    std::string err;
+    ASSERT_TRUE(index->reset({{"alice", std::vector<float>(512, 1.0f)}}, 512, err)) << err;
+    Engine engine;
+    auto detector = std::make_shared<ScriptedDetector>();
+    detector->boxes = {boxOf(cv::Rect(200, 150, 160, 200))};
+    auto empty = std::make_shared<FaceSearchLinearIndex>();
+    ASSERT_TRUE(empty->reset({}, 512, err)) << err;
+    engine.setRealtimePipeline(makeRtPipeline(detector, empty));
+    cv::Mat frame(rk_core::config::FRAME_HEIGHT, rk_core::config::FRAME_WIDTH,
+                  CV_8UC3, cv::Scalar(50, 50, 50));
+    // 先确认框，再开始累计身份；框确认与身份确认是两道独立门槛。
+    for (int i = 0; i < 3; ++i) engine.processFrameOnce(frame);
+    ASSERT_TRUE(engine.applyGalleryUpdate(index, {"alice"}));
+    engine.processFrameOnce(frame);
+    ASSERT_EQ(engine.getTrackViews().size(), 1u);
+    ASSERT_TRUE(engine.getTrackViews()[0].identityPending);
+    ASSERT_EQ(engine.getTrackViews()[0].stableId, "Unknown");
+
+    // 换库时尚未确认的候选也属于旧库；必须即时撤销，不能等下一帧修正对外状态。
+    ASSERT_TRUE(engine.applyGalleryUpdate(index, {"alice"}));
+    EXPECT_TRUE(engine.getTrackViews()[0].identityPending);
+    ASSERT_TRUE(engine.applyGalleryUpdate(empty, {}));
+    const auto revoked = engine.getTrackViews();
+    ASSERT_EQ(revoked.size(), 1u);
+    EXPECT_FALSE(revoked[0].identityPending);
+    EXPECT_GT(revoked[0].bbox.area(), 0);
+}
+
 TEST(EngineTest, ApplyGalleryUpdateSwapsGalleryAndRevokesAtomically) {
     auto index = std::make_shared<FaceSearchLinearIndex>();
     std::string err;
@@ -1858,4 +2104,125 @@ TEST(RealtimeFacePipelinePlatformDefault, DefaultEnforceBudgetMatchesPlatform) {
            "在 x64 上把 RealtimeFacePipeline.cpp 的 #else 改成 true 即令本断言翻红";
 #endif
 }
+
+namespace {
+class AccelEnvironmentScope {
+public:
+    explicit AccelEnvironmentScope(const char* key, const char* value) : key_(key) {
+        const char* previous = std::getenv(key);
+        hadValue_ = previous != nullptr;
+        if (previous) previous_ = previous;
+        set(value);
+    }
+    ~AccelEnvironmentScope() { set(hadValue_ ? previous_.c_str() : nullptr); }
+private:
+    void set(const char* value) {
+#ifdef _WIN32
+        _putenv_s(key_.c_str(), value ? value : "");
+#else
+        if (value) setenv(key_.c_str(), value, 1); else unsetenv(key_.c_str());
+#endif
+    }
+    std::string key_, previous_;
+    bool hadValue_ = false;
+};
+
+rk_accel::AccelContractStatus accelStatus(const Engine& engine, const std::string& key) {
+    for (const auto& status : engine.accelerationStatuses()) if (status.key == key) return status;
+    ADD_FAILURE() << "缺少加速状态: " << key;
+    return {};
+}
+
+class NamedNcnnDetector : public ScriptedDetector {
+    const char* name() const override { return "scrfd_ncnn"; }
+};
+class NamedNcnnEmbedder : public ConstantEmbedder {
+    const char* name() const override { return "ncnn"; }
+};
+}
+
+TEST(EngineAccelerationEvidence, CompiledNcnnWithoutLoadedPipelineIsNotEffective) {
+    Engine engine;
+    EXPECT_FALSE(accelStatus(engine, "ncnn").effective);
+    ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(std::make_shared<ScriptedDetector>())));
+    EXPECT_FALSE(accelStatus(engine, "ncnn").effective) << "其他后端的快照不能充当 ncnn 证据";
+}
+
+TEST(EngineAccelerationEvidence, LoadedNcnnSnapshotRefreshesAndClearingRevokesEvidence) {
+    Engine engine;
+    auto pipeline = makeRtPipeline(std::make_shared<NamedNcnnDetector>(), nullptr, false,
+                                   std::make_shared<NamedNcnnEmbedder>());
+    ASSERT_TRUE(engine.setRealtimePipeline(pipeline));
+    EXPECT_FALSE(accelStatus(engine, "ncnn").effective);
+    ASSERT_TRUE(pipeline->reload(rtManifest(), "", "arm64-v8a", "").ok);
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    EXPECT_TRUE(accelStatus(engine, "ncnn").effective) << "getter 必须读取同对象的新快照";
+#else
+    EXPECT_FALSE(accelStatus(engine, "ncnn").effective);
+#endif
+    ASSERT_TRUE(engine.setRealtimePipeline(nullptr));
+    EXPECT_FALSE(accelStatus(engine, "ncnn").effective);
+}
+
+TEST(EngineAccelerationEvidence, RequestedBackendsWithoutRuntimeEvidenceStayIneffective) {
+    AccelEnvironmentScope qualcomm("RK_USE_QUALCOMM", "1");
+    AccelEnvironmentScope mpp("RK_USE_MPP", "1");
+    AccelEnvironmentScope libyuv("RK_USE_LIBYUV", "1");
+    Engine engine;
+    for (const auto& key : {"qualcomm", "mpp", "libyuv"}) {
+        const auto status = accelStatus(engine, key);
+        EXPECT_TRUE(status.requested) << key;
+        EXPECT_FALSE(status.effective) << key;
+        EXPECT_NE(status.reason, "ok") << key;
+    }
+}
+
+#if defined(RK_ACCEL_TEST_LIBYUV_STUB)
+// 独立验证目标用可控返回码替代本机未安装的 libyuv，仅验证 Engine 的成功/回落接线。
+void rkTestSetLibyuvResult(int value);
+TEST(EngineAccelerationEvidence, LibyuvSuccessRefreshesEvidenceAndFallbackRevokesIt) {
+    AccelEnvironmentScope requested("RK_USE_LIBYUV", "1");
+    Engine engine;
+    ASSERT_TRUE(engine.setRealtimePipeline(makeRtPipeline(std::make_shared<ScriptedDetector>())));
+    engine.setExternalInputEnabled(true);
+    struct RunningEngine {
+        Engine& engine;
+        std::thread worker;
+        explicit RunningEngine(Engine& value) : engine(value), worker([&value] { value.run(); }) {}
+        ~RunningEngine() { engine.stop(); worker.join(); }
+    } running(engine);
+    uint64_t sequence = 0;
+    auto feed = [&](ExternalFrameFormat format) {
+        ExternalFrame input;
+        input.format = format;
+        input.width = input.height = 4;
+        if (format == ExternalFrameFormat::NV21) {
+            input.nv21.assign(24, 128);
+            input.nv21RowStrideY = 4;
+        } else {
+            input.y = {std::vector<uint8_t>(16, 128), 4, 1};
+            input.u = {std::vector<uint8_t>(4, 128), 2, 1};
+            input.v = {std::vector<uint8_t>(4, 128), 2, 1};
+        }
+        if (!engine.pushExternalFrame(std::move(input))) return false;
+        cv::Mat rendered;
+        const auto until = std::chrono::steady_clock::now() + kInterleaveWait;
+        while (std::chrono::steady_clock::now() < until) {
+            if (engine.getRenderFrame(rendered, sequence)) return true;
+            std::this_thread::yield();
+        }
+        return false;
+    };
+    EXPECT_FALSE(accelStatus(engine, "libyuv").effective);
+    for (const auto format : {ExternalFrameFormat::NV21, ExternalFrameFormat::YUV_420_888}) {
+        rkTestSetLibyuvResult(0);
+        ASSERT_TRUE(feed(format));
+        EXPECT_TRUE(accelStatus(engine, "libyuv").effective);
+        rkTestSetLibyuvResult(-1);
+        ASSERT_TRUE(feed(format));
+        EXPECT_FALSE(accelStatus(engine, "libyuv").effective) << "OpenCV 回落不能遗留上帧成功证据";
+    }
+    rkTestSetLibyuvResult(0);
+}
+#endif
 

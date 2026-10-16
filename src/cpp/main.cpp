@@ -382,7 +382,7 @@ static int runFaceInferCli(int argc, char** argv) {
                      "[--yolo-opencv-backend 0] [--yolo-opencv-target 0] "
                      "[--arc-backend opencv] [--arc-model <path>] [--arc-config <path>] [--arc-framework <name>] [--arc-output-name <name>] [--arc-input-name <name>] [--arc-w 112] [--arc-h 112] "
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
-                     "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive N] "
+                     "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive 1] "
                      "[--face-select score_area|score|area|first] "
                      "[--detector-id yolo_face|scrfd_0.5gf] [--embedder-id arcface|mobilefacenet] [--face-profile-dir <dir>] "
                      "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"

@@ -343,7 +343,7 @@ AppConfig loadConfigFromIniOrDefault(AppConfig* envFreeOut) {
     // A18：http 端口的 env 覆盖移到函数末尾（见末尾统一覆盖块）。
 
     cfg.poster.enable = readIniBool(cfg.configPath, L"poster", L"enable", cfg.poster.enable);
-    cfg.poster.postUrl = utf8FromWide(readIniW(cfg.configPath, L"poster", L"post_url", L"http://localhost:8080/api/faces"));
+    cfg.poster.postUrl = utf8FromWide(readIniW(cfg.configPath, L"poster", L"post_url", L""));
     cfg.poster.throttleMs = readIniInt(cfg.configPath, L"poster", L"throttle_ms", cfg.poster.throttleMs);
     cfg.poster.backoffMinMs = readIniInt(cfg.configPath, L"poster", L"backoff_min_ms", cfg.poster.backoffMinMs);
     cfg.poster.backoffMaxMs = readIniInt(cfg.configPath, L"poster", L"backoff_max_ms", cfg.poster.backoffMaxMs);
@@ -384,6 +384,8 @@ AppConfig loadConfigFromIniOrDefault(AppConfig* envFreeOut) {
     cfg.acceleration.enableMpp = readIniBool(cfg.configPath, L"acceleration", L"enable_mpp", cfg.acceleration.enableMpp);
     cfg.acceleration.enableQualcomm = readIniBool(cfg.configPath, L"acceleration", L"enable_qualcomm", cfg.acceleration.enableQualcomm);
 
+    const auto profileDir = readIniW(cfg.configPath, L"model", L"face_profile_dir", L"");
+    cfg.model.faceProfileDir = profileDir.empty() ? std::filesystem::path{} : resolvePathFromExeDir(profileDir);
     cfg.model.detection = utf8FromWide(readIniW(cfg.configPath, L"model", L"detection", wideFromUtf8(cfg.model.detection).c_str()));
     cfg.model.recognition = utf8FromWide(readIniW(cfg.configPath, L"model", L"recognition", wideFromUtf8(cfg.model.recognition).c_str()));
     cfg.model.backend = rk_accel::normalizeBackendName(
@@ -512,6 +514,7 @@ bool saveConfigToIni(const AppConfig& cfg) {
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_libyuv", toWStringInt(cfg.acceleration.enableLibyuv ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_mpp", toWStringInt(cfg.acceleration.enableMpp ? 1 : 0)) && ok;
     ok = writeIniW(cfg.configPath, L"acceleration", L"enable_qualcomm", toWStringInt(cfg.acceleration.enableQualcomm ? 1 : 0)) && ok;
+    ok = writeIniW(cfg.configPath, L"model", L"face_profile_dir", cfg.model.faceProfileDir.wstring()) && ok;
     ok = writeIniW(cfg.configPath, L"model", L"detection", wideFromUtf8(cfg.model.detection)) && ok;
     ok = writeIniW(cfg.configPath, L"model", L"recognition", wideFromUtf8(cfg.model.recognition)) && ok;
     ok = writeIniW(cfg.configPath, L"model", L"backend", wideFromUtf8(rk_accel::normalizeBackendName(cfg.model.backend, "opencv_dnn"))) && ok;

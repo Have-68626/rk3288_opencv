@@ -34,7 +34,7 @@ endif()
 option(RK_ENABLE_NCNN "启用 ncnn 后端（优先 find_package，缺失时可选 FetchContent）" OFF)
 option(RK_NCNN_FETCHCONTENT "当 ncnn 未安装时，允许通过 FetchContent 拉取并构建 ncnn" OFF)
 set(RK_NCNN_GIT_REPOSITORY "https://github.com/Tencent/ncnn.git" CACHE STRING "ncnn 仓库地址（仅 FetchContent 时使用）")
-set(RK_NCNN_GIT_TAG "master" CACHE STRING "ncnn 版本（tag/commit，默认 master；仅 FetchContent 时使用）")
+set(RK_NCNN_GIT_TAG "e956fbf9bd97fe945df35d736747dc816f8b5f42" CACHE STRING "ncnn 20260113 官方提交（仅 FetchContent 时使用）")
 
 option(RK_ENABLE_MPP "启用 RK MPP 硬解码加速（默认开启，缺失依赖时自动回退为占位实现）" ON)
 option(RK_ENABLE_QUALCOMM "启用 Qualcomm SDK 推理加速（默认开启，缺失依赖时自动回退为占位实现）" ON)
@@ -224,6 +224,7 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
         "tests/cpp/test_resource_cleanup.cpp"
         "tests/cpp/test_gallery_cache.cpp"
         "tests/cpp/test_result_publisher.cpp"
+        "tests/cpp/test_perf_reporter.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         "src/win/src/DnnSsdFaceDetector.cpp"
         "src/win/src/FaceDetector.cpp"
@@ -278,13 +279,24 @@ if(NOT ANDROID AND RK_BUILD_FACE_INFER_UNIT_TESTS)
     set_tests_properties(face_infer_unit_tests PROPERTIES TIMEOUT 120)
 endif()
 
-# 独立 ncnn 精度测试：仅链接 ncnn + OpenCV，不含适配器代码
+# 精度工具复用生产 SCRFD 解码，避免独立实现再次漂移
 if(NOT ANDROID AND RK_HAVE_NCNN AND RK_NCNN_TARGET)
-    add_executable(ncnn_precision_test "tests/cpp/ncnn_precision_test.cpp")
-    find_path(_ncnn_include ncnn/net.h PATHS "${NCNN_DIR}/include" NO_DEFAULT_PATH)
+    add_executable(ncnn_calibration_images "scripts/prepare_ncnn_calibration.cpp")
+    target_link_libraries(ncnn_calibration_images PRIVATE ${RK_OPENCV_FULL_LIBS})
+    if(MSVC)
+        target_compile_options(ncnn_calibration_images PRIVATE /utf-8)
+    endif()
+    add_executable(ncnn_precision_test
+        "tests/cpp/ncnn_precision_test.cpp"
+        "src/cpp/src/adapters/ScrfdNcnnAdapter.cpp"
+        "src/cpp/src/pipeline/ScrfdDecoder.cpp"
+        "src/cpp/src/pipeline/FacePostProcessor.cpp"
+        "src/cpp/src/FileHash.cpp"
+        "src/win/src/JsonLite.cpp")
     target_include_directories(ncnn_precision_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include ${_ncnn_include})
-    target_compile_definitions(ncnn_precision_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include)
+    target_compile_definitions(ncnn_precision_test PRIVATE RK_HAVE_NCNN=1 NOMINMAX WIN32_LEAN_AND_MEAN)
     if(MSVC)
         target_compile_options(ncnn_precision_test PRIVATE /utf-8)
         set_target_properties(ncnn_precision_test PROPERTIES
@@ -292,6 +304,9 @@ if(NOT ANDROID AND RK_HAVE_NCNN AND RK_NCNN_TARGET)
     endif()
     target_link_libraries(ncnn_precision_test ${RK_OPENCV_FULL_LIBS} ${RK_NCNN_TARGET})
     add_test(NAME ncnn_precision_test COMMAND ncnn_precision_test)
+    set_tests_properties(ncnn_precision_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" SKIP_RETURN_CODE 77)
+    add_test(NAME ncnn_precision_contracts COMMAND ncnn_precision_test --self-test)
 endif()
 
 # ── GTest 基础测试（Engine / BioAuth / MotionDetector / ModelRegistry）─────

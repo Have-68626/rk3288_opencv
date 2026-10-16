@@ -114,6 +114,7 @@ export function buildServerFormModelFromDoc(doc: ServerSettingsDoc): {
         target: Number(doc.dnn?.target ?? 0),
       },
       model: {
+        faceProfileDir: String(doc.model?.faceProfileDir ?? ''),
         detection: String(doc.model?.detection ?? ''),
         recognition: String(doc.model?.recognition ?? ''),
         backend: String(doc.model?.backend ?? ''),

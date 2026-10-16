@@ -79,6 +79,7 @@ function fullDoc(): ServerSettingsDoc {
       target: 0,
     },
     model: {
+      faceProfileDir: 'storage/profiles/synthetic',
       detection: 'yolo_face',
       recognition: 'arcface',
       backend: 'opencv_dnn',
@@ -118,6 +119,24 @@ function fullDoc(): ServerSettingsDoc {
 }
 
 describe('buildServerFormModelFromDoc 完整性（S-5）', () => {
+  it('profile 目录完整进入提交，清空显式回到旧入口', () => {
+    const { model: baseline } = buildServerFormModelFromDoc(fullDoc())
+    expect(baseline.model.faceProfileDir).toBe('storage/profiles/synthetic')
+    const changed = { ...baseline, model: { ...baseline.model, faceProfileDir: 'storage/profiles/next' } }
+    expect(buildSettingsSubmission(baseline, changed).patch).toEqual({ model: { faceProfileDir: 'storage/profiles/next' } })
+    const cleared = { ...baseline, model: { ...baseline.model, faceProfileDir: '' } }
+    expect(buildSettingsSubmission(baseline, cleared).patch).toEqual({ model: { faceProfileDir: '' } })
+  })
+
+  it('旧响应缺失 profile 字段时保持空入口，其他编辑不回写该字段', () => {
+    const doc = fullDoc()
+    delete (doc.model as Partial<ServerSettingsDoc['model']>).faceProfileDir
+    const { model: baseline } = buildServerFormModelFromDoc(doc)
+    expect(baseline.model.faceProfileDir).toBe('')
+    const changed = { ...baseline, camera: { ...baseline.camera, width: 800 } }
+    expect(buildSettingsSubmission(baseline, changed).patch).toEqual({ camera: { width: 800 } })
+  })
+
   it('段集合与 ServerSettingsDoc 的段集合逐一相等（判别点：漏一段即红）', () => {
     const { model } = buildServerFormModelFromDoc(fullDoc())
     expect(Object.keys(model).sort()).toEqual([...SETTINGS_SECTIONS].sort())

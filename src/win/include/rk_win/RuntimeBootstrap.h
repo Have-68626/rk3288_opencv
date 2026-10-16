@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+namespace rk_core { struct RealtimePipelineHooks; }
+
 namespace rk_win {
 
 // 前向声明
@@ -47,6 +49,12 @@ public:
     // 纯装配：只构造对象，不启动线程，不写 render_.status；但**会**经识别器构造链向 stderr/stdout
     // 打自检输出（ArcFace / LBPH 识别器初始化时的失败 `std::cerr`、LBPH 成功时的 `std::cout` + SHA256）。
     static BootstrapResult build(const AppConfig& cfg);
+#if defined(RK_ENABLE_TEST_SEAMS)
+    // 仅替换模型装配钩子；manifest、数据库和识别器消费者仍走生产调用链。
+    static BootstrapResult buildForTesting(const AppConfig& cfg, const rk_core::RealtimePipelineHooks& hooks);
+#endif
+private:
+    static BootstrapResult buildInternal(const AppConfig& cfg, const rk_core::RealtimePipelineHooks* hooks);
 };
 
 }  // namespace rk_win

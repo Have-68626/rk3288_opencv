@@ -11,6 +11,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/ocl.hpp>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -33,6 +34,11 @@ public:
      * @param requested true to request OpenCL enablement, false to disable.
      */
     void setUseOpenCL(bool requested);
+
+    void setUseMpp(bool requested) { mppRequested_.store(requested); }
+    bool mppRequested() const { return mppRequested_.load(); }
+    bool mppEffective() const { return mppEffective_.load(); }
+    std::uint64_t mppDecodedFrames() const { return mppDecodedFrames_.load(); }
 
     /**
      * @brief Opens the camera device.
@@ -122,6 +128,7 @@ public:
     std::string getLastMockRejectReason() const;
 
 private:
+    friend struct VideoManagerTestPeer;
     void setMockRejectReason(const std::string& reasonCode, const std::string& detail = "");
     void clearMockRejectReason();
     void captureLoop();
@@ -144,6 +151,9 @@ private:
     cv::Mat staticFrame;
     std::unique_ptr<MppDecoder> mppDecoder;
     bool useMppDecode = false;
+    std::atomic<bool> mppRequested_{false};
+    std::atomic<bool> mppEffective_{false};
+    std::atomic<std::uint64_t> mppDecodedFrames_{0};
 
     // Mock state tracking
     std::atomic<MockState> mockState{ MockState::NONE };

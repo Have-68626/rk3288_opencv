@@ -40,6 +40,52 @@ TEST(TrackCoordinator, CreatesNewTrackForFirstFace) {
     EXPECT_EQ(tracks[0].lastSeenMs, 1200);
 }
 
+TEST(TrackCoordinator, LowercaseUnknownNeverConfirmsAndRevokesAnExistingIdentity) {
+    pipeline::TrackConfig cfg;
+    cfg.stableFrames = 1;
+    pipeline::TrackCoordinator coordinator(cfg);
+    std::vector<pipeline::TrackView> views;
+    for (int i = 0; i < 3; ++i) {
+        views = coordinator.update({face(10, 10, 80, 80, true, "unknown")}, 1000 + i * 100, true);
+    }
+    ASSERT_EQ(views.size(), 1u);
+    EXPECT_EQ(views[0].stableId, "Unknown");
+    for (int i = 0; i < 3; ++i) {
+        views = coordinator.update({face(10, 10, 80, 80, true, "registered")}, 1400 + i * 100, true);
+    }
+    ASSERT_EQ(views.size(), 1u);
+    ASSERT_EQ(views[0].stableId, "registered");
+    views = coordinator.update({face(10, 10, 80, 80, true, "unknown")}, 1800, true);
+    ASSERT_EQ(views.size(), 1u);
+    EXPECT_EQ(views[0].stableId, "Unknown");
+    EXPECT_FLOAT_EQ(views[0].stableConfidence, 0.0f);
+}
+
+TEST(TrackCoordinator, GalleryRevocationPreservesKeptPendingCandidateInReadOnlyViews) {
+    pipeline::TrackConfig cfg;
+    cfg.stableFrames = 1;
+    pipeline::TrackCoordinator coordinator(cfg);
+    const auto initial = coordinator.update({
+        face(0, 0, 40, 40, true, "candidate_a"),
+        face(120, 0, 40, 40, true, "candidate_b")}, 1000, true);
+    ASSERT_EQ(initial.size(), 2u);
+    ASSERT_TRUE(initial[0].identityPending);
+    ASSERT_TRUE(initial[1].identityPending);
+    coordinator.resetIdentitiesExcept({"candidate_b"});
+    const auto snapshot = coordinator.views();
+    ASSERT_EQ(snapshot.size(), 2u);
+    EXPECT_FALSE(snapshot[0].identityPending);
+    EXPECT_TRUE(snapshot[1].identityPending);
+    const auto skipped = coordinator.update({}, 1100, false);
+    ASSERT_EQ(skipped.size(), snapshot.size());
+    for (std::size_t i = 0; i < snapshot.size(); ++i) {
+        EXPECT_EQ(snapshot[i].trackId, skipped[i].trackId);
+        EXPECT_EQ(snapshot[i].bbox.x, skipped[i].bbox.x);
+        EXPECT_EQ(snapshot[i].stableId, skipped[i].stableId);
+        EXPECT_EQ(snapshot[i].identityPending, skipped[i].identityPending);
+    }
+}
+
 // 任务5：未确认轨迹在下一次实际空检测即删（不再仅靠 TTL 保留空框）
 TEST(TrackCoordinator, UnconfirmedTrackRemovedOnNextEmptyDetection) {
     pipeline::TrackCoordinator tc;

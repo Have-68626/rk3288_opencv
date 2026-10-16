@@ -111,6 +111,7 @@ as_of=2026-10-13
 |---|---|---|
 | `plans/2026-07-03-triple-refactor-plan.md` | snapshot | 三层重构实施计划 |
 | `plans/2026-10-13-pr495-review-fixes.md` | living | PR #495 九项审查修复、回归与变异验证计划 |
+| `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |
@@ -182,6 +183,7 @@ as_of=2026-10-13
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `../web/README.md` | living | Web SPA 构建、测试与产物路径 |
+| `../tests/fixtures/rtmp/README.md` | living | Android RTMP 合成边界行为测试、精准变异与验收范围 |
 | `../src/win/third_party/civetweb/LEDGER.md` | living | CivetWeb 供应链台账 |
 | `../deps/qualcomm_snpe/README.md` | — | 第三方依赖说明（**豁免**元数据要求） |
 | `../deps/rk_mpp/README.md` | — | 第三方依赖说明（**豁免**元数据要求） |

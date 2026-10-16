@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-26
+as_of=2026-10-13
 -->
 
 # RK3288 机器视觉引擎 (AI Engine)
@@ -138,7 +138,7 @@ pnpm -C web e2e:run     # Cypress E2E
 | Batch 4 | Web SPA + Android 治理 | ✅ 完成 |
 | Batch 4.7 | MainActivity 拆分 | ✅ 完成 |
 | Batch 5 | 测试覆盖治理（GTest 迁移） | ✅ 完成 |
-| 架构治理 | 架构契约 + CMake 模块化 + JNI 拆分 | ✅ 完成 |
+| 架构治理 | CMake 模块化与 JNI 拆分已完成；RAII 两个符号族闭环，其余契约仍待修复 | 进行中 |
 | 持续 | 文档合规 | 🟡 持续 |
 
 ## 脚本工具

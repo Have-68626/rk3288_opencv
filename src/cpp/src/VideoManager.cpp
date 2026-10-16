@@ -5,6 +5,7 @@
 #include "VideoManager.h"
 #include "Config.h"
 #include "MppDecoder.h"
+#include "AccelerationContract.h"
 #include "NativeLog.h"
 #include <iostream>
 #ifdef __linux__
@@ -574,8 +575,8 @@ bool VideoManager::open(const std::string& filePath) {
             mockState = MockState::LOADING;
             rklog::logInfo("MockMode", "open", "Opening local file, state=LOADING");
 #if defined(RK_HAVE_MPP) && RK_HAVE_MPP && !defined(_WIN32)
-            mppDecoder = std::make_unique<MppDecoder>();
-            if (mppDecoder->init() && mppDecoder->open(filePath)) {
+            if (mppRequested_.load()) mppDecoder = std::make_unique<MppDecoder>();
+            if (mppDecoder && mppDecoder->init() && mppDecoder->open(filePath)) {
                 useMppDecode = true;
                 rklog::logInfo("MockMode", "open", "MPP hardware decoding enabled for: " + sanitizeUriForLog(filePath));
                 // Also initialize cap as fallback in case MPP fails at runtime
@@ -652,6 +653,13 @@ void VideoManager::close() {
     if (captureThread.joinable()) {
         captureThread.join();
     }
+    mppEffective_.store(false);
+    mppDecodedFrames_.store(0);
+    {
+        std::lock_guard<std::mutex> lock(frameMutex);
+        latestFrame.release();
+        hasNewFrame = false;
+    }
     if (cap.isOpened()) {
         cap.release();
     }
@@ -676,6 +684,8 @@ bool VideoManager::getLatestFrame(cv::Mat& outFrame) {
         return false;
     }
     latestFrame.copyTo(outFrame);
+    // 消费标记与发布共用一把锁，防止旧帧重复驱动识别或误清下一帧。
+    hasNewFrame = false;
     return true;
 }
 
@@ -718,6 +728,19 @@ void VideoManager::captureLoop() {
                 consecutiveReadFailures = 0;
                 std::lock_guard<std::mutex> lock(frameMutex);
                 if (!tempFrame.empty()) {
+                    const bool validMppFrame = tempFrame.cols > 0 && tempFrame.cols <= 4096 &&
+                        tempFrame.rows > 0 && tempFrame.rows <= 4096 &&
+                        (tempFrame.channels() == 3 || tempFrame.channels() == 4);
+                    // 初始化成功不代表硬件产帧；仅成功解码且尺寸有效时记录运行证据。
+                    if (validMppFrame) {
+                        mppDecodedFrames_.fetch_add(1);
+                        if (!mppEffective_.exchange(true)) {
+                            rklog::logInfo("VideoManager", "captureLoop", rk_accel::formatSelfCheckLine(
+                                {"mpp", mppRequested_.load(), true, "ok", "decoded_frames=1"}));
+                        }
+                    } else {
+                        mppEffective_.store(false);
+                    }
                     if (!firstFrameValidated && isMockMode) {
                         int ch = tempFrame.channels();
                         bool valid = tempFrame.cols > 0 && tempFrame.cols <= 4096
@@ -744,6 +767,9 @@ void VideoManager::captureLoop() {
                 // MPP decoding failed or EOS, fall back to VideoCapture
                 rklog::logWarn("MockMode", "captureLoop", "MPP decode failed, falling back to VideoCapture");
                 useMppDecode = false;
+                mppEffective_.store(false);
+                rklog::logInfo("VideoManager", "captureLoop", rk_accel::formatSelfCheckLine(
+                    {"mpp", mppRequested_.load(), false, "runtime_init_failed", "decoder_fallback=opencv"}));
                 mppDecoder.reset();
                 if (!cap.isOpened()) {
                     cap.open(mockFilePath);

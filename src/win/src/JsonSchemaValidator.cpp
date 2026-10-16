@@ -304,6 +304,7 @@ JsonValue JsonSchemaValidator::buildSettingsDocSchema() {
         m.o["type"] = JsonValue::makeString("object");
         m.o["additionalProperties"] = JsonValue::makeBool(false);
         JsonValue mp = JsonValue::makeObject();
+        mp.o["faceProfileDir"] = objStr();
         mp.o["detection"] = objStr();
         mp.o["recognition"] = objStr();
         mp.o["backend"] = objStr();

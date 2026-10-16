@@ -155,6 +155,35 @@ static bool isLoopbackOrigin(const std::string& origin) {
     return isLoopbackHost(originHost(origin));
 }
 
+// DNS rebinding 时浏览器的同站信号仍可能为真，所有路由都必须先验证实际请求 authority。
+static bool hasLoopbackAuthority(const HttpFacesServer::HttpRequest& req) {
+    const std::string* authority = nullptr;
+    for (const auto& header : req.headers) {
+        if (header.first != "host") continue;
+        if (authority) return false;  // 重复 Host 由不同代理解释时可能产生不同的路由。
+        authority = &header.second;
+    }
+    if (!authority || authority->empty()) return false;
+    std::size_t end = authority->front() == '[' ? authority->find(']') : authority->find(':');
+    if (authority->front() == '[') {
+        if (end == std::string::npos) return false;
+        ++end;
+    } else if (end == std::string::npos) {
+        end = authority->size();
+    }
+    if (!isLoopbackHost(toLower(authority->substr(0, end)))) return false;
+    if (end == authority->size()) return true;
+    if ((*authority)[end] != ':' || end + 1 == authority->size()) return false;
+    unsigned int port = 0;
+    for (std::size_t i = end + 1; i < authority->size(); ++i) {
+        const char c = (*authority)[i];
+        if (c < '0' || c > '9') return false;
+        port = port * 10 + static_cast<unsigned int>(c - '0');
+        if (port > 65535) return false;
+    }
+    return port != 0;
+}
+
 static std::string guessContentType(const std::string& path) {
     auto pos = path.find_last_of('.');
     if (pos == std::string::npos) return "application/octet-stream";
@@ -589,7 +618,7 @@ HttpFacesServer::HttpResponse HttpFacesServer::jsonErr(int httpStatus, const std
 // ──── 路由调度 ───────────────────────────────────────────────
 
 HttpFacesServer::HttpResponse HttpFacesServer::handleRequest(const HttpRequest& req) {
-    if (startsWith(req.path, "/api")) return handleApi(req);
+    if (startsWith(req.path, "/api") || req.path == "/openapi.json") return handleApi(req);
     return handleStaticOrFallback(req);
 }
 
@@ -650,6 +679,8 @@ HttpFacesServer::HttpResponse HttpFacesServer::handleStaticOrFallback(const Http
 // ──── HTTP 认证授权（S-SEC-B09-001，规格见 docs/security/auth-model.md）────
 
 bool HttpFacesServer::isAnonymousPath(const std::string& path) const {
+    // 规范别名也属于管理 API；它不带 /api 前缀，不能落入静态文件匿名白名单。
+    if (path == "/openapi.json") return false;
     // 非 /api 前缀 = 静态文件托管（写操作已被 handleStaticOrFallback 以 405 拒绝）→ 匿名。
     if (path.rfind("/api", 0) != 0) return true;
     // /api 下仅只读状态端点匿名（健康检查 + 加速状态，无敏感动作/凭据）。
@@ -744,6 +775,12 @@ void HttpFacesServer::handleClient(std::uintptr_t sock) {
     // 避免"注册表已锁但流漏放行"（规格 §4）。未通过 → 401，不执行任何 handler。
     if (!requestAuthorized(req)) {
         (void)writeResponse(sock, unauthorizedResponse());
+        return;
+    }
+
+    // Host 校验覆盖读方法、静态资源和流，不能只用写方法的来源信号阻止 DNS rebinding。
+    if (!hasLoopbackAuthority(req)) {
+        (void)writeResponse(sock, crossSiteForbiddenResponse());
         return;
     }
 
