@@ -14,7 +14,7 @@ as_of=2026-10-16
 
 每项记录落地、回归与变异证据；恢复变异后才做统一检查和独立复核。缓存内账本记录原始条目、裁定与证据，原始审计报告不覆盖。构建只验证 Windows/MSVC 和 Android；Linux 保留参考 CI。
 
-2026-10-16 接续复核：基线 HEAD 为 `dceff75`；`9c499f0` 和 `dceff75` 为接续方本地提交，未推送。本轮修正 M3 测试假通过，使用旧快照持有与新帧发布正向确认；正式 Windows 测试通过。当前真实生产链四项聚焦基线4/4，M1/M2/M3分别4/4/1条失败，原始日志见 `resume-2026-10-16/database-mutants/`；700ms受控调度对照两轮均区分修复态与缺守卫变异。此前139/141和RED数量仅为历史报告，不冒充本轮全套变异。F32已按用户认可规格修复，转换复现和重新登记边界不变。适用正式CTest六目标通过，M3替换后Windows目标再次通过；其他未改模块保留源绑定的既有验证。Cypress仍在二进制启动阶段崩溃，完整E2E未通过，需用户处理运行环境；未作真机/真人精度/外网推流验收。图谱已AST刷新，旧health副产物失效，不作当前证据。
+2026-10-16 接续复核：基线 HEAD 为 `dceff75`；`9c499f0` 和 `dceff75` 为接续方本地提交，未推送。本轮修正 M3 测试假通过，使用旧快照持有与新帧发布正向确认；正式 Windows 测试通过。当前真实生产链四项聚焦基线4/4，M1/M2/M3分别4/4/1条失败，原始日志见 `resume-2026-10-16/database-mutants/`；700ms受控调度对照两轮均区分修复态与缺守卫变异。此前139/141和RED数量仅为历史报告，不冒充本轮全套变异。F32已按用户认可规格修复，转换复现和重新登记边界不变。适用正式CTest六目标通过，M3替换后Windows目标再次通过；其他未改模块保留源绑定的既有验证。Cypress verify已恢复，但完整E2E尚未通过；新增配置/用例/驱动修正已落地，正式运行仍初始化超时或0x80000003，需宿主会话介入；未作真机/真人精度/外网推流验收。图谱已AST刷新，旧health副产物失效，不作当前证据。
 
 ## 逐项账本
 
@@ -40,7 +40,7 @@ as_of=2026-10-16
 | F-0018 | CONFIRMED_DEFECT | P3 | README 治理进度与架构契约实证自相矛盾 | 已修正文档治理进度；其余4条契约仍待修复 |
 | F-0019 | CONFIRMED_DEFECT | P3 | CI 量化产出的 scrfd_int8_ncnn 无任何程序读取校验 | CI已实际调用SCRFD精度模式，合成量化→推理→指标已验证；真实资产未验收 |
 | F-0020 | CONFIRMED_DEFECT | P3 | 注释失真：test_face_infer_pipeline.cpp 描述已删除的 INT8 回落链 | 已更正旧INT8回落链注释，与当前显式装配一致 |
-| F-0021 | CONFIRMED_DEFECT | P3 | Cypress E2E 断言已失效且从不连真实后端，属「空心端到端」 | mock 冒烟已修复；真实 Chrome 验证通过，Cypress 二进制启动受阻 |
+| F-0021 | CONFIRMED_DEFECT | P3 | Cypress E2E 断言已失效且从不连真实后端，属「空心端到端」 | mock冒烟逻辑已修；Cypress verify现可通过。实际复跑发现TS/ESM配置冲突、主题选择器误点透明输入框，以及本地驱动作业清理和端口转发问题：CJS配置获批应用，完整配置IPC、驱动判别、Web156条/lint/build通过。旧选择器实际1/2；修正后正式E2E仍初始化超时，Node22绝对路径对照0x80000003，完整E2E未通过，需宿主会话介入 |
 | F-0022 | REVIEW_CANDIDATE | P2 | Windows reloadRuntime 失败不保留旧运行态（与「load 失败旧状态保持」相悖） | 失败保旧运行态、首次失败和HTTP本次结果已修；正式Windows及精准变异通过 |
 | F-0023 | REVIEW_CANDIDATE | P2 | profile/模型切换不隔离内存图库空间 ⇒ 跨嵌入空间复用模板 | 空间路由、Engine竞态及Windows命令/输出屏障已修；同空间重载的数据库load/save竞争已以databaseMutationMu_互斥。当前正式Windows测试通过；本轮NCNN=1真实生产链四项聚焦回归4/4，移除处理侧锁/重载侧锁/取锁后复核分别触发4/4/1条失败，原始日志保留。M3测试改用旧快照持有和新帧发布确认处理完成，700ms调度对照连续两轮检出旧测试漏检。见resume-2026-10-16/database-mutants/及win-review/；旧报告仅作历史来源 |
 | F-0024 | REVIEW_CANDIDATE | P3 | 检索只挡 NaN 不挡 Inf：Inf 分量可致分数为 NaN，排序退化为索引序 | 已修复；实际检索回归与旧缺陷变异通过 |
@@ -90,6 +90,8 @@ as_of=2026-10-16
 | N-01 | 独立复核（审计外） | 同 templateSpaceId 重载时整库 load/save 竞争导致登记丢失或清库复活 | **已修复并重验**：生产锁序不变；本轮四项真实生产链基线4/4，M1/M2各触发4条失败；正式Windows通过。原始日志见 `resume-2026-10-16/database-mutants/` |
 | N-02 | 独立复核（审计外） | `test_pipeline_initialize_rejects_live_threads` 只定义未注册 ⇒ 死测试、零覆盖（自 enrollment-runtime 轮次起） | **已修复**：补注册进 `win_unit_tests_main.cpp`，转为真执行 |
 | N-03 | 独立复核（审计外） | 取数据库锁后的运行时复核缺少可靠测试；旧测试在处理结束前缓存判据导致假通过 | **已修复并重验**：正向确认旧快照持有和新帧发布，检查旧识别器零调用；缺守卫M3触发1条失败。700ms受控调度两轮修复态PASS、变异FAIL；正式Windows通过。见 `resume-2026-10-16/win-review/clean-results.json` |
+| N-04 | Cypress恢复后实际执行 | TS配置在ESM中产生CommonJS exports错误；主题用例点击被遮挡透明输入框 | CJS配置已获批应用，实际Cypress加载及完整IPC通过；选择器改为可见容器。旧选择器曾1/2；修正后完整E2E仍受初始化超时/原生崩溃阻塞，不能宣称通过。证据 `cypress-recovered-2026-10-16/` |
+| N-05 | 用户实跑日志与本机复现 | PowerShell7不支持Stop-Job -Force；pnpm转发--导致Vite忽略指定地址/端口并误连其他服务 | 已最小修复：正常Stop-Job，直接Vite入口及strictPort，启动前拒绝占用端口。旧参数/旧转发真实失败，新清理/指定端口及占用/空闲判别通过；不停止用户已有5173服务 |
 
 ## 交付标准
 

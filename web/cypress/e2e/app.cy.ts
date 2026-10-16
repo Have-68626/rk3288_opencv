@@ -49,7 +49,7 @@ describe('RK3288 本地控制台（mock 冒烟）', () => {
 
     cy.get('.ant-menu').contains('设置').click()
     cy.contains('基础（主题 / 语言 / 启动页）')
-    cy.get('#theme').click()
+    cy.get('#theme').closest('.ant-select').find('.ant-select-selector').click()
     cy.get('.ant-select-dropdown').contains('深色').click()
     cy.window().then((win) => {
       const prefs = JSON.parse(win.localStorage.getItem('rk_wcfr_web_prefs_v1') || '{}')
