@@ -14,7 +14,7 @@ as_of=2026-10-16
 
 每项记录落地、回归与变异证据；恢复变异后才做统一检查和独立复核。缓存内账本记录原始条目、裁定与证据，原始审计报告不覆盖。构建只验证 Windows/MSVC 和 Android；Linux 保留参考 CI。
 
-2026-10-16 检查点：用户已明确接回工作区并批准样例上报地址清空、MobileFaceNet指定父模型及预处理统一。Engine空间竞态和Windows跨运行时登记/清库/旧身份发布已修；F32已通过可复现转换及六项精准变异，不能再列为等待规范。同空间重载的数据库快照登记丢失已实证并由本轮修复：reloadRuntime 持 databaseMutationMu_ 覆盖候选整库 load 与提交，processLoop 仅对会写库的命令取同锁并在 run() 后立即释放（锁序 lifecycleMu_ → databaseMutationMu_ → publicationMu_）；两条真实 FramePipeline.reload 门控回归先 RED（137 通过 / 2 失败）后 GREEN（140/140），精准变异 M1/M2 各致 3 条确定红。统一检查：全目标构建 rc=0、ctest 6/6、node --test 202/202、Web 156 条、docs H0/M0/L10、仓库卫生 rc=0 均通过；图谱已刷新。已知边界：移除"取锁后运行时复核"无判别锚（已登记）；Cypress 二进制启动仍受阻，未作真机/真人精度/外网推流验收。本轮尚未 commit，不 push。
+2026-10-16 检查点：用户已明确接回工作区并批准样例上报地址清空、MobileFaceNet指定父模型及预处理统一。Engine空间竞态和Windows跨运行时登记/清库/旧身份发布已修；F32已通过可复现转换及六项精准变异，不能再列为等待规范。同空间重载的数据库快照登记丢失已实证并由本轮修复：reloadRuntime 持 databaseMutationMu_ 覆盖候选整库 load 与提交，processLoop 仅对会写库的命令取同锁并在 run() 后立即释放（锁序 lifecycleMu_ → databaseMutationMu_ → publicationMu_）；两条真实 FramePipeline.reload 门控回归先 RED（137 通过 / 2 失败）后 GREEN（141/141）；精准变异 M1/M2 各致 4 条确定红、M3（取锁后运行时复核）致 1 条确定红——该复核此前无判别锚，本轮已补 `pipeline_stale_command_does_not_run_after_reload_wait` 锚定，并含前提自检防静默漏检。统一检查：全目标构建 rc=0、ctest 6/6、node --test 202/202、Web 156 条、docs H0/M0/L10、仓库卫生 rc=0 均通过；图谱已刷新。已知边界：Cypress 二进制启动仍受阻，未作真机/真人精度/外网推流验收。本轮尚未 commit，不 push。
 
 ## 逐项账本
 
@@ -89,7 +89,7 @@ as_of=2026-10-16
 |---|---|---|---|
 | N-01 | 独立复核（审计外） | 同 templateSpaceId 重载时候选整库 load 与在途登记/清库帧的 saveDb 无互斥 ⇒ 登记丢失 / 清库复活 | **已修复**（`reloadRuntime` 持 `databaseMutationMu_` 覆盖候选装配与提交；`processLoop` 仅对会写库的命令取同锁、`run()` 后立即释放；锁序 `lifecycleMu_ → databaseMutationMu_ → publicationMu_`）。两条真实 `FramePipeline.reload` 门控回归 RED→GREEN，M1/M2 变异各致 3 条确定红。证据 `cache/audit-fixes-2026-10-13/enrollment-database-lock/` |
 | N-02 | 独立复核（审计外） | `test_pipeline_initialize_rejects_live_threads` 只定义未注册 ⇒ 死测试、零覆盖（自 enrollment-runtime 轮次起） | **已修复**：补注册进 `win_unit_tests_main.cpp`，转为真执行 |
-| N-03 | 独立复核（审计外） | `processLoop` 取锁后的运行时复核（`rt != runtimeSnapshot()`）当前无任何用例可确定性判别 | **如实登记为无判别锚**（可达性论证见同目录报告 §5），本轮未新增生产接缝 |
+| N-03 | 独立复核（审计外） | `processLoop` 取锁后的运行时复核（`rt != runtimeSnapshot()`）此前无任何用例可确定性判别 | **已闭合**：新增判别锚 `pipeline_stale_command_does_not_run_after_reload_wait`（移除该行 ⇒ 恰好 1 条确定红）；未新增生产接缝，观测放在测试文件内的 `FramePipelineTestAccess`。见同目录报告 §5 |
 
 ## 交付标准
 

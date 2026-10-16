@@ -96,6 +96,8 @@ bool test_pipeline_failed_reload_keeps_pending_commands();
 bool test_pipeline_reload_discards_old_identity_outputs();
 bool test_pipeline_callback_rejects_runtime_reload();
 bool test_pipeline_reload_shutdown_and_publication_lock_order();
+// 取锁后的运行时复核（数据库锁版本）：被挡在数据库锁上的旧命令不得在重载提交后仍然执行。
+bool test_pipeline_stale_command_does_not_run_after_reload_wait();
 bool test_pipeline_reload_config_commit_uses_reader_mutex();
 bool test_pipeline_shutdown_waits_for_camera_change();
 bool test_pipeline_callback_reentry_does_not_deadlock();
@@ -348,6 +350,8 @@ int main(int argc, char** argv) {
         {"pipeline_reload_discards_old_identity_outputs", test_pipeline_reload_discards_old_identity_outputs},
         {"pipeline_callback_rejects_runtime_reload", test_pipeline_callback_rejects_runtime_reload},
         {"pipeline_reload_shutdown_and_publication_lock_order", test_pipeline_reload_shutdown_and_publication_lock_order},
+        {"pipeline_stale_command_does_not_run_after_reload_wait",
+         test_pipeline_stale_command_does_not_run_after_reload_wait},
         {"pipeline_reload_config_commit_uses_reader_mutex", test_pipeline_reload_config_commit_uses_reader_mutex},
         {"pipeline_shutdown_waits_for_camera_change", test_pipeline_shutdown_waits_for_camera_change},
         {"pipeline_callback_reentry_does_not_deadlock", test_pipeline_callback_reentry_does_not_deadlock},
