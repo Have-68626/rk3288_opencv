@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-10-16
+as_of=2026-10-17
 -->
 
 # 文档索引
@@ -115,6 +115,8 @@ as_of=2026-10-16
 | `plans/2026-10-16-android-ncnn-build-remediation.md` | living | Android ncnn 路径查找、消费方编译选项及双 ABI 编译/链接验证 |
 | `plans/2026-10-16-cypress-e2e-remediation.md` | living | Cypress 启动恢复、34项 E2E、原覆盖率门槛与五组变异验证 |
 | `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
+| `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |
+| `plans/2026-10-17-rtmp-lan-handoff.md` | snapshot | 双机推流实测结果、安全落点与接续命令 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |
@@ -123,19 +125,22 @@ as_of=2026-10-16
 | `plans/2026-07-21-agent-guide-audit.md` | snapshot | 助手指南（AGENTS.md/CLAUDE.md）审计与镜像治理 |
 | `plans/int8-quantization-plan.md` | snapshot | INT8 量化实现计划（任务级） |
 
-## specs/（时点快照）
+## specs/
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `specs/2026-07-03-triple-refactor-design.md` | snapshot | 三层重构设计（Engine/FramePipeline/HttpFacesServer 值流管线） |
 | `specs/2026-07-04-governance-plan-design.md` | snapshot | 全项目治理计划设计 |
 | `specs/2026-07-06-architecture-governance-design.md` | snapshot | 架构治理设计（5 条契约的**目标**定义） |
+| `specs/2026-10-17-rtmp-hidden-preview-design.md` | living | 实机推流测试隐藏预览的临时控制器与正式模式取舍 |
 
 ## audits/
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `audits/2026-09-15-documentation-audit.md` | snapshot | 全项目文档审计报告（门禁基准失效根因、真实错误清单、遗留问题） |
+| `audits/2026-10-17-cache-inventory.md` | snapshot | 本地缓存盘点、删除候选、保留与入库归档清单 |
+| `audits/2026-10-17-rk3288-runtime-feedback.md` | snapshot | 双机推流实测、资源采样及开发改进反馈 |
 
 ### audits/archive/（已冻结）
 

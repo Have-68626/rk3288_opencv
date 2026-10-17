@@ -1,19 +1,31 @@
 <!-- DOCSYNC_DOC
 type=runbook
 status=living
-as_of=2026-09-18
+as_of=2026-10-17
 -->
 
 # RK3288 Android 设备验收清单（人工执行）
 
 
-**执行状态**: **待真机执行**。本文是手工验收清单，步骤存在不等于场景已通过；无论断结果不得标记为“已通过”。
+**执行状态**: **完整验收未通过**。本轮FFmpegKit局域网分段已有真机测量，详见[验收记录](../plans/2026-10-17-rtmp-lan-validation.md)及[双机实测与开发反馈](../audits/2026-10-17-rk3288-runtime-feedback.md)；本文完整的人脸与性能清单尚未执行完毕。步骤存在不等于场景通过，无对应测量及判据记录不得标记为“已通过”。
 
 **适用对象**: RK3288（`armeabi-v7a`）与 ARM64 高精度机型；Android App 主链路。
 
 **自动化边界**: 数据采集可用 `scripts/run-android-face-regression.ps1`（私有媒体回归，仅聚合并匿名化报告；其中 A1 的稳态 FPS 判据已能自动给出显式结论行，口径见 A1）；**判定与留档仍由人工完成**。性能口径亦可参考 `docs/guides/windows-service/performance.md` 的留档要求。
 
 ## 0. 前置条件
+
+### 0.1 局域网与设备操作边界
+
+历史拓扑为笔记本与两台RK3288经交换机连接。机A的TCP ADB目标为 `192.168.5.2:5555`，机B为 `192.168.5.3:5555`；出处见[拓扑设计](../designs/assistant-terminal-vision.md)与[设备调查](../research/rk3288-device-capability-survey-2026-09-17.md)。这些是历史连接参数，不表示当前在线。ADB不在PATH时，使用本机 `D:/ProgramData/AndroidStudioSDK/platform-tools/adb.exe`，不要据命令名不可用推断设备不可达。
+
+先指定机A、机B或两台分轮，再只读核对型号、API/ABI、应用版本与剩余空间。安装APK、推送文件、启动相机与实际传输按具体方案确认；禁止默认执行卸载、清数据、修改系统时间、governor、`adb root`、`remount` 或 `setprop`。应用数据与模型保持，签名不兼容时停止并报告，不用卸载绕过。
+
+本轮FFmpegKit验收选择局域网接收：RK3288向笔记本的专用RTMP接收进程推送，Windows本地Web服务继续只监听回环地址。确认接收网卡与端口后，先合成视频短测30秒，再进行5分钟相机测试；本轮镜头固定，按用户批准范围采集，并用临时控制器遮黑应用内容区，机器屏幕不显示相机画面。相机路径640×480、15fps、H.264、无音频。接收端须实际收到持续可解码帧；记录运行时长、帧数、错误、内存/CPU、停止及重启结果。15fps是请求值，不预先宣称RK3288编码吞吐达标；记录实际接收帧率，低于目标单列性能未达标。断流恢复另作显式测试，不重启设备或网络。无需开放公网；必要的防火墙规则另行确认，限制为选定设备与测试端口，结束后撤销。
+
+真实相机帧依赖生产JNI；开展相机链验收时必须核对真实核心包及实际ncnn编译开关，不能以JNI桩APK替代。依赖位置与摘要见[FFmpegKit构建记录](../plans/2026-10-16-ffmpeg-kit-build.md)，本轮逐台测量、失败记录和验收边界统一见[局域网验收计划](../plans/2026-10-17-rtmp-lan-validation.md)。不保存或回传截图、录像、界面XML，不导出底库或凭据；日志先脱敏，仅保留聚合测量结果。本文是通用清单，不将局部推流测试替代完整人脸验收。
+
+### 0.2 环境与证据准备
 
 1. 目标设备已连接：`adb devices` 可见（RK3288 常用 `adb connect 192.168.5.2:5555`；设备时钟可能未校准，注意时间戳解读）。
 2. 已安装 debug APK：`gradlew.bat --no-daemon :app:assembleDebug`，产物 `app/build/outputs/apk/debug/app-debug.apk`。
