@@ -113,6 +113,8 @@ as_of=2026-10-16
 | `plans/2026-10-13-pr495-review-fixes.md` | living | PR #495 九项审查修复、回归与变异验证计划 |
 | `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
 | `plans/2026-10-16-android-ncnn-build-remediation.md` | living | Android ncnn 路径查找、消费方编译选项及双 ABI 编译/链接验证 |
+| `plans/2026-10-16-cypress-e2e-remediation.md` | living | Cypress 启动恢复、34项 E2E、原覆盖率门槛与五组变异验证 |
+| `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |

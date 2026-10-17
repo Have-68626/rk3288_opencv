@@ -16,6 +16,8 @@ as_of=2026-10-16
 
 2026-10-16 接续复核：基线 HEAD 为 `dceff75`；`9c499f0` 和 `dceff75` 为接续方本地提交，未推送。本轮修正 M3 测试假通过，使用旧快照持有与新帧发布正向确认；正式 Windows 测试通过。当前真实生产链四项聚焦基线4/4，M1/M2/M3分别4/4/1条失败，原始日志见 `resume-2026-10-16/database-mutants/`；700ms受控调度对照两轮均区分修复态与缺守卫变异。此前139/141和RED数量仅为历史报告，不冒充本轮全套变异。F32已按用户认可规格修复，转换复现和重新登记边界不变。适用正式CTest六目标通过，M3替换后Windows目标再次通过；其他未改模块保留源绑定的既有验证。Cypress verify已恢复，但完整E2E尚未通过；新增配置/用例/驱动修正已落地，正式运行仍初始化超时或0x80000003，需宿主会话介入；未作真机/真人精度/外网推流验收。图谱已AST刷新，旧health副产物失效，不作当前证据。
 
+2026-10-16 Cypress最终收口：主会话在正式Vite配置下完整34/34通过，原nyc门槛全部达标；162项单测、构建/包体门禁、五组精准变异及清理验证通过。旧“初始化阻塞/待宿主介入”已由当前证据取代。Android ncnn既有接线问题已另行获批修复并本地提交cdb1ab5，双ABI100对象/2次独立JNI链接及23项回归/4组变异通过；不代表完整APK或真机验收。细节见[本轮Web记录](2026-10-16-cypress-e2e-remediation.md)与[Android记录](2026-10-16-android-ncnn-build-remediation.md)。按最新交接要求，当前Web改动保留未提交，不暂存、不推送。
+
 ## 逐项账本
 
 | 编号 | 审计类别 | 优先级 | 问题 | 当前裁定 |
@@ -40,7 +42,7 @@ as_of=2026-10-16
 | F-0018 | CONFIRMED_DEFECT | P3 | README 治理进度与架构契约实证自相矛盾 | 已修正文档治理进度；其余4条契约仍待修复 |
 | F-0019 | CONFIRMED_DEFECT | P3 | CI 量化产出的 scrfd_int8_ncnn 无任何程序读取校验 | CI已实际调用SCRFD精度模式，合成量化→推理→指标已验证；真实资产未验收 |
 | F-0020 | CONFIRMED_DEFECT | P3 | 注释失真：test_face_infer_pipeline.cpp 描述已删除的 INT8 回落链 | 已更正旧INT8回落链注释，与当前显式装配一致 |
-| F-0021 | CONFIRMED_DEFECT | P3 | Cypress E2E 断言已失效且从不连真实后端，属「空心端到端」 | mock冒烟逻辑已修；Cypress verify现可通过。实际复跑发现TS/ESM配置冲突、主题选择器误点透明输入框，以及本地驱动作业清理和端口转发问题：CJS配置获批应用，完整配置IPC、驱动判别、Web156条/lint/build通过。旧选择器实际1/2；修正后正式E2E仍初始化超时，Node22绝对路径对照0x80000003，完整E2E未通过，需宿主会话介入 |
+| F-0021 | CONFIRMED_DEFECT | P3 | Cypress E2E 断言已失效且从不连真实后端，属「空心端到端」 | 已修复并正式验收：34项mock E2E通过，语句90.53%/行94.16%/函数88.14%/分支85.09%，保持原门槛；162项单测、五组精准变异通过。宿主交互标记、旧覆盖率累积、启动重试导航与失败信封缓存已修；不冒充真实后端联调 |
 | F-0022 | REVIEW_CANDIDATE | P2 | Windows reloadRuntime 失败不保留旧运行态（与「load 失败旧状态保持」相悖） | 失败保旧运行态、首次失败和HTTP本次结果已修；正式Windows及精准变异通过 |
 | F-0023 | REVIEW_CANDIDATE | P2 | profile/模型切换不隔离内存图库空间 ⇒ 跨嵌入空间复用模板 | 空间路由、Engine竞态及Windows命令/输出屏障已修；同空间重载的数据库load/save竞争已以databaseMutationMu_互斥。当前正式Windows测试通过；本轮NCNN=1真实生产链四项聚焦回归4/4，移除处理侧锁/重载侧锁/取锁后复核分别触发4/4/1条失败，原始日志保留。M3测试改用旧快照持有和新帧发布确认处理完成，700ms调度对照连续两轮检出旧测试漏检。见resume-2026-10-16/database-mutants/及win-review/；旧报告仅作历史来源 |
 | F-0024 | REVIEW_CANDIDATE | P3 | 检索只挡 NaN 不挡 Inf：Inf 分量可致分数为 NaN，排序退化为索引序 | 已修复；实际检索回归与旧缺陷变异通过 |
@@ -69,7 +71,7 @@ as_of=2026-10-16
 | F-0047 | REVIEW_CANDIDATE | P3 | AppStore.refreshServerSettings 过期分支返回 true，布尔语义与「本次是否落地」不一致 | 已修复；真实并发请求回归与旧缺陷变异通过 |
 | F-0048 | REVIEW_CANDIDATE | P3 | PerfReporter「Peak RSS」名不副实 + 有锁入队/静默丢样本/p95 口径分裂 | 采样峰值/最近秩/保新1024/drop可见/退出排空已修；6回归9变异并独立复核通过 |
 | F-0049 | REVIEW_CANDIDATE | P3 | ncnn FetchContent 默认引用可移动 ref master | 已固定官方release完整SHA，用户已批准并应用CMake/CI接线 |
-| F-0050 | REVIEW_CANDIDATE | P3 | RTMP 推流：凭据未脱敏 Toast、回调语义失真、相机源未实现 | 回调/隐私/相机流/JNI独立seq已实现；2回归15变异/双ABI语法/Android桩通过；可选AAR缺失与设备实推未验收 |
+| F-0050 | REVIEW_CANDIDATE | P3 | RTMP 推流：凭据未脱敏 Toast、回调语义失真、相机源未实现 | 回调/隐私/相机流/JNI独立seq已实现；既有2回归15变异/双ABI语法/Android桩通过；2026-10-16用户授权x264/GPL AAR已自编译集成，26库/401单测/桩APK组装/lint及模型门禁通过；设备实推未验收 |
 | F-0051 | REVIEW_CANDIDATE | P3 | CHANGELOG/CREDITS 的 DOCSYNC as_of 元数据陈旧 | 元数据已按实际变更更新；本轮文档门禁H0/M0/L10 |
 | F-0052 | REVIEW_CANDIDATE | P3 | CLAUDE.md 对 unit-tests 跨平台编译检查的范围描述偏大 | 已将Linux参考编译检查范围订正为实际3个文件 |
 | F-0053 | REVIEW_CANDIDATE | P3 | CREDITS/ledger 对 SCRFD「代码许可」的归属待取证 | 原Apache-2.0归属经SCRFD子目录LICENSE反证为正确；已补直接上游来源，不改权重许可 |
@@ -90,8 +92,13 @@ as_of=2026-10-16
 | N-01 | 独立复核（审计外） | 同 templateSpaceId 重载时整库 load/save 竞争导致登记丢失或清库复活 | **已修复并重验**：生产锁序不变；本轮四项真实生产链基线4/4，M1/M2各触发4条失败；正式Windows通过。原始日志见 `resume-2026-10-16/database-mutants/` |
 | N-02 | 独立复核（审计外） | `test_pipeline_initialize_rejects_live_threads` 只定义未注册 ⇒ 死测试、零覆盖（自 enrollment-runtime 轮次起） | **已修复**：补注册进 `win_unit_tests_main.cpp`，转为真执行 |
 | N-03 | 独立复核（审计外） | 取数据库锁后的运行时复核缺少可靠测试；旧测试在处理结束前缓存判据导致假通过 | **已修复并重验**：正向确认旧快照持有和新帧发布，检查旧识别器零调用；缺守卫M3触发1条失败。700ms受控调度两轮修复态PASS、变异FAIL；正式Windows通过。见 `resume-2026-10-16/win-review/clean-results.json` |
-| N-04 | Cypress恢复后实际执行 | TS配置在ESM中产生CommonJS exports错误；主题用例点击被遮挡透明输入框 | CJS配置已获批应用，实际Cypress加载及完整IPC通过；选择器改为可见容器。旧选择器曾1/2；修正后完整E2E仍受初始化超时/原生崩溃阻塞，不能宣称通过。证据 `cypress-recovered-2026-10-16/` |
+| N-04 | Cypress恢复后实际执行 | TS配置在ESM中产生CommonJS exports错误；主题用例点击被遮挡透明输入框 | CJS配置与可见主题选择器保留；主会话定位宿主交互标记并修复，完整34项E2E及原覆盖率门槛通过；最新证据见cypress-main-resume/formal-final/，旧超时/崩溃记录仅作历史 |
 | N-05 | 用户实跑日志与本机复现 | PowerShell7不支持Stop-Job -Force；pnpm转发--导致Vite忽略指定地址/端口并误连其他服务 | 已最小修复：正常Stop-Job，直接Vite入口及strictPort，启动前拒绝占用端口。旧参数/旧转发真实失败，新清理/指定端口及占用/空闲判别通过；不停止用户已有5173服务 |
+| N-06 | 主会话真实Cypress诊断 | 宿主自动切换PowerShell标记导致内部查询进入交互pwsh而挂起 | 子进程环境副本移除标记，宿主不变；真实完整E2E与恢复标记变异检出 |
+| N-07 | 干净覆盖率对照 | headless插件合并旧计数导致跨轮假通过 | 单文件归档旧计数；正式干净运行达标，不移动旧计数变异检出 |
+| N-08 | 新增启动恢复E2E | 启动页重试成功不导航 | 成功后按启动偏好导航；真实E2E及移除导航变异检出 |
+| N-09 | 启动恢复回归 | 失败信封被缓存且旧失败缓存阻塞立即重试 | 只写成功信封、拒绝旧失败缓存；回归、读写两组精准变异检出 |
+| N-10 | Android正式构建扩展 | ABI安装根未用于ncnn查找，启用后传播禁用RTTI/异常选项 | 用户纳入并批准后已修；双ABI100对象/2链接、23项回归和4组变异通过，见专项记录 |
 
 ## 交付标准
 

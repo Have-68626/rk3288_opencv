@@ -3,6 +3,9 @@
 *.ap_
 *.aab
 
+# 本地源码编译的可选推流依赖；版本与摘要登记在供应链账本。
+/app/libs/ffmpeg-kit.aar
+
 # Files for the ART/Dalvik VM
 *.dex
 
