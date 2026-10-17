@@ -57,6 +57,16 @@ describe('fetchJson（导入真实 http.ts 实现）', () => {
     expect(a).toEqual(b)
   })
 
+  it('失败信封不阻断重试恢复', async () => {
+    const failure = { ok: false, error: { code: 'unavailable', message: '暂未就绪' } }
+    const success = { ok: true, data: { ready: true } }
+    mockFetch.mockResolvedValueOnce(jsonResponse(true, failure)).mockResolvedValueOnce(jsonResponse(true, success))
+    const opts = { method: 'GET', timeoutMs: 100, logLevel: 'silent' as const, cacheStrategy: 'memory-30s' as const, cacheKey: 'retry-after-failed-envelope' }
+    expect(await fetchJson('/api/retry-fixture', opts)).toEqual(failure)
+    expect(await fetchJson('/api/retry-fixture', opts)).toEqual(success)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
   it('HTTP 错误：映射 ApiError（code/httpStatus/details）', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse(false, { ok: false, error: { code: 'bad_request', message: '参数错误', details: ['a'] } }, 400),
@@ -129,6 +139,25 @@ describe('fetchJson（导入真实 http.ts 实现）', () => {
     // 存储 key 前缀直接复用 http.ts 导出的 CACHE_KEY_PREFIX（单一来源），
     // 改前缀时实现与测试同步更新，无漂移风险。
     const storageKey = (cacheKey: string) => `${CACHE_KEY_PREFIX}${cacheKey}`
+
+    it('失败信封不写入持久缓存，恢复后才缓存成功结果', async () => {
+      const failure = { ok: false, error: { code: 'fixture', message: '暂未就绪' } }
+      const success = { ok: true, data: 'recovered' }
+      const opts = { method: 'GET', timeoutMs: 100, logLevel: 'silent' as const, cacheStrategy: 'local-5m' as const, cacheKey: 'no-persisted-failure' }
+      mockFetch.mockResolvedValueOnce(jsonResponse(true, failure)).mockResolvedValueOnce(jsonResponse(true, success))
+      expect(await fetchJson('/api/retry', opts)).toEqual(failure)
+      expect(localStorageMock.getItem(storageKey(opts.cacheKey))).toBeNull()
+      expect(await fetchJson('/api/retry', opts)).toEqual(success)
+      expect(JSON.parse(localStorageMock.getItem(storageKey(opts.cacheKey))!).json).toEqual(success)
+    })
+
+    it('忽略旧版本落盘的失败信封并恢复请求', async () => {
+      backingStore[storageKey('legacy-failure')] = JSON.stringify({ expiresAt: Date.now() + 60000, json: { ok: false } })
+      mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, data: 'recovered' }))
+      const result = await fetchJson('/api/recovery', { method: 'GET', timeoutMs: 100, logLevel: 'silent', cacheStrategy: 'local-5m', cacheKey: 'legacy-failure' })
+      expect(result).toEqual({ ok: true, data: 'recovered' })
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+    })
 
     it('缓存命中：两次 GET 只发一次 fetch，第二次读 localStorage', async () => {
       mockFetch.mockResolvedValue(jsonResponse(true, { ok: true, v: 1 }))

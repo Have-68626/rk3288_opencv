@@ -9,6 +9,20 @@ module.exports = defineConfig({
     supportFile: 'cypress/support/e2e.ts',
     setupNodeEvents(on, config) {
       codeCoverageTask(on, config)
+      on('before:run', () => console.log('[E2E] Cypress 测试运行开始'))
+      on('before:spec', (spec) => console.log(`[E2E] 测试文件开始：${spec.relative}`))
+      on('after:spec', (spec, results) => {
+        const stats = results?.stats
+        console.log(
+          `[E2E] 测试文件结束：${spec.relative}（通过 ${stats?.passes ?? 0}，失败 ${stats?.failures ?? 0}，跳过 ${stats?.pending ?? 0}）`,
+        )
+      })
+      on('task', {
+        e2eProgress({ event, title }) {
+          console.log(`[E2E] ${event}：${title}`)
+          return null
+        },
+      })
       return config
     },
   },
