@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "camera": { "preferredDeviceId": "camera-fixture", "width": 640, "height": 480, "fps": 30 },
+  "recognition": { "cascadePath": "fixtures/cascade.xml", "databasePath": "fixtures/database", "minFaceSizePx": 60, "identifyThreshold": 55, "identifyThresholdArcFace": 0.45, "enrollSamples": 12, "arcFaceModelPath": "fixtures/recognizer.onnx", "arcFaceInputName": "", "arcFaceOutputName": "" },
+  "inference": { "throttleMode": "auto", "intervalMs": 150 },
+  "dnn": { "enable": true, "modelPath": "fixtures/detector.pb", "configPath": "fixtures/detector.pbtxt", "inputWidth": 300, "inputHeight": 300, "scale": 1, "meanB": 104, "meanG": 177, "meanR": 123, "swapRB": false, "confThreshold": 0.5, "backend": 0, "target": 0 },
+  "model": { "faceProfileDir": "fixtures/profile", "detection": "scrfd", "recognition": "arcface", "backend": "ncnn", "detectorBackend": "ncnn", "recognitionBackend": "ncnn", "autoFallback": true, "int8Enabled": false },
+  "http": { "enable": true, "port": 8080 },
+  "poster": { "enable": false, "postUrl": "***", "throttleMs": 100, "backoffMinMs": 200, "backoffMaxMs": 5000 },
+  "log": { "logDir": "fixtures/logs", "maxFileBytes": 10485760, "maxRollFiles": 5 },
+  "ui": { "windowWidth": 1280, "windowHeight": 800, "previewScaleMode": 0 },
+  "display": { "outputIndex": 0, "width": 0, "height": 0, "refreshNumerator": 0, "refreshDenominator": 1, "vsync": true, "swapchainBuffers": 2, "fullscreen": false, "allowSystemModeSwitch": false, "enableSRGB": true, "gamma": 2.2, "colorTempK": 6500, "aaSamples": 1, "anisoLevel": 1 },
+  "acceleration": { "enableOpenCL": false, "enableLibyuv": false, "enableMpp": false, "enableQualcomm": false }
+}
