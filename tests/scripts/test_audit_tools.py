@@ -196,3 +196,22 @@ def test_dashboard_bad_json_does_not_leak_or_create_output(tmp_path):
                  '--coverage', source, '--output', output)
     assert result.returncode == 2 and 'fixture data' not in result.stderr
     assert not output.exists()
+
+
+@pytest.mark.parametrize('scheme', ['rtmp', 'rtmps', 'rtsp', 'https'])
+def test_dashboard_redacts_stream_url_userinfo(tmp_path, scheme):
+    rubric, source, _ = scoring_inputs(tmp_path)
+    scorecard = tmp_path / 'score.json'
+    assert score(rubric, source, scorecard).returncode == 0
+    findings = tmp_path / 'findings.jsonl'
+    findings.write_text(json.dumps({'id': 'F-url', 'severity': 'P2', 'status': 'open',
+        'title': '合成地址', 'impact': f'{scheme}://fixture-user:fixture-credential@192.0.2.1/live'}) + '\n', encoding='utf-8')
+    coverage = tmp_path / 'coverage.csv'
+    write_rows(coverage, [dict(path='scripts/example.py', review_state='assigned', evidence_ids='')])
+    output = tmp_path / 'dashboard.html'
+    result = run('generate-dashboard.py', '--scorecard', scorecard, '--findings', findings,
+                 '--coverage', coverage, '--output', output)
+    assert result.returncode == 0
+    text = output.read_text(encoding='utf-8')
+    assert 'fixture-user' not in text and 'fixture-credential' not in text
+    assert scheme + '://' in text

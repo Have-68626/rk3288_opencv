@@ -34,7 +34,7 @@ def load_csv(path, required):
 
 def redact(value):
     text = str(value)
-    text = re.sub(r'(?i)(https?://)[^\s/@]+@', r'\1[已脱敏]@', text)
+    text = re.sub(r'(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+@', r'\1[已脱敏]@', text)
     text = re.sub(r'(?i)\bBearer\s+[^\s;,]+', 'Bearer [已脱敏]', text)
     text = re.sub(r'''(?i)(["']?(?:password|token|secret|api[_-]?key)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)''',
                   r'\1[已脱敏]', text)
