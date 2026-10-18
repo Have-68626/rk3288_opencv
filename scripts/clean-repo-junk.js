@@ -1241,7 +1241,7 @@ async function runClean(repoRoot, cfg, outputDir, quarantineDirBase, runId, dryR
 
   await writeJson(manifestPath, manifest);
   await writeText(txtPath, renderPlanText(dryRun ? "clean(dry-run)" : "clean", runId, plan, outputDir, manifestPath));
-  return { plan, manifestPath, cancelled: false };
+  return { plan, manifestPath, cancelled: false, failedItems: manifest.totals.failedItems };
 }
 
 async function runRestore(repoRoot, cfg, outputDir, manifestPathArg, runId, dryRun, yes) {
@@ -1362,7 +1362,7 @@ async function runRestore(repoRoot, cfg, outputDir, manifestPathArg, runId, dryR
   }
   if (report.items.length > 200) lines.push(`- ... 省略 ${report.items.length - 200} 项`);
   await writeText(txtPath, lines.join("\n"));
-  return { reportPath: jsonPath, cancelled: false, manifestPath: absManifest };
+  return { reportPath: jsonPath, cancelled: false, manifestPath: absManifest, failedItems: report.totals.failedItems };
 }
 
 async function main() {
@@ -1479,6 +1479,10 @@ async function main() {
     console.log(`clean 完成: ${r.manifestPath}`);
     console.log(`候选项: ${r.plan.totals.items}，预估释放: ${formatBytes(r.plan.totals.bytes)}`);
     console.log(args.dryRun ? "dry-run: 未进行任何移动/删除" : "已执行清理（默认隔离/或按规则删除）");
+    if (r.failedItems > 0) {
+      console.error(`清理失败项: ${r.failedItems}`);
+      process.exitCode = 1;
+    }
     if (r.cancelled) {
       console.log("已取消执行");
       process.exitCode = 3;
@@ -1510,6 +1514,10 @@ async function main() {
     }
     console.log(`restore 完成: ${r.reportPath}`);
     console.log(args.dryRun ? "dry-run: 未进行任何移动/删除" : "已执行恢复");
+    if (r.failedItems > 0) {
+      console.error(`恢复失败项: ${r.failedItems}`);
+      process.exitCode = 1;
+    }
     if (r.cancelled) {
       console.log("已取消执行");
       process.exitCode = 3;
