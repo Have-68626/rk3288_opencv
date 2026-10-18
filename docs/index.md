@@ -55,6 +55,7 @@ as_of=2026-10-18
 | `guides/rk3288-device-acceptance.md` | living | RK3288 设备验收清单（人工执行） |
 | `guides/android-validation-tools.md` | living | Android只读采样、离线流证据及APK/设备状态校验 |
 | `guides/repository-storage-layout.md` | living | 本地工具、依赖、模型与证据布局及清理恢复边界 |
+| `guides/audit-tools.md` | living | 显式输入的审查分派、区间评分与安全静态仪表盘 |
 | `guides/windows-service/config.md` | living | Windows 服务配置格式、环境变量、加密与热重载 |
 | `guides/windows-service/deploy_and_rollback.md` | living | Windows 服务部署与回滚指南 |
 | `guides/windows-service/uat.md` | living | 用户验收测试场景清单 |
@@ -194,6 +195,7 @@ as_of=2026-10-18
 | `../.claude/CLAUDE.md` | living | Claude Code 子目录指南（graphify 触发 + 记忆系统指针） |
 | `../cache/README.md` | living | `cache/` 落盘规范：可复用内容的唯一根目录、分类、删除代价与重建命令 |
 | `../scripts/ffmpegkit/README.md` | living | FFmpegKit固定来源、离线原生/Java重建与AAR静态打包 |
+| `../scripts/audit/README.md` | living | 审计工具入口、来源与回归命令 |
 
 ## 子系统说明（各自目录内）
 

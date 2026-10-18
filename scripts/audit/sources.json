@@ -1,0 +1,26 @@
+{
+  "historical_task": "PR495 审计 2026-10-13",
+  "historical_baseline": "40121ce350942d2bc61088c7ad6b55b20b744cec",
+  "source_archive": "cache/reports/pr495/temp-2026-10-18/",
+  "sources": [
+    {
+      "historical_source": "gen_coverage.py",
+      "historical_sha256": "03e31973b517351ce8458134a8655c3667549dd53efcfdf471c981a40fc9079d",
+      "formal_entry": "generate-review-map.py",
+      "reuse_scope": "保留项目路径分派函数，替换输入输出与路径校验"
+    },
+    {
+      "historical_source": "output/probes/score_audit.py",
+      "historical_sha256": "850de51e8e32bc5a5b8f7391f82763b1094ce6851012d4ac24ab5cc9cd2e4e6d",
+      "formal_entry": "score-audit.py",
+      "reuse_scope": "提炼区间公式，规则与基线显式输入并校验"
+    },
+    {
+      "historical_source": "gen_dashboard.py",
+      "historical_sha256": "ab7f014e5b76da4e0f8b497e8081133cfb20b3e2b88f5ddd26fa8239db74ebb5",
+      "formal_entry": "generate-dashboard.py",
+      "reuse_scope": "复用自包含静态展示思路，重写为无脚本安全摘要"
+    }
+  ],
+  "external_runtime_dependencies": []
+}
