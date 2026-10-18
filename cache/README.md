@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-17
+as_of=2026-10-18
 -->
 
 # `cache/` —— 本项目可复用内容的唯一根目录
@@ -19,6 +19,12 @@ as_of=2026-10-17
 | `builds/` | CMake / Gradle 构建目录 | `fp15_gtest/`（VS2022 + 真实 OpenCV 源码）等 | **高**（带真实 OpenCV 的配置是数 GB、重编耗时长）；`-DRK_SKIP_OPENCV=ON -G Ninja` 的快通道便宜 |
 | `tools/` | 本机包装脚本 | `rk_android_gate.bat` / `rk_probe.bat` / `rk_docsgate.bat` / `rk_javatest.bat` | **低**（3–5 行，随时重建，见下） |
 | `reports/` | 需**跨会话保留**的验证产物 | 基线哈希、门禁结论快照等 | 中（若未另存到记忆/计划文件） |
+| `dependency-sources/` | 固定版本依赖源码 | OpenCV提交、GNU config固定提交 | 保留Git身份，未确认来源可恢复前不删 |
+| `model-conversion/` | 模型转换中间件 | InsightFace三族PNNX/NCNN输出 | 保留来源、工具版本及路径映射，不能替代正式消费模型 |
+
+正式FFmpegKit构建链已迁入[scripts/ffmpegkit](../scripts/ffmpegkit/README.md)，Android验证工具见[使用说明](../docs/guides/android-validation-tools.md)。本机旧工具原件待提交回读和消费者迁移完成后再逐项退出，不能按日期整删。
+
+详细布局与恢复边界见[仓库存储布局](../docs/guides/repository-storage-layout.md)。当前AAR消费件仍为 `app/libs/ffmpeg-kit.aar`；新构建候选与历史实机消费件分开登记。
 
 > ⚠️ **需要跨会话引用的结论（如基线哈希、审计裁定）应同时写进记忆或计划文件**，
 > 不要只留在这里——缓存被忽略不等于其中的唯一证据可以删除。

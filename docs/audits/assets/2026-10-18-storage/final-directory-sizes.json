@@ -1,0 +1,103 @@
+{
+  "scope": "八个报告目录；普通文件逻辑字节，跳过重解析点，不重复统计链接目标，不是物理占用",
+  "errors": 0,
+  "elapsed_seconds": 28.0,
+  "directories": [
+    {
+      "directory": "app",
+      "bytes": 3648709086,
+      "files": 5862,
+      "reparse_points_skipped": 0,
+      "baseline": {
+        "bytes": 6906324185,
+        "files": 9931,
+        "tracked_bytes": 153913,
+        "tracked_files": 15
+      }
+    },
+    {
+      "directory": "build_fp15_gtest",
+      "bytes": 2519194310,
+      "files": 8008,
+      "reparse_points_skipped": 0,
+      "baseline": {
+        "bytes": 3725056733,
+        "files": 8031,
+        "tracked_bytes": 0,
+        "tracked_files": 0
+      }
+    },
+    {
+      "directory": "cache",
+      "bytes": 4628729697,
+      "files": 56929,
+      "reparse_points_skipped": 364,
+      "baseline": {
+        "bytes": 3540612544,
+        "files": 49229,
+        "tracked_bytes": 5063,
+        "tracked_files": 1
+      }
+    },
+    {
+      "directory": "deps",
+      "bytes": 1849634150,
+      "files": 195,
+      "reparse_points_skipped": 0,
+      "baseline": {
+        "bytes": 2482773065,
+        "files": 220,
+        "tracked_bytes": 5289,
+        "tracked_files": 13
+      }
+    },
+    {
+      "directory": "web",
+      "bytes": 875249769,
+      "files": 56976,
+      "reparse_points_skipped": 2089,
+      "baseline": {
+        "bytes": 893202552,
+        "files": 57005,
+        "tracked_bytes": 674662,
+        "tracked_files": 66
+      }
+    },
+    {
+      "directory": "graphify-out",
+      "bytes": 156062320,
+      "files": 1274,
+      "reparse_points_skipped": 0,
+      "baseline": {
+        "bytes": 423045490,
+        "files": 1356,
+        "tracked_bytes": 0,
+        "tracked_files": 0
+      }
+    },
+    {
+      "directory": "_deps",
+      "bytes": 0,
+      "files": 0,
+      "reparse_points_skipped": 0,
+      "baseline": {
+        "bytes": 301006937,
+        "files": 7525,
+        "tracked_bytes": 0,
+        "tracked_files": 0
+      }
+    },
+    {
+      "directory": "models",
+      "bytes": 266833912,
+      "files": 220,
+      "reparse_points_skipped": 0,
+      "baseline": {
+        "bytes": 266833912,
+        "files": 220,
+        "tracked_bytes": 5409,
+        "tracked_files": 7
+      }
+    }
+  ]
+}

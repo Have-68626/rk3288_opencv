@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-10-17
+as_of=2026-10-18
 -->
 
 # 文档索引
@@ -53,6 +53,8 @@ as_of=2026-10-17
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `guides/rk3288-device-acceptance.md` | living | RK3288 设备验收清单（人工执行） |
+| `guides/android-validation-tools.md` | living | Android只读采样、离线流证据及APK/设备状态校验 |
+| `guides/repository-storage-layout.md` | living | 本地工具、依赖、模型与证据布局及清理恢复边界 |
 | `guides/windows-service/config.md` | living | Windows 服务配置格式、环境变量、加密与热重载 |
 | `guides/windows-service/deploy_and_rollback.md` | living | Windows 服务部署与回滚指南 |
 | `guides/windows-service/uat.md` | living | 用户验收测试场景清单 |
@@ -117,6 +119,9 @@ as_of=2026-10-17
 | `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
 | `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |
 | `plans/2026-10-17-rtmp-lan-handoff.md` | snapshot | 双机推流实测结果、安全落点与接续命令 |
+| `plans/2026-10-17-cache-tools-integration.md` | living | 缓存工具迁入方案；任务1–4工具与静态重建已实施，消费集成及原件退出保留边界 |
+| `plans/2026-10-17-cache-cleanup.md` | living | A1合成夹具及A2编译缓存已清理；后续批次待确认 |
+| `plans/2026-10-18-storage-reorganization.md` | living | 瘦身报告复核、工具迁入、资产分类、清理与master合入准备 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |
@@ -140,7 +145,10 @@ as_of=2026-10-17
 |---|---|---|
 | `audits/2026-09-15-documentation-audit.md` | snapshot | 全项目文档审计报告（门禁基准失效根因、真实错误清单、遗留问题） |
 | `audits/2026-10-17-cache-inventory.md` | snapshot | 本地缓存盘点、删除候选、保留与入库归档清单 |
+| `audits/2026-10-17-cache-cleanup-A.md` | snapshot | A1/A2实际删除清单、空间变化与执行后完整性核对 |
+| `audits/2026-10-17-repository-storage-slimming.md` | snapshot | 仓库大目录占用、可清理候选、复用与存放规范建议 |
 | `audits/2026-10-17-rk3288-runtime-feedback.md` | snapshot | 双机推流实测、资源采样及开发改进反馈 |
+| `audits/2026-10-18-storage-reorganization-result.md` | snapshot | 存储整理执行、保全映射、FFmpegKit独立重建与合入边界 |
 
 ### audits/archive/（已冻结）
 
@@ -185,6 +193,7 @@ as_of=2026-10-17
 | `../CLAUDE.md` | living | AI 助手指南镜像（共享区间与 AGENTS.md 校验一致） |
 | `../.claude/CLAUDE.md` | living | Claude Code 子目录指南（graphify 触发 + 记忆系统指针） |
 | `../cache/README.md` | living | `cache/` 落盘规范：可复用内容的唯一根目录、分类、删除代价与重建命令 |
+| `../scripts/ffmpegkit/README.md` | living | FFmpegKit固定来源、离线原生/Java重建与AAR静态打包 |
 
 ## 子系统说明（各自目录内）
 

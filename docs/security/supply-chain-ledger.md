@@ -30,7 +30,7 @@ SCRFD 代码许可证的直接来源为 [InsightFace `detection/scrfd/LICENSE`](
 | **ArcFace 识别模型** | https://github.com/deepinsight/insightface（LResNet100E-IR 风格，经 PNNX 转换） | `[未定]` 未固定 | 代码 MIT / 模型权重：insightface 非商用（仅限非商业研究，见 `CREDITS.md`「⚠️ 商用限制结论（必读）」） | `[部署时生成]` 同 SCRFD，对 `models/arcface_ncnn/`、`models/arcface_int8_ncnn/` 执行 `sha256sum` | InsightFace 上游发布 / 本仓库转换产物 | gitignored，本地生成 |
 | **MobileFaceNet 模型** | https://github.com/deepinsight/insightface/releases/tag/v0.7（`w600k_mbf.onnx`，buffalo_s/sc） | v0.7；代码 `3e6486942a1be2da0e5b475fac375ea73264bd21` | 代码 MIT / 新候选权重：insightface 非商用，仅限非商业研究 | 父 ONNX `9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f`；候选与工具摘要见下方 F32 | 用户认可本地父图，PNNX 离线重建新候选链；非远端字节认证 | 仅显式调用、非默认、无自动回落；候选仅cache，未替换models；fp16=1重建件与现存param/bin字节一致 |
 | **YOLO Face 模型** | `[未定]` 仓库标注「自训练/转换」，无上游 URL 可取证（BLOCKED_DATA） | `[未定]` | `[未定]` | `[部署时生成]` 同 SCRFD，对 `models/yolo_face_int8_ncnn/` 执行 `sha256sum` | `[未定]` 需人工确认 FP32 来源 | gitignored，本地生成 |
-| **FFmpegKit AAR** | https://github.com/arthenica/ffmpeg-kit （用户提供源码 ZIP，未另行比对远端归档字节） | 6.0.LTS 自编译；FFmpeg n6.0、x264、OpenSSL 3.1.1 | 本次启用 x264/GPL，FFmpeg 为 GPL 3.0 或更新版本；OpenSSL Apache-2.0；smart-exception BSD-3-Clause | AAR SHA-256：`07dd0dcffbe52023b614e7455694093e9d17003626247f3ac9361b28aaf57eda`；输入与构建见[记录](../plans/2026-10-16-ffmpeg-kit-build.md) | 本机源码编译，二进制不入库 | 已放入 `app/libs/ffmpeg-kit.aar`；API21+、ARMv7 NEON / ARM64；未作设备加载或真实推流验收 |
+| **FFmpegKit AAR** | https://github.com/arthenica/ffmpeg-kit （用户提供源码 ZIP，未另行比对远端归档字节） | 6.0.LTS 自编译；FFmpeg n6.0、x264、OpenSSL 3.1.1 | 本次启用 x264/GPL，FFmpeg 为 GPL 3.0 或更新版本；OpenSSL Apache-2.0；smart-exception BSD-3-Clause | AAR SHA-256：`07dd0dcffbe52023b614e7455694093e9d17003626247f3ac9361b28aaf57eda`；输入与构建见[记录](../plans/2026-10-16-ffmpeg-kit-build.md) | 本机源码编译，二进制不入库 | 已放入 `app/libs/ffmpeg-kit.aar`；API21+、ARMv7 NEON / ARM64；该消费件已有[双机局域网加载与推流记录](../audits/2026-10-17-rk3288-runtime-feedback.md)，含首次重启失败及资源缺测限制；不代表后续重建候选已验收 |
 | **RK MPP** | https://github.com/rockchip-linux/mpp | `[未随附]`（已知本地路径 `D:/ProgramData/rkmpp/mpp-1.0.11`） | Apache 2.0 | `[未随附]` 引入时按 `deps/rk_mpp/README.md` 记录包校验值 | Rockchip GitHub Release / 官方 SDK | 可选：头文件未随附，CMake 缺失时 CPU 解码回退 |
 | **Qualcomm SNPE** | https://github.com/quic/aimet（SNPE 由供应商 SDK 分发） | `[未随附]` | `[供应商专有]` | `[未随附]` 引入时记录 SDK 包校验值 | 供应商 SDK 渠道 | 可选：未检测到头文件，CPU 推理回退 |
 | **libyuv** | https://chromium.googlesource.com/libyuv/libyuv | `[未启用]` 未固定 | BSD 3-Clause | `[未启用]` 启用时记录版本与 `sha256sum` | chromium.googlesource（FetchContent） | 未启用：Android 显式 `-DRK_ENABLE_LIBYUV=OFF`（国内网络原因） |
@@ -55,6 +55,7 @@ ncnn 官方资产（3 个 zip）SHA-256 与 CivetWeb 各文件 git blob SHA-256 
 - **部署时生成（gitignored）**：全部 ncnn 模型（SCRFD / ArcFace / MobileFaceNet / YOLO Face 的 `.param`/`.bin`），由 `scripts/quantize_ncnn_int8.py` 产出。复算方式 = 运行脚本后对产物 `sha256sum`；INT8 量化使用校准数据，逐次运行 hash 可能不同，以当次部署产物为准并记录。
 - **部署时验证（来源在仓库外）**：OpenCV / OpenCV-contrib 源码归档，官方 Release 下载后校验。
 - **本机自编译（gitignored）**：FFmpegKit AAR，摘要、来源与许可证见上表；构建集成不等于设备推流通过。
+- **可维护重建入口**：[FFmpegKit工具](../../scripts/ffmpegkit/README.md)及固定来源清单已进入正式源码目录；新增登记GNU config v20210814固定提交。新候选独立输出，不能复用旧消费APK的实机结论。
 - **未集成 / 未随附 / 未启用**：RK MPP、Qualcomm SNPE、libyuv。
 
 ## BLOCKED_DATA（来源无法从仓库取证）

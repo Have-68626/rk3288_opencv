@@ -756,7 +756,7 @@ jobs:
           # engine_run_reentry_behavior 是 DISABLED_ 用例，须由独立 CTest 显式启用（见 CMakeLists.txt）
           ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior" --output-on-failure
 
-      - name: Run precision tool behavior regressions with synthetic assets
+      - name: Run tool behavior regressions with synthetic assets
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -767,8 +767,8 @@ jobs:
           $env:RK_PRECISION_TOOL_NCNN2INT8 = Join-Path $env:NCNN_ROOT "bin/ncnn2int8.exe"
           $env:RK_PUBLIC_CASCADE_PATH = Join-Path $env:OPENCV_ROOT "data/lbpcascades/lbpcascade_frontalface.xml"
           $env:PATH = "$env:RK_PRECISION_TOOLS_DIR;$env:PATH"
-          python -m pytest tests/scripts/test_precision_tools_behavior.py tests/scripts/test_ncnn_cmake_behavior.py -q
-          if ($LASTEXITCODE -ne 0) { throw "precision tool behavior regression failed" }
+          python -m pytest tests/scripts/test_precision_tools_behavior.py tests/scripts/test_ncnn_cmake_behavior.py tests/scripts/test_docs_check_driver.py tests/scripts/test_android_runtime_metrics.py tests/scripts/test_stream_evidence.py tests/scripts/test_apk_native_inspection.py tests/scripts/test_device_state_verification.py tests/scripts/test_ffmpegkit_build_tools.py -q
+          if ($LASTEXITCODE -ne 0) { throw "tool behavior regression failed" }
 
       - name: Check for model/quantize changes
         id: changed-int8
