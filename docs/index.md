@@ -152,6 +152,7 @@ as_of=2026-10-18
 | `audits/2026-10-17-rk3288-runtime-feedback.md` | snapshot | 双机推流实测、资源采样及开发改进反馈 |
 | `audits/2026-10-18-storage-reorganization-result.md` | snapshot | 存储整理执行、保全映射、FFmpegKit独立重建与合入边界 |
 | `audits/2026-10-18-temp-reuse-result.md` | snapshot | 外部临时目录复用、历史证据归档与删除边界 |
+| `audits/2026-10-18-auxiliary-tools-remediation.md` | living | 辅助工具缺测判据、失败传播、脱敏及行为回归整改 |
 
 ### audits/archive/（已冻结）
 
