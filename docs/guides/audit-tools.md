@@ -55,4 +55,4 @@ python scripts/audit/generate-dashboard.py --scorecard cache/scorecard.json --fi
 python -m pytest tests/scripts/test_audit_tools.py -q
 ```
 
-当前测试覆盖评分区间与非法数据、输出拒绝覆盖、路径约束、旧CSV兼容、转义与脱敏。历史材料位于本地忽略目录 `cache/reports/pr495/temp-2026-10-18/`，来源与脱敏摘要在其 `archive-manifest.json`。旧 `mutate.py`、摘要刷新、交接追加和台账关闭脚本仅保留历史，不属于正式工具。
+当前测试覆盖评分区间与非法数据、输出拒绝覆盖、路径约束、旧CSV兼容、转义与脱敏。历史材料位于本地忽略目录 `cache/reports/pr495/temp-2026-10-18/`，来源与脱敏摘要在其 `archive-manifest.json`。旧 `mutate.py`、摘要刷新、交接追加和台账关闭脚本仅保留历史，不属于正式工具。具体迁移与删除状态见[实施报告](../audits/2026-10-18-temp-reuse-result.md)。
