@@ -10,7 +10,7 @@
 用法：
     python scripts/verify_face_models.py [--report <path>]
 
-输出：本地报告文件（默认 build/face_models_verify.md）+ 控制台摘要。
+输出：本地报告文件（默认 cache/reports/face-models/face_models_verify.md）+ 控制台摘要。
 退出码：全部 PASS=0，任一 FAIL=1（供 Gradle verifyFaceModels 门控）。
 """
 import argparse
@@ -88,7 +88,7 @@ def load_manifest_pins(profile):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--report", default=str(REPO / "build" / "face_models_verify.md"))
+    ap.add_argument("--report", default=str(REPO / "cache" / "reports" / "face-models" / "face_models_verify.md"))
     args = ap.parse_args()
 
     report = pathlib.Path(args.report)

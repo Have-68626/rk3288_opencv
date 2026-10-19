@@ -1,11 +1,15 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+rem 入口可从其他目录调用，源码和产物始终锚定仓库。
+for %%I in ("%~dp0..") do set "REPO_ROOT=%%~fI"
+cd /d "%REPO_ROOT%" || exit /b 1
+
 echo ==============================================
 echo  OpenCV 4.10.0 Host Verification Script
 echo ==============================================
 
-set "BUILD_DIR=build_host"
+set "BUILD_DIR=%REPO_ROOT%\cache\builds\windows-opencv-vs2022-x64"
 if not defined OPENCV_ROOT (
     echo [ERROR] OPENCV_ROOT 未设置。请设置环境变量 OPENCV_ROOT 指向 OpenCV 源码根目录。
     exit /b 1
@@ -38,14 +42,13 @@ if not exist "%OPENCV_CONTRIB_ROOT%" (
 )
 
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
-cd "%BUILD_DIR%"
 
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONNOUSERSITE=1"
-set "PYTHONPYCACHEPREFIX=%CD%\pycache"
+set "PYTHONPYCACHEPREFIX=%BUILD_DIR%\pycache"
 
 echo [INFO] Configuring CMake...
-"%CMAKE_EXE%" -G "Visual Studio 17 2022" -A x64 ^
+"%CMAKE_EXE%" -S "%REPO_ROOT%" -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 ^
     -DOPENCV_ROOT="%OPENCV_ROOT%" ^
     -DOPENCV_CONTRIB_ROOT="%OPENCV_CONTRIB_ROOT%" ^
     -DBUILD_SHARED_LIBS=OFF ^
@@ -53,28 +56,26 @@ echo [INFO] Configuring CMake...
     -DOPENCV_DOWNLOAD_IPPICV=OFF ^
     -DWITH_FFMPEG=OFF ^
     -DOPENCV_FFMPEG_SKIP_DOWNLOAD=ON ^
-    -DBUILD_LIST=core,imgproc,imgcodecs,objdetect,features2d ^
     -DCPU_BASELINE= ^
     -DCPU_DISPATCH= ^
-    .. > build_config.log 2>&1
+    > "%BUILD_DIR%\build_config.log" 2>&1
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] CMake configuration failed.
-    type build_config.log
+    type "%BUILD_DIR%\build_config.log"
     exit /b 1
 )
 
 echo [INFO] Building Project...
-"%CMAKE_EXE%" --build . --config Release --target opencv_verify_cli -j 4 > build.log 2>&1
+"%CMAKE_EXE%" --build "%BUILD_DIR%" --config Release --target opencv_verify_cli -j 4 > "%BUILD_DIR%\build.log" 2>&1
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Build failed.
-    type build.log
+    type "%BUILD_DIR%\build.log"
     exit /b 1
 )
 
 echo [INFO] Build Successful. Starting Functional Tests...
-cd ..
 
 set "EXE_PATH=%BUILD_DIR%\bin\Release\opencv_verify_cli.exe"
 if not exist "%EXE_PATH%" set "EXE_PATH=%BUILD_DIR%\bin\Debug\opencv_verify_cli.exe"
@@ -87,10 +88,9 @@ if not exist "%EXE_PATH%" (
 
 set "TEST_DATA=tests\data"
 set "CASCADE=%TEST_DATA%\lbpcascade_frontalface.xml"
-set "STORAGE=host_storage"
+set "OUT_DIR=%REPO_ROOT%\cache\reports\opencv-host"
 
-if not exist "%STORAGE%" mkdir "%STORAGE%"
-if exist test_results.txt del /q test_results.txt
+if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 
 if not exist "%TEST_DATA%\lena.bmp" (
     powershell -NoProfile -Command ^
@@ -104,15 +104,22 @@ if not exist "%TEST_DATA%\lena.bmp" (
 )
 
 echo [TEST] Running OpenCV verification on test dataset...
-"%EXE_PATH%" --input "%TEST_DATA%" --cascade "%CASCADE%" --manifest "%TEST_DATA%\manifest.csv" --out "opencv_verify_results.csv" > verify.log 2>&1
-findstr /C:"VERIFY_SUMMARY" verify.log >nul
+"%EXE_PATH%" --input "%TEST_DATA%" --cascade "%CASCADE%" --manifest "%TEST_DATA%\manifest.csv" --out "%OUT_DIR%\opencv_verify_results.csv" > "%OUT_DIR%\verify.log" 2>&1
+set "VERIFY_EXIT=%ERRORLEVEL%"
+if not "%VERIFY_EXIT%"=="0" (
+    echo [FAIL] Verification failed.
+    exit /b %VERIFY_EXIT%
+)
+findstr /C:"VERIFY_SUMMARY" "%OUT_DIR%\verify.log" >nul
 if %ERRORLEVEL% equ 0 (
     echo [PASS] Verification finished.
-    type verify.log
+    type "%OUT_DIR%\verify.log"
 ) else (
     echo [FAIL] Verification failed.
-    type verify.log
+    type "%OUT_DIR%\verify.log"
     exit /b 1
 )
 
 echo [INFO] Verification Complete.
+
+exit /b 0

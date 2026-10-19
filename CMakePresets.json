@@ -5,7 +5,7 @@
       "name": "default",
       "displayName": "Default (Ninja, no OpenCV)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build_ci",
+      "binaryDir": "${sourceDir}/cache/builds/core-ninja",
       "cacheVariables": {
         "RK_SKIP_OPENCV": "ON"
       }
@@ -14,8 +14,11 @@
       "name": "windows",
       "displayName": "Windows (VS 2022, OpenCV)",
       "generator": "Visual Studio 17 2022",
-      "architecture": { "value": "x64", "strategy": "set" },
-      "binaryDir": "${sourceDir}/build_win",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "binaryDir": "${sourceDir}/cache/builds/windows-vs2022-x64",
       "cacheVariables": {
         "OPENCV_ROOT": "$env{OPENCV_ROOT}",
         "OPENCV_CONTRIB_ROOT": "$env{OPENCV_CONTRIB_ROOT}"
@@ -25,7 +28,7 @@
       "name": "android",
       "displayName": "Android RK3288",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build_android_rk3288",
+      "binaryDir": "${sourceDir}/cache/builds/android-ninja-armeabi-v7a",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
         "ANDROID_ABI": "armeabi-v7a",
@@ -35,8 +38,7 @@
         "OPENCV_CONTRIB_ROOT": "$env{OPENCV_CONTRIB_ROOT}",
         "WITH_IPP": "OFF",
         "OPENCV_DOWNLOAD_IPPICV": "OFF",
-        "WITH_FFMPEG": "OFF",
-        "BUILD_LIST": "core,imgproc,imgcodecs,objdetect,features2d"
+        "WITH_FFMPEG": "OFF"
       }
     }
   ],
@@ -59,13 +61,17 @@
     {
       "name": "default",
       "configurePreset": "default",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "windows",
       "configurePreset": "windows",
       "configuration": "Release",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

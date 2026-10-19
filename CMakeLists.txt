@@ -281,7 +281,7 @@ endif()
 
 # 精度工具复用生产 SCRFD 解码，避免独立实现再次漂移
 if(NOT ANDROID AND RK_HAVE_NCNN AND RK_NCNN_TARGET)
-    add_executable(ncnn_calibration_images "scripts/prepare_ncnn_calibration.cpp")
+    add_executable(ncnn_calibration_images "src/cpp/tools/ncnn_calibration_images.cpp")
     target_link_libraries(ncnn_calibration_images PRIVATE ${RK_OPENCV_FULL_LIBS})
     if(MSVC)
         target_compile_options(ncnn_calibration_images PRIVATE /utf-8)

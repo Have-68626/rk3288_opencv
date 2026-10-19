@@ -1,6 +1,10 @@
 @echo off
 setlocal
 
+rem 入口可从其他目录调用，源码和产物始终锚定仓库。
+for %%I in ("%~dp0..") do set "REPO_ROOT=%%~fI"
+cd /d "%REPO_ROOT%" || exit /b 1
+
 :: --- CONFIGURATION START ---
 
 if defined ANDROID_SDK_ROOT (
@@ -11,21 +15,14 @@ if defined ANDROID_SDK_ROOT (
     set "SDK_ROOT="
 )
 
-:: 1. NDK Path
-:: Try to find NDK from environment variable first
-if defined ANDROID_NDK_HOME (
-    set "NDK_ROOT=%ANDROID_NDK_HOME%"
-) else (
-    if "%SDK_ROOT%"=="" (
-        echo [ERROR] ANDROID_SDK_ROOT/ANDROID_HOME 未设置，无法自动定位 NDK。
-        echo 请设置 ANDROID_NDK_HOME，或设置 ANDROID_SDK_ROOT/ANDROID_HOME 指向 Android SDK 根目录。
+:: 显式NDK优先；不能在括号块内放跳转标签，否则cmd会误解析右括号。
+set "NDK_ROOT=%ANDROID_NDK_HOME%"
+if not defined NDK_ROOT (
+    if not defined SDK_ROOT (
+        echo [ERROR] 请设置 ANDROID_NDK_HOME 或 Android SDK 根目录。
         exit /b 1
     )
-    for /f "tokens=*" %%d in ('dir "%SDK_ROOT%\ndk" /b 2^>nul ^| findstr /r "^[0-9]" ^| sort /r') do (
-        set "NDK_ROOT=%SDK_ROOT%\ndk\%%d"
-        goto :found_ndk
-    )
-    :found_ndk
+    for /f "delims=" %%d in ('dir "%SDK_ROOT%\ndk" /b /ad 2^>nul ^| findstr /r "^[0-9]" ^| sort /r') do if not defined NDK_ROOT set "NDK_ROOT=%SDK_ROOT%\ndk\%%d"
 )
 
 :: 2. CMake (from AndroidStudioSDK)
@@ -62,13 +59,12 @@ if not exist "%NDK_ROOT%" (
 )
 
 :: Build Directory
-set "BUILD_DIR=build_android_rk3288"
+set "BUILD_DIR=%REPO_ROOT%\cache\builds\android-opencv-ninja-armeabi-v7a"
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
-cd "%BUILD_DIR%"
 
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONNOUSERSITE=1"
-set "PYTHONPYCACHEPREFIX=%CD%\pycache"
+set "PYTHONPYCACHEPREFIX=%BUILD_DIR%\pycache"
 
 echo ==============================================
 echo  Building for RK3288 (ARM Cortex-A17)
@@ -78,7 +74,7 @@ echo ==============================================
 
 :: Configure CMake
 :: Note: We use "NMake Makefiles" or default generator. If you have Ninja installed, add -G "Ninja"
-"%CMAKE_EXE%" -G "Ninja" -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" ^
+"%CMAKE_EXE%" -S "%REPO_ROOT%" -B "%BUILD_DIR%" -G "Ninja" -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" ^
       -DCMAKE_TOOLCHAIN_FILE="%NDK_ROOT%\build\cmake\android.toolchain.cmake" ^
       -DANDROID_ABI=armeabi-v7a ^
       -DANDROID_PLATFORM=android-21 ^
@@ -88,33 +84,32 @@ echo ==============================================
       -DWITH_IPP=OFF ^
       -DOPENCV_DOWNLOAD_IPPICV=OFF ^
       -DWITH_FFMPEG=OFF ^
-      -DBUILD_LIST=core,imgproc,imgcodecs,objdetect,features2d ^
       -DCMAKE_BUILD_TYPE=Release ^
-      .. > build_config.log 2>&1
+      > "%BUILD_DIR%\build_config.log" 2>&1
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] CMake configuration failed.
-    type build_config.log
+    type "%BUILD_DIR%\build_config.log"
     exit /b 1
 )
 
 :: Build
 echo.
 echo Starting Build...
-"%CMAKE_EXE%" --build . --config Release --target opencv_verify_cli -- -j4 > build.log 2>&1
+"%CMAKE_EXE%" --build "%BUILD_DIR%" --config Release --target opencv_verify_cli -- -j4 > "%BUILD_DIR%\build.log" 2>&1
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Build failed.
-    type build.log
+    type "%BUILD_DIR%\build.log"
     exit /b 1
 )
 
 echo.
 echo [SUCCESS] Build complete!
-echo Executable is located at: %CD%\opencv_verify_cli
+echo Executable is located at: %BUILD_DIR%\bin\opencv_verify_cli
 echo.
 echo To deploy to device:
-echo   adb push %CD%\opencv_verify_cli /data/local/tmp/opencv_verify_cli
+echo   adb push %BUILD_DIR%\bin\opencv_verify_cli /data/local/tmp/opencv_verify_cli
 echo   adb shell "chmod +x /data/local/tmp/opencv_verify_cli"
 echo   adb shell "/data/local/tmp/opencv_verify_cli --input /data/local/tmp/tests --cascade /data/local/tmp/lbpcascade_frontalface.xml"
 echo.
