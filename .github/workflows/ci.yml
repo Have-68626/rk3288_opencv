@@ -179,9 +179,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pnpm
-        # 固定 pnpm 小版本（对应 web/pnpm-lock.yaml lockfileVersion 9.0 的 pnpm 9.x 主线），
-        # 避免浮动版本（pnpm@9）导致 web job 行为漂移
-        run: npm install -g pnpm@9.15.9
+        # 固定经过冻结锁文件与Web回归验证的版本，避免全局版本漂移。
+        run: npm install -g pnpm@10.33.0
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -238,6 +237,10 @@ jobs:
 
       - name: Build
         run: cd web && pnpm build
+
+      - name: Install Cypress binary
+        # pnpm 10默认不运行依赖安装脚本；显式准备锁定的Cypress二进制。
+        run: cd web && pnpm exec cypress install
 
       - name: Test (E2E)
         # E2E 失败不阻断 job（历史决策），但 coverage 报告仍需尽力生成。
