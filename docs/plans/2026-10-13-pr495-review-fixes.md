@@ -1,10 +1,12 @@
 <!-- DOCSYNC_DOC
 type=plan
-status=living
-as_of=2026-10-13
+status=snapshot
+as_of=2026-10-18
 -->
 
 # PR #495 审查修复与验证计划
+
+本页保留前期修复轮的历史结果，原测试数字和环境限制不代表当前HEAD；后续状态见[Cypress专项](2026-10-16-cypress-e2e-remediation.md)、[Android ncnn专项](2026-10-16-android-ncnn-build-remediation.md)及[总整改账本](2026-10-13-pr495-audit-remediation.md)。
 
 执行依据：本次审查的九项发现及用户授权。允许自行提交，禁止推送；逐项验证落地、质量、变异，修复复核发现的问题，直到复核无新增问题或需要用户介入。
 

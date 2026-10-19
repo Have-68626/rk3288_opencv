@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-10-16
+as_of=2026-10-18
 -->
 
 # 致谢与许可证（CREDITS）
@@ -64,7 +64,7 @@ SCRFD 代码许可核验（2026-10-15）：[InsightFace 的 SCRFD 子目录 LICE
 | ncnn | 端侧推理加速 | BSD 3-Clause | ✅ 已下载（1.0.20260113，见 [ncnn 依赖账本与安全](#ncnn-依赖账本与安全)） |
 | Rockchip MPP | 硬件解码加速 | Apache 2.0 | ⚠️ 可选（自动回退） |
 | Qualcomm SDK | 推理加速 | — | ⚠️ 可选（未检测到） |
-| FFmpegKit | RTMP / RTMPS 推流 | 本地 x264 构建为 GPL 3.0 或更新版本 | 本地已集成 6.0.LTS 自编译 AAR；API21+、ARMv7 需 NEON、ARM64；设备推流未验收，见[构建记录](docs/plans/2026-10-16-ffmpeg-kit-build.md) |
+| FFmpegKit | RTMP / RTMPS 推流 | 本地 x264 构建为 GPL 3.0 或更新版本 | 本地已集成 6.0.LTS 自编译 AAR；API21+、ARMv7 需 NEON、ARM64；指定消费AAR已有[双机局域网功能记录](docs/audits/2026-10-17-rk3288-runtime-feedback.md)；完整识别/性能/长稳未验收，后续重建候选不继承该结果；构建与来源见[记录](docs/plans/2026-10-16-ffmpeg-kit-build.md) |
 
 ### UI 组件
 

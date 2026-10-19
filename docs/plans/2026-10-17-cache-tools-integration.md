@@ -16,6 +16,8 @@ as_of=2026-10-18
 
 **依据**：[缓存盘点](../audits/2026-10-17-cache-inventory.md)、[实测反馈](../audits/2026-10-17-rk3288-runtime-feedback.md)、[FFmpegKit构建记录](2026-10-16-ffmpeg-kit-build.md)。整理后再执行[独立清理方案](2026-10-17-cache-cleanup.md)，两者可分别审批。
 
+当前操作统一见[验证工具](../guides/android-validation-tools.md)、[FFmpegKit重建工具](../../scripts/ffmpegkit/README.md)和[存储布局](../guides/repository-storage-layout.md)。本页保留迁入取舍、来源映射和未勾选的交付/验收条件；任务5未完成前不能按已迁入推定缓存原件可删。
+
 ## 决策与边界
 
 9份既有文档已提交至 `4b39536`，未推送。本方案及其索引更新是后续新增内容，尚未提交。

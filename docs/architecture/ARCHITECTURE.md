@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=architecture
 status=living
-as_of=2026-09-26
+as_of=2026-10-18
 -->
 
 # RK3288 OpenCV 架构契约
@@ -161,7 +161,7 @@ std::unique_ptr<IRecognizer> CreateArcFaceRecognizer(const RecognizerConfig&);
 
 | 位置 | 问题 | 目标 |
 |------|------|------|
-| `FaceInferencePipeline` 类 | 具体类暴露全部内部方法 | 拆出 `IFacePipeline` 接口 |
+| 单图边界 `FaceInferRequest` / `FaceInferOutcome` / `runFaceInferOnce` | 旧文档按不存在的具体类公共方法计数，须按现行数据/函数边界复核 | 依据实际调用者评估接口隔离，不先假定必须新增类 |
 | `Engine` 类 | 公共头文件暴露初始化顺序依赖 | 增加 `Engine::Options` 配置对象 |
 
 ---
@@ -174,7 +174,7 @@ std::unique_ptr<IRecognizer> CreateArcFaceRecognizer(const RecognizerConfig&);
 | #2 纯函数管线 | 1 处 (P1) | 待修复 |
 | #3 原子状态提交 | 2 处 (P1) | 待修复 |
 | #4 错误通道 | 2 处 (P1) | 待修复 |
-| #5 接口隔离与符号隐藏 | 2 处 (P2) | 待修复 |
+| #5 接口隔离与符号隐藏 | 待复核（旧类计数失效） | 待修复；不据符号订正宣称已闭环 |
 
 ---
 

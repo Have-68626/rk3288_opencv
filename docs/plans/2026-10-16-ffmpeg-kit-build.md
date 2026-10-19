@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=plan
 status=living
-as_of=2026-10-17
+as_of=2026-10-18
 -->
 
 # FFmpegKit Android 本地源码构建
@@ -57,6 +57,8 @@ if ((Get-FileHash -LiteralPath $aarTarget -Algorithm SHA256).Hash.ToLowerInvaria
 WSL原生工作目录为 `/var/tmp/rk3288-ffmpeg-kit-20261016`；结果与脱敏报告保存在项目 `cache/ffmpeg-kit-build-2026-10-16/`。原始ZIP及现有Windows NDK保持不变，未覆写Windows系统环境变量。
 
 ## 构建适配与命令
+
+下文为原消费件构建记录；当前可复用准备/编译/打包接口以[正式工具README](../../scripts/ffmpegkit/README.md)为准。来源和消费件状态由[供应链账本](../security/supply-chain-ledger.md)维护，不用原命令直接覆盖后续候选。
 
 仅在缓存源码适配：禁用完整环境变量转储；ZIP构建标签使用已知哈希；限制6路编译；cpu-features添加 `-DBUILD_TESTING=OFF`，不下载无法在宿主执行的Android交叉测试；旧LTS JNI的 `MY_ARM_NEON := false` 改为true以满足NDK r25及本项目NEON要求。生产Gradle/CMake和Java推流调用未改。
 

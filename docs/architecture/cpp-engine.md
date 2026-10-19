@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=architecture
 status=living
-as_of=2026-09-26
+as_of=2026-10-18
 -->
 
 # C++ 引擎架构文档
@@ -59,6 +59,8 @@ flowchart TD
 ---
 
 ## 2. FaceInferencePipeline 数据流
+
+实时路径由 `Engine::run()` 编排；单图路径使用头文件声明的自由函数 `runFaceInferOnce(const FaceInferRequest&)`，不存在 `FaceInferencePipeline::process()` 成员入口。profile/模板空间与输入绑定是单图决策前提，相关接口以 `FaceInferencePipeline.h` 为准。
 
 `FaceInferencePipeline` 提供两条路径：
 

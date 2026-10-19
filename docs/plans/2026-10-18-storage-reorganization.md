@@ -14,6 +14,8 @@ as_of=2026-10-18
 
 **技术栈**：已有Python标准库、PowerShell、Git、Android SDK/NDK、Java及WSL交叉编译宿主；不新增运行依赖。源码、许可、摘要与消费者映射先核对，移动后再校验，删除按冻结白名单逐文件进行。
 
+实施结果见[整理报告](../audits/2026-10-18-storage-reorganization-result.md)，现行存储规则见[存储布局](../guides/repository-storage-layout.md)。以下已勾选步骤保留历史现场，不重复执行；master合入仍须另行确认，不能因本页全部实施步骤勾选就视为已合入。
+
 ## 边界与接口
 
 - 当前分支为 `codex/pr495-review-fixes`；不切换master、不覆盖18项已有暂存内容。不进行实机、相机或推流操作。

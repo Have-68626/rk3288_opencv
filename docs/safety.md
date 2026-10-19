@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=process
 status=living
-as_of=2026-07-22
+as_of=2026-10-18
 -->
 
 # Safety — Loop Engineering
@@ -15,14 +15,13 @@ Never modify without explicit human approval:
 - CI/CD configuration (`.github/workflows/`)
 - Branch protection rules / merge configuration
 
-## Auto-Merge Allowlist
+## 人工授权后的合并检查
 
-Auto-merge is allowed only when ALL conditions met:
-- PR passes all required CI checks
-- All review comments resolved
-- Only squash merge (no merge commit, no rebase)
-- Title follows Conventional Commits format
-- Not breaking existing test suites
+权限由[loop约束](../loop-constraints.md)统一定义：禁止自动合并master，提交和推送也须分别取得用户确认。以下只是取得授权后的必要检查，不构成授权：
+
+- 必需CI通过，审查意见处理完成。
+- 使用squash and merge，标题遵循Conventional Commits。
+- 不破坏测试；远端写入和删除分支仍需对应明确授权。
 
 ## MCP Scopes
 

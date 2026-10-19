@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-10-12
+as_of=2026-10-18
 -->
 
 # Android 端人员注册设计（目标 vs 已落地）
@@ -38,7 +38,16 @@ as_of=2026-10-12
 
 ### 2.1 加密模板仓库 `AndroidEnrollmentRepository`（任务 16）
 
-存储布局（默认作用域 `files/face_templates/`，与 `FeatureTemplateEncryptedStore.defaultDir` 一致）：
+当前生产由 `MainActivity.routeGalleryForActiveProfile` 选择空间，注册仓库和显示名使用同一 `templateSpaceId`，以 `AndroidEnrollmentRepository.templateSpaceDir` 为路径事实源：
+
+| 空间 | 模板目录 | 显示名目录 |
+|---|---|---|
+| 空ID，旧版兼容 | `files/face_templates/` | `files/face_names/` |
+| 非空64位小写十六进制ID | `files/face_templates/spaces/<id>/` | `files/face_names/spaces/<id>/` |
+
+模型切换先切到相应空间，再恢复/替换图库；空ID只兼容旧目录，不代表不同模型可共用模板。不得跨空间复制旧模板或自动搬库；预处理变更（包括MobileFaceNet旧mean=0）须在新非空空间重新登记，迁移边界见[供应链账本](../security/supply-chain-ledger.md#f32mobilefacenet-指定父链与迁移)。备份、删除与恢复以选定空间为单位，不能只处理默认根目录。
+
+下列文件名相对于所选模板目录；`forDefaultGallery` 仅表示旧默认作用域：
 
 - `face_registry_v1.dat` —— gallery 级单表注册表，记录**元数据**：`hex(userId) mv sv templateFileSize templateFileSha256Hex createdAtMs`，**不含任何生物特征向量**。
   **格式（A8 起为 FREG2）**：首行魔数 `FREG2`、第二行 `COUNT N`、其后 N 行六字段记录、末行 `END N`（空表真实内容为 `FREG2\nCOUNT 0\nEND 0\n`）。旧版 `FREG1`（仅魔数 + 若干六字段行，**无**条目数与结束标记）仍**读取兼容**、不自动判重，下次写入即升级为 FREG2。文件名沿用 `face_registry_v1.dat`，**版本以首行魔数区分**；首行既非 `FREG1` 也非 `FREG2` 判 `CORRUPTED`。六列仍为**位置式、列名不落盘**。
@@ -49,7 +58,7 @@ as_of=2026-10-12
 
 - **模板加密、注册表明文**：敏感的是向量；模板文件名是 userId 的 SHA-256，没有注册表无法反推，因此索引必须依赖一张表；低版本无 Keystore AES-GCM 时，明文注册表仍能支撑“只读预览”。
 - **userId 用 hex 可逆编码而非哈希（明文档化取舍）**：为在低版本展示人员标识；若后续要求不可逆，需放弃 `list` 展示或改为单向派生，不能只改编码一处。**该取舍仍然成立**——见下一条的保护边界。
-- **显示名加密（任务 B，2026-09-16）**：显示名**不再**以明文存于 SharedPreferences，改由 `PersonDisplayNameStore` 加密存于 `files/face_names/n_<sha256(personId)>.enc`（KeyStore AES-GCM，**独立密钥** `person_name_aes_gcm_v1` + **独立 AAD 域**，与模板文件互不可换用）。**三者各自的边界**：注册表 `face_registry_v1.dat` 只存 userId 等元数据、**不含显示名**；显示名加密存于上述目录；模板向量加密存于 `files/face_templates/`。⚠️ `userId` 仍是可逆编码，故**不得**宣称「人员 PII 全部加密」。
+- **显示名加密（任务 B，2026-09-16）**：显示名**不再**以明文存于 SharedPreferences，改由 `PersonDisplayNameStore` 加密存于所选显示名目录下的 `n_<sha256(personId)>.enc`（空ID默认根与非空空间目录见上表）（KeyStore AES-GCM，**独立密钥** `person_name_aes_gcm_v1` + **独立 AAD 域**，与模板文件互不可换用）。**三者各自的边界**：注册表 `face_registry_v1.dat` 只存 userId 等元数据、**不含显示名**；显示名加密存于上述目录；模板向量加密存于上表所选模板目录。⚠️ `userId` 仍是可逆编码，故**不得**宣称「人员 PII 全部加密」。
 - **显示名生命周期（任务 B）**：采集期**仅存内存**；**注册提交（`add` 落盘）成功后即加密写入**，与图库替换结果**解耦**——图库替换失败**不回滚**显示名，否则「模板已落盘但图库替换失败」的人会永久丢失显示名（A1 审计 P3-3 修正）。因此取消/失败**不会留下残留**（此前是先写 SharedPreferences 再采集，取消/失败都不清理）。旧明文键经一次性迁移清除，顺序为「加密 → **验证密文可读** → 删原值」，失败保留原值待重试。API<23 或密钥不可用时返回 `UNSUPPORTED_PLATFORM` / `KEYSTORE_ERROR`，**绝不回落明文**，UI 降级显示 personId。密钥刻意**不设** `setUserAuthenticationRequired(true)`：设了则只能在「已设置安全锁屏」的设备上生成，且锁屏变更会令其不可逆失效。
 - **显示名文件的摘要暴露（如实记录，不做安全表演）**：显示名文件的**文件名与 AAD 都明文含 `sha256(personId)`**，理论上可对低熵 personId（姓名/工号）做字典反查。但**真正的短板是注册表本身**——`face_registry_v1.dat` 用**可逆 hex** 存 userId，能读到显示名文件的攻击者必然也能读到注册表，从中直接还原 personId。故给文件名加盐**不构成实质改进**（盐只能与数据同处一地）。**真正的修复路径**是让注册表不再存可逆 userId，改存不可逆随机 id——而任务 B 引入的加密显示名存储恰好使这条路可行（人可读标签已不再依赖 userId）。属**独立设计变更**，未在本批实施。
 - **降级与旧数据（API<23）**：AndroidKeyStore 的 **AES/HMAC 支持自 API 23 起**（更早版本只提供 RSA/EC），故本项目在 API 21–22 上**无法直接复用现有 AES-GCM 方案**。

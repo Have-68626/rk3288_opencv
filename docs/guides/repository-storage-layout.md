@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-18
+as_of=2026-10-19
 -->
 
 # 仓库存储布局
@@ -11,6 +11,8 @@ as_of=2026-10-18
 | 内容 | 位置 | 管理方式 |
 |---|---|---|
 | 正式工具和回归 | `scripts/android/`、`scripts/ffmpegkit/`、`tests/scripts/` | 小文本入库，显式输入输出，不依赖历史cache |
+| 独立编译工具源码 | `src/cpp/tools/` | CMake登记并真实重建，入口见scripts/README |
+| 公共参数夹具 | `tests/fixtures/opencv/` | 不含私有媒体/身份数据；脚本显式消费 |
 | 来源、许可、结论及复现 | `docs/` | 脱敏入库，二进制及完整日志不入库 |
 | InsightFace父模型 | `deps/insightface/*.onnx` | 三份已引用父图原位保留，绑定来源与摘要 |
 | 上游发行包 | `deps/insightface/archives/` | 五份原包保留，不按单个识别器重复删除整包 |
@@ -39,3 +41,7 @@ WSL仅作Android交叉编译宿主时，源码和对象可放其原生文件系�
 移动可按映射反向操作，前提是目标无冲突且摘要不变。图谱可从已校验ZIP恢复；旧Android仅保留负向验证所需核心库与白名单配置，**不声称完整构建树可逐字节恢复**。
 
 分别统计删除逻辑字节、归档新增字节、移动字节及卷空间读数。Android原生库存在硬链接，路径减少不等于同量物理空间释放。本轮失败重建中间件不计入“清理原仓库”收益。
+
+## 现行入口与消费导航
+
+本地新树由CMake preset和批处理显式-S/-B进入cache/builds；默认工具报告进入cache/reports对应领域。具体命令见[构建与测试](build-and-test.md)，脚本职责见[工具入口](../../scripts/README.md)，父图/转换/消费模型的区别见[模型消费者](model-storage-and-consumers.md)。工具规定的app/build、app/.cxx及web依赖缓存保留默认布局，隔离验收可以显式新建输出树。

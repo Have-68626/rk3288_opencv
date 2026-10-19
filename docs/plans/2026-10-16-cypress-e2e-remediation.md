@@ -1,10 +1,12 @@
 <!-- DOCSYNC_DOC
 type=plan
-status=living
-as_of=2026-10-16
+status=snapshot
+as_of=2026-10-18
 -->
 
 # Cypress 启动与覆盖率整改
+
+本专项已结束，下述数字及失败/通过边界保留为该轮快照；当前复现步骤见[构建与测试](../guides/build-and-test.md#cypress-e2e与覆盖率)，不把历史覆盖率作为当前HEAD结果。
 
 本轮接收侧边会话四份未提交改动，保留心跳、用例事件与退出码传递；用户要求补齐 E2E，按原覆盖率门槛验收，不提交、不推送。
 

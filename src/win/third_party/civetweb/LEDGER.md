@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-08-14
+as_of=2026-10-19
 -->
 
 # CivetWeb 来源账本（Source Provenance Ledger）
@@ -62,3 +62,18 @@ as_of=2026-08-14
 - 任何对 `src/win/third_party/civetweb/` 的改动（含新增补丁）都必须同步更新本账本中的 hash 与补丁记录。
 - 验证：`node --test tests/scripts/civetweb-ledger.test.js`（CI 已通过 `node --test tests/scripts/*.test.js` 目录级接入）。
 - 哈希约定同 `tests/scripts/manifest-anchor-consistency.test.js`（git blob 为规范值，行尾无关）。
+
+
+## TLS适用性与重新接入要求
+
+当前CivetWeb 1.16仅为源码及许可证快照，未编入产品；Windows服务使用自有Winsock HttpFacesServer，不能将本快照TLS设置直接当成现行运行风险。
+
+现存 `src/civetweb.c` 可见 `SSL_CTX_set_verify` 的SSL_VERIFY_NONE分支。旧短文写成目录根下的civetweb.c并绑定旧行号，此处改按实际源码路径和符号定位，不把历史行号当稳定接口。
+
+若未来编入目标并启用HTTPS客户端，必须针对真实验证路径落实SSL_VERIFY_PEER、受信任链与主机名验证，并补证书失败、受信链和主机名不匹配的自动化测试。快照保留不构成TLS功能或安全验收。
+
+## 根级历史快照映射
+
+根级original_civetweb.c与本账本src/civetweb.c当前字节完全相同，原始字节SHA256为 `74f777048068dea7f12ac3de62a8fdbef97e6544647875693102e6689a4214e3`。当前来源与许可证以本目录为准；根副本只为历史审计定位保留，本轮不删除，也不将其编入产品。
+
+历史AUDIT_REPORT仍按根文件名记录观察；查阅旧结论时可按此身份映射定位规范副本，不改写旧正文或把历史观察当作当前HTTP实现。退出根副本须另行确认外部消费者和恢复路径。

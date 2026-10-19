@@ -1,10 +1,12 @@
 <!-- DOCSYNC_DOC
 type=audit
-status=living
+status=snapshot
 as_of=2026-10-18
 -->
 
 # 辅助工具核验整改
+
+本整改轮已结束，以下测试数与变异结果属于该轮快照；当前工具使用见[审计工具](../guides/audit-tools.md)和[Android验证工具](../guides/android-validation-tools.md)，不自动继承为当前HEAD验收。
 
 针对基线 `495f53f15e27466ae4cfe464f4a7fbad3b90316d` 的辅助工具审查，范围为 `scripts/`、相关测试及报告生成链。原始核验和本轮脱敏证据保存在本地忽略目录 `cache/reports/auxiliary-review-2026-10-18/`。本轮不连接设备、不启用相机或推流、不读取私有媒体，不清理真实资产，不推送或合并master。
 
