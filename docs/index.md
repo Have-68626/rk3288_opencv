@@ -167,6 +167,7 @@ as_of=2026-10-19
 | `audits/2026-10-17-rk3288-runtime-feedback.md` | snapshot | 双机推流实测、资源采样及开发改进反馈 |
 | `audits/2026-10-19-directory-optimization-result.md` | snapshot | R01—R06落地、规范重建、真实/桩通道与恢复证据 |
 | `audits/2026-10-19-post-rebuild-hygiene-result.md` | snapshot | 重建后旧编译输出清理、历史文档归档及资产保护与验证边界 |
+| `audits/2026-10-19-legacy-build-retirement-result.md` | snapshot | 三个旧构建根、历史缓存专批退出、必要输入迁置及重验边界 |
 
 ### 历史审计
 

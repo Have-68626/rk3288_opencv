@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-18
+as_of=2026-10-19
 -->
 
 # FFmpegKit 离线重建工具
@@ -26,7 +26,15 @@ as_of=2026-10-18
 }
 ```
 
-GNU config使用 `v20210814` / `805517123cbfe33d17c989a18e78c5789fab0437`，也是上游前置输入。旧构建原件暂保留于 `cache/ffmpeg-kit-build-2026-10-16/`；本轮不清理其NDK离线包和唯一来源证据。
+GNU config使用 `v20210814` / `805517123cbfe33d17c989a18e78c5789fab0437`，也是上游前置输入。当前固定输入位置：
+
+- 主源码ZIP：`cache/ffmpeg-kit-6.0.LTS.zip`。
+- FFmpeg、x264、cpu-features、OpenSSL独立裸镜像：`cache/dependency-sources/ffmpegkit-6.0-lts/<依赖>/<提交前缀>/`；不使用旧仓alternates或硬链接。`mirrors.windows.json`和`mirrors.wsl.json`分别提供本机及WSL路径。
+- GNU config：`cache/dependency-sources/gnu-config/805517123cbf/`。
+- smart-exception：`cache/dependency-sources/smart-exception/0.2.1/`下两份sources JAR及`LICENSE.txt`。
+- NDK离线包：`cache/tools/android-ndk/android-ndk-r25c-linux.zip`；使用前按所选临时路径解压，版本须为25.2.9519653。
+
+这些输入已从旧混合构建目录独立保留并核对提交或摘要。旧`cache/ffmpeg-kit-build-2026-10-16/`及原始历史材料按[专批退出记录](../../docs/audits/2026-10-19-legacy-build-retirement-result.md)处理，不再作为重建前提。保留输入链不等于本轮重新编译AAR；消费件仍由`app/libs/ffmpeg-kit.aar`提供。
 
 ## 顺序执行
 

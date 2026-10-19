@@ -15,7 +15,7 @@ as_of=2026-10-19
 | deps/insightface/*.onnx | 上游父图 | 转换输入；来源和SHA以供应链为准，不以mtime证明父链 |
 | deps/insightface/archives、optional | 原发行包及用途待确认输入 | 离线来源保全，不把识别器相同当成整包可删 |
 | deps/WIDER_train | 校准/评估数据源 | 量化或精度任务显式指定；涉及媒体授权，不随路径检查读取 |
-| cache/model-conversion/insightface | 转换中间件 | 绑定本次父图和工具身份；不得直接当作已认证生产消费件 |
+| cache/model-conversion/insightface | 新任务转换中间件的约定位置 | 历史副本经专批退出；新输出须绑定本次父图和工具身份，不得直接当作已认证生产消费件 |
 | models/calib_images | 历史校准副本 | 独立精度程序的历史默认位置；不是生产模型目录，不因结构测试通过获准清理 |
 | models/scrfd_face_detect_ncnn | Android当前检测源模型 | Gradle源文件表与独立校验器共同消费，profile确定具体变体 |
 | models/arcface_ncnn、arcface_int8_ncnn | Android当前识别源模型及其他工具候选 | profile源文件表决定Android消费件；同族不同精度不能只凭文件名混用 |
@@ -36,6 +36,6 @@ rk3288_light与arm64_accuracy使用各自表项，不根据profile名称推断�
 - 新转换在cache/model-conversion内使用明确模型族和本次标识；量化输入保持唯一同stem配对，不覆盖正式消费目录。
 - 消费者优先读取明确profile/配置，不通过“发现哪个文件夹就启用哪个模型”扩张能力。
 - 先在独立输出验证父图、节点、ABI、预处理、四文件摘要和templateSpaceId，再单独批准切换正式消费件；本页登记不替代该批准。
-- 历史asset-paths记录当时移动，不追加本轮未实际移动的条目；新用途视图由本页维护。旧模型、校准集、发行包和中间件本轮保留原位。
+- 历史asset-paths记录当时移动，不追加本轮未实际移动的条目；新用途视图由本页维护。正式模型、校准集、父图和发行包保留原位；旧cache转换中间件按[专批退出记录](../audits/2026-10-19-legacy-build-retirement-result.md)处理，不能再以历史映射推定本机副本仍存在。
 
 校验命令从仓库根执行：`python scripts/verify_face_models.py`。模型身份报告仅留本机cache/reports/face-models，不把该缓存作为正式说明的稳定引用；不运行校准图片或真实精度任务。

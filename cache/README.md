@@ -16,10 +16,10 @@ as_of=2026-10-19
 
 | 子目录 | 存放 | 典型内容 | 删除代价 |
 |---|---|---|---|
-| `builds/` | CMake / Gradle 构建目录 | `fp15_gtest/`（VS2022 + 真实 OpenCV 源码）等 | **高**（带真实 OpenCV 的配置是数 GB、重编耗时长）；`-DRK_SKIP_OPENCV=ON -G Ninja` 的快通道便宜 |
+| `builds/` | CMake / Gradle 构建目录 | `windows-vs2022-x64-ncnn/`、`android-gradle-real/`、`android-native-real/` | **高**（真实 OpenCV 重编耗时长）；隔离真实与mock输出，不直接移动配置树 |
 | `tools/` | 本机包装脚本 | `rk_android_gate.bat` / `rk_probe.bat` / `rk_docsgate.bat` / `rk_javatest.bat` | **低**（3–5 行，随时重建，见下） |
 | `reports/` | 需**跨会话保留**的验证产物 | 基线哈希、门禁结论快照等 | 中（若未另存到记忆/计划文件） |
-| `dependency-sources/` | 固定版本依赖源码 | OpenCV提交、GNU config固定提交 | 保留Git身份，未确认来源可恢复前不删 |
+| `dependency-sources/` | 固定版本依赖源码 | GoogleTest、GNU config、FFmpegKit依赖镜像、smart-exception源码JAR | 保留Git身份及来源锁定；当前OpenCV使用外部SDK源码 |
 | `model-conversion/` | 模型转换中间件 | InsightFace三族PNNX/NCNN输出 | 保留来源、工具版本及路径映射，不能替代正式消费模型 |
 
 正式FFmpegKit构建链已迁入[scripts/ffmpegkit](../scripts/ffmpegkit/README.md)，Android验证工具见[使用说明](../docs/guides/android-validation-tools.md)。本机旧工具原件待提交回读和消费者迁移完成后再逐项退出，不能按日期整删。
@@ -86,6 +86,10 @@ cmake -S . -B cache/builds/gtest -G "Visual Studio 17 2022" -A x64 \
 - 临时夹具与编译缓存仅在使用它们的进程结束后列入删除批次；Cypress既有保留要求不因盘点解除。
 - 批量删除前逐项报告绝对路径、逻辑大小、风险和恢复方法，取得确认后再执行；检查路径留在仓库缓存内，不跟随重解析点。
 - 本目录有pytest链接、Windows路径安全测试链接等，不递归进入链接目标。逻辑文件大小不等于实际磁盘可回收空间。
+
+2026-10-19用户已单独批准按冻结清单退出旧构建、原始日志、唯一历史证据、旧Cypress副本及回滚ZIP，不再为该批历史内容保留备份；该授权不扩大到后续新产物或整个cache。执行与验收见[旧构建与历史缓存退出](../docs/audits/2026-10-19-legacy-build-retirement-result.md)。上面的默认保留要求不撤销这次明确批准。
+
+本轮必要输入改存：`dependency-sources/ffmpegkit-6.0-lts/`为独立固定Git镜像及宿主路径映射，`dependency-sources/smart-exception/0.2.1/`为两份源码JAR和许可，`tools/android-ndk/android-ndk-r25c-linux.zip`为NDK25离线包，`tools/android-layout/{real,mock}-output.gradle`为隔离构建配置。消费AAR仍在`app/libs/ffmpeg-kit.aar`，不随历史缓存退出。
 
 ## 相关约定
 
