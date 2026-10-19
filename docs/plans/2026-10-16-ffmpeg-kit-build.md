@@ -31,7 +31,7 @@ if ((Get-FileHash -LiteralPath $aarTarget -Algorithm SHA256).Hash.ToLowerInvaria
 }
 ```
 
-暂时保留消费位置和缓存副本、原始源码ZIP、构建输入清单及适配/打包脚本；没有独立备份前，不按普通临时文件清理。缓存分类见[本地缓存盘点](../audits/2026-10-17-cache-inventory.md)。文档已入库，AAR仍为本地产物；真机验收状态以下方记录为准。
+暂时保留消费位置和缓存副本、原始源码ZIP、构建输入清单及适配/打包脚本；没有独立备份前，不按普通临时文件清理。缓存分类见[本地缓存盘点](../audits/archive/2026-10-17-cache-inventory.md)。文档已入库，AAR仍为本地产物；真机验收状态以下方记录为准。
 
 用户已选择局域网验证：本机接收、RK3288推送。历史设备地址和TCP ADB方式已在[设备验收清单](../guides/rk3288-device-acceptance.md)确认文档出处；后续已按机A、机B顺序完成推流功能分段，结果与未通过项见[局域网验收计划](2026-10-17-rtmp-lan-validation.md)，不据历史地址推断设备此刻在线。实际相机链须使用真实核心JNI包，不能用下方桩APK替代。
 

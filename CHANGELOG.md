@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **元数据迁移**：全部 67 份项目文档补齐 `DOCSYNC_DOC` 块
 - **目录重构**：`docs/superpowers/{plans,specs}` → `docs/plans`、`docs/specs`；新增 `docs/guides/`；6 份根级审计快照归档至 `docs/audits/archive/`
 - **内容更正**：README 的 Gradle 版本与 CI 描述、`docs/index.md` 的路径与收录、`cpp-engine.md` 的行号引用等 10 处过期内容；测试框架口径由 4 处 3 种收敛为单一权威表；架构契约表述由「项目遵循」更正为「目标契约，5/5 待修复」
-- **审计报告**：`docs/audits/2026-09-15-documentation-audit.md`
+- **审计报告**：`docs/audits/archive/2026-09-15-documentation-audit.md`
 
 ### Added — 工程与流程（2026-09）
 

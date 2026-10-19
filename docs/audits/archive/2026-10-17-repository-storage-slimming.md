@@ -187,7 +187,7 @@ as_of=2026-10-17
 
 ## 6. 依据与局限
 
-项目依据：[cache存放约定](../../cache/README.md)、[忽略规则](../../.gitignore)、[前次清理执行记录](2026-10-17-cache-cleanup-A.md)、[工具迁入方案](../plans/2026-10-17-cache-tools-integration.md)、[双机实测反馈](2026-10-17-rk3288-runtime-feedback.md)、[供应链账本](../security/supply-chain-ledger.md)。构建接线参考`app/build.gradle:334`、`web/vite.config.ts:40`与当前CMake缓存；另现场核对了用户项目记忆`feedback-file-paths.md`，按其可复用内容集中、外部工具直接引用及不直接移动CMake树的约定制定建议。
+项目依据：[cache存放约定](../../../cache/README.md)、[忽略规则](../../../.gitignore)、[前次清理执行记录](2026-10-17-cache-cleanup-A.md)、[工具迁入方案](../../plans/2026-10-17-cache-tools-integration.md)、[双机实测反馈](../2026-10-17-rk3288-runtime-feedback.md)、[供应链账本](../../security/supply-chain-ledger.md)。构建接线参考`app/build.gradle:334`、`web/vite.config.ts:40`与当前CMake缓存；另现场核对了用户项目记忆`feedback-file-paths.md`，按其可复用内容集中、外部工具直接引用及不直接移动CMake树的约定制定建议。
 
 原始聚合、局部大文件摘要、模型重复组和配置核对结果保留在本机忽略目录`.superpowers/sdd/2026-10-17-storage-audit/`。除为重复核验读取候选文件计算摘要外，未解析、复制或展示私有日志/媒体正文；没有完整扫描仓库外SDK、全局包缓存、WSL或整个磁盘，也未执行网络查询、编译、应用回归测试或设备操作。未被活树检索引用不等于绝对无用途；不同格式/版本模型不能仅因用途相似就认定重复。
 

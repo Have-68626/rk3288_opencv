@@ -119,23 +119,30 @@ as_of=2026-10-19
 |---|---|---|
 | `claude-code-permission-approval.md` | living | 权限自动审批：弹窗规模实测、auto 模式诊断、`PermissionRequest` 官方规格、安全设计与验证方案 |
 
-## plans/（活跃与历史轮次）
+## plans/（当前待办）
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
-| `plans/2026-07-03-triple-refactor-plan.md` | snapshot | 三层重构实施计划 |
-| `plans/2026-10-13-pr495-review-fixes.md` | snapshot | PR #495 九项审查修复、回归与变异验证计划 |
 | `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
-| `plans/2026-10-16-android-ncnn-build-remediation.md` | snapshot | Android ncnn 路径查找、消费方编译选项及双 ABI 编译/链接验证 |
-| `plans/2026-10-16-cypress-e2e-remediation.md` | snapshot | Cypress 启动恢复、34项 E2E、原覆盖率门槛与五组变异验证 |
 | `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
 | `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |
-| `plans/2026-10-17-rtmp-lan-handoff.md` | snapshot | 双机推流实测结果、安全落点与接续命令 |
 | `plans/2026-10-17-cache-tools-integration.md` | living | 缓存工具迁入方案；任务1–4工具与静态重建已实施，消费集成及原件退出保留边界 |
 | `plans/2026-10-17-cache-cleanup.md` | living | A1合成夹具及A2编译缓存已清理；后续批次待确认 |
 | `plans/2026-10-18-storage-reorganization.md` | living | 瘦身报告复核、工具迁入、资产分类、清理与master合入准备 |
 | `plans/2026-10-19-directory-optimization.md` | living | R01—R06目录优化、独立全量重建及本地CI验收 |
-| `plans/2026-10-18-temp-reuse-and-cleanup.md` | snapshot | 外部临时目录审计工具复用、证据保全与清理审批 |
+
+### 历史计划
+
+已结束轮次与工具绑定的旧路径分列保留；历史测试数字不代替当前验收。
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `plans/2026-07-03-triple-refactor-plan.md` | snapshot | 三层重构实施计划 |
+| `plans/archive/2026-10-13-pr495-review-fixes.md` | snapshot | PR #495 九项审查修复、回归与变异验证计划 |
+| `plans/archive/2026-10-16-android-ncnn-build-remediation.md` | snapshot | Android ncnn 路径查找、消费方编译选项及双 ABI 编译/链接验证 |
+| `plans/archive/2026-10-16-cypress-e2e-remediation.md` | snapshot | Cypress 启动恢复、34项 E2E、原覆盖率门槛与五组变异验证 |
+| `plans/archive/2026-10-17-rtmp-lan-handoff.md` | snapshot | 双机推流实测结果、安全落点与接续命令 |
+| `plans/archive/2026-10-18-temp-reuse-and-cleanup.md` | snapshot | 外部临时目录审计工具复用、证据保全与清理审批 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |
@@ -153,28 +160,29 @@ as_of=2026-10-19
 | `specs/2026-07-06-architecture-governance-design.md` | snapshot | 架构治理设计（5 条契约的**目标**定义） |
 | `specs/2026-10-17-rtmp-hidden-preview-design.md` | living | 实机推流测试隐藏预览的临时控制器与正式模式取舍 |
 
-## audits/
+## audits/（近期结果与设备基线）
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
-| `audits/2026-09-15-documentation-audit.md` | snapshot | 全项目文档审计报告（门禁基准失效根因、真实错误清单、遗留问题） |
-| `audits/2026-10-17-cache-inventory.md` | snapshot | 本地缓存盘点、删除候选、保留与入库归档清单 |
-| `audits/2026-10-17-cache-cleanup-A.md` | snapshot | A1/A2实际删除清单、空间变化与执行后完整性核对 |
-| `audits/2026-10-17-repository-storage-slimming.md` | snapshot | 仓库大目录占用、可清理候选、复用与存放规范建议 |
 | `audits/2026-10-17-rk3288-runtime-feedback.md` | snapshot | 双机推流实测、资源采样及开发改进反馈 |
-| `audits/2026-10-18-storage-reorganization-result.md` | snapshot | 存储整理执行、保全映射、FFmpegKit独立重建与合入边界 |
-| `audits/2026-10-18-temp-reuse-result.md` | snapshot | 外部临时目录复用、历史证据归档与删除边界 |
-| `audits/2026-10-18-auxiliary-tools-remediation.md` | snapshot | 辅助工具缺测判据、失败传播、脱敏及行为回归整改 |
-| `audits/2026-10-18-documentation-remediation.md` | snapshot | 文档十项修订、事实源收敛、历史轮次与退出验收 |
-| `audits/2026-10-19-directory-organization-audit.md` | snapshot | 目录职责、路径消费者、忽略目录分类及渐进整改顺序与验收 |
 | `audits/2026-10-19-directory-optimization-result.md` | snapshot | R01—R06落地、规范重建、真实/桩通道与恢复证据 |
+| `audits/2026-10-19-post-rebuild-hygiene-result.md` | snapshot | 重建后旧编译输出清理、历史文档归档及资产保护与验证边界 |
 
-### audits/archive/（已冻结）
+### 历史审计
 
-历史审计快照，保留原始内容不再更新。2026-09-15 由仓库根目录归档至此。
+保留原始基准、来源与失败边界；按日期查阅，不据旧报告推断当前实现。
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
+| `audits/archive/2026-09-15-documentation-audit.md` | snapshot | 全项目文档审计报告（门禁基准失效根因、真实错误清单、遗留问题） |
+| `audits/archive/2026-10-17-cache-inventory.md` | snapshot | 本地缓存盘点、删除候选、保留与入库归档清单 |
+| `audits/archive/2026-10-17-cache-cleanup-A.md` | snapshot | A1/A2实际删除清单、空间变化与执行后完整性核对 |
+| `audits/archive/2026-10-17-repository-storage-slimming.md` | snapshot | 仓库大目录占用、可清理候选、复用与存放规范建议 |
+| `audits/archive/2026-10-18-storage-reorganization-result.md` | snapshot | 存储整理执行、保全映射、FFmpegKit独立重建与合入边界 |
+| `audits/archive/2026-10-18-temp-reuse-result.md` | snapshot | 外部临时目录复用、历史证据归档与删除边界 |
+| `audits/archive/2026-10-18-auxiliary-tools-remediation.md` | snapshot | 辅助工具缺测判据、失败传播、脱敏及行为回归整改 |
+| `audits/archive/2026-10-18-documentation-remediation.md` | snapshot | 文档十项修订、事实源收敛、历史轮次与退出验收 |
+| `audits/archive/2026-10-19-directory-organization-audit.md` | snapshot | 目录职责、路径消费者、忽略目录分类及渐进整改顺序与验收 |
 | `audits/archive/AUDIT_REPORT.md` | frozen | 全项目审计报告（2026-07-04，综合评分 2.9/5，38 项发现） |
 | `audits/archive/AUDIT_RESULT.md` | frozen | 针对《重构洞察.txt》的逐条验证结果 |
 | `audits/archive/GITHUB_SCAN_AUDIT.md` | frozen | GitHub 安全与质量扫描审计（CodeQL + Dependabot，2026-07-05） |

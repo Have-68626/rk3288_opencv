@@ -6,7 +6,7 @@ as_of=2026-10-19
 
 # 目录优化与规范内容重建计划
 
-目标：按[目录审计](../audits/2026-10-19-directory-organization-audit.md)实施R01—R06，并以Windows、真实双ABI Android APK、Web全量重建和本地CI验收。不新增运行依赖。
+目标：按[目录审计](../audits/archive/2026-10-19-directory-organization-audit.md)实施R01—R06，并以Windows、真实双ABI Android APK、Web全量重建和本地CI验收。不新增运行依赖。
 
 设计：沿用当前分支和用户工作区，用独立新构建树与补丁探针保护旧产物及未提交工作。规范目录承载后续可复用工具/夹具/报告；源模型、生产身份和历史证据不迁移。台账在本地.superpowers/sdd/2026-10-19-directory-optimization，脱敏日志在cache/reports/directory-optimization-2026-10-19。技能默认计划目录、自动提交/清理及逐任务分派由用户当前约定替代。
 

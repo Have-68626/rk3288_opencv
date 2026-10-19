@@ -147,4 +147,4 @@ MIT License
 - [架构治理设计](docs/specs/2026-07-06-architecture-governance-design.md)
 - [架构治理实施计划](docs/plans/2026-07-06-architecture-governance-plan.md)
 - [远程分支审计](docs/audits/archive/REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
-- [文档审计报告](docs/audits/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题
+- [文档审计报告](docs/audits/archive/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题

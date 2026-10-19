@@ -6,11 +6,11 @@ as_of=2026-10-18
 
 # 外部临时目录复用与清理实施报告
 
-范围为 `D:/ProgramData/Temp` 的PR495历史现场，依据用户确认的[实施计划](../plans/2026-10-18-temp-reuse-and-cleanup.md)。本报告不把历史测试结果当成当前代码或实机验收，不修改核心配置、不提交、不推送。
+范围为 `D:/ProgramData/Temp` 的PR495历史现场，依据用户确认的[实施计划](../../plans/archive/2026-10-18-temp-reuse-and-cleanup.md)。本报告不把历史测试结果当成当前代码或实机验收，不修改核心配置、不提交、不推送。
 
 ## 已完成迁入
 
-- 正式工具位于 `scripts/audit/`：审查映射 `generate-review-map.py`、显式规则评分 `score-audit.py`、无脚本静态摘要 `generate-dashboard.py`，来源摘要见同目录 `sources.json`。输出独占创建，固定错误诊断，展示内容先脱敏再HTML转义。使用方法见[工具说明](../guides/audit-tools.md)。
+- 正式工具位于 `scripts/audit/`：审查映射 `generate-review-map.py`、显式规则评分 `score-audit.py`、无脚本静态摘要 `generate-dashboard.py`，来源摘要见同目录 `sources.json`。输出独占创建，固定错误诊断，展示内容先脱敏再HTML转义。使用方法见[工具说明](../../guides/audit-tools.md)。
 - 已先记录入口缺失的RED，再实现并通过32项CLI回归。真实48项历史准则全部复算，12个维度与整体评分数值和旧记录一致；审查映射重生成590行，始终为assigned，未补造已审查证据。旧准则遗漏未使用尾列的兼容问题另经RED/GREEN验证，必需评分字段仍严格检查。
 - 四组定点变异均被回归检出：放行无证据评分、把未知项上界压为已知下界、去掉HTML转义、放行输出覆写。变异仅在本轮忽略目录中的正式工具副本进行，没有执行旧源码变异脚本。
 

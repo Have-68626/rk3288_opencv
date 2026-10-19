@@ -14,7 +14,7 @@ as_of=2026-10-19
 
 ## 范围、方法与基线
 
-用户确认范围为“正式目录逐项审查＋忽略目录分类盘点”，交付问题证据、目标布局、实施顺序和验收办法。规范以[仓库存储布局](../guides/repository-storage-layout.md)、[文档规范](../DOC_STANDARD.md)和实际构建消费者为准；通用习惯只作为可选建议，不将工具默认名或历史证据路径判为错误。
+用户确认范围为“正式目录逐项审查＋忽略目录分类盘点”，交付问题证据、目标布局、实施顺序和验收办法。规范以[仓库存储布局](../../guides/repository-storage-layout.md)、[文档规范](../../DOC_STANDARD.md)和实际构建消费者为准；通用习惯只作为可选建议，不将工具默认名或历史证据路径判为错误。
 
 - 当前分支为 `codex/pr495-review-fixes`，HEAD为 `265d3fc575d649f2ff908bfdfc20a4f086e596fc`。
 - 根目录实际有34个目录、27个文件；Git索引685项，分属15个顶层目录及24个根文件。索引仍含上轮已获批删除的两份文档，当前文件系统不存在；不能误报为本轮丢失文件。
@@ -50,7 +50,7 @@ as_of=2026-10-19
 
 ### R01：本地新构建入口尚未遵守统一落点（优先）
 
-证据：[CMakePresets.json](../../CMakePresets.json)第8/18/28行仍输出到根级build_ci、build_win、build_android_rk3288；[Android包装脚本](../../scripts/build_android.bat)第65行和[Host包装脚本](../../scripts/verify_opencv_host.bat)第8行也创建根级构建树，而存储规范约定新独立树进入cache/builds。本机仍有build_fp15_gtest等历史目录，名称无法单独说明工具链、用途和有效期。
+证据：[CMakePresets.json](../../../CMakePresets.json)第8/18/28行仍输出到根级build_ci、build_win、build_android_rk3288；[Android包装脚本](../../../scripts/build_android.bat)第65行和[Host包装脚本](../../../scripts/verify_opencv_host.bat)第8行也创建根级构建树，而存储规范约定新独立树进入cache/builds。本机仍有build_fp15_gtest等历史目录，名称无法单独说明工具链、用途和有效期。
 
 最短整改：保留preset名称和已有树，先让新的本地构建统一输出到 `cache/builds/<用途-工具链>/`。包装脚本显式使用仓库根的 `-S` 和目标 `-B`；不能只改BUILD_DIR却保留依赖父目录层数的 `..`。VS、Ninja、不同ABI及mock/真实后端使用不同树。CI runner中的build_ci/build_ci_win属于独立短期契约，可保留，不为目录美观改workflow。
 
@@ -60,9 +60,9 @@ as_of=2026-10-19
 
 ### R02：运行及验证输出的归属仍分散（优先明确规则，迁移另批）
 
-本机根级recognition.csv、recognition.jsonl合计5,733,365逻辑字节，均已忽略；这里只核验元数据，未读内容。当前生产Windows默认日志由[WinJsonConfig.cpp](../../src/win/src/WinJsonConfig.cpp)第561行解析为exe旁storage/win_logs，**不能据根级同名文件断言当前服务仍错误写根目录**。
+本机根级recognition.csv、recognition.jsonl合计5,733,365逻辑字节，均已忽略；这里只核验元数据，未读内容。当前生产Windows默认日志由[WinJsonConfig.cpp](../../../src/win/src/WinJsonConfig.cpp)第561行解析为exe旁storage/win_logs，**不能据根级同名文件断言当前服务仍错误写根目录**。
 
-另有build/reports、tests/reports、web/tests/reports及cache/reports等产物位置。[Host验证脚本](../../scripts/verify_opencv_host.bat)第107行仍在仓库根输出opencv_verify_results.csv及verify.log；说明输出布局不完全由一个规则覆盖。
+另有build/reports、tests/reports、web/tests/reports及cache/reports等产物位置。[Host验证脚本](../../../scripts/verify_opencv_host.bat)第107行仍在仓库根输出opencv_verify_results.csv及verify.log；说明输出布局不完全由一个规则覆盖。
 
 最短整改：生产运行态维持应用既有storage规则；工具默认机器报告留在各自约定目录，跨会话需保留的脱敏证据集中到 `cache/reports/<任务-日期>/`，结论入docs/audits。只改后续工具的输出参数或运行目录，不搬正在写入的日志，不让正式指南稳定链接忽略的原始报告。先核对根日志的作者、保留需求和写入句柄，再决定受控归档或另批删除。
 
@@ -70,7 +70,7 @@ as_of=2026-10-19
 
 ### R03：Android默认测试目录保留不参与测试的样例（优先）
 
-[app/build.gradle](../../app/build.gradle)第119/123行将生产Java指定为src/java、测试指定为tests/unit/java，但 `app/src/test/java/com/example/rk3288_opencv/DummyTest.java` 仍被跟踪，仅含assertTrue(true)。它不在当前test源集合中，容易让后续人员在惯常目录添加测试却未执行。
+[app/build.gradle](../../../app/build.gradle)第119/123行将生产Java指定为src/java、测试指定为tests/unit/java，但 `app/src/test/java/com/example/rk3288_opencv/DummyTest.java` 仍被跟踪，仅含assertTrue(true)。它不在当前test源集合中，容易让后续人员在惯常目录添加测试却未执行。
 
 最短整改：维持当前源集合，在Android入口明确真实路径；确认该样例无外部消费者后移除，不将39份现有Java测试整体迁移，也不为保留空样例扩大sourceSets。
 
@@ -78,19 +78,19 @@ as_of=2026-10-19
 
 ### R04：根级第三方源与账本副本重复，但绑定历史证据（分批）
 
-`original_civetweb.c` 与 `src/win/third_party/civetweb/src/civetweb.c` 均为616,093字节，原始字节SHA256完全相同，完整摘要见本地证据。但[历史审计](archive/AUDIT_REPORT.md)第317—320行仍按根文件名记录观察；不是无消费者的垃圾。
+`original_civetweb.c` 与 `src/win/third_party/civetweb/src/civetweb.c` 均为616,093字节，原始字节SHA256完全相同，完整摘要见本地证据。但[历史审计](AUDIT_REPORT.md)第317—320行仍按根文件名记录观察；不是无消费者的垃圾。
 
-建议先以[第三方账本](../../src/win/third_party/civetweb/LEDGER.md)中的快照为唯一当前来源，在当前说明中登记根路径到规范路径、版本和摘要的映射。原历史正文不改写。只有确认历史定位可以经映射恢复、无外部工具固定该根路径后，才单独申请退出根副本；现阶段保留更安全。
+建议先以[第三方账本](../../../src/win/third_party/civetweb/LEDGER.md)中的快照为唯一当前来源，在当前说明中登记根路径到规范路径、版本和摘要的映射。原历史正文不改写。只有确认历史定位可以经映射恢复、无外部工具固定该根路径后，才单独申请退出根副本；现阶段保留更安全。
 
 验收：原始和规范化摘要均可复算，账本回归通过，构建/检索不依赖根副本；恢复方案保留原路径身份及历史引用解释。不得连带删除第三方许可证或把CivetWeb写成当前HTTP实现。
 
 ### R05：模型路径缺少统一的用途与消费者视图（优先补映射，代码迁移另立任务）
 
-[Android Gradle](../../app/build.gradle)第165—172行消费scrfd_face_detect_ncnn；[CI](../../.github/workflows/ci.yml)第811行量化输入为scrfd_ncnn；[ModelRegistry.cpp](../../src/cpp/src/ModelRegistry.cpp)第130行仍有yolo_face_int8_ncnn的独立历史入口。本机还并存models/int8、各族FP32/INT8和Android profile。
+[Android Gradle](../../../app/build.gradle)第165—172行消费scrfd_face_detect_ncnn；[CI](../../../.github/workflows/ci.yml)第811行量化输入为scrfd_ncnn；[ModelRegistry.cpp](../../../src/cpp/src/ModelRegistry.cpp)第130行仍有yolo_face_int8_ncnn的独立历史入口。本机还并存models/int8、各族FP32/INT8和Android profile。
 
 这证明布局和消费者多路并存，**不证明所有目录内容重复，也不证明YOLO与SCRFD可互换**。检测器注册ID、图结构、节点及解码语义不能靠改文件夹名统一。
 
-最短整改：扩充现有[资产映射](assets/2026-10-18-storage/asset-paths.json)和供应链说明，分别登记上游父图、转换中间件、校准集、生产消费件及消费者。Android消费入口以既有profile/manifest为准，其他注册入口列为明确兼容项。新产物先采用一致命名；历史路径只在真实消费者、摘要、预处理及templateSpaceId同步验证后分批切换。
+最短整改：扩充现有[资产映射](../assets/2026-10-18-storage/asset-paths.json)和供应链说明，分别登记上游父图、转换中间件、校准集、生产消费件及消费者。Android消费入口以既有profile/manifest为准，其他注册入口列为明确兼容项。新产物先采用一致命名；历史路径只在真实消费者、摘要、预处理及templateSpaceId同步验证后分批切换。
 
 验收：每个保留路径有明确角色及消费者，切换前后四文件摘要、预处理、节点、ABI和模板空间一致；按模型族分别运行路径/manifest/合成契约回归。真实精度缺测和结构跳过继续单列，不能用目录整理解除验收阻塞。
 
@@ -98,7 +98,7 @@ as_of=2026-10-19
 
 scripts共43份跟踪文件，其中23份在根部，另20份已归入android/audit/ffmpegkit。多种语言本身不是问题；需要改善的是工具入口、编译源和测试参数的发现方式。
 
-[CMakeLists.txt](../../CMakeLists.txt)第284行直接编译scripts/prepare_ncnn_calibration.cpp，而共享编译工具已有src/cpp/tools；[验证脚本](../../scripts/verify_faces_test_set01.bat)第122行又从scripts读取CSV参数清单。现状能工作，属于维护建议，不是编译缺陷。
+[CMakeLists.txt](../../../CMakeLists.txt)第284行直接编译scripts/prepare_ncnn_calibration.cpp，而共享编译工具已有src/cpp/tools；[验证脚本](../../../scripts/verify_faces_test_set01.bat)第122行又从scripts读取CSV参数清单。现状能工作，属于维护建议，不是编译缺陷。
 
 建议仅在对应工具下次维护时，将独立编译源放src/cpp/tools，已确认不含私有路径/身份数据的公用参数夹具放tests/fixtures；Android验证归scripts/android，仓库通用门禁仍可保留scripts根入口。目录归属按职责，不为统一连字符/下划线同时改所有脚本。根入口有CI、文档及用户消费者时先保留兼容入口。
 

@@ -45,7 +45,7 @@ as_of=2026-10-17
 | `cache/tools/` | 很小 | 本机包装脚本；不为节省空间删除 |
 | `cache/rtmp-lan-2026-10-17/` | 快照后新增，未计入上述总量 | 本轮真实核心APK、两台覆盖前APK、临时控制器源码和匿名验收结果，先保留。旧APK仅作代码回退输入，不代表数据兼容；APK、原始日志不入Git。临时控制器与驱动验证完成后再选择是否整理为通用脚本，结论入库到局域网验收计划；设备上的临时控制器按每段finally卸载 |
 
-`app/libs/ffmpeg-kit.aar` 不在本次cache扫描范围，是Gradle实际消费件，不是待清理缓存。用途、恢复方法及摘要由[构建记录](../plans/2026-10-16-ffmpeg-kit-build.md)统一说明。Web另有复制的Cypress缓存和原始二进制缓存，均未扫描、未删除。
+`app/libs/ffmpeg-kit.aar` 不在本次cache扫描范围，是Gradle实际消费件，不是待清理缓存。用途、恢复方法及摘要由[构建记录](../../plans/2026-10-16-ffmpeg-kit-build.md)统一说明。Web另有复制的Cypress缓存和原始二进制缓存，均未扫描、未删除。
 
 ## 需要入库或独立归档的内容
 
@@ -53,12 +53,12 @@ as_of=2026-10-17
 
 | 内容 | 原件位置（均为本地缓存） | 建议归宿与处理 |
 |---|---|---|
-| FFmpegKit用途、消费位置、缺件行为、摘要、许可、恢复步骤 | 本地产物与构建说明 | 已整理至[构建记录](../plans/2026-10-16-ffmpeg-kit-build.md)，本轮补充内容尚待提交确认 |
+| FFmpegKit用途、消费位置、缺件行为、摘要、许可、恢复步骤 | 本地产物与构建说明 | 已整理至[构建记录](../../plans/2026-10-16-ffmpeg-kit-build.md)，本轮补充内容尚待提交确认 |
 | 有效来源与工具摘要 | FFmpegKit构建目录的 `build-inputs.json` | 整理为入库来源清单；去除本机镜像绝对路径，保留URL、固定commit、源码及工具摘要。已入库构建记录中的关键摘要继续保留 |
 | 适配、原生运行、库收集及AAR打包 | 同目录的 `prepare-native.py`、`run-native.sh`、`collect-native.py`、`bundle.py` | 建议整理至 `scripts/` 专用子目录；现有脚本硬编码本机路径、依赖手工准备的Java输入，不应直接宣称为跨机器一键复现工具。整理并验证后再归档，原件先保留 |
 | 最初的依赖获取脚本 | 同目录的 `prefetch.py`、`seed-sources.py` | 含未采用的GnuTLS/gmp/nettle/libiconv路线，不作为最终有效构建入口；保留历史，后续按OpenSSL有效来源重写再入库 |
 | Java编译参数、原生库/接口校验、APK校验及集成结果 | 同目录的 `java/`、`artifact-verification.json`、`apk-verification.json`、`android-integration-result.json` | 脱敏后的输入摘要与判据适合小型验收附件；原始日志、classes/JAR及SO作仓库外归档，不把机器路径直接包装成通用脚本 |
-| Cypress正式运行、覆盖率、变异及清理证据 | `cypress-main-resume/` 的 `formal-final/`、`formal-expanded-round5/`、`mutations/`、`splash-mutant-round1/`、源绑定及总账 | 已有[整改结论](../plans/2026-10-16-cypress-e2e-remediation.md)；完整日志经脱敏复核后独立归档，建议另入库最小源绑定和汇总结论，不批量提交原始调试输出 |
+| Cypress正式运行、覆盖率、变异及清理证据 | `cypress-main-resume/` 的 `formal-final/`、`formal-expanded-round5/`、`mutations/`、`splash-mutant-round1/`、源绑定及总账 | 已有[整改结论](../../plans/archive/2026-10-16-cypress-e2e-remediation.md)；完整日志经脱敏复核后独立归档，建议另入库最小源绑定和汇总结论，不批量提交原始调试输出 |
 | Windows、Android、F32等正式回归与变异 | 审计目录的 `resume-2026-10-16/`、`nonweb-followup-2026-10-16/`、`f32-final/`、`integration/` 等 | 保留源绑定、真实退出码和失败变异；从已入库整改总账逐项提取必需证据再归档。日志存在不代表对应平台验收通过 |
 | 交接卡、checkpoint及源码快照 | cache根与FFmpegKit构建目录 | 历史HEAD及“未提交”等文字均为当时状态，不按当前指令执行；保留历史快照，后续归档须标注对应commit |
 

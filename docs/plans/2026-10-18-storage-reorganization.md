@@ -1,20 +1,20 @@
 <!-- DOCSYNC_DOC
 type=plan
 status=living
-as_of=2026-10-18
+as_of=2026-10-19
 -->
 
 # 仓库存储整理与工具迁入实施计划
 
 > 执行者沿用 `superpowers:executing-plans`，逐项验证；用户已明确要求准备合入master，实际提交、合并仍须展示内容后另行确认。不得推送。
 
-**目标**：审查并落实[瘦身报告](../audits/2026-10-17-repository-storage-slimming.md)，迁入可维护工具，规范模型/依赖来源及中间产物的存放，删除已证明无用的临时内容。
+**目标**：审查并落实[瘦身报告](../audits/archive/2026-10-17-repository-storage-slimming.md)，迁入可维护工具，规范模型/依赖来源及中间产物的存放，删除已证明无用的临时内容。
 
 **设计依据**：用户已确认仅限报告涉及内容、保留工具规定名称和历史证据绑定；相关使用者均已停止。按照已有[迁入方案](2026-10-17-cache-tools-integration.md)和[清理安全流程](2026-10-17-cache-cleanup.md)执行，不进行全仓命名重构或应用架构重写。
 
 **技术栈**：已有Python标准库、PowerShell、Git、Android SDK/NDK、Java及WSL交叉编译宿主；不新增运行依赖。源码、许可、摘要与消费者映射先核对，移动后再校验，删除按冻结白名单逐文件进行。
 
-实施结果见[整理报告](../audits/2026-10-18-storage-reorganization-result.md)，现行存储规则见[存储布局](../guides/repository-storage-layout.md)。以下已勾选步骤保留历史现场，不重复执行；master合入仍须另行确认，不能因本页全部实施步骤勾选就视为已合入。
+实施结果见[整理报告](../audits/archive/2026-10-18-storage-reorganization-result.md)，现行存储规则见[存储布局](../guides/repository-storage-layout.md)。以下已勾选步骤保留历史现场，不重复执行；master合入仍须另行确认，不能因本页全部实施步骤勾选就视为已合入。
 
 ## 边界与接口
 
@@ -73,4 +73,4 @@ as_of=2026-10-18
 - [x] 做一次独立只读复核并修正确定问题；不重复把历史实机结果宣称为本轮新验收。
 - [x] 汇总实际落地、保留项、逻辑/物理空间、测试和限制；生成待确认提交/合并方案。master实际合并及推送均不由本计划自动授权。
 
-执行结果与限制见[整理报告](../audits/2026-10-18-storage-reorganization-result.md)。提交与master合并仍待用户单独确认；检查完成不代表已合入。
+执行结果与限制见[整理报告](../audits/archive/2026-10-18-storage-reorganization-result.md)。相关文档已由本地提交ab27d8b记录，该提交尚未进入本机master；合并及推送仍须另行确认。本次后续卫生清理与文档归档产生的新改动仍未提交，不能用既有提交代替本轮交付检查。

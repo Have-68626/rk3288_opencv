@@ -6,7 +6,7 @@ as_of=2026-10-18
 
 # Android ncnn 构建接线整改
 
-本专项已结束，下述双ABI与回归结果保留为该轮快照；当前命令见[构建与测试](../guides/build-and-test.md#android)。完整APK或真机的未验收边界不因转快照而解除。
+本专项已结束，下述双ABI与回归结果保留为该轮快照；当前命令见[构建与测试](../../guides/build-and-test.md#android)。完整APK或真机的未验收边界不因转快照而解除。
 
 PR495 接续复核发现两项既有构建问题，用户已确认纳入修复，并批准应用 CMake/CI 补丁。本轮仅处理这组问题；Web/Cypress 由侧边会话处理。
 

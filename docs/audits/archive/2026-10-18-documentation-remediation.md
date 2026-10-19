@@ -31,14 +31,14 @@ as_of=2026-10-18
 
 | 组 | 当前维护位置 | 其他入口与保留边界 |
 |---|---|---|
-| M1 构建与测试 | [构建与测试](../guides/build-and-test.md) | README、DEVELOP、AGENTS/CLAUDE及角色说明引用；助手受控镜像保留 |
-| M2 Android注册与导入 | [Android注册设计](../designs/android-enrollment-design.md)、[模型导入](../designs/model-acquisition-import.md) | 架构和顶层人员设计引用布局，导入事务与目标能力各保留原职责 |
-| M3 INT8操作 | [INT8量化操作](../guides/int8-quantization.md) | 设计保留运行时差异，供应链负责父链/许可，不把结构跳过当精度通过 |
-| M4 FFmpegKit | [构建工具](../../scripts/ffmpegkit/README.md)、[供应链](../security/supply-chain-ledger.md)、[实测反馈](2026-10-17-rk3288-runtime-feedback.md) | 构建计划保留原消费件历史命令，CREDITS只摘要并回链 |
-| M5 存储与迁入 | [存储布局](../guides/repository-storage-layout.md)、[审计工具](../guides/audit-tools.md) | 旧计划链接结果与当前工具，保留manifest、SHA和历史路径绑定，不迁移原证据 |
-| M6 Loop职责 | [约束](../../loop-constraints.md)、[预算](../../loop-budget.md)、[安全检查](../safety.md) | 固定入口保留；STATE/run-log仍只承担运行态，不启动Loop或改写其状态 |
+| M1 构建与测试 | [构建与测试](../../guides/build-and-test.md) | README、DEVELOP、AGENTS/CLAUDE及角色说明引用；助手受控镜像保留 |
+| M2 Android注册与导入 | [Android注册设计](../../designs/android-enrollment-design.md)、[模型导入](../../designs/model-acquisition-import.md) | 架构和顶层人员设计引用布局，导入事务与目标能力各保留原职责 |
+| M3 INT8操作 | [INT8量化操作](../../guides/int8-quantization.md) | 设计保留运行时差异，供应链负责父链/许可，不把结构跳过当精度通过 |
+| M4 FFmpegKit | [构建工具](../../../scripts/ffmpegkit/README.md)、[供应链](../../security/supply-chain-ledger.md)、[实测反馈](../2026-10-17-rk3288-runtime-feedback.md) | 构建计划保留原消费件历史命令，CREDITS只摘要并回链 |
+| M5 存储与迁入 | [存储布局](../../guides/repository-storage-layout.md)、[审计工具](../../guides/audit-tools.md) | 旧计划链接结果与当前工具，保留manifest、SHA和历史路径绑定，不迁移原证据 |
+| M6 Loop职责 | [约束](../../../loop-constraints.md)、[预算](../../../loop-budget.md)、[安全检查](../../safety.md) | 固定入口保留；STATE/run-log仍只承担运行态，不启动Loop或改写其状态 |
 
-[索引](../index.md)增加“当前操作／目标设计／历史证据／工具配置”阅读路径。长篇研究、模型LICENSE/NOTICE、机器可读契约及工具固定入口保留，不按篇幅或文件短小判定冗余。项目外个人记忆和客户端加载配置不在本次修订范围。
+[索引](../../index.md)增加“当前操作／目标设计／历史证据／工具配置”阅读路径。长篇研究、模型LICENSE/NOTICE、机器可读契约及工具固定入口保留，不按篇幅或文件短小判定冗余。项目外个人记忆和客户端加载配置不在本次修订范围。
 
 ## 历史轮次处理
 

@@ -6,7 +6,7 @@ as_of=2026-10-17
 
 # RK3288 局域网推流验证交接卡
 
-**接续更新**：本快照的待续步骤已有后续执行，须先阅读[最新实测反馈](../audits/2026-10-17-rk3288-runtime-feedback.md)。`stable6`亦已取消，机B正式稳定段使用 `stable7`，稳定、重启和显式重试均已通过；不能直接照本卡旧步骤复跑或删除取消标记。旧结果与当时状态按快照保留。
+**接续更新**：本快照的待续步骤已有后续执行，须先阅读[最新实测反馈](../../audits/2026-10-17-rk3288-runtime-feedback.md)。`stable6`亦已取消，机B正式稳定段使用 `stable7`，稳定、重启和显式重试均已通过；不能直接照本卡旧步骤复跑或删除取消标记。旧结果与当时状态按快照保留。
 
 更新：2026-10-17。完整验收未通过；本卡用于额度恢复或用户指定的接续会话。接续前确认工作区写入归属，不与其他会话同时修改。
 
@@ -37,7 +37,7 @@ as_of=2026-10-17
 
 消费AAR：`app/libs/ffmpeg-kit.aar`，SHA256：
 `07dd0dcffbe52023b614e7455694093e9d17003626247f3ac9361b28aaf57eda`。
-ARMv7 NEON/ARM64、x264/GPL、FFmpeg n6.0；备份在 `cache/ffmpeg-kit-build-2026-10-16/ffmpeg-kit.aar`。用途、恢复位置和许可边界见[构建记录](2026-10-16-ffmpeg-kit-build.md)。
+ARMv7 NEON/ARM64、x264/GPL、FFmpeg n6.0；备份在 `cache/ffmpeg-kit-build-2026-10-16/ffmpeg-kit.aar`。用途、恢复位置和许可边界见[构建记录](../2026-10-16-ffmpeg-kit-build.md)。
 
 ## 3. 已完成与未通过
 
@@ -88,10 +88,10 @@ Set-Location 'D:/19842/Documents/GitHub/rk3288_opencv'
 6. `run-controller.py`不允许覆盖已有结果；若标签已存在，先阅读该结果，再用新标签。每30秒主机心跳不是测试通过；重试首段主动杀接收器exit1为预期，最后一段仍须exit0且收到帧。
 7. 最终运行 `python cache/rtmp-lan-2026-10-17/verify-final-devices.py`，检查双方代码包身份、进程退出、桌面、控制器和专用输入清理；另核对规则不存在、端口释放。
 8. 修改 `summarize-validation.py` 的机B相机证据标签为实际完成的新标签，补齐机B证据变异，复跑汇总。现汇总完整验收为false，不能只改结果字段。机A首轮异常、吞吐不足、无效PSS和未做完整人脸精度验收继续保留。
-9. 更新[局域网计划](2026-10-17-rtmp-lan-validation.md)，执行文档门禁与 `git diff --check`；代码有修改则 `graphify update .`。不得提交或推送。
+9. 更新[局域网计划](../2026-10-17-rtmp-lan-validation.md)，执行文档门禁与 `git diff --check`；代码有修改则 `graphify update .`。不得提交或推送。
 
 ## 6. cache整理边界
 
-[cache清单](../audits/2026-10-17-cache-inventory.md)已分类可删候选与必须保留的源包、AAR、验证证据；**没有删除文件**。批量删除须另行报备内容、风险与回滚方案并等待确认，不能把“候选”当成已授权删除。
+[cache清单](../../audits/archive/2026-10-17-cache-inventory.md)已分类可删候选与必须保留的源包、AAR、验证证据；**没有删除文件**。批量删除须另行报备内容、风险与回滚方案并等待确认，不能把“候选”当成已授权删除。
 
 反思：功能段与完整验收必须分开报告；机B状态窗仅有自检证据。后续应先取得真实相机对照，再讨论根因闭环，避免被通过的合成测试误导。

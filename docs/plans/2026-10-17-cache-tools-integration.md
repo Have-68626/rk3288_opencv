@@ -14,7 +14,7 @@ as_of=2026-10-18
 
 **技术栈**：沿用Python标准库、PowerShell、已有ADB/Android SDK/NDK/Java及FFmpegKit构建链；不引入新运行时依赖。WSL仅为Android交叉编译宿主，不新增Linux目标平台或Linux验收要求。
 
-**依据**：[缓存盘点](../audits/2026-10-17-cache-inventory.md)、[实测反馈](../audits/2026-10-17-rk3288-runtime-feedback.md)、[FFmpegKit构建记录](2026-10-16-ffmpeg-kit-build.md)。整理后再执行[独立清理方案](2026-10-17-cache-cleanup.md)，两者可分别审批。
+**依据**：[缓存盘点](../audits/archive/2026-10-17-cache-inventory.md)、[实测反馈](../audits/2026-10-17-rk3288-runtime-feedback.md)、[FFmpegKit构建记录](2026-10-16-ffmpeg-kit-build.md)。整理后再执行[独立清理方案](2026-10-17-cache-cleanup.md)，两者可分别审批。
 
 当前操作统一见[验证工具](../guides/android-validation-tools.md)、[FFmpegKit重建工具](../../scripts/ffmpegkit/README.md)和[存储布局](../guides/repository-storage-layout.md)。本页保留迁入取舍、来源映射和未勾选的交付/验收条件；任务5未完成前不能按已迁入推定缓存原件可删。
 
@@ -123,7 +123,7 @@ as_of=2026-10-18
 
 ## 待确认范围
 
-上一轮仅实施任务1–3。任务4已由[2026-10-18存储整理](2026-10-18-storage-reorganization.md)承接：Java源码重建、双ABI原生构建、26库静态检查与独立候选AAR组装通过，见[执行报告](../audits/2026-10-18-storage-reorganization-result.md)。上方含“组装APK”的复合项仍未勾选：新消费APK集成和设备验收不在本轮范围，不能套用旧APK结论。任务5的正式提交、完整历史证据归档与原件退出仍按各自确认边界执行；旧来源ZIP、镜像和唯一证据继续保留。
+上一轮仅实施任务1–3。任务4已由[2026-10-18存储整理](2026-10-18-storage-reorganization.md)承接：Java源码重建、双ABI原生构建、26库静态检查与独立候选AAR组装通过，见[执行报告](../audits/archive/2026-10-18-storage-reorganization-result.md)。上方含“组装APK”的复合项仍未勾选：新消费APK集成和设备验收不在本轮范围，不能套用旧APK结论。任务5的正式提交、完整历史证据归档与原件退出仍按各自确认边界执行；旧来源ZIP、镜像和唯一证据继续保留。
 
 ## 本轮实现裁定与验证
 

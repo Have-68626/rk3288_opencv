@@ -8,7 +8,7 @@ as_of=2026-10-19
 
 ## 结论与边界
 
-已按[目录审计](2026-10-19-directory-organization-audit.md)的R01—R06及[实施计划](../plans/2026-10-19-directory-optimization.md)完成本轮目录改造。两份核心补丁和三个旧件退出均获用户确认；未提交、推送、合并或操作实机。构建来自当前含未提交改动的工作区，不是纯净HEAD的发行包。
+已按[目录审计](archive/2026-10-19-directory-organization-audit.md)的R01—R06及[实施计划](../plans/2026-10-19-directory-optimization.md)完成本轮目录改造。两份核心补丁和三个旧件退出均获用户确认；未提交、推送、合并或操作实机。构建来自当前含未提交改动的工作区，不是纯净HEAD的发行包。
 
 Windows完整重建14个目标，最终CTest筛选5/5通过；Android真实双ABI与独立mock通道均完成构建、单测、lint及APK无内置模型检查；Web全量检查和现有覆盖率门槛通过。完整Python工具回归187项通过。**全量本地CI尚未全部通过**：文档与Node被其他会话基准文档阻断，详见下表；不能用前轮通过记录替代。
 
