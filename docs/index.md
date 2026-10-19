@@ -130,6 +130,7 @@ as_of=2026-10-19
 | `plans/2026-10-17-cache-cleanup.md` | living | A1合成夹具及A2编译缓存已清理；后续批次待确认 |
 | `plans/2026-10-18-storage-reorganization.md` | living | 瘦身报告复核、工具迁入、资产分类、清理与master合入准备 |
 | `plans/2026-10-19-directory-optimization.md` | living | R01—R06目录优化、独立全量重建及本地CI验收 |
+| `plans/2026-10-19-cyber-cricket-arena-benchmark-spec.md` | living | 代码修复竞技靶场可行性、题目证据边界及裁判器验收草案 |
 
 ### 历史计划
 
