@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-10-19
+as_of=2026-10-20
 -->
 
 # 文档索引
@@ -217,8 +217,8 @@ as_of=2026-10-19
 | `../CREDITS.md` | living | 完整依赖清单与模型台账 |
 | `../SECURITY.md` | living | 安全策略与漏洞报告渠道 |
 | `../CHANGELOG.md` | living | 变更记录（Keep a Changelog 格式） |
-| `../AGENTS.md` | living | AI 助手指南（事实源，含机器可读事实块） |
-| `../CLAUDE.md` | living | AI 助手指南镜像（共享区间与 AGENTS.md 校验一致） |
+| `../AGENTS.md` | living | AI 协作规则事实源：任务权限、构建约束、模型/证据边界及 CI |
+| `../CLAUDE.md` | living | Claude Code 简短入口；规则引用 AGENTS.md，共享事实块接受镜像校验 |
 | `../.claude/CLAUDE.md` | living | Claude Code 子目录指南（graphify 触发 + 记忆系统指针） |
 | `../cache/README.md` | living | `cache/` 落盘规范：可复用内容的唯一根目录、分类、删除代价与重建命令 |
 | `../scripts/ffmpegkit/README.md` | living | FFmpegKit固定来源、离线原生/Java重建与AAR静态打包 |
