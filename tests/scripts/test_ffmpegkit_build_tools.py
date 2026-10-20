@@ -45,8 +45,8 @@ def test_prepare_patches_known_inputs_once(tmp_path):
     root = source(tmp_path)
     result = tool.patch_source(root, 6)
     assert result['environment_dumps_removed'] == 1
-    assert 'echo 6' in (root / 'scripts/function.sh').read_text()
-    assert 'MY_ARM_NEON := true' in (root / 'android/jni/Android.mk').read_text()
+    assert 'echo 6' in (root / 'scripts/function.sh').read_text(encoding='utf-8')
+    assert 'MY_ARM_NEON := true' in (root / 'android/jni/Android.mk').read_text(encoding='utf-8')
     with pytest.raises(ValueError):
         tool.patch_source(root, 6)
 

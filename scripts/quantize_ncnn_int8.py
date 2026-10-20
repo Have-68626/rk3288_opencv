@@ -96,7 +96,7 @@ def collect_calib_images(calib_dir: str, num_samples: int) -> list[str]:
 
 def write_imagelist(images: list[str], path: str):
     """写入图片列表文件（ncnn2table 输入）。"""
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         for img in images:
             f.write(f"{img}\n")
     print(f"图片列表已写入: {path}")
@@ -153,7 +153,9 @@ def run_ncnn2table(tool_path: str, fp32_param: str, fp32_bin: str,
     ]
     print(f"[ncnn2table] 生成校准表...")
     print(f"  模型: {fp32_param}")
-    print(f"  校准图片: {imagelist_path} ({len(open(imagelist_path).readlines())} 张)")
+    with open(imagelist_path, encoding="utf-8") as images:
+        image_count = sum(1 for _ in images)
+    print(f"  校准图片: {imagelist_path} ({image_count} 张)")
     print(f"  shape={shape_str}, mean=[{mean_str}], pixel={cfg['pixel']}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -336,4 +338,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # 重定向到CI管道时也须保留中文诊断，不能依赖Windows区域编码。
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     main()

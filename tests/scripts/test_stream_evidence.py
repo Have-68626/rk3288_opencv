@@ -57,7 +57,7 @@ def test_stream_cli_bad_json_is_sanitized(tmp_path):
     tool = ROOT / "scripts/android/validate-stream-evidence.py"
     assert tool.exists(), "缺少正式证据门禁"
     bad = tmp_path / "bad.json"
-    bad.write_text('原始异常不应输出')
+    bad.write_text('原始异常不应输出', encoding='utf-8')
     run = subprocess.run([sys.executable, str(tool), "--inputs", str(bad), "--output", str(tmp_path / "out.json")],
                          capture_output=True, text=True, encoding="utf8")
     assert run.returncode == 2

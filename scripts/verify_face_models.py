@@ -157,4 +157,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 中文诊断失败不能中断报告落盘，CLI输出统一使用UTF-8。
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     sys.exit(main())
