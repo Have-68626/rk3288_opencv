@@ -60,6 +60,7 @@ as_of=2026-10-20
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `guides/build-and-test.md` | living | 统一shell、构建目标/CTest筛选、E2E服务器与覆盖率前提 |
+| `guides/test-suite-coordination.md` | living | 本地七类套件选择、前置、串行互斥、退出码与可信汇总 |
 | `guides/int8-quantization.md` | living | 唯一输入配对、校准sidecar、预处理/几何与量化报告 |
 | `guides/model-storage-and-consumers.md` | living | 模型父图、中间件、消费件与历史路径消费者导航 |
 | `../app/README.md` | living | Android模块职责、真实测试源与构建入口 |
@@ -131,6 +132,7 @@ as_of=2026-10-20
 | `plans/2026-10-18-storage-reorganization.md` | living | 瘦身报告复核、工具迁入、资产分类、清理与master合入准备 |
 | `plans/2026-10-19-directory-optimization.md` | living | R01—R06目录优化、独立全量重建及本地CI验收 |
 | `plans/2026-10-19-cyber-cricket-arena-benchmark-spec.md` | living | 代码修复竞技靶场可行性、题目证据边界及裁判器验收草案 |
+| `plans/2026-10-20-test-suite-coordination-plan.md` | living | 已批准套件统筹设计的TDD实施与实际验收步骤 |
 
 ### 历史计划
 
@@ -160,6 +162,7 @@ as_of=2026-10-20
 | `specs/2026-07-04-governance-plan-design.md` | snapshot | 全项目治理计划设计 |
 | `specs/2026-07-06-architecture-governance-design.md` | snapshot | 架构治理设计（5 条契约的**目标**定义） |
 | `specs/2026-10-17-rtmp-hidden-preview-design.md` | living | 实机推流测试隐藏预览的临时控制器与正式模式取舍 |
+| `specs/2026-10-20-test-suite-coordination-design.md` | living | 已批准的本地套件统筹设计：选择、前置、互斥、失败传播及可信汇总 |
 
 ## audits/（近期结果与设备基线）
 

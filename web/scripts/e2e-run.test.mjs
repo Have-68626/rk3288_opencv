@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { describe, it, expect, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -117,5 +118,27 @@ describe('覆盖率运行隔离', () => {
     } finally {
       rmSync(scratch, { recursive: true, force: true })
     }
+  })
+})
+
+
+describe('CLI报告参数透传', () => {
+  it('真实子进程接收本次JUnit参数并保留失败码', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'rk-e2e-argv-'))
+    try {
+      const web = join(scratch, 'web')
+      mkdirSync(join(web, 'scripts'), { recursive: true })
+      mkdirSync(join(web, 'node_modules', 'cypress'), { recursive: true })
+      writeFileSync(join(web, 'package.json'), JSON.stringify({ type: 'module' }))
+      writeFileSync(join(web, 'scripts', 'e2e-run.mjs'), readFileSync(new URL('./e2e-run.mjs', import.meta.url)))
+      writeFileSync(join(web, 'node_modules', 'cypress', 'package.json'), JSON.stringify({ bin: { cypress: 'cli.cjs' } }))
+      writeFileSync(join(web, 'node_modules', 'cypress', 'cli.cjs'), "require('fs').writeFileSync(process.env.RK_E2E_ARGS_OUT,JSON.stringify(process.argv.slice(2)));process.exit(7)")
+      const output = join(scratch, 'args.json')
+      const args = ['--reporter', 'junit', '--reporter-options', 'mochaFile=result.xml']
+      const child = spawnSync(process.execPath, [join(web, 'scripts', 'e2e-run.mjs'), ...args],
+        { env: { ...process.env, RK_E2E_ARGS_OUT: output }, encoding: 'utf8', timeout: 15000 })
+      expect(child.status).toBe(7)
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual(['run', ...args])
+    } finally { rmSync(scratch, { recursive: true, force: true }) }
   })
 })

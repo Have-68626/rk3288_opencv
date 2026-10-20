@@ -103,10 +103,10 @@ export function runE2E(extraEnv = {}, options = {}) {
   const projectDir = join(dirname(fileURLToPath(import.meta.url)), '..')
   const archived = archivePreviousCoverage(projectDir, join(projectDir, '..', 'cache', 'web-e2e', `${Date.now()}-${process.pid}`))
   if (archived) process.stdout.write(`[E2E] 上轮覆盖率已归档：${archived}\n`)
-  return spawnWithHeartbeat(process.execPath, [CYPRESS_CLI, 'run'], extraEnv, options)
+  return spawnWithHeartbeat(process.execPath, [CYPRESS_CLI, 'run', ...(options.args || [])], extraEnv, options)
 }
 
 // CLI 入口：`node scripts/e2e-run.mjs`；把 Cypress 退出码透传给 pnpm/CI，失败可判别
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await runE2E()
+  process.exitCode = await runE2E({}, { args: process.argv.slice(2) })
 }

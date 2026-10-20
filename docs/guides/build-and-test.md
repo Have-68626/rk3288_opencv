@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-19
+as_of=2026-10-20
 -->
 
 # 构建与测试
@@ -108,3 +108,6 @@ if ($LASTEXITCODE -ne 0) { throw '覆盖率未达到现有门槛' }
 ## 本地门禁与验收边界
 
 文档修改运行 `node scripts/docs-sync-audit.js --skip-links` 与 `git diff --check`。完整CI的job与非门禁边界见[CI说明](../../AGENTS.md#ci-pipeline)；本页的选定命令不能冒充全量CI。
+
+
+需要串行协调多个套件并汇总新鲜证据时，使用[本地测试统筹](test-suite-coordination.md)。先list/plan确认前置，再明确run范围；统筹结果不替代远端CI或真机验收。
