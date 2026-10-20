@@ -13,7 +13,7 @@ model: inherit
 
 ## 构建与测试
 - `pnpm -C web install` → `pnpm -C web lint` → `pnpm -C web build`
-- E2E：`pnpm -C web e2e:run`（Cypress；需要 `pnpm preview` 或 scripts/run-web-e2e.ps1 起后端）
+- E2E和覆盖率统一见 `docs/guides/build-and-test.md`；Windows完整驱动为scripts/run-web-e2e.ps1，普通Cypress命令不启动服务器，preview不提供当前serve插桩。
 - dev 代理 `/api` → `http://127.0.0.1:8080`（`VITE_DEV_PROXY_TARGET` 可覆盖）
 
 ## 规矩

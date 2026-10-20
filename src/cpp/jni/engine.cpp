@@ -21,6 +21,19 @@
 
 namespace {
 
+bool replaceActivityReference(JNIEnv* env, jobject activity) {
+    std::lock_guard<std::mutex> lock(g_activityMutex);
+    jobject replacement = env->NewGlobalRef(activity);
+    if (env->ExceptionCheck() || !replacement) {
+        // JNI 分配失败以 false 返回；先保留旧引用，避免初始化失败留下悬空回调目标。
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return false;
+    }
+    if (g_activity) env->DeleteGlobalRef(g_activity);
+    g_activity = replacement;
+    return true;
+}
+
 // ========== stringFromJNI（简单测试接口） ==========
 jstring engine_stringFromJNI(JNIEnv* env, jobject /* this */) {
     RKLOG_ENTER(TAG);
@@ -37,16 +50,26 @@ jboolean engine_nativeInitFile(
 
     stopAndJoinEngineThreadIfRunning();
 
-    // Update global activity ref（受 g_activityMutex 保护）
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity) env->DeleteGlobalRef(g_activity);
-        g_activity = env->NewGlobalRef(thiz);
-    }
+    if (!replaceActivityReference(env, thiz)) return JNI_FALSE;
 
     const char* path = filePath ? env->GetStringUTFChars(filePath, nullptr) : nullptr;
+    if (filePath && (env->ExceptionCheck() || !path)) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_FALSE;
+    }
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
+    if (cascadePath && (env->ExceptionCheck() || !cascade)) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (path) env->ReleaseStringUTFChars(filePath, path);
+        return JNI_FALSE;
+    }
     const char* storage = storagePath ? env->GetStringUTFChars(storagePath, nullptr) : nullptr;
+    if (storagePath && (env->ExceptionCheck() || !storage)) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (cascade) env->ReleaseStringUTFChars(cascadePath, cascade);
+        if (path) env->ReleaseStringUTFChars(filePath, path);
+        return JNI_FALSE;
+    }
 
     std::string pathStr = path ? path : "";
     std::string cascadeStr = cascade ? cascade : "";
@@ -90,12 +113,7 @@ jboolean engine_nativeInit(
 
     stopAndJoinEngineThreadIfRunning();
 
-    // Update global activity ref（受 g_activityMutex 保护）
-    {
-        std::lock_guard<std::mutex> lock(g_activityMutex);
-        if (g_activity) env->DeleteGlobalRef(g_activity);
-        g_activity = env->NewGlobalRef(thiz);
-    }
+    if (!replaceActivityReference(env, thiz)) return JNI_FALSE;
 
     const char* cascade = cascadePath ? env->GetStringUTFChars(cascadePath, nullptr) : nullptr;
     if (cascadePath && env->ExceptionCheck()) {

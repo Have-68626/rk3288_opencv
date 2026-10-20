@@ -6,6 +6,37 @@
 #include <thread>
 #include "pipeline/ResultPublisher.h"
 
+bool test_publisher_distinguishes_pending_identity_from_auth_failure() {
+    pipeline::TrackConfig cfg;
+    cfg.stableFrames = 1;
+    pipeline::TrackCoordinator coordinator(cfg);
+    pipeline::DetectedFace face;
+    face.bbox = cv::Rect(10, 10, 80, 80);
+    face.identityId = "registered";
+    face.isAuthenticated = true;
+    face.confidence = 0.9f;
+    pipeline::ResultPublisher publisher;
+    std::string message;
+    publisher.setCallback([&](const std::string& text) { message = text; });
+    const auto publish = [&](long long timestamp) {
+        pipeline::FrameOutcome outcome;
+        outcome.tracks = coordinator.update({face}, timestamp, true);
+        outcome.events.push_back({"", "", timestamp});
+        publisher.publish(std::move(outcome));
+    };
+    publish(20000);
+    if (message != "RECOGNIZING") {
+        std::cerr << "[pending_identity] 身份累计第1次应报告识别中，实际=" << message << std::endl;
+        return false;
+    }
+    publish(20100);
+    publish(20200);
+    if (message.find("VERIFIED registered") != 0) return false;
+    face.isAuthenticated = false;
+    publish(20300);
+    return message == "AUTH_FAIL Unknown";
+}
+
 bool test_publisher_emits_no_face_on_empty_tracks() {
     pipeline::ResultPublisher pub;
     std::string lastMsg;

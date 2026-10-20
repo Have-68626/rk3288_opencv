@@ -2884,7 +2884,7 @@ bool test_initialize_ini_branch_writes_env_free() {
     std::string w2;
     if (!reloaded.initialize(w2)) return false;
     if (reloaded.current().http.port != 8080) return false;
-    if (reloaded.current().poster.postUrl != "http://localhost:8080/api/faces") return false;
+    if (!reloaded.current().poster.postUrl.empty()) return false;
     if (reloaded.current().dnn.modelPath != rk_win::resolvePathFromExeDir(L"storage/models/opencv_face_detector_uint8.pb")) {
         return false;
     }

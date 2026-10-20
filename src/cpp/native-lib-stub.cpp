@@ -23,7 +23,7 @@ static void throwIllegalStateException(JNIEnv* env, const char* msg) {
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_rk3288_1opencv_MainActivity_nativeInit(JNIEnv* env, jobject /* this */, jstring, jstring, jint) {
+Java_com_example_rk3288_1opencv_MainActivity_nativeInit(JNIEnv* env, jobject /* this */, jstring, jstring, jstring) {
     LOGE("OpenCV disabled by RK_SKIP_OPENCV");
     throwIllegalStateException(env, "nativeInit failed: OpenCV disabled by RK_SKIP_OPENCV");
     return JNI_FALSE;
@@ -56,6 +56,11 @@ Java_com_example_rk3288_1opencv_MainActivity_nativePushFrameYuv420888Bytes(JNIEn
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_rk3288_1opencv_MainActivity_nativeGetFrame(JNIEnv* env, jobject /* this */, jobject) {
+    return JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_rk3288_1opencv_MainActivity_nativeGetRtmpFrame(JNIEnv* /* env */, jobject /* this */, jobject) {
     return JNI_FALSE;
 }
 
@@ -111,7 +116,7 @@ Java_com_example_rk3288_1opencv_NativeBridge_nativeConfigureLog(JNIEnv* /* env *
 
 // nativeInferFaceFromImage(...)Ljava/lang/String; —— stub 返回占位 JSON
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_rk3288_1opencv_NativeBridge_nativeInferFaceFromImage(JNIEnv* env, jclass /* clazz */, jstring, jstring, jstring, jstring, jint, jfloat, jboolean, jboolean) {
+Java_com_example_rk3288_1opencv_NativeBridge_nativeInferFaceFromImage(JNIEnv* env, jclass /* clazz */, jstring, jint) {
     return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
 }
 
@@ -149,9 +154,9 @@ Java_com_example_rk3288_1opencv_NativeFaceBridge_activateRuntime(JNIEnv* env, jc
     return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
 }
 
-// replaceGallery([Ljava/lang/String;[Ljava/nio/ByteBuffer;)Ljava/lang/String; —— 占位失败 JSON
+// replaceGallery 显式携带模板空间，stub 与正式 JNI 同签名。
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_rk3288_1opencv_NativeFaceBridge_replaceGallery(JNIEnv* env, jclass /* clazz */, jobjectArray, jobjectArray) {
+Java_com_example_rk3288_1opencv_NativeFaceBridge_replaceGallery(JNIEnv* env, jclass /* clazz */, jstring, jobjectArray, jobjectArray) {
     return env->NewStringUTF("{\"ok\":false,\"stub\":true}");
 }
 

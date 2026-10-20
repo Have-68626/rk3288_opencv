@@ -5,10 +5,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ActivityName,
 
-    [int]$Iterations = 50,
-    [int]$ForegroundSec = 2,
-    [int]$BackgroundSec = 1,
-    [int]$SettleSec = 2,
+    [ValidateRange(1, 2147483647)][int]$Iterations = 50,
+    [ValidateRange(0, 2147483647)][int]$ForegroundSec = 2,
+    [ValidateRange(0, 2147483647)][int]$BackgroundSec = 1,
+    [ValidateRange(0, 2147483647)][int]$SettleSec = 2,
     [string]$Serial = "",
     [string]$OutputRoot = "tests/reports/stability"
 )
@@ -54,22 +54,22 @@ function Get-ShellValue([string]$AdbPath, [string[]]$AdbArgs, [string]$Cmd) {
 }
 
 function Get-FocusSummary([string]$AdbPath, [string[]]$AdbArgs) {
-    # Try modern dumpsys activity first, fall back to deprecated window dumpsys
+    # 旧系统可能先输出null条目，继续寻找实际组件，避免遮蔽后续有效焦点。
     $dump = Get-ShellValue -AdbPath $AdbPath -AdbArgs $AdbArgs -Cmd "dumpsys activity activities"
     if (-not [string]::IsNullOrWhiteSpace($dump)) {
         $lines = $dump -split "`r?`n"
         foreach ($line in $lines) {
-            if ($line -match "mResumedActivity|mFocusedActivity|mCurrentFocus") {
+            if ($line -match "mResumedActivity|mFocusedActivity|mCurrentFocus" -and $line -match '\s[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+') {
                 return $line.Trim()
             }
         }
     }
-    # Fallback: deprecated but still works on older Android
+    # activity没有有效组件时，再读取旧Android的window焦点。
     $dump = Get-ShellValue -AdbPath $AdbPath -AdbArgs $AdbArgs -Cmd "dumpsys window windows"
     if (-not [string]::IsNullOrWhiteSpace($dump)) {
         $lines = $dump -split "`r?`n"
         foreach ($line in $lines) {
-            if ($line -match "mCurrentFocus|mFocusedApp") {
+            if ($line -match "mCurrentFocus|mFocusedApp" -and $line -match '\s[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+') {
                 return $line.Trim()
             }
         }
@@ -78,7 +78,7 @@ function Get-FocusSummary([string]$AdbPath, [string[]]$AdbArgs) {
 }
 
 $adb = Resolve-AdbPath
-$connected = Get-ConnectedDevices -AdbPath $adb
+$connected = @(Get-ConnectedDevices -AdbPath $adb)
 if (-not $connected -or $connected.Count -eq 0) {
     throw "No connected Android device detected."
 }
@@ -98,7 +98,7 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
 $deviceInfoPath = Join-Path $outDir "device_info.txt"
 $cyclesPath = Join-Path $outDir "cycles.csv"
-$logcatPath = Join-Path $outDir "logcat_full.txt"
+$logcatPath = Join-Path $outDir "logcat_summary.json"
 $summaryPath = Join-Path $outDir "summary.json"
 
 $brand = Get-ShellValue -AdbPath $adb -AdbArgs $adbArgs -Cmd "getprop ro.product.brand"
@@ -117,18 +117,23 @@ $sdkInt = Get-ShellValue -AdbPath $adb -AdbArgs $adbArgs -Cmd "getprop ro.build.
 ) | Set-Content -Path $deviceInfoPath -Encoding UTF8
 
 & $adb @adbArgs logcat -c | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'STABILITY_CLEAR_FAILED' }
 
 $rows = New-Object System.Collections.Generic.List[object]
 
 for ($i = 1; $i -le $Iterations; $i++) {
     $startAt = (Get-Date).ToString("o")
-    & $adb @adbArgs shell am start -n "$PackageName/$ActivityName" | Out-Null
+    $started = @(& $adb @adbArgs shell am start -n "$PackageName/$ActivityName" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or ($started -match '(?i)Error:|Exception')) { throw 'STABILITY_START_FAILED' }
     Start-Sleep -Seconds $ForegroundSec
     $focusFront = Get-FocusSummary -AdbPath $adb -AdbArgs $adbArgs
+    if ($focusFront -notmatch ('\s' + [regex]::Escape($PackageName) + '/')) { throw 'STABILITY_FRONT_UNVERIFIED' }
 
     & $adb @adbArgs shell input keyevent 3 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'STABILITY_HOME_FAILED' }
     Start-Sleep -Seconds $BackgroundSec
     $focusBack = Get-FocusSummary -AdbPath $adb -AdbArgs $adbArgs
+    if ($focusBack -notmatch '\s([A-Za-z0-9_.]+)/[A-Za-z0-9_.$]+' -or $Matches[1] -eq $PackageName) { throw 'STABILITY_BACK_UNVERIFIED' }
 
     $rows.Add([pscustomobject]@{
         iteration = $i
@@ -140,19 +145,26 @@ for ($i = 1; $i -le $Iterations; $i++) {
     }) | Out-Null
 }
 
-& $adb @adbArgs shell am start -n "$PackageName/$ActivityName" | Out-Null
+$started = @(& $adb @adbArgs shell am start -n "$PackageName/$ActivityName" 2>$null)
+if ($LASTEXITCODE -ne 0 -or ($started -match '(?i)Error:|Exception')) { throw 'STABILITY_START_FAILED' }
 Start-Sleep -Seconds $SettleSec
-& $adb @adbArgs logcat -d -v threadtime | Set-Content -Path $logcatPath -Encoding UTF8
+$logLines = @(& $adb @adbArgs logcat -d -v threadtime 2>$null)
+if ($LASTEXITCODE -ne 0) { throw 'STABILITY_LOG_FAILED' }
+$logLines = @($logLines | Where-Object { $_ -match '\S' -and $_ -notmatch '^[- ]*beginning of ' })
+if ($logLines.Count -eq 0) { throw 'STABILITY_LOG_UNVERIFIED' }
 
 $rows | Export-Csv -Path $cyclesPath -NoTypeInformation -Encoding UTF8
 
-$logLines = @(Get-Content -Path $logcatPath -ErrorAction SilentlyContinue)
 $blackPattern = "(?i)(black\s*screen|blackscreen|黑屏|surface.*(invalid|lost)|preview.*(freeze|stuck)|ANR)"
 $abnormalPattern = "handleAbnormalEvent"
 $blackMatches = @($logLines | Select-String -Pattern $blackPattern)
 $abnormalMatches = @($logLines | Select-String -Pattern $abnormalPattern)
+# 仅保存判据计数，系统原始日志可能夹带其他应用的凭据和身份信息。
+@{ lines = $logLines.Count; blackscreen_count = $blackMatches.Count; abnormal_event_count = $abnormalMatches.Count } |
+    ConvertTo-Json | Set-Content -Path $logcatPath -Encoding UTF8
 
 $summary = [ordered]@{
+    scope = '仅验证前后台焦点与日志关键词，不证明实际画面无黑屏或完整设备验收'
     timestamp = $ts
     serial = $Serial
     package = $PackageName
@@ -174,7 +186,7 @@ $summary = [ordered]@{
     artifacts = [ordered]@{
         device_info = $deviceInfoPath
         cycles_csv = $cyclesPath
-        logcat_full = $logcatPath
+        logcat_summary = $logcatPath
     }
 }
 
@@ -183,3 +195,4 @@ $summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding UT
 Write-Output "stability_report_dir=$outDir"
 Write-Output "summary_json=$summaryPath"
 Write-Output "pass=$($summary.pass)"
+if (-not $summary.pass) { exit 1 }

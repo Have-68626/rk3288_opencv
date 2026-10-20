@@ -6,15 +6,27 @@
 #include <filesystem>
 #include <random>
 #include <process.h>
+#include <algorithm>
+#include <cmath>
+#include <numeric>
 
 using namespace rk_win;
 
-int main() {
+int main(int argc, char** argv) {
+    int iterations = 1000, warmup = 0;
+    for (int i = 1; i < argc; ++i) {
+        const std::string option = argv[i];
+        if (i + 1 >= argc) return 2;
+        if (option == "--iters") iterations = std::stoi(argv[++i]);
+        else if (option == "--warmup") warmup = std::stoi(argv[++i]);
+        else return 2;
+    }
+    if (iterations <= 0 || warmup < 0) return 2;
     FaceDatabase db;
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
-    // Populate database with dummy data
+    // 固定种子只生成合成向量，不读取真实人脸库。
     for (int i = 0; i < 100; i++) {
         std::vector<float> mean(512);
         for (int j = 0; j < 512; j++) {
@@ -28,25 +40,37 @@ int main() {
         ("test_face_database_perf_" + std::to_string(::_getpid()) + "_" +
          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".xml");
 
-    // Timing save()
-    int iterations = 1000;
-    auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iterations; i++) {
-        db.save(testPath);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code error;
+            std::filesystem::remove(path, error);
+            std::filesystem::remove(FaceDatabase::keyPathFor(path), error);
+        }
+    } cleanup{testPath};
+    auto measure = [&](auto operation, std::vector<double>& samples) {
+        for (int i = 0; i < warmup; ++i) if (!operation()) return false;
+        for (int i = 0; i < iterations; ++i) {
+            const auto start = std::chrono::steady_clock::now();
+            if (!operation()) return false;
+            samples.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        }
+        return true;
+    };
+    std::vector<double> saveSamples, loadSamples;
+    if (!measure([&] { return db.save(testPath); }, saveSamples) ||
+        !measure([&] { FaceDatabase loaded; return loaded.load(testPath); }, loadSamples)) {
+        std::cerr << "TEST_RESULT: FAIL operation_failed\n";
+        return 1;
     }
-    auto end = std::chrono::high_resolution_clock::now();
-    auto saveDuration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    const double saveDuration = std::accumulate(saveSamples.begin(), saveSamples.end(), 0.0);
+    const double loadDuration = std::accumulate(loadSamples.begin(), loadSamples.end(), 0.0);
+    std::sort(saveSamples.begin(), saveSamples.end());
+    std::sort(loadSamples.begin(), loadSamples.end());
+    const auto percentile = [](const std::vector<double>& samples, double p) {
+        return samples[static_cast<std::size_t>(std::ceil(p * samples.size())) - 1];
+    };
 
-    // Timing load()
-    start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iterations; i++) {
-        FaceDatabase loadDb;
-        loadDb.load(testPath);
-    }
-    end = std::chrono::high_resolution_clock::now();
-    auto loadDuration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-    // Validate correctness
     FaceDatabase loadDb;
     loadDb.load(testPath);
     // persons() 按值返回整表：循环外各取一次副本，避免每次迭代整表拷贝，
@@ -69,7 +93,6 @@ int main() {
                 break;
             }
             for (size_t i = 0; i < origE.mean.size(); i++) {
-                // Approximate floating-point match
                 if (std::abs(origE.mean[i] - loadE.mean[i]) > 1e-5f) {
                     valid = false;
                     break;
@@ -81,10 +104,12 @@ int main() {
     std::cout << "TEST_RESULT: " << (valid ? "PASS" : "FAIL") << "\n";
     std::cout << "SAVE_TIME_MS: " << saveDuration << "\n";
     std::cout << "LOAD_TIME_MS: " << loadDuration << "\n";
-
-    // 清理库文件及其 DPAPI 密钥文件（<路径>.key.dpapi，见 FaceDatabase::keyPathFor），避免 Temp 残留密钥材料。
-    std::filesystem::remove(testPath);
-    std::filesystem::remove(FaceDatabase::keyPathFor(testPath));
+    std::cout << "BENCH_SCOPE warmup_iters=" << warmup << " measured_iters=" << iterations
+              << " includes_cold_start=" << (warmup == 0 ? "true" : "false") << "\n";
+    std::cout << "SAVE_P50_MS: " << percentile(saveSamples, 0.50) << "\n";
+    std::cout << "SAVE_P95_MS: " << percentile(saveSamples, 0.95) << "\n";
+    std::cout << "LOAD_P50_MS: " << percentile(loadSamples, 0.50) << "\n";
+    std::cout << "LOAD_P95_MS: " << percentile(loadSamples, 0.95) << "\n";
 
     return valid ? 0 : 1;
 }

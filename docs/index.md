@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-09-26
+as_of=2026-10-19
 -->
 
 # 文档索引
@@ -13,6 +13,13 @@ as_of=2026-09-26
 - 新增文档后请同步登记本表——门禁会校验索引完整性。
 
 ---
+
+## 当前阅读路径
+
+- **当前操作**：[构建与测试](guides/build-and-test.md)、[INT8量化](guides/int8-quantization.md)、[Android验证](guides/android-validation-tools.md)、[存储布局](guides/repository-storage-layout.md)。
+- **目标设计**：architecture/designs保留架构边界；“未落地”与“未验收”不因代码接线或文档合并而解除。
+- **历史证据**：plans中的snapshot、audits与research记录各自基线；当前状态优先沿接续链接查看，不拿旧测试数替代当前验收。
+- **工具配置**：根助手镜像、角色入口和Loop固定文件保留路径；权限以loop-constraints为准，状态/预算分开维护。
 
 ## 规范与索引
 
@@ -52,7 +59,15 @@ as_of=2026-09-26
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
+| `guides/build-and-test.md` | living | 统一shell、构建目标/CTest筛选、E2E服务器与覆盖率前提 |
+| `guides/int8-quantization.md` | living | 唯一输入配对、校准sidecar、预处理/几何与量化报告 |
+| `guides/model-storage-and-consumers.md` | living | 模型父图、中间件、消费件与历史路径消费者导航 |
+| `../app/README.md` | living | Android模块职责、真实测试源与构建入口 |
+| `../scripts/README.md` | living | 辅助工具职责、规范构建/报告输出与Windows入口约定 |
 | `guides/rk3288-device-acceptance.md` | living | RK3288 设备验收清单（人工执行） |
+| `guides/android-validation-tools.md` | living | Android只读采样、离线流证据及APK/设备状态校验 |
+| `guides/repository-storage-layout.md` | living | 本地工具、依赖、模型与证据布局及清理恢复边界 |
+| `guides/audit-tools.md` | living | 显式输入的审查分派、区间评分与安全静态仪表盘 |
 | `guides/windows-service/config.md` | living | Windows 服务配置格式、环境变量、加密与热重载 |
 | `guides/windows-service/deploy_and_rollback.md` | living | Windows 服务部署与回滚指南 |
 | `guides/windows-service/uat.md` | living | 用户验收测试场景清单 |
@@ -74,7 +89,6 @@ as_of=2026-09-26
 | `security/auth-model.md` | living | HTTP 认证模型（Bearer 令牌） |
 | `security/face-db-encryption.md` | living | 人脸库加密（DPAPI + AES-256-GCM 版本化迁移） |
 | `security/enablement-plan.md` | living | 安全能力启用计划与状态表（默认状态的唯一事实源） |
-| `security/civetweb-ssl-note.md` | living | CivetWeb SSL 相关说明 |
 | `security/supply-chain-ledger.md` | living | 外部二进制来源账本（版本/许可证/摘要） |
 
 ## bsp/
@@ -105,11 +119,31 @@ as_of=2026-09-26
 |---|---|---|
 | `claude-code-permission-approval.md` | living | 权限自动审批：弹窗规模实测、auto 模式诊断、`PermissionRequest` 官方规格、安全设计与验证方案 |
 
-## plans/（时点快照）
+## plans/（当前待办）
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
+| `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
+| `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |
+| `plans/2026-10-17-cache-tools-integration.md` | living | 缓存工具迁入方案；任务1–4工具与静态重建已实施，消费集成及原件退出保留边界 |
+| `plans/2026-10-17-cache-cleanup.md` | living | A1合成夹具及A2编译缓存已清理；后续批次待确认 |
+| `plans/2026-10-18-storage-reorganization.md` | living | 瘦身报告复核、工具迁入、资产分类、清理与master合入准备 |
+| `plans/2026-10-19-directory-optimization.md` | living | R01—R06目录优化、独立全量重建及本地CI验收 |
+| `plans/2026-10-19-cyber-cricket-arena-benchmark-spec.md` | living | 代码修复竞技靶场可行性、题目证据边界及裁判器验收草案 |
+
+### 历史计划
+
+已结束轮次与工具绑定的旧路径分列保留；历史测试数字不代替当前验收。
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `plans/2026-07-03-triple-refactor-plan.md` | snapshot | 三层重构实施计划 |
+| `plans/archive/2026-10-13-pr495-review-fixes.md` | snapshot | PR #495 九项审查修复、回归与变异验证计划 |
+| `plans/archive/2026-10-16-android-ncnn-build-remediation.md` | snapshot | Android ncnn 路径查找、消费方编译选项及双 ABI 编译/链接验证 |
+| `plans/archive/2026-10-16-cypress-e2e-remediation.md` | snapshot | Cypress 启动恢复、34项 E2E、原覆盖率门槛与五组变异验证 |
+| `plans/archive/2026-10-17-rtmp-lan-handoff.md` | snapshot | 双机推流实测结果、安全落点与接续命令 |
+| `plans/archive/2026-10-18-temp-reuse-and-cleanup.md` | snapshot | 外部临时目录审计工具复用、证据保全与清理审批 |
 | `plans/2026-07-04-governance-plan.md` | snapshot | 全项目治理实施计划 |
 | `plans/2026-07-06-architecture-governance-plan.md` | snapshot | 架构治理实施计划 |
 | `plans/2026-07-06-docs-compliance-plan.md` | snapshot | 文档合规推进计划 |
@@ -118,26 +152,39 @@ as_of=2026-09-26
 | `plans/2026-07-21-agent-guide-audit.md` | snapshot | 助手指南（AGENTS.md/CLAUDE.md）审计与镜像治理 |
 | `plans/int8-quantization-plan.md` | snapshot | INT8 量化实现计划（任务级） |
 
-## specs/（时点快照）
+## specs/
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `specs/2026-07-03-triple-refactor-design.md` | snapshot | 三层重构设计（Engine/FramePipeline/HttpFacesServer 值流管线） |
 | `specs/2026-07-04-governance-plan-design.md` | snapshot | 全项目治理计划设计 |
 | `specs/2026-07-06-architecture-governance-design.md` | snapshot | 架构治理设计（5 条契约的**目标**定义） |
+| `specs/2026-10-17-rtmp-hidden-preview-design.md` | living | 实机推流测试隐藏预览的临时控制器与正式模式取舍 |
 
-## audits/
-
-| 文件 | 状态 | 说明 |
-|---|---|---|
-| `audits/2026-09-15-documentation-audit.md` | snapshot | 全项目文档审计报告（门禁基准失效根因、真实错误清单、遗留问题） |
-
-### audits/archive/（已冻结）
-
-历史审计快照，保留原始内容不再更新。2026-09-15 由仓库根目录归档至此。
+## audits/（近期结果与设备基线）
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
+| `audits/2026-10-17-rk3288-runtime-feedback.md` | snapshot | 双机推流实测、资源采样及开发改进反馈 |
+| `audits/2026-10-19-directory-optimization-result.md` | snapshot | R01—R06落地、规范重建、真实/桩通道与恢复证据 |
+| `audits/2026-10-19-post-rebuild-hygiene-result.md` | snapshot | 重建后旧编译输出清理、历史文档归档及资产保护与验证边界 |
+| `audits/2026-10-19-legacy-build-retirement-result.md` | snapshot | 三个旧构建根、历史缓存专批退出、必要输入迁置及重验边界 |
+
+### 历史审计
+
+保留原始基准、来源与失败边界；按日期查阅，不据旧报告推断当前实现。
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `audits/archive/2026-09-15-documentation-audit.md` | snapshot | 全项目文档审计报告（门禁基准失效根因、真实错误清单、遗留问题） |
+| `audits/archive/2026-10-17-cache-inventory.md` | snapshot | 本地缓存盘点、删除候选、保留与入库归档清单 |
+| `audits/archive/2026-10-17-cache-cleanup-A.md` | snapshot | A1/A2实际删除清单、空间变化与执行后完整性核对 |
+| `audits/archive/2026-10-17-repository-storage-slimming.md` | snapshot | 仓库大目录占用、可清理候选、复用与存放规范建议 |
+| `audits/archive/2026-10-18-storage-reorganization-result.md` | snapshot | 存储整理执行、保全映射、FFmpegKit独立重建与合入边界 |
+| `audits/archive/2026-10-18-temp-reuse-result.md` | snapshot | 外部临时目录复用、历史证据归档与删除边界 |
+| `audits/archive/2026-10-18-auxiliary-tools-remediation.md` | snapshot | 辅助工具缺测判据、失败传播、脱敏及行为回归整改 |
+| `audits/archive/2026-10-18-documentation-remediation.md` | snapshot | 文档十项修订、事实源收敛、历史轮次与退出验收 |
+| `audits/archive/2026-10-19-directory-organization-audit.md` | snapshot | 目录职责、路径消费者、忽略目录分类及渐进整改顺序与验收 |
 | `audits/archive/AUDIT_REPORT.md` | frozen | 全项目审计报告（2026-07-04，综合评分 2.9/5，38 项发现） |
 | `audits/archive/AUDIT_RESULT.md` | frozen | 针对《重构洞察.txt》的逐条验证结果 |
 | `audits/archive/GITHUB_SCAN_AUDIT.md` | frozen | GitHub 安全与质量扫描审计（CodeQL + Dependabot，2026-07-05） |
@@ -157,7 +204,6 @@ as_of=2026-09-26
 | `research/appendix-e.md` | snapshot | 性能优化与故障排障研究 |
 | `research/appendix-f.md` | snapshot | 证据日志分析报告 |
 | `research/appendix-g.md` | snapshot | 稳定性治理审计修复计划 |
-| `research/appendix-h.md` | placeholder | 稳定性治理分阶段执行报告（内容未填充） |
 | `research/opensource-benchmark-2026-09-16.md` | snapshot | 开源对标调研（核实版）：重复开发 / 独有 / 可借鉴三分类与行动建议 |
 | `research/opensource-integration-feasibility-2026-09-16.md` | snapshot | 开源代码可集成性评估：四档可行性分级、语言适配矩阵、不建议清单、32 位移植代价 |
 | `research/rk3288-device-capability-survey-2026-09-17.md` | snapshot | 目标机实测画像与视频管线能力：外设识别、硬解上限（1080p≈31fps / 720p≈55fps）、spacedesk 路径诊断 |
@@ -175,12 +221,15 @@ as_of=2026-09-26
 | `../CLAUDE.md` | living | AI 助手指南镜像（共享区间与 AGENTS.md 校验一致） |
 | `../.claude/CLAUDE.md` | living | Claude Code 子目录指南（graphify 触发 + 记忆系统指针） |
 | `../cache/README.md` | living | `cache/` 落盘规范：可复用内容的唯一根目录、分类、删除代价与重建命令 |
+| `../scripts/ffmpegkit/README.md` | living | FFmpegKit固定来源、离线原生/Java重建与AAR静态打包 |
+| `../scripts/audit/README.md` | living | 审计工具入口、来源与回归命令 |
 
 ## 子系统说明（各自目录内）
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `../web/README.md` | living | Web SPA 构建、测试与产物路径 |
+| `../tests/fixtures/rtmp/README.md` | living | Android RTMP 合成边界行为测试、精准变异与验收范围 |
 | `../src/win/third_party/civetweb/LEDGER.md` | living | CivetWeb 供应链台账 |
 | `../deps/qualcomm_snpe/README.md` | — | 第三方依赖说明（**豁免**元数据要求） |
 | `../deps/rk_mpp/README.md` | — | 第三方依赖说明（**豁免**元数据要求） |

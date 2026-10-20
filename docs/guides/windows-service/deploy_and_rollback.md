@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=runbook
 status=living
-as_of=2026-09-23
+as_of=2026-10-13
 -->
 
 ﻿# 部署与回滚指南（Windows 本地服务 + 浏览器 SPA）
@@ -64,8 +64,9 @@ as_of=2026-09-23
 
 - `storage/win_face_db.yml` —— 人脸特征库（**AES-256-GCM 加密容器**）；
   同名 `storage/win_face_db.yml.key.dpapi` 为 DPAPI 保护的密钥；
-  迁移成功后残留的 `storage/win_face_db.yml.pre-encrypt` 是**完整明文库副本**（有意保留的回滚点），
-  须由运维人工删除。规格见 `docs/security/face-db-encryption.md` §2–§3。
+  本次迁移的 `storage/win_face_db.yml.pre-encrypt.pending` 是完整明文副本，回读验证通过后删除；
+  若清理失败，日志报告 `CleanupFailed`。历史 `.pre-encrypt` 不自动覆写或删除，须核验并另行授权处理。
+  规格见 `docs/security/face-db-encryption.md` §2–§3。
 - `storage/win_logs/` —— 结构化识别日志目录（`log.logDir` 默认值，见 `WinJsonConfig.cpp` 的 `defaultAppConfig()`）。
   该目录下**最多 4 份文件集**，另有各自的滚动档位（`<文件名>.1` … `<文件名>.N`，最新在 `.1`）：
   - `recognition.csv` / `recognition.jsonl`（`StructuredLogger`）——**含明文 `person_id`**（PII），

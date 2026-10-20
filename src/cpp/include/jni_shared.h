@@ -12,6 +12,7 @@ class JniMethodRegistry;
 
 namespace rk_core {
 class Engine;
+struct FaceInferRequest;
 } // namespace rk_core
 
 // ========== 共享全局变量（定义在 native-lib.cpp） ==========
@@ -47,6 +48,9 @@ void registerFaceBridgeMethods(JniMethodRegistry& registry);
  * 未挂起或无 Engine 时为空操作。
  */
 void applyPendingFaceRuntimeActivation();
+
+// 单图只绑定已生效模型与已解密图库，不能把 Android 密文目录交给明文读取器。
+bool bindActiveFaceInferRequest(rk_core::FaceInferRequest& request, std::string& reason);
 
 // ========== 全局注册入口（定义在 jni/registry.cpp） ==========
 jint registerAllNativeMethods(JNIEnv* env);

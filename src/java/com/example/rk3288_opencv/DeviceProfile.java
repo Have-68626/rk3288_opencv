@@ -2,6 +2,7 @@ package com.example.rk3288_opencv;
 
 import android.app.ActivityManager;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.StatFs;
 
@@ -80,7 +81,7 @@ final class DeviceProfile {
 
         long totalMem = readTotalMemBytes(context);
         long dataTotal = readDataTotalBytes();
-        boolean hasGms = false; // Simplified for basic profiling
+        boolean hasGms = hasGoogleMobileServices(context);
 
         return new DeviceProfile(manufacturer, brand, model, device, hardware, board, fingerprint, buildType, sdkInt, totalMem, dataTotal, hasGms);
     }
@@ -106,6 +107,17 @@ final class DeviceProfile {
             return mi.totalMem;
         } catch (Throwable ignored) {
             return -1;
+        }
+    }
+
+    private static boolean hasGoogleMobileServices(@NonNull Context context) {
+        // 包可见性由清单定向声明；无法查询时保持未知设备的保守分型。
+        PackageManager packages = context.getPackageManager();
+        if (packages == null) return false;
+        try {
+            return packages.getPackageInfo("com.google.android.gms", 0) != null;
+        } catch (PackageManager.NameNotFoundException | SecurityException ignored) {
+            return false;
         }
     }
 

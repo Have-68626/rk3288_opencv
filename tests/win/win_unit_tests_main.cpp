@@ -87,6 +87,27 @@ bool test_pipeline_first_frame_timeout();
 bool test_pipeline_open_failure();
 bool test_pipeline_enroll_writeback_does_not_overwrite_new_request();
 bool test_pipeline_reload_reruns_manifest_check();
+bool test_pipeline_processor_metrics_match_identify();
+bool test_pipeline_failed_reload_preserves_runtime();
+bool test_pipeline_reload_cancels_pending_enrollment();
+bool test_pipeline_reload_cancels_pending_clear();
+bool test_pipeline_reload_discards_inflight_enrollment_writeback();
+bool test_pipeline_failed_reload_keeps_pending_commands();
+bool test_pipeline_reload_discards_old_identity_outputs();
+bool test_pipeline_callback_rejects_runtime_reload();
+bool test_pipeline_reload_shutdown_and_publication_lock_order();
+// 取锁后的运行时复核（数据库锁版本）：被挡在数据库锁上的旧命令不得在重载提交后仍然执行。
+bool test_pipeline_stale_command_does_not_run_after_reload_wait();
+bool test_pipeline_reload_config_commit_uses_reader_mutex();
+bool test_pipeline_shutdown_waits_for_camera_change();
+bool test_pipeline_callback_reentry_does_not_deadlock();
+// 重复 initialize 必须在任何资源突变前拒绝（覆盖 joinable 线程赋值 terminate 的路径）。
+// ⚠️ 该用例此前**只定义未注册**（自 enrollment-runtime 轮次起即为死测试），本轮补注册。
+bool test_pipeline_initialize_rejects_live_threads();
+// 同空间持久化排序：候选装配的整库 load 与在途登记/清库的 saveDb 必须互斥，
+// 否则候选读到旧快照、提交后的整库保存会覆盖掉在途登记的人员（真实加密库已复现）。
+bool test_pipeline_profile_reload_preserves_inflight_enrollment();
+bool test_pipeline_profile_reload_does_not_restore_cleared_person();
 bool test_config_put_bumps_generation();
 bool test_config_external_write_bumps_generation_once();
 // 读取失败（超上限）后**不**标记 mtime ⇒ 可读性恢复且 mtime 未变时仍会重试（2026-09-28 新增）。
@@ -156,6 +177,16 @@ bool test_face_db_load_nonexistent_path_is_intentionally_ok();
 bool test_face_db_malformed_legacy_is_controlled_failure();
 // A11：历史同名 .pre-encrypt 副本存在时迁移中止（不覆写不删，主库保持明文）。
 bool test_face_db_migration_historical_backup_aborts();
+bool test_profile_config_roundtrip_and_legacy_default();
+bool test_profile_legacy_snapshot_usage_tracks_consumers();
+bool test_profile_camera_and_model_same_patch_are_both_consumed();
+bool test_profile_bootstrap_enroll_identify_and_space_isolation();
+bool test_profile_bootstrap_empty_space_and_bad_manifest();
+bool test_profile_default_ncnn_hooks_end_to_end();
+bool test_face_db_migration_failure_emits_sanitized_warning();
+bool test_face_db_migration_resumes_matching_pending_copy();
+bool test_face_db_migration_rejects_mismatched_pending_copy();
+bool test_face_db_migration_retained_pending_is_visible_on_encrypted_load();
 // A18：INI 加载器的 env-free 来源快照 + initialize INI 分支落盘用该快照。
 bool test_load_config_ini_env_free_snapshot();
 bool test_initialize_ini_branch_writes_env_free();
@@ -310,6 +341,25 @@ int main(int argc, char** argv) {
         {"pipeline_open_failure", test_pipeline_open_failure},
         {"pipeline_enroll_writeback_does_not_overwrite_new_request", test_pipeline_enroll_writeback_does_not_overwrite_new_request},
         {"pipeline_reload_reruns_manifest_check", test_pipeline_reload_reruns_manifest_check},
+        {"pipeline_processor_metrics_match_identify", test_pipeline_processor_metrics_match_identify},
+        {"pipeline_failed_reload_preserves_runtime", test_pipeline_failed_reload_preserves_runtime},
+        {"pipeline_reload_cancels_pending_enrollment", test_pipeline_reload_cancels_pending_enrollment},
+        {"pipeline_reload_cancels_pending_clear", test_pipeline_reload_cancels_pending_clear},
+        {"pipeline_reload_discards_inflight_enrollment_writeback", test_pipeline_reload_discards_inflight_enrollment_writeback},
+        {"pipeline_failed_reload_keeps_pending_commands", test_pipeline_failed_reload_keeps_pending_commands},
+        {"pipeline_reload_discards_old_identity_outputs", test_pipeline_reload_discards_old_identity_outputs},
+        {"pipeline_callback_rejects_runtime_reload", test_pipeline_callback_rejects_runtime_reload},
+        {"pipeline_reload_shutdown_and_publication_lock_order", test_pipeline_reload_shutdown_and_publication_lock_order},
+        {"pipeline_stale_command_does_not_run_after_reload_wait",
+         test_pipeline_stale_command_does_not_run_after_reload_wait},
+        {"pipeline_reload_config_commit_uses_reader_mutex", test_pipeline_reload_config_commit_uses_reader_mutex},
+        {"pipeline_shutdown_waits_for_camera_change", test_pipeline_shutdown_waits_for_camera_change},
+        {"pipeline_callback_reentry_does_not_deadlock", test_pipeline_callback_reentry_does_not_deadlock},
+        {"pipeline_initialize_rejects_live_threads", test_pipeline_initialize_rejects_live_threads},
+        {"pipeline_profile_reload_preserves_inflight_enrollment",
+         test_pipeline_profile_reload_preserves_inflight_enrollment},
+        {"pipeline_profile_reload_does_not_restore_cleared_person",
+         test_pipeline_profile_reload_does_not_restore_cleared_person},
         {"config_put_bumps_generation", test_config_put_bumps_generation},
         {"config_external_write_bumps_generation_once", test_config_external_write_bumps_generation_once},
         {"config_reload_retries_after_read_failure_without_mtime_change",
@@ -369,6 +419,16 @@ int main(int argc, char** argv) {
         {"face_db_load_nonexistent_path_is_intentionally_ok", test_face_db_load_nonexistent_path_is_intentionally_ok},
         {"face_db_malformed_legacy_is_controlled_failure", test_face_db_malformed_legacy_is_controlled_failure},
         {"face_db_migration_historical_backup_aborts", test_face_db_migration_historical_backup_aborts},
+        {"profile_config_roundtrip_and_legacy_default", test_profile_config_roundtrip_and_legacy_default},
+        {"profile_legacy_snapshot_usage_tracks_consumers", test_profile_legacy_snapshot_usage_tracks_consumers},
+        {"profile_camera_and_model_same_patch_are_both_consumed", test_profile_camera_and_model_same_patch_are_both_consumed},
+        {"profile_bootstrap_enroll_identify_and_space_isolation", test_profile_bootstrap_enroll_identify_and_space_isolation},
+        {"profile_bootstrap_empty_space_and_bad_manifest", test_profile_bootstrap_empty_space_and_bad_manifest},
+        {"profile_default_ncnn_hooks_end_to_end", test_profile_default_ncnn_hooks_end_to_end},
+        {"face_db_migration_failure_emits_sanitized_warning", test_face_db_migration_failure_emits_sanitized_warning},
+        {"face_db_migration_resumes_matching_pending_copy", test_face_db_migration_resumes_matching_pending_copy},
+        {"face_db_migration_rejects_mismatched_pending_copy", test_face_db_migration_rejects_mismatched_pending_copy},
+        {"face_db_migration_retained_pending_is_visible_on_encrypted_load", test_face_db_migration_retained_pending_is_visible_on_encrypted_load},
         {"load_config_ini_env_free_snapshot", test_load_config_ini_env_free_snapshot},
         {"initialize_ini_branch_writes_env_free", test_initialize_ini_branch_writes_env_free},
         {"config_put_post_url_scheme_rejected", test_config_put_post_url_scheme_rejected},

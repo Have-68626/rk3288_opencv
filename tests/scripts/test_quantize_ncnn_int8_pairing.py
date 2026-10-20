@@ -117,10 +117,54 @@ def test_arcface_preset_matches_production_preprocessing(monkeypatch, tmp_path):
     _assert_argv_has(cmd, "shape=[112,112,3]")
 
 
-def test_mobilefacenet_preset_untouched(monkeypatch, tmp_path):
-    """MobileFaceNet 预设不在本任务改动面内（保持原值：RGB / 127.5 / 1/128 / 112）。"""
+def test_mobilefacenet_preset_matches_approved_parent(monkeypatch, tmp_path):
+    """MobileFaceNet 指定父图的官方输入为 RGB / 127.5 / 1÷127.5 / 112。"""
     cmd = _capture_ncnn2table_argv(monkeypatch, tmp_path, "mobilefacenet")
     _assert_argv_has(cmd, "pixel=RGB")
     _assert_argv_has(cmd, "mean=[127.5,127.5,127.5]")
-    _assert_argv_has(cmd, "norm=[0.0078125,0.0078125,0.0078125]")
+    _assert_argv_has(cmd, f"norm=[{1.0 / 127.5},{1.0 / 127.5},{1.0 / 127.5}]")
     _assert_argv_has(cmd, "shape=[112,112,3]")
+
+
+def test_quantization_report_binds_both_artifact_pairs(monkeypatch, tmp_path):
+    """父模型与量化产物的路径和摘要必须可供真实精度程序复核。"""
+    import hashlib
+
+    source_param = tmp_path / "scrfd.param"
+    source_bin = tmp_path / "scrfd.bin"
+    output_param = tmp_path / "scrfd_int8.param"
+    output_bin = tmp_path / "scrfd_int8.bin"
+    source_param.write_bytes(b"source-param")
+    source_bin.write_bytes(b"source-weights")
+    output_param.write_bytes(b"quantized-param")
+    output_bin.write_bytes(b"quantized-weights")
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(quant.subprocess, "run", lambda *a, **k: Result())
+    report = quant.run_ncnn2int8("ncnn2int8", str(source_param), str(source_bin),
+                               "table", str(output_param), str(output_bin))
+    for key, artifact in [("fp32_param", source_param), ("fp32_bin", source_bin),
+                          ("int8_param", output_param), ("int8_bin", output_bin)]:
+        assert report[key] == artifact.name
+        assert report[key + "_sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+
+def test_quant_only_rejects_calibration_table_without_geometry_evidence(monkeypatch, tmp_path, capsys):
+    """旧表没有来源/几何元数据，不能直接宣称它按生产 letterbox 校准。"""
+    import sys
+    directory = tmp_path / "scrfd_ncnn"
+    directory.mkdir()
+    _mk(directory, ["scrfd.param", "scrfd.bin"])
+    table = tmp_path / "scrfd.table"
+    table.write_bytes(b"synthetic-table")
+    monkeypatch.setattr(sys, "argv", ["quantize", "--model", "scrfd", "--fp32-dir", str(directory),
+                                     "--output-dir", str(tmp_path / "output"), "--quant-only", "--table-path", str(table)])
+    monkeypatch.setattr(quant, "find_tool", lambda name: pytest.fail("缺证据时不得启动量化工具"))
+    with pytest.raises(SystemExit) as error:
+        quant.main()
+    assert error.value.code == 1
+    assert "校准表缺少或不匹配父模型/预处理证据" in capsys.readouterr().err

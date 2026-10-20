@@ -193,6 +193,8 @@ export function ServerSettingsTab() {
   //   （isSettingsDocComplete 只查段是否存在、不查段内字段：段内缺字段同样因两侧同源而不会被提交，
   //     故不需要更细的判据。）
   const formReady = !!serverSettings.data && isSettingsDocComplete(serverSettings.data)
+  // 后端摘要不含 disabled 计数；从同份活动快照派生，避免把禁用项算作文件缺失。
+  const disabledModels = modelsData?.activeModels.filter((m) => m.status === 'disabled').length ?? 0
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -397,6 +399,14 @@ export function ServerSettingsTab() {
                 label: '模型选择（Model）',
                 children: (
                   <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <Form.Item
+                      label="人脸 Profile 目录"
+                      name={['model', 'faceProfileDir']}
+                      tooltip={READ_PATH_HINT}
+                      extra="填写含 manifest.json 的目录后按清单装配检测与识别，精度和模板空间由清单决定；留空沿用旧模型配置。"
+                    >
+                      <Input placeholder="storage/profiles/face" />
+                    </Form.Item>
                     <Form.Item label="检测模型 ID" name={['model', 'detection']} tooltip="模型 ID 字符串（如 yolo_face）。本 UI 与 schema 都不校验取值是否被后端支持，写错只会在运行期暴露。">
                       <Input placeholder="yolo_face" />
                     </Form.Item>
@@ -415,17 +425,10 @@ export function ServerSettingsTab() {
                     <Form.Item label="失败自动回落" name={['model', 'autoFallback']} valuePropName="checked">
                       <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
-                    {/* ⚠️ 如实口径（旧提示"需要对应的 INT8 量化模型已存在…"会让人以为"模型在就能生效"）：
-                        Windows 运行时**没有**可用的 INT8 推理路径——RuntimeBootstrap 把本键消费为**一条
-                        status=disabled 的快照（id=int8_recognition）+ 一条启动告警**，识别器仍固定走
-                        OpenCV DNN / FP32（INT8 的 .param/.bin 只能由 ncnn 后端加载）。置 true 的作用是让
-                        "该请求未被满足"**可见**：本页「模型状态」里会多出一张 int8_recognition 卡片
-                        （本页的标签映射把非 loaded/failed 的状态显示为「缺失」；它只计入 totalConfigured，
-                        不进 missing/failed 计数）。 */}
                     <Form.Item
-                      label="启用 INT8 模型"
+                      label="旧入口请求 INT8 模型"
                       name={['model', 'int8Enabled']}
-                      tooltip="置 true 不会真的启用 INT8 推理：Windows 运行时不支持（识别器固定 OpenCV DNN / FP32，而 INT8 产物是 ncnn 的 .param/.bin），它只是让「该请求未被满足」变得可见——「模型状态」里会多出一张标着「缺失」的 int8_recognition 卡片。INT8 模型不入库，须用 scripts/quantize_ncnn_int8.py 本地生成。"
+                      tooltip="仅作用于旧模型入口：置 true 仍走 OpenCV FP32，并在模型状态显示已禁用的 int8_recognition。使用 Profile 时，FP32/INT8 由 manifest.json 决定，此开关不改变清单精度。"
                     >
                       <FlipSwitch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>
@@ -454,6 +457,9 @@ export function ServerSettingsTab() {
                           {modelsData.summary.totalMissing > 0 && (
                             <Tag color="orange">缺失 {modelsData.summary.totalMissing}</Tag>
                           )}
+                          {disabledModels > 0 && (
+                            <Tag color="default">已禁用 {disabledModels}</Tag>
+                          )}
                         </Space>
 
                         {/* 活跃模型 */}
@@ -465,10 +471,10 @@ export function ServerSettingsTab() {
                               <Space>
                                 <span>{m.displayName}</span>
                                 <Tag
-                                  color={m.status === 'loaded' ? 'green' : m.status === 'failed' ? 'red' : 'orange'}
+                                  color={m.status === 'loaded' ? 'green' : m.status === 'failed' ? 'red' : m.status === 'disabled' ? 'default' : 'orange'}
                                   style={{ marginRight: 0 }}
                                 >
-                                  {m.status === 'loaded' ? '已加载' : m.status === 'failed' ? '失败' : '缺失'}
+                                  {m.status === 'loaded' ? '已加载' : m.status === 'failed' ? '失败' : m.status === 'disabled' ? '已禁用' : '缺失'}
                                 </Tag>
                                 {m.isInUse && <Tag color="blue">使用中</Tag>}
                               </Space>

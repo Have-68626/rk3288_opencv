@@ -86,6 +86,57 @@ public class FaceModelManagerTest {
     // ---------- ② 成功导入 ----------
 
     @Test
+    public void importedTemplateSpaceRoutesGalleryWithoutMovingLegacyFiles() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File store = tmp.newFolder();
+        File legacy = new File(store.getParentFile(), "face_templates");
+        assertTrue(legacy.isDirectory() || legacy.mkdirs());
+        File marker = new File(legacy, "legacy_probe.bin");
+        java.nio.file.Files.write(marker.toPath(), new byte[]{1, 2, 3});
+        FaceModelManager m = new FaceModelManager(store, rt);
+        Map<String, byte[]> files = defaultFiles("synthetic");
+        String space = String.join("", java.util.Collections.nCopies(64, "a"));
+        String json = manifest("space_a", "[\"arm64-v8a\"]", files, "lic")
+                .replace("\"schemaVersion\":1,", "\"schemaVersion\":1,\"templateSpaceId\":\"" + space + "\",");
+        assertTrue(m.importZip(stream(zip("", json, files)), ABI, true).isOk());
+        assertEquals(new File(new File(legacy, "spaces"), space).getAbsolutePath(), rt.lastGalleryDir);
+        assertTrue("新空间不得搬动或导入旧模板", marker.isFile());
+    }
+
+    @Test
+    public void legacyProfileKeepsOriginalGalleryDirectory() throws Exception {
+        FakeRuntime rt = new FakeRuntime();
+        File store = tmp.newFolder();
+        FaceModelManager m = new FaceModelManager(store, rt);
+        Map<String, byte[]> files = defaultFiles("synthetic");
+        assertTrue(m.importZip(stream(zip("", manifest("legacy_space", "[\"arm64-v8a\"]", files, "lic"), files)), ABI, true).isOk());
+        assertEquals(new File(store.getParentFile(), "face_templates").getAbsolutePath(), rt.lastGalleryDir);
+    }
+
+    @Test
+    public void rejectedCandidateNeverSelectsItsGallerySpace() throws Exception {
+        FakeRuntime runtime = new FakeRuntime();
+        FaceModelManager manager = manager(runtime);
+        Map<String, byte[]> files = defaultFiles("synthetic");
+        String spaceA = String.join("", java.util.Collections.nCopies(64, "a"));
+        String spaceB = String.join("", java.util.Collections.nCopies(64, "b"));
+        String a = manifest("space_a", "[\"arm64-v8a\"]", files, "lic")
+                .replace("\"schemaVersion\":1,", "\"schemaVersion\":1,\"templateSpaceId\":\"" + spaceA + "\",");
+        String b = manifest("space_b", "[\"arm64-v8a\"]", files, "lic")
+                .replace("\"schemaVersion\":1,", "\"schemaVersion\":1,\"templateSpaceId\":\"" + spaceB + "\",");
+        assertTrue(manager.importZip(stream(zip("", a, files)), ABI, true).isOk());
+        assertEquals(spaceA, manager.activeTemplateSpaceId(ABI));
+        runtime.activateOk = false;
+        assertFalse(manager.importZip(stream(zip("", b, files)), ABI, true).isOk());
+        assertEquals("暂存候选不能替代生效空间", spaceA, manager.activeTemplateSpaceId(ABI));
+        runtime.activateOk = true;
+        assertTrue(manager.importZip(stream(zip("", b, files)), ABI, true).isOk());
+        assertEquals(spaceB, manager.activeTemplateSpaceId(ABI));
+        assertTrue(manager.activate("space_a", ABI, true).isOk());
+        assertEquals(spaceA, manager.activeTemplateSpaceId(ABI));
+    }
+
+    @Test
     public void importZipExtractsVerifiesNativedAndActivates() throws Exception {
         FakeRuntime rt = new FakeRuntime();
         File dir = tmp.newFolder();
@@ -3301,6 +3352,7 @@ public class FaceModelManagerTest {
         int activateCalls = 0;
         String lastBaseDir;
         String lastManifest;
+        String lastGalleryDir;
         String runtimeJson = "{\"ok\":true,\"profileValidated\":true,\"profileLoaded\":true,"
                 + "\"effective\":true,\"reason\":\"ok\",\"embeddingDim\":512,"
                 + "\"galleryCount\":0,\"enrollmentState\":\"IDLE\"}";
@@ -3326,6 +3378,7 @@ public class FaceModelManagerTest {
                                       String galleryDir) {
             activateCalls++;
             lastBaseDir = baseDir;
+            lastGalleryDir = galleryDir;
             if (activateOk) {
                 return "{\"ok\":true,\"pending\":false,\"effective\":" + activateEffective
                         + ",\"reason\":\"" + activateReason + "\",\"generation\":1}";

@@ -71,7 +71,8 @@ struct HttpServerConfig {
 
 struct HttpPosterConfig {
     bool enable = false;
-    std::string postUrl = "http://localhost:8080/api/faces";
+    // 本服务的人脸接口只接受 GET；推送必须显式配置接收端。
+    std::string postUrl;
     int throttleMs = 100;
     int backoffMinMs = 200;
     int backoffMaxMs = 5000;
@@ -126,13 +127,15 @@ struct AccelerationConfig {
 };
 
 struct ModelConfig {
+    // 非空时以 manifest 装配 SCRFD/ArcFace，模板库按其已校验空间隔离；空值保留旧配置路径。
+    std::filesystem::path faceProfileDir;
     std::string detection = "yolo_face";
     std::string recognition = "arcface";
     std::string backend = "opencv_dnn";
     std::string detectorBackend = "opencv_dnn";
     std::string recognitionBackend = "opencv_dnn";
     bool autoFallback = true;
-    // 启用 INT8 量化模型推理（请求语义）。
+    // 旧入口的 INT8 请求（faceProfileDir 为空时才消费）。profile 入口以 manifest.precision 为准。
     // 消费点：`RuntimeBootstrap::build()`——**仅在 Windows 侧**记一条 `status="disabled"` 的
     // `int8_recognition` 快照（**恒可经 `/api/v1/models` 的 activeModels 观测**）并追加一条启动告警
     // （⚠️ 告警的可见性有条件：`FramePipeline` 只在 `!bootstrap.ok` 时才把它落到 `render_.status` /

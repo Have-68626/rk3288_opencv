@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "ffmpegkit": {
+    "version": "6.0.LTS-source-zip-22fe0791",
+    "url": "https://github.com/arthenica/ffmpeg-kit/releases/tag/v6.0.LTS",
+    "sha256": "22fe0791ed5fa9cac8d55b598e3776e2befa1daa2efa3dfbb396e82f0011aade",
+    "scope": "用户提供源码ZIP的本地绑定，不声称与远端归档逐字节认证"
+  },
+  "sources": {
+    "ffmpeg": {"url": "https://github.com/arthenica/FFmpeg", "commit": "ea3d24bbe3c58b171e55fe2151fc7ffaca3ab3d2"},
+    "x264": {"url": "https://github.com/arthenica/x264", "commit": "eaa68fad9e5d201d42fde51665f2d137ae96baf0"},
+    "cpu-features": {"url": "https://github.com/arthenica/cpu_features", "commit": "936b9ab5515dead115606559502e3864958f7f6e"},
+    "openssl": {"url": "https://github.com/arthenica/openssl", "commit": "2cf4e90eaaf7402bf038b158dbdacd0a15561fb7"},
+    "gnu-config": {"url": "https://github.com/arthenica/gnu-config", "ref": "v20210814", "commit": "805517123cbfe33d17c989a18e78c5789fab0437", "directory": ".tmp/source/config"}
+  },
+  "ndk_version": "25.2.9519653",
+  "target_api": 21,
+  "abis": ["armeabi-v7a", "arm64-v8a"],
+  "java_source_sha256": {
+    "common": "dd1541b83d88a284fedf2db38d81b27ad43340a8c890b7414d63c81ec6a7e5b8",
+    "java": "8275af16bcb006e3547edb18f1eda54875a4d749409290d9d0e97fed013e3be9"
+  },
+  "license": "GPL-3.0-or-later（启用x264）；OpenSSL Apache-2.0；smart-exception BSD-3-Clause"
+}

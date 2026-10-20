@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-26
+as_of=2026-10-18
 -->
 
 # RK3288 机器视觉引擎 (AI Engine)
@@ -75,38 +75,14 @@ rk3288_opencv/
 
 ## 快速开始
 
-### C++ 单元测试（无 OpenCV）
+从仓库根目录开始，依赖、不同shell命令与验收边界以[构建与测试](docs/guides/build-and-test.md)为准：
 
-```powershell
-cmake -S . -B build_ci -G Ninja -DRK_SKIP_OPENCV=ON
-cmake --build build_ci --target core_unit_tests
-ctest --test-dir build_ci --output-on-failure
-```
+### 构建命令
 
-### Windows 全量构建（需 OpenCV 源码）
-
-```powershell
-cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 `
-  -DOPENCV_ROOT="path\to\opencv" -DOPENCV_CONTRIB_ROOT="path\to\opencv_contrib"
-cmake --build build_win --config Release --target win_local_service
-ctest --test-dir build_win -C Release
-```
-
-### Android
-
-```powershell
-gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
-```
-
-### Web SPA
-
-```powershell
-pnpm -C web install
-pnpm -C web lint
-pnpm -C web test        # Vitest 单元测试
-pnpm -C web build
-pnpm -C web e2e:run     # Cypress E2E
-```
+- [C++核心快通道](docs/guides/build-and-test.md#c核心快通道powershell)：不依赖OpenCV，构建后只运行匹配的CTest。
+- [Windows服务与选定测试](docs/guides/build-and-test.md#windows服务与选定测试powershell)：先区分服务构建和测试构建。
+- [Android](docs/guides/build-and-test.md#android)：PowerShell从当前目录调用须写显式相对路径。
+- [Web与E2E](docs/guides/build-and-test.md#cypress-e2e与覆盖率)：E2E需要已启动的同端口服务器，覆盖率还需要服务端插桩。
 
 ## 测试框架
 
@@ -138,7 +114,7 @@ pnpm -C web e2e:run     # Cypress E2E
 | Batch 4 | Web SPA + Android 治理 | ✅ 完成 |
 | Batch 4.7 | MainActivity 拆分 | ✅ 完成 |
 | Batch 5 | 测试覆盖治理（GTest 迁移） | ✅ 完成 |
-| 架构治理 | 架构契约 + CMake 模块化 + JNI 拆分 | ✅ 完成 |
+| 架构治理 | CMake 模块化与 JNI 拆分已完成；RAII 两个符号族闭环，其余契约仍待修复 | 进行中 |
 | 持续 | 文档合规 | 🟡 持续 |
 
 ## 脚本工具
@@ -171,4 +147,4 @@ MIT License
 - [架构治理设计](docs/specs/2026-07-06-architecture-governance-design.md)
 - [架构治理实施计划](docs/plans/2026-07-06-architecture-governance-plan.md)
 - [远程分支审计](docs/audits/archive/REMOTE_BRANCH_AUDIT.md) — 19→3 分支清理
-- [文档审计报告](docs/audits/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题
+- [文档审计报告](docs/audits/archive/2026-09-15-documentation-audit.md) — 门禁基准修复与遗留问题

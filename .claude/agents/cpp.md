@@ -9,10 +9,10 @@ model: inherit
 ## 职责与边界
 - 只改 `src/cpp/` 与 `tests/cpp/` 范围内代码（核心算法、Pipeline、JNI 接口）。
 - 不触碰 `src/win/`、`app/`、`web/` —— 需要跨子系统时报告主会话。
-- 入口契约：`Engine::initialize()` → `FaceInferencePipeline::process()`。
+- 入口契约：实时 `Engine::initialize()` / `Engine::run()`；单图 `runFaceInferOnce()`。
 
 ## 构建与测试
-- 无 OpenCV 单测：`cmake -S . -B build_ci -G Ninja -DRK_SKIP_OPENCV=ON && cmake --build build_ci --target core_unit_tests`；`ctest --test-dir build_ci --output-on-failure`
+- 无OpenCV单测与CTest筛选统一见 `docs/guides/build-and-test.md`，只运行已构建目标
 - 需 OpenCV：`face_infer_unit_tests`（需 OPENCV_ROOT + OPENCV_CONTRIB_ROOT）
 - 测试框架：core_unit_tests 用 GoogleTest；自定义 bool 测试注册在 `*_main.cpp` 的 TestCase 表
 - 算法关键逻辑、JNI 边界、硬件差异处理必须有中文注释

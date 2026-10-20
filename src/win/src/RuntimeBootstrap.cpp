@@ -2,6 +2,7 @@
 #include "rk_win/IRecognizer.h"
 #include "rk_win/FaceRecognizer.h"
 #include "rk_win/ArcFaceWinRecognizer.h"
+#include "rk_win/ProfileWinRecognizer.h"
 #include "rk_win/DnnSsdFaceDetector.h"
 #include "rk_win/WinConfig.h"
 #include "FileHash.h"
@@ -21,7 +22,42 @@ static std::string modelSha256OrUnavailable(const std::filesystem::path& p) {
 BootstrapResult::~BootstrapResult() = default;
 
 BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
+    return buildInternal(cfg, nullptr);
+}
+
+#if defined(RK_ENABLE_TEST_SEAMS)
+BootstrapResult RuntimeBootstrap::buildForTesting(const AppConfig& cfg, const rk_core::RealtimePipelineHooks& hooks) {
+    return buildInternal(cfg, &hooks);
+}
+#endif
+
+BootstrapResult RuntimeBootstrap::buildInternal(const AppConfig& cfg, const rk_core::RealtimePipelineHooks* hooks) {
     BootstrapResult result;
+
+    if (!cfg.model.faceProfileDir.empty()) {
+        auto recognizer = std::make_unique<ProfileWinRecognizer>(hooks ? *hooks : rk_core::makeDefaultRealtimePipelineHooks());
+        std::string err;
+        result.ok = recognizer->initialize(cfg.model.faceProfileDir, cfg.recognition.databasePath, err);
+        const auto state = recognizer->snapshot();
+        // 清单入口也登记为快照，使 REST 模型重载有稳定目标；失败不伪装旧模型已加载。
+        ModelSnapshot manifest;
+        manifest.id = "face_profile";
+        manifest.displayName = state ? state->profile.displayName : "Face Profile";
+        manifest.taskType = "detect_recognize_pipeline";
+        manifest.configuredPath = (cfg.model.faceProfileDir / "manifest.json").string();
+        manifest.resolvedPath = manifest.configuredPath;
+        manifest.backend = state && state->profile.embedderPrecision == "int8" ? "ncnn_int8" : "ncnn";
+        manifest.hash = modelSha256OrUnavailable(manifest.resolvedPath);
+        manifest.modelVersion = state ? state->profile.modelVersion : "";
+        manifest.status = result.ok ? "loaded" : "failed";
+        manifest.isInUse = result.ok;
+        manifest.lastError = err;
+        result.models.push_back(std::move(manifest));
+        if (!result.ok) result.warning = "profile 识别模块初始化失败: " + err;
+        result.recognizer = std::move(recognizer);
+        // profile 自带 SCRFD，不能再装配没有帧消费者的 SSD 或旧 cascade。
+        return result;
+    }
 
     const std::string cascadeUtf8 = cfg.recognition.cascadePath.string();
 
@@ -70,7 +106,7 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         // FramePipeline 的 cascade 快照 hash 断言会误报 mismatch。
         m.hash = modelSha256OrUnavailable(cfg.recognition.cascadePath);
         m.status = recognizerOk ? "loaded" : "failed";
-        m.isInUse = !cfg.dnn.enable;
+        m.isInUse = recognizerOk;
         if (!recognizerOk) {
             // 归因如实：失败可能来自 cascade 文件、ArcFace 识别模型 / 节点名，或 database 路径，
             // 此处无法区分，故不再断言是 cascade / database 的问题（识别器自身已把原因打到日志）。
@@ -104,7 +140,8 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
     // 背景：`cfg.model.int8Enabled`（WinConfig.h 的 ModelConfig）此前**只被序列化**——INI / JSON 两侧
     //   读得出、写得进，但全仓无任何消费点（既不影响识别器装配，也不影响 DNN 配置）。
     // 本段把它接成**可观测的消费点**。
-    // ⚠️ **如实口径，勿高估本段作用**：Windows 运行时**目前没有可用的 INT8 推理路径**——
+    // ⚠️ 本段只描述未配置 faceProfileDir 的旧入口；profile 在上方返回，精度由清单决定。
+    // Windows 旧入口**没有可用的 INT8 推理路径**——
     //   `ArcFaceWinRecognizer::initialize` 把 `embedderCfg_.backend` 定死为 `OpenCvDnn`（见该文件），
     //   而本仓 INT8 产物是 ncnn 的 `.param`/`.bin`，只能由 ncnn 后端加载；`DnnSsdFaceDetector` 亦无
     //   INT8 入口。因此这里能做的只有两件**可观测**的事：
@@ -120,9 +157,7 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
     //   （JsonEndpointHandlers 的 loaded/failed/missing 计数、web 的模型状态 Tab）收到未知取值。
     // ⚠️ 也不把它升级为启动期硬错误：本系统是 fail-open（识别器初始化失败都只写 warning、不阻断，
     //   见上方注释），一个「不支持的能力开关」更不该阻断服务启动。
-    // ⚠️ 真正打通 INT8 需要改识别器后端选择与 FramePipeline（不在本文件范围），并需要新增
-    //   「INT8 模型路径」配置面——现状 `recognition.arcFaceModelPath` 只有一个路径字段，
-    //   无法同时表达 FP32 与 INT8 两套权重。
+    // 需要 ncnn INT8 时应配置 faceProfileDir；recognition.arcFaceModelPath 仍仅服务旧入口。
     // ⚠️ 默认 `int8Enabled == false` ⇒ 本段整体不执行：不新增快照、不新增告警、`models.size()` 不变
     //   ⇒ 默认路径**零行为变化**（`/api/v1/models` 的 totalConfigured 与 warning 文案均不变）。
     if (cfg.model.int8Enabled) {
@@ -141,13 +176,13 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
         m.status = "disabled";
         m.isInUse = false;
         m.lastError =
-            "model.int8Enabled=true 但 Windows 运行时不支持 INT8 推理：识别器固定走 OpenCV DNN（FP32），"
+            "model.int8Enabled=true 但 Windows 旧模型入口不支持 INT8 推理：识别器固定走 OpenCV DNN（FP32），"
             "INT8 的 .param/.bin 只能由 ncnn 后端加载；本次已按 FP32 继续运行";
         result.models.push_back(std::move(m));
 
         if (!result.warning.empty()) result.warning += "; ";
         result.warning +=
-            "model.int8Enabled=true 未生效：Windows 运行时不支持 INT8 推理（识别器固定 OpenCV DNN / FP32），"
+            "model.int8Enabled=true 未生效：Windows 旧模型入口不支持 INT8 推理（识别器固定 OpenCV DNN / FP32），"
             "已按 FP32 继续；详见 /api/v1/models 的 int8_recognition 快照";
     }
 
@@ -182,7 +217,7 @@ BootstrapResult RuntimeBootstrap::build(const AppConfig& cfg) {
             m.backend = "opencv_dnn";
             m.hash = modelSha256OrUnavailable(cfg.dnn.modelPath);
             m.status = dnnOk ? "loaded" : (std::filesystem::exists(cfg.dnn.modelPath) ? "failed" : "missing");
-            m.isInUse = true;
+            m.isInUse = false;
             m.lastError = err;
             result.models.push_back(m);
         }

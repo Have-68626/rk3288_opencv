@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <iostream>
 #include <sstream>
 
 namespace rk_win {
@@ -34,6 +35,40 @@ constexpr std::size_t kGcmTagLen = 16;
 //   <hexId> <count> <dim> <hexFloat0> <hexFloat1> ... <hexFloat(dim-1)>
 // id 按 UTF-8 字节 hex 编码（任意字符安全）；mean 按 IEEE-754 bit 模式 hex 编码（无损往返）。
 constexpr const char* kFaceDbPayloadSig = "RKFDBSER1";
+
+bool sameFileBytes(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(a, ec);
+    if (ec) return false;
+    const auto otherSize = std::filesystem::file_size(b, ec);
+    if (ec || size != otherSize) return false;
+    std::ifstream first(a, std::ios::binary), second(b, std::ios::binary);
+    if (!first || !second) return false;
+    char left[4096], right[4096];
+    std::uintmax_t compared = 0;
+    while (compared < size) {
+        const auto count = static_cast<std::streamsize>(std::min<std::uintmax_t>(sizeof(left), size - compared));
+        first.read(left, count);
+        second.read(right, count);
+        if (first.gcount() != count || second.gcount() != count ||
+            !std::equal(left, left + count, right)) return false;
+        compared += count;
+    }
+    return true;
+}
+
+void reportMigrationWarning(MigrationOutcome outcome) {
+    const char* code = nullptr;
+    switch (outcome) {
+        case MigrationOutcome::VerifyFailed: code = "VerifyFailed"; break;
+        case MigrationOutcome::CleanupFailed: code = "CleanupFailed"; break;
+        case MigrationOutcome::HistoricalBackupPresent: code = "HistoricalBackupPresent"; break;
+        case MigrationOutcome::Aborted: code = "Aborted"; break;
+        default: return;
+    }
+    // 迁移结果必须可见；仅输出固定结果码，避免路径、人员或底层错误携带的敏感值进入日志。
+    std::cerr << "face_database_migration outcome=" << code << std::endl;
+}
 
 std::string makeHeader() {
     std::string h;
@@ -294,7 +329,7 @@ std::filesystem::path FaceDatabase::keyPathFor(const std::filesystem::path& dbPa
 
 bool FaceDatabase::load(const std::filesystem::path& path) {
     if (path.empty()) return false;
-    // A11：每次 load 先复位迁移结果（仅明文分支才可能改写为正结果；加密/不存在/失败均为 NotAttempted）。
+    // 每次 load 先复位结果；明文迁移或密文旁遗留 pending 副本会更新该状态。
     {
         std::lock_guard<std::mutex> lock(mu_);
         migrationOutcome_ = MigrationOutcome::NotAttempted;
@@ -349,6 +384,12 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
             std::lock_guard<std::mutex> lock(mu_);
             persons_.clear();
             return false;
+        }
+        std::error_code pendingEc;
+        if (std::filesystem::exists(path.string() + ".pre-encrypt.pending", pendingEc) || pendingEc) {
+            // 替换后崩溃留下的明文不能静默忽略；当前 load 不拥有该副本，不自动删除恢复材料。
+            migOutcome = MigrationOutcome::CleanupFailed;
+            migDetail = "已存在待清理迁移副本，需核验后处理";
         }
     } else {
         // 旧明文 YAML：先读明文（兼容既有库），再尝试加密迁移（失败/中止保留旧库，可回滚）。
@@ -422,6 +463,7 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
         migDetail = migErr;
     }
 
+    reportMigrationWarning(migOutcome);
     std::lock_guard<std::mutex> lock(mu_);
     persons_ = std::move(tmp);
     migrationOutcome_ = migOutcome;
@@ -468,14 +510,24 @@ MigrationOutcome FaceDatabase::migratePlaintextToEncrypted(
     const std::unordered_map<std::string, PersonEntry>& persons,
     std::string& err) {
     err.clear();
-    const std::filesystem::path bak = std::filesystem::path(path.string() + ".pre-encrypt");
+    const std::filesystem::path historical = std::filesystem::path(path.string() + ".pre-encrypt");
+    const std::filesystem::path bak = std::filesystem::path(path.string() + ".pre-encrypt.pending");
 
     // A11：迁移前若**已存在**同名 .pre-encrypt 副本，必须明确报错停止 —— 它可能是人工恢复的
     //   最后凭据（或上一次迁移的产物），静默覆写/删除都不允许。此支不改动任何文件（主库仍为明文）。
     std::error_code existsEc;
-    if (std::filesystem::exists(bak, existsEc)) {
+    if (std::filesystem::exists(historical, existsEc)) {
         err = "已存在历史 .pre-encrypt 副本，为避免覆盖而中止迁移（未做任何改动）";
         return MigrationOutcome::HistoricalBackupPresent;
+    }
+    if (existsEc) {
+        err = "无法核验历史迁移副本，迁移中止";
+        return MigrationOutcome::Aborted;
+    }
+    const bool resume = std::filesystem::exists(bak, existsEc);
+    if (existsEc || (resume && !sameFileBytes(path, bak))) {
+        err = "待迁移副本与明文主库不一致，保留全部恢复材料并中止";
+        return MigrationOutcome::Aborted;
     }
 
     const std::string payload = serializePayload(persons);
@@ -501,7 +553,8 @@ MigrationOutcome FaceDatabase::migratePlaintextToEncrypted(
     // 这里用 copy_options::none（而非 overwrite_existing）：上面已判过不存在，若此刻竞态出现同名文件
     // 则 copy 失败并中止，绝不静默覆盖（与「历史副本不覆写」同一安全方向）。
     std::error_code ec;
-    std::filesystem::copy_file(path, bak, std::filesystem::copy_options::none, ec);
+    // 仅逐字节一致的本类 pending 副本可重试；旧 .pre-encrypt 永远不覆写、不删除。
+    if (!resume) std::filesystem::copy_file(path, bak, std::filesystem::copy_options::none, ec);
     if (ec) {
         std::filesystem::remove(tmp, ec);
         err = "明文备份失败: " + ec.message();

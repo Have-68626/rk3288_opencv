@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -14,6 +15,39 @@ namespace {
 
 static bool nearlyEqual(float a, float b, float eps = 1e-6f) {
     return std::fabs(a - b) <= eps;
+}
+
+TEST(FaceSearchFiniteInputs, RejectsInfiniteTemplatesWithoutReplacingGallery) {
+    for (float invalid : {std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+        FaceSearchLinearIndex index;
+        std::string err;
+        ASSERT_TRUE(index.reset({FaceSearchEntry{"valid", {1.0f, 0.0f}}}, 2, err));
+        std::vector<FaceSearchEntry> entries{{"invalid", {invalid, 1.0f}}};
+        ASSERT_FALSE(index.reset(std::move(entries), 2, err));
+        EXPECT_FALSE(err.empty());
+        ASSERT_EQ(index.size(), 1u);
+        EXPECT_EQ(index.entries()[0].id, "valid");
+        ASSERT_EQ(entries.size(), 1u);
+        EXPECT_FLOAT_EQ(entries[0].embedding[0], 0.0f);
+        EXPECT_FLOAT_EQ(entries[0].embedding[1], 0.0f);
+    }
+}
+
+TEST(FaceSearchFiniteInputs, RejectsInfiniteQueriesForEitherNormalizationMode) {
+    FaceSearchLinearIndex index;
+    std::string err;
+    ASSERT_TRUE(index.reset({FaceSearchEntry{"valid", {1.0f, 0.0f}}}, 2, err));
+    for (bool normalized : {false, true}) {
+        FaceSearchOptions options;
+        options.assumeL2Normalized = normalized;
+        for (float invalid : {std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+            const auto hits = index.searchTopK({invalid, 1.0f}, 1, options, err);
+            EXPECT_TRUE(hits.empty());
+            EXPECT_FALSE(err.empty());
+        }
+    }
+    EXPECT_EQ(index.searchTopK({1.0f, 0.0f}, 1, FaceSearchOptions{}, err).size(), 1u);
+    EXPECT_TRUE(err.empty());
 }
 
 // 在原始字节缓冲中查找 ASCII 子串（不触碰任何已释放内存）。

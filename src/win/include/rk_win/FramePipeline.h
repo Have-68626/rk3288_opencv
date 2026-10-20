@@ -120,7 +120,11 @@ public:
 
     // ── ReloadPolicy 热更新（Phase 1） ──
     void switchCamera(const AppConfig& cfg);
-    void reloadRuntime(const AppConfig& cfg);
+    // 同一次配置更新可同时改变两域，分别消费各自差异并沿用各自失败回滚。
+    void applyModelAndCameraChanges(const AppConfig& previous, const AppConfig& next);
+    bool reloadRuntime(const AppConfig& cfg);
+    // 最近一次重载失败告警；失败保留旧运行态，不能用 degraded() 推断此次重载结果。
+    std::string runtimeReloadWarning() const;
     void updatePreviewLayout(int w, int h, const std::string& scaleMode);
 
     void requestEnroll(const std::string& personId);
@@ -193,11 +197,13 @@ public:
     // 装配失败也照样递增）。
     // reload 端点（B06-020 治理项）以"成功重载**必然**改变代次"为契约——禁止"伪成功"
     // （返回成功但从未真正重载）；消费方记录已消费代次即可感知重载确实发生。
-    // ⚠️ 反向不成立：代次改变**只证明重载执行过，不证明装配成功**（装配成败看 DegradedState
-    // / reload 响应新增的 ok 键），勿据代次递增推断模型已可用。
+    // ⚠️ 代次改变只证明重载执行过，不证明装配成功；本次成败以 reloadRuntime 返回值为准。
     std::uint64_t runtimeReloadGen() const { return runtimeReloadGen_.load(std::memory_order_relaxed); }
 
 private:
+#if defined(RK_ENABLE_TEST_SEAMS)
+    friend struct FramePipelineTestAccess;
+#endif
     void captureLoop();
     void processLoop();
     void stopCameraLocked();
@@ -218,6 +224,12 @@ private:
 
     AppConfig cfg_{};
     mutable std::mutex mu_;
+    // 串行化线程创建、join 与相机切换；不得持 mu_ 调用，采集/处理线程退出仍需 mu_。
+    std::mutex lifecycleMu_;
+    // 候选加载与数据库变更互斥；纯识别不取此锁，装配期间仍可发布旧预览。
+    std::mutex databaseMutationMu_;
+    // 提交顺序为 lifecycleMu_ → databaseMutationMu_ → publicationMu_；回调不得同步重载。
+    std::mutex publicationMu_;
 
     std::vector<CameraDevice> devices_;
     int activeDeviceIndex_ = -1;
@@ -238,6 +250,7 @@ private:
     // 避免并发 reload/enroll 时旧 processor/recognizer/dnn 被销毁（UAF）
     std::shared_ptr<RuntimeSnapshot> runtime_;
     mutable std::mutex runtimeMu_;
+    std::string runtimeReloadWarning_;
 
     bool flipX_ = false;
     bool flipY_ = false;
@@ -276,8 +289,8 @@ private:
     std::atomic<bool> enrollRequested_{false};
     std::string enrollPersonId_;
     int enrollRemaining_ = 0;
-    // 注册代次（mu_ 保护）：requestEnroll 成功时 +1 并随 cmd 携带；处理回写前比较
-    // 当前值与 cmd 携带值——未变才写回（变化说明期间有新注册，保留新计数不覆盖，
+    // 注册代次（mu_ 保护）：新请求或运行时成功切换时 +1，并随 cmd 携带；回写前比较
+    // 当前值与 cmd 携带值——未变才写回（期间有新请求或运行时已切换时，丢弃旧计数，
     // 修复 B06-018 注释承认的残余竞态）。
     std::uint64_t enrollEpoch_ = 0;
 

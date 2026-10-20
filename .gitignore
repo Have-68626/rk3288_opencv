@@ -3,6 +3,9 @@
 *.ap_
 *.aab
 
+# 本地源码编译的可选推流依赖；版本与摘要登记在供应链账本。
+/app/libs/ffmpeg-kit.aar
+
 # Files for the ART/Dalvik VM
 *.dex
 
@@ -141,8 +144,8 @@ deps/WIDER_train/*
 deps/insightface/*
 !deps/insightface/.gitkeep
 # 可复用缓存根目录（cache/）：构建目录、本机包装脚本、需跨会话保留的验证产物。
-# 内容一律不入库（均可重建），仅保留说明文件 cache/README.md——使本目录的用途有版本记录，
-# 不会被后续清理误判为「编译后未及时清理的垃圾」。
+# 内容一律不入库，既含可重建产物，也含未入库脚本及唯一证据；忽略不等于可删除。
+# 仅保留说明文件 cache/README.md 入库，记录分类、恢复方式与清理边界。
 cache/*
 !cache/README.md
 
@@ -170,3 +173,6 @@ web/.vite/
 
 # 备份文件（构建/部署脚本产出的临时副本）
 *.bak
+
+# 版权申请材料（按需单独审查后再纳入版本控制）
+docs/copyright/

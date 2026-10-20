@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=process
 status=living
-as_of=2026-09-30
+as_of=2026-10-18
 -->
 
 # RK3288 AI Engine — Agent Guide
@@ -45,7 +45,7 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
   删除会让每个 PR 永久卡在「Expected — waiting for status to be reported」。它仍以
   `RK_SKIP_OPENCV=ON` 提供 `core_unit_tests` 的快通道（1–2 分钟出结果）。
 - 覆盖不丢——`windows` job 同样构建并运行 `core_unit_tests`。
-- 相应地，该 job 中 `g++` 对 `src/win/src/*.cpp` 的跨平台编译检查**不再作为验收依据**；
+- 相应地，该 job 中 `g++` 仅编译检查 `FaceDetector.cpp`、`LbphEmbedder.cpp`、`DnnSsdFaceDetector.cpp`，**不再作为验收依据**；
   新增 C++ 代码只须在 Windows（MSVC）与 Android 两侧验证。
 - ⚠️ **不要**把 `CMakeLists.txt:121` 的 `if(UNIX AND NOT APPLE)` 当作 Linux 残留删掉——
   **Android 也是 UNIX**，该分支在为 Android 加 `-fPIE -pie` 安全加固，删掉会让加固静默失效。
@@ -84,43 +84,16 @@ rk3288_opencv — 面向 Rockchip RK3288 平台的多模态人脸识别系统。
 
 | 子系统 | 构建 | 入口 | 测试 |
 |---|---|---|---|
-| Android App (`app/` + `src/java/`) | `gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug` | `src/cpp/native-lib.cpp` (JNI)、`MainActivity.java` | `tests/unit/java/`（经 Gradle） |
+| Android App (`app/` + `src/java/`) | `.\gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug` | `src/cpp/native-lib.cpp` (JNI)、`MainActivity.java` | `tests/unit/java/`（经 Gradle） |
 | Windows 服务 (`src/win/`) | CMake + VS 2022 | `src/win/app/win_local_service_main.cpp`（服务，默认构建）、`src/win/app/win_camera_face_recognition_main.cpp`（旧版 UI，默认 OFF） | `win_unit_tests`、`win_face_database_perf`；CLI 工具 `win_face_eval_cli`、`win_face_bench_cli` |
-| Web SPA (`web/`) | `pnpm -C web`（build/lint/dev） | `web/src/`（Vite + React + Ant Design） | `pnpm -C web e2e:run`（Cypress）、`pnpm -C web e2e:run:coverage`；E2E 需 `pnpm preview` 或 `scripts/run-web-e2e.ps1` 提供后端 |
-| C++ 核心引擎 (`src/cpp/`) | CMake（跨平台） | `Engine::initialize()` → `FaceInferencePipeline::process()` | `core_unit_tests`（无需 OpenCV）、`face_infer_unit_tests`（需 OpenCV） |
+| Web SPA (`web/`) | `pnpm -C web`（build/lint/dev） | `web/src/`（Vite + React + Ant Design） | `pnpm -C web e2e:run`（Cypress）、`pnpm -C web e2e:run:coverage`；E2E服务器、端口和覆盖率前提见构建指南；Windows可用 `scripts/run-web-e2e.ps1` |
+| C++ 核心引擎 (`src/cpp/`) | CMake（跨平台） | 实时 `Engine::initialize()` / `Engine::run()`；单图 `runFaceInferOnce()` | `core_unit_tests`（无需 OpenCV）、`face_infer_unit_tests`（需 OpenCV） |
 
 ## 构建与测试命令
 
-```powershell
-# C++ 单测（无需 OpenCV）——与 CI 一致
-cmake -S . -B build_ci -G "Ninja" -DRK_SKIP_OPENCV=ON
-cmake --build build_ci --target core_unit_tests
-ctest --test-dir build_ci --output-on-failure
+统一命令、Windows构建目标与CTest选择、PowerShell/POSIX差异及E2E插桩前提见[构建与测试](docs/guides/build-and-test.md)。从仓库根执行；只构建服务后不要运行未筛选的全体CTest。精度目标的缺数据跳过不等于精度通过。
 
-# Windows（需 OPENCV_ROOT + OPENCV_CONTRIB_ROOT）
-cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 `
-  -DOPENCV_ROOT="path\to\opencv" -DOPENCV_CONTRIB_ROOT="path\to\opencv_contrib"
-cmake --build build_win --config Release --target win_unit_tests
-ctest --test-dir build_win -C Release
-
-# 人脸推理测试（需 OpenCV + OPENCV_CONTRIB_ROOT）
-cmake --build build_win --config Release --target face_infer_unit_tests
-
-# ncnn 精度测试（独立目标，静态 CRT /MT，需 ncnn + OpenCV）
-cmake --build build_win --config Release --target ncnn_precision_test
-
-# Web
-pnpm -C web install
-pnpm -C web lint
-pnpm -C web build
-pnpm -C web e2e:run
-
-# Android
-gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
-
-# 基准
-cmake --build build_win --config Release --target win_face_eval_cli win_face_bench_cli
-```
+量化输入、校准sidecar与报告字段见[INT8量化操作](docs/guides/int8-quantization.md)。本页保留平台约束和CI边界，不重复维护命令。
 
 ## Essential build quirks
 
@@ -143,7 +116,7 @@ cmake --build build_win --config Release --target win_face_eval_cli win_face_ben
 
 1. **changes**（`classify-changes`）—— 比对变更路径并输出 `docs_only`；纯 `docs/` + `*.md` 变更时为 `true`。无法可靠比对时（手动触发、首个 push）保守地置 `false`。
 2. **repo-hygiene** —— `node scripts/clean-repo-junk.js scan --ci`，另跑 `node --test tests/scripts/*.test.js` 与量化配对 pytest。
-3. **unit-tests** —— **非门禁**（job 级 `continue-on-error: true`）：Linux CMake + Ninja，`RK_SKIP_OPENCV=ON`，构建并运行 `core_unit_tests`，同时对 `src/win/src/*.cpp` 做 `g++` 跨平台编译检查。
+3. **unit-tests** —— **非门禁**（job 级 `continue-on-error: true`）：Linux CMake + Ninja，`RK_SKIP_OPENCV=ON`，构建并运行 `core_unit_tests`；`g++` 仅检查 Windows 的 `FaceDetector.cpp`、`LbphEmbedder.cpp`、`DnnSsdFaceDetector.cpp`。
 4. **docs-audit** —— `node scripts/docs-sync-audit.js --skip-links --out-dir tests/reports/docs-sync-audit`。门禁要求 high=0 且 medium=0，不满足时以退出码 2 阻断。**本 job 不因 `docs_only` 跳过**——docs 变更正是它的审查对象（其余 job 在 pure-docs 变更时全部跳过）。
 5. **web** —— `pnpm install` → `lint` → `build` → `e2e:run:coverage`（E2E 失败非阻断）。
 6. **android** —— `./gradlew -PRK_SKIP_OPENCV=true :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`（Temurin Java 21）。

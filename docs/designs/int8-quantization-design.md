@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-26
+as_of=2026-10-18
 -->
 
 # INT8 量化工具链设计文档
@@ -37,26 +37,11 @@ models/scrfd_int8_ncnn（脚本/CI 主线）
 models/yolo_face_int8_ncnn（C++ 注册与测试的历史路径）
 ```
 
-量化报告 `quantize_report.json` 当前只记录 FP32/INT8 `.bin` 字节数与压缩比，不包含逐层参数范围或精度结论。
+量化报告绑定父模型和INT8产物相对路径、四文件摘要、预处理与几何，并记录大小和压缩比；它不包含真实精度结论。字段以[操作说明](../guides/int8-quantization.md#输出与报告)为准。
 
 ## 3. 量化脚本接口
 
-```powershell
-python scripts/quantize_ncnn_int8.py `
-  --model scrfd `
-  --fp32-dir models/scrfd_ncnn `
-  --calib-dir deps/WIDER_train/WIDER_train/images `
-  --output-dir models/scrfd_int8_ncnn `
-  --num-samples 50
-```
-
-关键约束：
-
-- `--model` 仅接受 `scrfd`、`arcface`、`mobilefacenet`。
-- 完整流程和 `--table-only` 需要 `--calib-dir`；`--quant-only` 可用 `--table-path` 指定已有校准表。
-- ncnn 工具从 `PATH`、`RK_NCNN_ROOT` 或 `NCNN_ROOT` 查找。
-- 脚本自动选择目录中的第一对 `.param`/`.bin`，输出名固定为 `<model>_int8.param/.bin`。
-- 脚本当前没有 `--size` 参数；输入尺寸来自内置模型预设。
+当前可执行步骤及完整输入/输出契约集中于[INT8量化操作](../guides/int8-quantization.md)：唯一同stem配对、SCRFD离线letterbox、table的同名JSON绑定、四个模型文件摘要及预处理/几何字段。多模型配对拒绝，旧校准表不能补造sidecar复用。
 
 ## 4. 运行时与配置
 

@@ -9,7 +9,7 @@
 namespace pipeline {
 
 struct DomainEvent {
-    std::string type;       // "VERIFIED" | "AUTH_FAIL" | "NO_FACE" | "FACES"
+    std::string type;       // "VERIFIED" | "RECOGNIZING" | "AUTH_FAIL" | "NO_FACE" | "FACES"
     std::string message;
     long long timestampMs = 0;
 };
@@ -57,6 +57,7 @@ private:
     long long lastNoFaceMs_ = 0;
     long long lastUnknownMs_ = 0;
     long long lastVerifiedMs_ = 0;
+    long long lastPendingMs_ = 0;
     long long lastMultiMs_ = 0;
 
     // 渲染帧

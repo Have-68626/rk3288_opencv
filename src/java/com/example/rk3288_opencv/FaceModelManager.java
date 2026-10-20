@@ -312,6 +312,23 @@ public final class FaceModelManager {
         }
     }
 
+    /** 仅沿已提交的激活指针选库，不能使用 loadProfile 暂存的候选 manifest。 */
+    @NonNull
+    public String activeTemplateSpaceId(@NonNull String currentAbi) {
+        synchronized (dirLock()) {
+            String id = readActive();
+            if (id == null) return "";
+            try {
+                String manifest = readTextFile(new File(profileDir(id), MANIFEST_FILE_NAME), limits.maxManifestBytes);
+                FaceModelManifest.ParseResult parsed = FaceModelManifest.parse(manifest, currentAbi);
+                if (!parsed.isOk()) throw new IllegalStateException("激活模型配置不可读，无法选择人员库");
+                return parsed.profile.templateSpaceId;
+            } catch (ImportFailure e) {
+                throw new IllegalStateException("激活模型配置不可读，无法选择人员库");
+            }
+        }
+    }
+
     /** 已导入的 profileId 列表（含未激活者），按字典序。 */
     @NonNull
     public List<String> listProfiles() {
@@ -864,7 +881,7 @@ public final class FaceModelManager {
         String resp;
         try {
             resp = runtime.activateRuntime(manifestJson, baseDir.getAbsolutePath(), currentAbi,
-                    galleryDirPath());
+                    galleryDirPath(manifestJson, currentAbi));
         } catch (Throwable t) {
             // native 库缺失/不可用：按激活失败处理（调用方保留旧配置），绝不静默成功。
             return new ActivateOutcome(false, false, "native_unavailable");
@@ -935,7 +952,8 @@ public final class FaceModelManager {
         }
         try {
             String oldManifest = readTextFile(mf, limits.maxManifestBytes);
-            runtime.activateRuntime(oldManifest, dir.getAbsolutePath(), currentAbi, galleryDirPath());
+            runtime.activateRuntime(oldManifest, dir.getAbsolutePath(), currentAbi,
+                    galleryDirPath(oldManifest, currentAbi));
         } catch (Throwable ignored) {
             // 回滚为尽力而为；失败不影响已上报的失败状态。
         }
@@ -943,10 +961,13 @@ public final class FaceModelManager {
 
     /** gallery 目录绝对路径（仅作契约位传入；当前图库来自内存注册，native 侧不读该目录）。 */
     @NonNull
-    private String galleryDirPath() {
+    private String galleryDirPath(@NonNull String manifest, @NonNull String abi) {
         File parent = storeDir.getParentFile();
         File dir = new File(parent != null ? parent : storeDir, GALLERY_DIR_NAME);
-        return dir.getAbsolutePath();
+        FaceModelManifest.ParseResult parsed = FaceModelManifest.parse(manifest, abi);
+        if (!parsed.isOk()) throw new IllegalArgumentException("模型配置无效，无法选择人员库");
+        String space = parsed.profile.templateSpaceId;
+        return (space.isEmpty() ? dir : new File(new File(dir, "spaces"), space)).getAbsolutePath();
     }
 
     /** 解析 native 返回 JSON 的 {@code ok} 字段；解析失败视为失败。 */

@@ -8,6 +8,15 @@ import static org.junit.Assert.assertNull;
 public class SensitiveDataUtilTest {
 
     @Test
+    public void personIdentityKeysAreMasked() {
+        String identity = "private_identity_fixture";
+        for (String key : new String[]{"personId", "person_id", "PERSON-ID"}) {
+            String masked = SensitiveDataUtil.maskSensitiveData("迁移失败 " + key + "=" + identity);
+            assertFalse("身份键的原始值不得留在日志中", masked.contains(identity));
+        }
+    }
+
+    @Test
     public void testNullOrEmpty() {
         assertNull("Null input should return null", SensitiveDataUtil.maskSensitiveData(null));
         assertEquals("Empty string should return empty string", "", SensitiveDataUtil.maskSensitiveData(""));

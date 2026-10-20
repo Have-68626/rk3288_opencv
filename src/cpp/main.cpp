@@ -382,7 +382,7 @@ static int runFaceInferCli(int argc, char** argv) {
                      "[--yolo-opencv-backend 0] [--yolo-opencv-target 0] "
                      "[--arc-backend opencv] [--arc-model <path>] [--arc-config <path>] [--arc-framework <name>] [--arc-output-name <name>] [--arc-input-name <name>] [--arc-w 112] [--arc-h 112] "
                      "[--arc-model-version 1] [--arc-preprocess-version 1] "
-                     "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive N] "
+                     "[--gallery-dir <dir>] [--topk N] [--threshold T] [--threshold-version <id>] [--consecutive 1] "
                      "[--face-select score_area|score|area|first] "
                      "[--detector-id yolo_face|scrfd_0.5gf] [--embedder-id arcface|mobilefacenet] [--face-profile-dir <dir>] "
                      "[--fake-detect 1|0] [--fake-embedding 1|0] [--int8 1|0]"
@@ -470,7 +470,10 @@ static int runFaceInferCli(int argc, char** argv) {
 
         else if (k == "--gallery-dir") nextStr(a.req.galleryDir);
         else if (k == "--topk") nextSizeT(a.req.topK);
-        else if (k == "--threshold") nextFloat(a.req.acceptThreshold);
+        else if (k == "--threshold") {
+            nextFloat(a.req.acceptThreshold);
+            a.req.acceptThresholdExplicit = true;
+        }
         else if (k == "--threshold-version") nextStr(a.req.thresholdVersionId);
         else if (k == "--consecutive") nextInt(a.req.consecutivePassesToTrigger);
 
@@ -483,7 +486,7 @@ static int runFaceInferCli(int argc, char** argv) {
         // §I3 起语义已变：**不再是**「先试 INT8 条目、失败再回落 FP32」的回落开关——装配集中在
         // runFaceInferOnce，检测/嵌入各由 --detector-id/--embedder-id 唯一选定（无盲试式回落）。
         // 本标志只作为期望精度参与装配缓存 key 与一致性判据（int8=true 只允许 ncnn 且量化资产），
-        // 不改变所选 ID。profile 模式会由 manifest 双 precision 自动派生该值。
+        // 不改变所选 ID。双 INT8 profile 自动置真；FP32 profile 不清除显式 INT8 要求。
         // 与 `--fake-embedding` 同形（`1|true|yes|on` 为真，见 isFlagTrue），不是裸开关。
         // 默认 false。
         else if (k == "--int8") nextBool(a.req.int8Enabled);

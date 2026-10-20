@@ -10,6 +10,8 @@
 #endif
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -25,6 +27,7 @@ struct Args {
     int minFaceSizePx = 60;
     double threshold = 55.0;
     int iters = 200;
+    int warmup = 0;
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -47,6 +50,7 @@ Args parseArgs(int argc, char** argv) {
         else if (k == "--min_face") nextInt(a.minFaceSizePx);
         else if (k == "--threshold") nextDouble(a.threshold);
         else if (k == "--iters") nextInt(a.iters);
+        else if (k == "--warmup") nextInt(a.warmup);
     }
     return a;
 }
@@ -80,6 +84,10 @@ int main(int argc, char** argv) {
 
     using namespace rk_win;
     const auto args = parseArgs(argc, argv);
+    if (args.iters <= 0 || args.warmup < 0) {
+        std::cerr << "BENCH_ERROR invalid_iterations" << std::endl;
+        return 2;
+    }
 
     const auto inputDir = resolvePathFromExeDir(args.inputDir);
     const auto cascadePath = resolvePathFromExeDir(args.cascadePath);
@@ -95,6 +103,7 @@ int main(int argc, char** argv) {
         std::cerr << "BENCH_ERROR no_images input=" << inputDir.string() << std::endl;
         return 2;
     }
+    std::sort(images.begin(), images.end());
 
     FaceRecognizer rec;
     if (!rec.initialize(cascadePath.string(), dbPath, args.minFaceSizePx, args.threshold)) {
@@ -114,13 +123,19 @@ int main(int argc, char** argv) {
     }
 
     using clock = std::chrono::steady_clock;
+    for (int i = 0; i < args.warmup; ++i) {
+        (void)rec.identify(mats[static_cast<std::size_t>(i) % mats.size()]);
+    }
     const auto t0 = clock::now();
     std::uint64_t frames = 0;
     std::uint64_t faces = 0;
+    std::vector<double> samples;
 
     for (int it = 0; it < args.iters; it++) {
         for (const auto& img : mats) {
+            const auto sampleStart = clock::now();
             const auto r = rec.identify(img);
+            samples.push_back(std::chrono::duration<double, std::milli>(clock::now() - sampleStart).count());
             frames++;
             faces += static_cast<std::uint64_t>(r.size());
         }
@@ -129,15 +144,24 @@ int main(int argc, char** argv) {
     const double ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
     const double fps = (ms > 0.0) ? (1000.0 * static_cast<double>(frames) / ms) : 0.0;
     const double avgMs = (frames > 0) ? (ms / static_cast<double>(frames)) : 0.0;
+    std::sort(samples.begin(), samples.end());
+    // 最近秩分位与实际计时样本对应；暖机从帧数、耗时与分位中一并剔除。
+    const auto percentile = [&](double p) {
+        return samples[static_cast<std::size_t>(std::ceil(p * samples.size())) - 1];
+    };
 
     std::cout << "BENCH_SUMMARY"
               << " images=" << mats.size()
               << " iters=" << args.iters
+              << " warmup_frames=" << args.warmup
+              << " includes_cold_start=" << (args.warmup == 0 ? "true" : "false")
               << " frames=" << frames
               << " faces=" << faces
               << " ms_total=" << ms
               << " fps=" << fps
               << " avg_ms=" << avgMs
+              << " p50_ms=" << percentile(0.50)
+              << " p95_ms=" << percentile(0.95)
               << " rss_bytes=" << rssBytes()
               << std::endl;
 

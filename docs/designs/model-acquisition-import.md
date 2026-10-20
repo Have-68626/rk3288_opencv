@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-23
+as_of=2026-10-18
 -->
 
 # 模型获取与导入流程（Android 端）
@@ -30,6 +30,7 @@ as_of=2026-09-23
 - 文件数 ≤ 64；解压累计字节 ≤ 256 MiB；`manifest.json` 体量 ≤ 1 MiB。
 - `manifest.json` 必填/关键字段（示例见 `models/android/rk3288_light/manifest.json`）：
   - `schemaVersion` 必须为 `1`。
+  - `templateSpaceId`：非空时必须为64位小写十六进制，用于隔离图库与显示名；空ID仅兼容旧目录。空间路径、恢复及禁止跨库复用的规则只在[Android注册设计](android-enrollment-design.md#21-加密模板仓库-androidenrollmentrepository任务-16)维护。模型/预处理变更不能靠复用旧ID继续沿用模板，精度变体共用空间须满足同一父图与预处理契约。
   - `supportedAbis`：必须包含设备当前 ABI，否则 `ABI_MISMATCH`。
   - `profileId`：可作目录名的安全串，且不得以 `.` 开头、不得为保留名 `active_profile`；另不得含控制字符（`< 0x20` 或 `0x7F`）、首尾不得为空格（见 §4 步骤 4）。
   - `detector.param` / `detector.bin`、`embedder.param` / `embedder.bin`：安全相对路径，`sha256` 可为空（空即跳过该项校验）。

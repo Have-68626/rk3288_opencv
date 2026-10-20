@@ -88,7 +88,8 @@ ChangeKind classifyChange(const AppConfig& prev, const AppConfig& next) {
         return ChangeKind::Camera;
     }
     // 模型参数变化（重建 DNN + Recognizer）
-    if (prev.model.recognition != next.model.recognition ||
+    if (prev.model.faceProfileDir != next.model.faceProfileDir ||
+        prev.model.recognition != next.model.recognition ||
         prev.dnn.enable != next.dnn.enable ||
         prev.dnn.modelPath != next.dnn.modelPath ||
         prev.recognition.cascadePath != next.recognition.cascadePath ||
@@ -183,10 +184,8 @@ int main() {
             auto kind = rk_win::classifyChange(cfg, next);
             switch (kind) {
             case rk_win::ChangeKind::Camera:
-                pipe.switchCamera(next);
-                break;
             case rk_win::ChangeKind::Model:
-                pipe.reloadRuntime(next);
+                pipe.applyModelAndCameraChanges(cfg, next);
                 break;
             case rk_win::ChangeKind::Preview:
                 pipe.updatePreviewLayout(next.ui.windowWidth, next.ui.windowHeight,

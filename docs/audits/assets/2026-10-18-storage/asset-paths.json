@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-18",
+  "scope": "相对路径映射；文件为逐SHA移动，OpenCV目录另含完整本地逐文件清单；非模型精度验收",
+  "assets": [
+    {
+      "original": "deps/insightface/antelopev2.zip",
+      "current": "deps/insightface/archives/antelopev2.zip",
+      "bytes": 360662982,
+      "sha256": "8e182f14fc6e80b3bfa375b33eb6cff7ee05d8ef7633e738d1c89021dcf0c5c5",
+      "purpose": "上游发行包，离线保留"
+    },
+    {
+      "original": "deps/insightface/buffalo_l.zip",
+      "current": "deps/insightface/archives/buffalo_l.zip",
+      "bytes": 288621354,
+      "sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+      "purpose": "上游发行包，离线保留"
+    },
+    {
+      "original": "deps/insightface/buffalo_m.zip",
+      "current": "deps/insightface/archives/buffalo_m.zip",
+      "bytes": 275951529,
+      "sha256": "d98264bd8f2dc75cbc2ddce2a14e636e02bb857b3051c234b737bf3b614edca9",
+      "purpose": "上游发行包，离线保留"
+    },
+    {
+      "original": "deps/insightface/buffalo_s.zip",
+      "current": "deps/insightface/archives/buffalo_s.zip",
+      "bytes": 127607557,
+      "sha256": "d85a87f503f691807cd8bb97128bdf7a0660326cd9cd02657127fa978bab8b5e",
+      "purpose": "上游发行包，离线保留"
+    },
+    {
+      "original": "deps/insightface/buffalo_sc.zip",
+      "current": "deps/insightface/archives/buffalo_sc.zip",
+      "bytes": 14969382,
+      "sha256": "57d31b56b6ffa911c8a73cfc1707c73cab76efe7f13b675a05223bf42de47c72",
+      "purpose": "上游发行包，离线保留"
+    },
+    {
+      "original": "deps/insightface/det_10g.ncnn.bin",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g.ncnn.bin",
+      "bytes": 8461336,
+      "sha256": "7db3bd945d01baf0495bd8e7732413fb312b7e8d1174ea25f130c393ee5614e4",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g.ncnn.param",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g.ncnn.param",
+      "bytes": 12016,
+      "sha256": "6bcc381a1357f638dba4bd2ce5c21c7c68df7b7dee6401db737268680626fd3e",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g.pnnx.bin",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g.pnnx.bin",
+      "bytes": 16923514,
+      "sha256": "aff1e9c63ed0cc0035e2166c327e6cdecacebde01ee900b4d3395b8867817d2d",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g.pnnx.onnx",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g.pnnx.onnx",
+      "bytes": 8478129,
+      "sha256": "48632e23f7e5ac9890160136f90d56d788e2d018ecabaa3c836540660992b192",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g.pnnx.param",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g.pnnx.param",
+      "bytes": 27226,
+      "sha256": "c3259ab40b58ef40abbe2c4858f6e7bac391543010657d6ce260ac3ce6988eab",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g.pnnxsim.onnx",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g.pnnxsim.onnx",
+      "bytes": 16925194,
+      "sha256": "ec018552addbe40916682fa72c1652064779863376c1f6dd56c1656850aae814",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g_ncnn.py",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g_ncnn.py",
+      "bytes": 1526,
+      "sha256": "15afca96e6a958d92a80673436babbb35730f94af45b0d929f03c3c03d75a13f",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/det_10g_pnnx.py",
+      "current": "cache/model-conversion/insightface/det-10g/det_10g_pnnx.py",
+      "bytes": 30774,
+      "sha256": "92349f1296ebd69641e6b012858f779b3574bd529c4f2df924e19b95efc85be0",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/inswapper_128.onnx",
+      "current": "deps/insightface/optional/inswapper_128.onnx",
+      "bytes": 554253681,
+      "sha256": "e4a3f08c753cb72d04e10aa0f7dbe3deebbf39567d4ead6dce08e98aa49e16af",
+      "purpose": "用途未明，分类保留"
+    },
+    {
+      "original": "deps/insightface/pnnx-20260526-windows.zip",
+      "current": "cache/tools/pnnx/20260526/pnnx-20260526-windows.zip",
+      "bytes": 17979396,
+      "sha256": "4e188e7606c887ac550820322f34b144140df877b73292b25e48a2ba38f297df",
+      "purpose": "固定版本PNNX工具包"
+    },
+    {
+      "original": "deps/insightface/scrfd_person_2.5g.onnx",
+      "current": "deps/insightface/optional/scrfd_person_2.5g.onnx",
+      "bytes": 3710223,
+      "sha256": "76522ba15eecb0712780509e912884aba066e9834be0c85761918cdcf76de5b5",
+      "purpose": "用途未明，分类保留"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf.ncnn.bin",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf.ncnn.bin",
+      "bytes": 6835400,
+      "sha256": "4cdb441a85243ab3349f3ec7d03745998eb78ad803cfd802a66ade29bb0dda66",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf.ncnn.param",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf.ncnn.param",
+      "bytes": 9710,
+      "sha256": "2639653a8dc037167f6380932634b0c94a76700ce1c6c4050af6332c7bb3259b",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf.pnnx.bin",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf.pnnx.bin",
+      "bytes": 13616430,
+      "sha256": "c07eae061b7a13786c80d3d85f432a24e2b8cc12be6c73ee180870d1d79579ce",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf.pnnx.onnx",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf.pnnx.onnx",
+      "bytes": 6819122,
+      "sha256": "d3ec229cc7a0ae2ad0715e7786608580988af64bd312fa0f6f504ab3b54eb337",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf.pnnx.param",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf.pnnx.param",
+      "bytes": 20933,
+      "sha256": "b7a2daa39f04cc3cdd1385224726c1eed4a17bd786605aba26e3e3ebe0f2ee81",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf.pnnxsim.onnx",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf.pnnxsim.onnx",
+      "bytes": 13617270,
+      "sha256": "011f4584c99ffbc9b4a952c5c1ab1ac3db186638ab8dd9c34921f7e27d237e6d",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf_ncnn.py",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf_ncnn.py",
+      "bytes": 759,
+      "sha256": "e8f1746fcc46bc3eac126aaaa85de1d0903c2f21eec454b44a6665a46a8e70b1",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_mbf_pnnx.py",
+      "current": "cache/model-conversion/insightface/w600k-mbf/w600k_mbf_pnnx.py",
+      "bytes": 31232,
+      "sha256": "c26bdebc9e7757b656c697a547a4254fadcb1c26e8e5f6a8651dce2e03cd38ee",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50.ncnn.bin",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50.ncnn.bin",
+      "bytes": 87263320,
+      "sha256": "e9c9147a406d6856863e14a38a6fe7cd4627a2fd511fac424b0a1f26fdb8b809",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50.ncnn.param",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50.ncnn.param",
+      "bytes": 13195,
+      "sha256": "a0cad4eab851084396b768214980c698e76572ccd5e394b577a66e0a318cdba2",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50.pnnx.bin",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50.pnnx.bin",
+      "bytes": 174396550,
+      "sha256": "47b472ba045752d3d25514f0751807e8829951f1c16110d41dad5c7309eb153c",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50.pnnx.onnx",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50.pnnx.onnx",
+      "bytes": 87210367,
+      "sha256": "521cc93664984992e240a1d06269b3bb3b7f16c2a39ef6b3a9507f05bbe7eff0",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50.pnnx.param",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50.pnnx.param",
+      "bytes": 28386,
+      "sha256": "abace45590e8290692ab5d850d5ab5b5c11bdc1df4a86f1d060e023cad509d42",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50.pnnxsim.onnx",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50.pnnxsim.onnx",
+      "bytes": 174389647,
+      "sha256": "69d987bf688eafb04bfadd75c491dbcbb9d17a334e68c346a6596ee282a6a8f6",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50_ncnn.py",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50_ncnn.py",
+      "bytes": 759,
+      "sha256": "c5c1f62287ba38273e2d8df4d6e564f3ea3d466a7a24eff8905e9a15acc0645e",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "deps/insightface/w600k_r50_pnnx.py",
+      "current": "cache/model-conversion/insightface/w600k-r50/w600k_r50_pnnx.py",
+      "bytes": 46724,
+      "sha256": "692355832f64201ca5236f24f3f7abd3ec20a206940f8c47b5b9f8757b775f60",
+      "purpose": "按原文件名成组保留的转换中间件",
+      "provenance": "遗留转换中间件，仅按移动前SHA256保全；本轮未重做父链认证或转换"
+    },
+    {
+      "original": "_deps/opencv",
+      "current": "cache/dependency-sources/opencv/71d3237a093b",
+      "bytes": 301006937,
+      "git_commit": "71d3237a093b60a27601c20e9ee6c3e52154e8b1",
+      "file_count": 7525,
+      "manifest_sha256": "e67a6acb62aca9272ac5a376c6de66176da36db8bf6d0c6c61246bdcd9b9a74d",
+      "purpose": "未被现行构建消费的离线源码，保留Git身份"
+    }
+  ]
+}

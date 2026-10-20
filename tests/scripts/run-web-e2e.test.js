@@ -13,9 +13,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
+const { spawnSync } = require("node:child_process");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-const PS1_PATH = path.join(REPO_ROOT, "scripts", "run-web-e2e.ps1");
+const PS1_PATH = process.env.RK_E2E_DRIVER_SCRIPT || path.join(REPO_ROOT, "scripts", "run-web-e2e.ps1");
 
 const ps = fs.readFileSync(PS1_PATH, "utf8");
 
@@ -73,4 +75,26 @@ test("RED2: 任何退出路径都必须清理后台 job（finally/trap 含 Stop-
     /\$devJob/.test(guardText) && /\$devJob\s+-ne\s+\$null/.test(guardText),
     "RED2 判别失败：finally/trap 未以判空方式清理 $devJob。"
   );
+});
+
+test('真实作业在正常和失败退出后均被移除', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-driver-behavior-'));
+  try {
+    fs.mkdirSync(path.join(base, 'scripts'));
+    fs.mkdirSync(path.join(base, 'web'));
+    const driver = path.join(base, 'scripts/run-web-e2e.ps1');
+    fs.copyFileSync(PS1_PATH, driver);
+    for (const scenario of ['valid', 'install-failed', 'e2e-failed', 'coverage-failed', 'no-ready']) {
+      const output = path.join(base, scenario + '.json');
+      const result = spawnSync('pwsh', ['-NoProfile', '-File', path.join(__dirname, 'fixtures/e2e-driver-harness.ps1'),
+        '-Driver', driver, '-Case', scenario, '-Report', output], { encoding: 'utf8', timeout: 45000 });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(fs.readFileSync(output, 'utf8').replace(/^\uFEFF/, ''));
+      assert.equal(report.failed, scenario !== 'valid', `${scenario}: ${report.reason}`);
+      assert.equal(report.created, scenario === 'install-failed' ? 0 : 1, scenario);
+      assert.equal(report.remaining, 0, `退出后残留作业：${scenario}`);
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 });

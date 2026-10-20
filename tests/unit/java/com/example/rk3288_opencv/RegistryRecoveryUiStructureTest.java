@@ -41,7 +41,7 @@ public class RegistryRecoveryUiStructureTest {
     public void corruptRegistryOffersRecoveryDelegatedToRepositoryApi() throws IOException {
         String code = stripCommentsAndLiterals(readMainActivity());
         assertTrue("UI 必须委托仓库层的非破坏性恢复 API（不在 UI 直接做文件 IO）",
-                code.contains("enrollmentRepository().quarantineCorruptRegistry()"));
+                code.contains("repo.quarantineCorruptRegistry()"));
 
         int method = code.indexOf("private void showPersonManagementDialog()");
         assertTrue("应有人员管理入口", method >= 0);
@@ -64,13 +64,13 @@ public class RegistryRecoveryUiStructureTest {
     @Test
     public void recoveryRequiresExplicitSecondConfirmation() throws IOException {
         String code = stripCommentsAndLiterals(readMainActivity());
-        String promptBody = methodBody(code, "private void promptRegistryRecovery(@NonNull String reason)");
-        assertTrue("提示入口应进入二次确认", promptBody.contains("confirmQuarantineRegistry()"));
+        String promptBody = methodBody(code, "private void promptRegistryRecovery(@NonNull String reason, AndroidEnrollmentRepository repo)");
+        assertTrue("提示入口应进入二次确认", promptBody.contains("confirmQuarantineRegistry(repo)"));
         assertFalse("提示入口不得一步直达执行旁置（须经二次确认）",
-                promptBody.contains("quarantineRegistry()"));
+                promptBody.contains("quarantineRegistry(repo)"));
 
-        String confirmBody = methodBody(code, "private void confirmQuarantineRegistry()");
-        assertTrue("二次确认才执行旁置", confirmBody.contains("quarantineRegistry()"));
+        String confirmBody = methodBody(code, "private void confirmQuarantineRegistry(AndroidEnrollmentRepository repo)");
+        assertTrue("二次确认才执行旁置", confirmBody.contains("quarantineRegistry(repo)"));
 
         // 确认文案必须如实：原文件不删、但新表为空（用未剥离注释/字面量的原文匹配，字面量在剥离后会被移除）。
         String raw = readMainActivity();
@@ -81,7 +81,7 @@ public class RegistryRecoveryUiStructureTest {
     @Test
     public void quarantineResultSurfacesQuarantinedFilePathToUser() throws IOException {
         String code = stripCommentsAndLiterals(readMainActivity());
-        String body = methodBody(code, "private void quarantineRegistry()");
+        String body = methodBody(code, "private void quarantineRegistry(AndroidEnrollmentRepository repo)");
         assertTrue("成功分支必须把旁置文件路径（result.message）展示给用户", body.contains("result.message"));
         assertTrue("成功分支应以弹窗展示（可读完整路径）", body.contains(".show()"));
     }

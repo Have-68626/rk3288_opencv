@@ -21,7 +21,7 @@ struct FaceRuntimeProfile {
     // detector（SCRFD ncnn：输入节点名 input.1、out0-8 输出；节点名随 manifest）
     // 缺键回落 = "input.1"——本仓 **`models/` 下全部 10 个 SCRFD `.param`**（含 int8 侧的 2 个）
     // 第 3 行皆为 `Input input.1`，与 manifest 用 sha256 钉住的 scrfd_500m/2.5g_kps-opt2.param 一致。
-    // ⚠️ **勿把该结论推广到 `deps/insightface/det_10g.ncnn.param`**：那份**未经 PNNX 转换的 ncnn 版**
+    // ⚠️ **勿把该结论推广到 `cache/model-conversion/insightface/det-10g/det_10g.ncnn.param`**：那份**未经 PNNX 转换的 ncnn 版**
     //    （同为 SCRFD-10G 系）第 3 行实测是 `Input in0`（2026-09-26 二次审计实测）。
     // "in0" 是 ArcFace 侧名字（arcface.param 第 3 行），曾被误抄到检测器侧。
     FaceModelManifestEntry detectorParam;

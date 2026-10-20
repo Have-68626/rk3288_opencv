@@ -1,0 +1,687 @@
+{
+  "schema_version": 1,
+  "sha256": "6b46a2a6718b72cb3a7ebf164033213535dd58d6ff26e57457dc66eca3bf61f1",
+  "bytes": 26387708,
+  "min_sdk": 21,
+  "armv7_requires_neon": true,
+  "runtime_verified": false,
+  "java": {
+    "classes": 45,
+    "java_class_version": 52,
+    "sha256": "90ef0bbdb18a50cb5e16d904b74de8bec7fd8aaab9af69066fc1dad3d3d2b156"
+  },
+  "native_libraries": [
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavcodec.so",
+      "sha256": "6433da3bf9f0b3c456e5524af134f5684855c8a997e8de625a24a8a76516eda6",
+      "bytes": 9287008,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libswresample.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavcodec_neon.so",
+      "sha256": "4a44b1f21fc72d9850741c600e0ca1513c3bb761b6e0a533c5c21463853665af",
+      "bytes": 9515408,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libswresample_neon.so",
+        "libavutil_neon.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavdevice.so",
+      "sha256": "79df1aa1dda6e4bbeab8751a8d197f74a974f03a34c1838ba8d68d2b5e921a43",
+      "bytes": 32836,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavfilter.so",
+        "libavformat.so",
+        "libavcodec.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavdevice_neon.so",
+      "sha256": "34e90a10c485203b922630dd2d93c32d63bc779cc743738bbc5e00689ffc6582",
+      "bytes": 33204,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavfilter_neon.so",
+        "libavformat_neon.so",
+        "libavcodec_neon.so",
+        "libavutil_neon.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavfilter.so",
+      "sha256": "7ce70a42a1a47b42814760e457f40005f02695e933cccc546ea062ddacfb9597",
+      "bytes": 2695144,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libswscale.so",
+        "libavformat.so",
+        "libavcodec.so",
+        "libswresample.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavfilter_neon.so",
+      "sha256": "04220cbb612cb0d518371395f773c58787b4ba8e90060a043fe4ba628fe97c74",
+      "bytes": 2690120,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libswscale_neon.so",
+        "libavformat_neon.so",
+        "libavcodec_neon.so",
+        "libswresample_neon.so",
+        "libavutil_neon.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavformat.so",
+      "sha256": "7e47baab4aec122918d18d331605c462c7c77634cb511b77569e064eb34fe665",
+      "bytes": 4142216,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavcodec.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavformat_neon.so",
+      "sha256": "85d183b9ec35246c00e778dbdba4fd25c88aaea98526fbcf368d300fdf009ee5",
+      "bytes": 4144136,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavcodec_neon.so",
+        "libavutil_neon.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavutil.so",
+      "sha256": "663a9c3d966cd9a0dd77a804d701274a3488dcfa017b31cc306be063f38b2d80",
+      "bytes": 412528,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libavutil_neon.so",
+      "sha256": "438d1be4ff012f3c47c2bd010c1884b7fd823107bb779ee1ae10fc41a2e9b54a",
+      "bytes": 409712,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libffmpegkit.so",
+      "sha256": "c303f965f66cb7a3691813a078363e3c02aaea1b5eb04516c5c37967e90cd46c",
+      "bytes": 469292,
+      "needed": [
+        "libavfilter.so",
+        "libavformat.so",
+        "libavcodec.so",
+        "libavutil.so",
+        "libswresample.so",
+        "libavdevice.so",
+        "libswscale.so",
+        "liblog.so",
+        "libz.so",
+        "libandroid.so",
+        "libc.so",
+        "libm.so",
+        "libdl.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libffmpegkit_abidetect.so",
+      "sha256": "a1c6ffd17dacc057e781152593cd7ad30f0dfca6c69aa8cfdb23216db2d4ebd5",
+      "bytes": 16676,
+      "needed": [
+        "liblog.so",
+        "libz.so",
+        "libandroid.so",
+        "libc.so",
+        "libm.so",
+        "libdl.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libffmpegkit_armv7a_neon.so",
+      "sha256": "ad961eb9ba0c9a0eec60bd02f6d9eb3f08c243fcfa7d51072a7fd555a721f9c4",
+      "bytes": 469436,
+      "needed": [
+        "libavcodec_neon.so",
+        "libavfilter_neon.so",
+        "libswscale_neon.so",
+        "libavformat_neon.so",
+        "libavutil_neon.so",
+        "libswresample_neon.so",
+        "libavdevice_neon.so",
+        "liblog.so",
+        "libz.so",
+        "libandroid.so",
+        "libc.so",
+        "libm.so",
+        "libdl.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libswresample.so",
+      "sha256": "dcd7ce0930631f8280a1184eb4b0f5c66f24676ecfab777168ad0caf91347f35",
+      "bytes": 71944,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libswresample_neon.so",
+      "sha256": "48f532483dcf07c80be57c64d031ff05f76760af441c9b4952b9d4fd7d470bdd",
+      "bytes": 74456,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavutil_neon.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libswscale.so",
+      "sha256": "999a3c8a016f55244ae61b0457f37d04df8a40665696b894f2d5808a2752a6aa",
+      "bytes": 324164,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "armeabi-v7a",
+      "file": "libswscale_neon.so",
+      "sha256": "41bf3a29660c1ab3e66d3d82806730199919690566fdc9d6615a7d3542b9a0ce",
+      "bytes": 323964,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavutil_neon.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libavcodec.so",
+      "sha256": "044ea6cee14c471aced57ff9949800b780158928fd62057c7f2064aa8a484e2b",
+      "bytes": 9207584,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libswresample.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libavdevice.so",
+      "sha256": "b6a837e8635b56a8b2dcfdcb44e1861adbb4e6a9b9aa0878c7982e32fe82d25e",
+      "bytes": 39016,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavfilter.so",
+        "libavformat.so",
+        "libavcodec.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libavfilter.so",
+      "sha256": "2ade55d769038066d3fa8498e2d4072dce46205278ea5271a48293349733a035",
+      "bytes": 2985176,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libswscale.so",
+        "libavformat.so",
+        "libavcodec.so",
+        "libswresample.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libavformat.so",
+      "sha256": "872b24dbc5d6cb6320138255220bfe4b6795d5a566e2e6c8415a12c9576f3619",
+      "bytes": 4881832,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavcodec.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libavutil.so",
+      "sha256": "03d43238005f94966c87a17934a569fb9fe902befb8b9270f589fdaff8078eb2",
+      "bytes": 492880,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libffmpegkit.so",
+      "sha256": "a880aa6ddb1accb92ec430a8fc84bdce1b3a811c98bd79682dd95abb5c6d75f1",
+      "bytes": 465264,
+      "needed": [
+        "libavfilter.so",
+        "libavformat.so",
+        "libavcodec.so",
+        "libavutil.so",
+        "libswresample.so",
+        "libavdevice.so",
+        "libswscale.so",
+        "liblog.so",
+        "libz.so",
+        "libandroid.so",
+        "libc.so",
+        "libm.so",
+        "libdl.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libffmpegkit_abidetect.so",
+      "sha256": "52328ba8b0a626e5d57a2be50b6a159e4689f84ab879e6a4c3f6101d5ecbe7b0",
+      "bytes": 30168,
+      "needed": [
+        "liblog.so",
+        "libz.so",
+        "libandroid.so",
+        "libc.so",
+        "libm.so",
+        "libdl.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libswresample.so",
+      "sha256": "285a1716e2ed5bcc5ffde7d29591d82e3e98e56238ee95c45101f3c556625942",
+      "bytes": 76552,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavutil.so"
+      ]
+    },
+    {
+      "abi": "arm64-v8a",
+      "file": "libswscale.so",
+      "sha256": "12f4f23fc51086da7dba21c5d301482a1ca4682e1d17fbf521e8148de96b861f",
+      "bytes": 310352,
+      "needed": [
+        "libc.so",
+        "libm.so",
+        "libdl.so",
+        "liblog.so",
+        "libandroid.so",
+        "libz.so",
+        "libavutil.so"
+      ]
+    }
+  ],
+  "license": "GPL-3.0-or-later（启用x264）",
+  "scope": "静态ELF/依赖/Java与打包校验，不是设备验收",
+  "artifact": "cache/builds/ffmpegkit-6-lts-validation/ffmpeg-kit-6.0-lts-android-gpl-armv7-arm64.aar",
+  "status": "独立重建候选，未替换消费AAR、未构建新消费APK、未设备验收",
+  "native_build_seconds": 264.79,
+  "native_build_host": "既有WSL交叉编译宿主，临时ext4工作区已自动回收",
+  "fixed_sources": {
+    "schema_version": 1,
+    "ffmpegkit": {
+      "version": "6.0.LTS-source-zip-22fe0791",
+      "url": "https://github.com/arthenica/ffmpeg-kit/releases/tag/v6.0.LTS",
+      "sha256": "22fe0791ed5fa9cac8d55b598e3776e2befa1daa2efa3dfbb396e82f0011aade",
+      "scope": "用户提供源码ZIP的本地绑定，不声称与远端归档逐字节认证"
+    },
+    "sources": {
+      "ffmpeg": {
+        "url": "https://github.com/arthenica/FFmpeg",
+        "commit": "ea3d24bbe3c58b171e55fe2151fc7ffaca3ab3d2"
+      },
+      "x264": {
+        "url": "https://github.com/arthenica/x264",
+        "commit": "eaa68fad9e5d201d42fde51665f2d137ae96baf0"
+      },
+      "cpu-features": {
+        "url": "https://github.com/arthenica/cpu_features",
+        "commit": "936b9ab5515dead115606559502e3864958f7f6e"
+      },
+      "openssl": {
+        "url": "https://github.com/arthenica/openssl",
+        "commit": "2cf4e90eaaf7402bf038b158dbdacd0a15561fb7"
+      },
+      "gnu-config": {
+        "url": "https://github.com/arthenica/gnu-config",
+        "ref": "v20210814",
+        "commit": "805517123cbfe33d17c989a18e78c5789fab0437",
+        "directory": ".tmp/source/config"
+      }
+    },
+    "ndk_version": "25.2.9519653",
+    "target_api": 21,
+    "abis": [
+      "armeabi-v7a",
+      "arm64-v8a"
+    ],
+    "java_source_sha256": {
+      "common": "dd1541b83d88a284fedf2db38d81b27ad43340a8c890b7414d63c81ec6a7e5b8",
+      "java": "8275af16bcb006e3547edb18f1eda54875a4d749409290d9d0e97fed013e3be9"
+    },
+    "license": "GPL-3.0-or-later（启用x264）；OpenSSL Apache-2.0；smart-exception BSD-3-Clause"
+  },
+  "native_code_comparison": {
+    "candidate": "cache/builds/ffmpegkit-6-lts-validation/ffmpeg-kit-6.0-lts-android-gpl-armv7-arm64.aar",
+    "candidate_sha256": "6b46a2a6718b72cb3a7ebf164033213535dd58d6ff26e57457dc66eca3bf61f1",
+    "consumer_unchanged": true,
+    "native_library_count": 26,
+    "code_section_equal_count": 0,
+    "scope": "静态代码段比较；新AAR未集成APK或做设备验收；相同代码段也不证明完整库或运行行为相同",
+    "libraries": [
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavcodec.so",
+        "old_text_sha256": "4df9c76ce0a1c1483ad33a741f7c001caf18756fcc5e68c1d097fb7a4eb42b8c",
+        "rebuilt_text_sha256": "38a757127781d8b4f355b42fb264f61b9fbbb3a8638d31c9b21827ac7ae08d0d",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavcodec_neon.so",
+        "old_text_sha256": "d82f8191a9902bff5963504d92828101730efbb497ad399b5cf979791966cf4b",
+        "rebuilt_text_sha256": "4ff69f83fe786877fa5dfd6e28ea44c8a8fb1fd9674e4fef6aca836d9817a230",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavdevice.so",
+        "old_text_sha256": "15f48049f0c48f131397b096fa4d53143623d16bf0ba87b512f81873b36b592c",
+        "rebuilt_text_sha256": "c0179e4f1118fd6ec333290481aa5a47d372f1f5365c040addc7df2b870e4a40",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavdevice_neon.so",
+        "old_text_sha256": "cd1f2e8856900213b5d77c331b77abb2342679ea629f06512049be032de029b0",
+        "rebuilt_text_sha256": "70f1383e86c24206d2c0de5c8bce57f7b8426cc1ac76c4d03060435921eb82b0",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavfilter.so",
+        "old_text_sha256": "70fa3ade90c20386ae9b1fd5833a224c800316622c1ac5174d93661aad5ee339",
+        "rebuilt_text_sha256": "669bfb1d204b904d20241c8e29a7759184f049fff02b9381ec3b624a926581a1",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavfilter_neon.so",
+        "old_text_sha256": "299dcd108fccd0c09dda646dbe97671d722de687b74c411af08c1e1bdeb4c7e9",
+        "rebuilt_text_sha256": "b7cdef91991df6729b79afdc2481c79970cafe7fa8a8976ce86225e664a756cc",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavformat.so",
+        "old_text_sha256": "b328a49a1e62030293bd713cfb40c330c2910b550ad67bdd61b58d5ae5b63150",
+        "rebuilt_text_sha256": "1bf161a3b1b34ade99b8706a0f59b18dc497463e77aed1802ee348bf807d1ae0",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavformat_neon.so",
+        "old_text_sha256": "e84052abeecea0176a594124c767f8be24b67c186261a49558d157e5439ba11d",
+        "rebuilt_text_sha256": "8e61adcbedb7a5c73a01cbecd3faa138f2e69c180c38b3faccabfcdba359a4d5",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavutil.so",
+        "old_text_sha256": "6215adf889a6546d1cf9493793c2788fe65de3a3ce49e8bf3d2690c3d45dd383",
+        "rebuilt_text_sha256": "235e93a3b755b261716c76558ce3ffc2e0c018abd89e7243df48c8fd3c368046",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libavutil_neon.so",
+        "old_text_sha256": "68f4bedab8705014b97609be9803b6873d0a97e5a4502e02cc1e0603c8502adc",
+        "rebuilt_text_sha256": "c119fd354926b1913e142f3caae6f40a5d98cb2c88c57d4fd91b1ed7416e383b",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libffmpegkit.so",
+        "old_text_sha256": "c5f612c6b74a267b8dd0ed36e729b6ab03350e3a26951af6aca65f64bfb2adef",
+        "rebuilt_text_sha256": "00c073885f29335719260d5ffe449a5dbed19fe6c54fc2928d0a069df1547daf",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libffmpegkit_abidetect.so",
+        "old_text_sha256": "f0df4494bfe8d4d452e86b0656e82d50e9dcc4ea901b2cc1881e18f5fcab036e",
+        "rebuilt_text_sha256": "74097cc4ff872aca287a47e8cec0d2f00e89b29934285d8dc8d5a3a003df68e7",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libffmpegkit_armv7a_neon.so",
+        "old_text_sha256": "100b91c77fc2eb1e087cc7641d2d6a8c70b029f8d5e80cf02367b844a76c472f",
+        "rebuilt_text_sha256": "aa1a949b19e3d6020d1026d9ab78e871d20c524f87007965c04ba65e67b67fcd",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libswresample.so",
+        "old_text_sha256": "bf99c9940c9bd02da845d1c20c9eced986adfdf865b85955ce9feb2ee2965c36",
+        "rebuilt_text_sha256": "6d5c8c6d154cb7e30fac603b3471ccc943ef1963ba73d8aeecb7b1da91afd3f8",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libswresample_neon.so",
+        "old_text_sha256": "96a13fa7e72d7572696256f5e949f610c75546bb1bb766d01964b0182402e6cd",
+        "rebuilt_text_sha256": "a2f09f7a92cb6f1fc91cde2d30a6a5d0f9d106f0ae221f6ccc614baf32676123",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libswscale.so",
+        "old_text_sha256": "6d742cf572968ea7e42a79d6d4e6d5fdf8350952fe748482a248ccfb3575639c",
+        "rebuilt_text_sha256": "3283b754113c139a32999f4775ea71c16234bc57ce601bdaa45b216afc958673",
+        "text_equal": false
+      },
+      {
+        "abi": "armeabi-v7a",
+        "file": "libswscale_neon.so",
+        "old_text_sha256": "61b7acbc05bf3252ac11986469189f6f29df4e031dceedc5f3526b6d1cbf9390",
+        "rebuilt_text_sha256": "38317091bcedb181b6a710072a6c79b55130d6e5a27f40fa58b83eab329ac922",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libavcodec.so",
+        "old_text_sha256": "1d5a4d60d48f08716e7d9329ff6b5a196d6ff7989d1004df3d95942fbf1c6457",
+        "rebuilt_text_sha256": "7589536c121a16bd1042db6af989ed88d558632ac3c51405fca1ee0d76cf172e",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libavdevice.so",
+        "old_text_sha256": "ba26d774f961fee60c5d8cb71f873b57b871a1c11fd2e6723b20a3db88d75ef3",
+        "rebuilt_text_sha256": "7657d4a54f5bc4b14c78671379bdbfb518d348f96babeed3acfaf2b4e9bc148d",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libavfilter.so",
+        "old_text_sha256": "cc07c909f68fa7322b338458e08cf0f6608fdc72c03d7436dab08b2e653ae2c9",
+        "rebuilt_text_sha256": "9351113530a7dc5d2491979a3817ce353388d7da1b9f882f2438ce508aff2d92",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libavformat.so",
+        "old_text_sha256": "6076c59127222c1472a418390e0648f9a4dca62b125732f36791701f32b35664",
+        "rebuilt_text_sha256": "54b9e6c963c471596234e2cd90c3968f3a8ac4b3cf515757221fbb0c71a5457f",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libavutil.so",
+        "old_text_sha256": "9b17ac36356c2c8c75d6676a4a9a2b0343f60770a679270fb4bce8c52c7c22f2",
+        "rebuilt_text_sha256": "67683f5dcafd53b5dbd3bbfe1e3ff223e5979b5dcb04c1de05f2b7ca1c04a52b",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libffmpegkit.so",
+        "old_text_sha256": "dcda675905a4c4f3dff2f59867337ba44772537cbe8bce2bfd2e173526d5cfaa",
+        "rebuilt_text_sha256": "b95327647970e4e05f9377eeb76bab1bdfc4a81c2f3661ed768cb28deb1c7239",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libffmpegkit_abidetect.so",
+        "old_text_sha256": "42b9dd4e60098533dedcd662c38d8765d0d24b5a40734f589ee7eae53092d3ba",
+        "rebuilt_text_sha256": "0a32a6b0923b6ccdcdc91cd53779e24dad86198350a0933e300c8fc11f4740dd",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libswresample.so",
+        "old_text_sha256": "a1218f262b0ae0a8fc4b4282b666e6e7285bc45c92cf8ef2ed5102dfd15ad041",
+        "rebuilt_text_sha256": "9cd96eaf8ed110c88b680e9d58fe4f59693cf22240e7f1bb19fe3e743be81681",
+        "text_equal": false
+      },
+      {
+        "abi": "arm64-v8a",
+        "file": "libswscale.so",
+        "old_text_sha256": "666ada99b8aeb55871132bece6dcac1d2afdaa4a41f709dc6f391147cd7a523a",
+        "rebuilt_text_sha256": "2ebaf3244a27a65cbc39282d066a6ad84868ce4cff682129cc7b5f87b15a86c1",
+        "text_equal": false
+      }
+    ]
+  }
+}

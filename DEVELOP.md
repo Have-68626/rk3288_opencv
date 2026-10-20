@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-09-30
+as_of=2026-10-18
 -->
 
 ﻿# RK3288 AI Engine - 开发指南 (Development Guide)
@@ -115,58 +115,15 @@ rk3288_opencv/
 
 ### 4.1 快速开始 (Quick Start)
 
-#### 4.1.1 Windows 快速构建 (最小闭环)
-在仓库根目录打开 PowerShell，执行以下命令进行冒烟测试：
-
-```powershell
-# 执行构建与测试脚本
-& .\scripts\verify_opencv_host.bat
-```
-
-#### 4.1.2 Android APK 快速构建
-在仓库根目录执行 Gradle 构建：
-
-```powershell
-.\gradlew.bat --no-daemon clean assembleDebug testDebugUnitTest
-```
+统一命令、前提与不同shell写法见[构建与测试](docs/guides/build-and-test.md)。Windows服务构建和测试目标构建分开；E2E先准备同端口服务器和覆盖率插桩。
 
 ### 4.2 C++ 构建变体
 
-项目支持多种 CMake 构建配置：
+- 核心快通道：RK_SKIP_OPENCV=ON，只构建并运行选定的核心目标。
+- Windows真实OpenCV：明确源码根及contrib；ncnn需另行启用并匹配静态CRT。
+- 独立精度目标：先核对模型与数据，跳过不作为精度通过。
 
-| 配置 | 生成器 | 适用场景 |
-|:-----|:-------|:---------|
-| `build_ci` | `Ninja` | 快速 C++ 单元测试，无 OpenCV（`-DRK_SKIP_OPENCV=ON`） |
-| `build_win` | `Visual Studio 17 2022 -A x64` | 完整构建（OpenCV + ncnn），运行全量测试 |
-
-#### 无 OpenCV 构建（core_unit_tests）
-
-```powershell
-cmake -S . -B build_ci -G "Ninja" -DRK_SKIP_OPENCV=ON
-cmake --build build_ci --target core_unit_tests
-ctest --test-dir build_ci -C Debug --output-on-failure
-```
-
-#### 完整 Windows 构建
-
-```powershell
-cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 `
-  -DOPENCV_ROOT="path\to\opencv" -DOPENCV_CONTRIB_ROOT="path\to\opencv_contrib" `
-  -DRK_ENABLE_NCNN=ON
-cmake --build build_win --config Release --target win_unit_tests face_infer_unit_tests
-ctest --test-dir build_win -C Release --output-on-failure
-```
-
-#### 可用构建目标
-
-| 目标 | 说明 | OpenCV |
-|:-----|:------|:------:|
-| `core_unit_tests` | 核心模块单元测试（用例数以 `ctest` 输出为准） | ❌ 不需要 |
-| `face_infer_unit_tests` | 人脸推理管线测试（含 INT8；用例数以 `ctest` 输出为准） | ✅ 需要 |
-| `ncnn_precision_test` | ncnn 推理精度对比测试（独立目标） | ✅ 需要 |
-| `win_unit_tests` | Windows 服务单元测试（用例数以 `ctest` 输出为准） | ✅ 需要 |
-| `win_local_service` | Windows 本地服务（默认入口） | ✅ 需要 |
-| `win_face_eval_cli` / `win_face_bench_cli` | 测评与基准 CLI | ✅ 需要 |
+新树放cache/builds，既有树不直接搬移。具体目标和CTest筛选由上述指南维护。
 
 ### 4.3 测试框架
 
@@ -415,7 +372,7 @@ PR 合并规则（权威口径见 [AGENTS.md](AGENTS.md) 的「PR 合并规则�
 
 ## 附录 H. 稳定性治理分阶段执行报告
 
-> **本附录已移出至独立文件。** 详见 [docs/research/appendix-h.md](docs/research/appendix-h.md)
+> 尚无独立的稳定性治理分阶段执行报告；本锚点仅保留占位语义，不代表已有执行结论。前置研究见[附录G](docs/research/appendix-g.md)，当前实机边界见[设备验收清单](docs/guides/rk3288-device-acceptance.md)。
 >
 > **摘要：** 稳定性治理分阶段执行报告。
 

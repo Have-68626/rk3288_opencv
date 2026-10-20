@@ -12,7 +12,7 @@ model: inherit
 - Java source 在 `../src/java`（app/build.gradle 的 sourceSets 引用）；单测在 `tests/unit/java/`。
 
 ## 构建与测试
-- `gradlew.bat --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`
+- PowerShell从仓库根执行，统一命令见 `docs/guides/build-and-test.md` 的Android节
 - 调试日志：`adb logcat | grep rk3288_opencv`
 - 默认 ABI `armeabi-v7a`+`arm64-v8a`；x86_64 需 `-PRK_ENABLE_X86_64=true`
 - JNI 改动必须保留中文注释；算法关键逻辑同步检查 `src/cpp/` 侧契约

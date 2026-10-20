@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=architecture
 status=living
-as_of=2026-07-05
+as_of=2026-10-18
 -->
 
 # Android 层架构文档
@@ -72,15 +72,21 @@ graph TD
 
 ### MainActivity 职责
 
-`MainActivity`（`MainActivity.java`，3156 行）是**单体编排器**，承担以下职责：
+`MainActivity`（`MainActivity.java`）是**单体编排器**，承担以下职责：
 
-1. **JNI 直调**：直接声明 `native` 方法（第 1291-1328 行），管理 Engine 生命周期
+1. **JNI 直调**：直接声明 `native` 方法，管理 Engine 生命周期
 2. **采集控制**：持有两个 CaptureController 实例（Camera2 / CameraX），根据策略切换
 3. **生命周期状态机**：通过 `MonitoringCoordinator` 管理监控启停流程
 4. **UI 绑定**：通过 `MainScreenBinder` 进行视图绑定与事件分发
 5. **安全**：调用 `SensitiveDataUtil` 脱敏日志，管理 `FeatureTemplateEncryptedStore` 加密存储
 
 ---
+
+### 模型、注册与推流装配
+
+- `FaceModelManager`负责导入与激活指针；`NativeFaceBridge.loadProfile`暂存、`activateRuntime`决定实际运行态，不能把导入成功等同模型生效。
+- 注册特征由 `startEnrollmentCapture` 与逐帧回调进入会话；图库及显示名按 `templateSpaceId` 同空间路由。布局、崩溃恢复和旧模板边界以[Android注册设计](../designs/android-enrollment-design.md)为准，不在本架构图重复定义。
+- RTMP经 `FfmpegRtmpPusher` / `RtmpCameraInput` 使用独立 `nativeGetRtmpFrame` 帧入口。后台运行与正式隐藏预览仍未实现；临时控制器实测不扩张为正式产品能力。
 
 ## 2. JNI 桥接
 

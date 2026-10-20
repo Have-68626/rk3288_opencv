@@ -8,6 +8,7 @@
 #pragma once
 
 #include "VideoManager.h"
+#include "AccelerationContract.h"
 #include "MotionDetector.h"
 #include "BioAuth.h"
 #include "EventManager.h"
@@ -197,6 +198,9 @@ public:
     /** 是否处于实时路径（已注入/启用管线）。 */
     bool hasRealtimePipeline() const { return realtimeEnabled_.load(); }
 
+    // 每次读取实时证据，避免初始化时的宏/环境变量被误报为运行成功。
+    std::vector<rk_accel::AccelContractStatus> accelerationStatuses() const;
+
     /** 实时管线当前快照代次（无管线为 0），供状态展示。 */
     uint64_t getRealtimeGeneration() const;
 
@@ -232,7 +236,8 @@ public:
      * 线程安全：可与 run() 并发调用（内部持 tracksMu_，与 trackFaces 的 update() 互斥）。
      */
     bool applyGalleryUpdate(std::shared_ptr<const FaceSearchLinearIndex> gallery,
-                            const std::vector<std::string>& keepIds);
+                            const std::vector<std::string>& keepIds,
+                            const std::string& templateSpaceId = "");
 
     /**
      * @brief 当前实时快照是否 effective（模型/自检/基准全部通过）。
@@ -435,8 +440,12 @@ private:
     // 任务12：注入式实时管线（Android 默认创建；nullptr = 走 BioAuth 兼容路径）。
     // realtimeMu_ 保护共享指针的注入/读取；realtimeEnabled_ 为无锁快速分支判断。
     std::shared_ptr<RealtimeFacePipeline> realtimePipeline_;
+    // 同对象可发布新模型快照，幂等键必须同时包含已提交快照。与 realtimePipeline_ 同锁。
+    std::shared_ptr<const RealtimePipelineSnapshot> committedRealtimeSnapshot_;
     mutable std::mutex realtimeMu_;
     std::atomic<bool> realtimeEnabled_{false};
+    std::atomic<std::uint64_t> libyuvConvertedFrames_{0};
+    std::atomic<bool> libyuvLastEffective_{false};
     std::string realtimeReason_;
     mutable std::mutex realtimeReasonMu_;
 
@@ -448,16 +457,17 @@ private:
     // 图库覆盖快照：replaceGallery 成功后的不可变索引，身份匹配优先于快照自带 gallery。
     // 独立锁，避免与 realtimeMu_ 的注入路径互相阻塞。
     std::shared_ptr<const FaceSearchLinearIndex> realtimeGallery_;
+    std::string realtimeGallerySpaceId_;  // 与覆盖快照同锁；不同模型空间不能复用同名人员模板。
     mutable std::mutex realtimeGalleryMu_;
 
     // 图库代次：任何对 realtimeGallery_ 的替换（applyGalleryUpdate / setRealtimePipeline 重置）
-    // 都在 realtimeGalleryMu_ 下原子递增。assignRealtimeIdentities 读库
-    // 时把所用代次记入 frameGalleryGeneration_，trackFaces 在 tracksMu_ 内比对——若图库在「读库」
-    // 与「提交轨迹」之间被替换，则该帧据旧库得出的认证结论作废（闭合 #4 残留竞态，见
+    // 都在 tracksMu_ → realtimeGalleryMu_ 下原子递增。runRealtimeDetect 在检测前将模型快照
+    // 与代次一并绑定，trackFaces 在 tracksMu_ 内比对——若模型/图库在「取快照」
+    // 与「提交轨迹」之间被替换，则该帧身份结论作废（包含检测期间切换，见
     // applyGalleryUpdate 注释）。之所以用代次而非把读库纳入 tracksMu_：读库与提交之间隔着嵌入
     // 计算，无法在该锁内完成，唯代次比对能在提交点判定「读数已过期」。
     std::atomic<uint64_t> galleryGeneration_{0};
-    uint64_t frameGalleryGeneration_{0};  // 仅引擎线程在单帧内 写(assign)→读(processFrameRealtime)
+    uint64_t frameGalleryGeneration_{0};  // 单帧推理线程在检测前绑定，提交轨迹时校验
 
     // 身份版本号：任何**撤销 / 清空跟踪身份**的对外操作（applyGalleryUpdate、
     // setRealtimePipeline[仅管线真正变化时]）都在 tracksMu_ 内递增。renderResults 在锁内拷贝

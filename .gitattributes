@@ -33,3 +33,6 @@ app/src/main/assets/** binary
 *.py text eol=lf
 *.cmake text eol=lf
 CMakeLists.txt text eol=lf
+
+# cmd解析UTF-8批处理需要CRLF；仅限定本仓Windows入口。
+scripts/*.bat text eol=crlf

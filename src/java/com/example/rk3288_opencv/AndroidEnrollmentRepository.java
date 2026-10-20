@@ -370,6 +370,21 @@ public final class AndroidEnrollmentRepository {
         return new AndroidEnrollmentRepository(ctx, FeatureTemplateEncryptedStore.defaultDir(ctx));
     }
 
+    /** 新空间独立建库；精度变体共用同一个空间，不迁移旧模板。 */
+    @NonNull
+    public static AndroidEnrollmentRepository forTemplateSpace(@NonNull Context ctx, @NonNull String space) {
+        return new AndroidEnrollmentRepository(ctx, templateSpaceDir(FeatureTemplateEncryptedStore.defaultDir(ctx), space));
+    }
+
+    @NonNull
+    static File templateSpaceDir(@NonNull File root, @NonNull String space) {
+        if (space.isEmpty()) return root;
+        if (!FaceModelManifest.isValidTemplateSpaceId(space)) {
+            throw new IllegalArgumentException("templateSpaceId 必须为 64 位小写十六进制");
+        }
+        return new File(new File(root, "spaces"), space);
+    }
+
     /** 通用作用域工厂：目录名相对 {@code files/} 目录。 */
     @NonNull
     public static AndroidEnrollmentRepository forScope(@NonNull Context ctx, @NonNull String scopeDirName) {
@@ -780,7 +795,7 @@ public final class AndroidEnrollmentRepository {
     public static final class OrphanListResult {
         @NonNull public final Status status;
         @NonNull public final List<String> fileNames;
-        /** 是否允许旁置：仅「完整 FREG2 主表 + 平台支持」时为 true；否则只能查看。 */
+        /** 是否允许旁置：仅「权威完整 FREG2 主表 + 平台支持」时为 true；否则只能查看。 */
         public final boolean quarantineAllowed;
         @NonNull public final String message;
 
@@ -803,7 +818,7 @@ public final class AndroidEnrollmentRepository {
      *
      * <h2>只读语义与门禁</h2>
      * 本方法**只读**：仅扫描 gallery 目录的**直属普通文件**（不含子目录，含旁置目录
-     * {@code .orphan-recovery/}）。缺主表 / 旧版 FREG1 / 不完整 FREG2 时
+     * {@code .orphan-recovery/}）。缺主表 / 旧版 FREG1 / 不完整 FREG2 / 非权威恢复副本时
      * {@link OrphanListResult#quarantineAllowed} 为 false —— 此时枚举不可信，孤儿判定仅供参考，
      * 只可查看、不可旁置。
      *
@@ -837,11 +852,11 @@ public final class AndroidEnrollmentRepository {
             java.util.Collections.sort(orphans);
 
             boolean platformOk = isEnrollmentEnabled();
-            boolean regProvable = snap.formatVersion == 2 && snap.complete;
+            boolean regProvable = snap.authoritative && snap.formatVersion == 2 && snap.complete;
             boolean allowed = platformOk && regProvable;
             String msg;
             if (!regProvable) {
-                msg = "注册表非完整 FREG2（版本 " + snap.formatVersion + "、条目 " + snap.entries.size()
+                msg = "注册表非权威或非完整 FREG2（版本 " + snap.formatVersion + "、条目 " + snap.entries.size()
                         + "）：仅可查看孤儿模板，暂不可旁置";
             } else if (!platformOk) {
                 msg = "当前系统不支持加密存储（API < 23）：仅可查看孤儿模板，暂不可旁置";
@@ -859,8 +874,8 @@ public final class AndroidEnrollmentRepository {
      * <ul>
      *   <li>平台支持（API &ge; 23）；</li>
      *   <li>{@code fileName} 必须是**模板文件名**（{@code u_<64hex>.bin}）—— 不开放任意/绝对路径删除；</li>
-     *   <li>注册表必须是**完整 FREG2 主表**（与 {@link ListResult#isEnumerationComplete()} 同口径），
-     *       否则无法判定谁是孤儿；</li>
+     *   <li>注册表必须来自**权威的完整 FREG2 主表**；恢复副本可能遗漏人员，只能查看，
+     *       不能据此旁置模板；</li>
      *   <li>在**与注册共用的目录锁**内**重读**注册表与引用集合：若该文件已被引用、或已不存在/不再是
      *       模板文件（列表后被改动），一律拒绝并要求刷新；</li>
      *   <li>旁置目标取**当前不存在**的唯一名，绝不覆盖既有恢复文件。</li>
@@ -882,9 +897,9 @@ public final class AndroidEnrollmentRepository {
             if (snap.status != Status.OK) {
                 return new Result(snap.status, null, "注册表不可读，无法确认该文件是否仍为孤儿");
             }
-            if (!(snap.formatVersion == 2 && snap.complete)) {
+            if (!(snap.authoritative && snap.formatVersion == 2 && snap.complete)) {
                 return new Result(Status.CORRUPTED, null,
-                        "注册表非完整 FREG2，拒绝旁置以免误移在册人员的模板；请刷新后重试");
+                        "注册表非权威或非完整 FREG2，拒绝旁置以免误移在册人员的模板；请刷新后重试");
             }
             // 锁内重读引用集合：确认仍无该条目引用。
             java.util.Set<String> referenced = new java.util.HashSet<>();
@@ -1273,6 +1288,7 @@ public final class AndroidEnrollmentRepository {
             }
             RegistrySnapshot snap = new RegistrySnapshot(Status.OK, out, skipped,
                     "注册表 COUNT 行缺失或非法");
+            snap.authoritative = false;
             snap.formatVersion = 2;
             snap.complete = false;
             return snap;
@@ -1308,14 +1324,16 @@ public final class AndroidEnrollmentRepository {
         // 期望结构：2 行头 + N 行数据 + 1 行 END。
         boolean sizeOk = nInt >= 0 && lines.size() == (2L + nInt + 1L);
         boolean endOk = false;
-        if (nInt >= 0 && (dataStart + nInt) < lines.size()) {
-            Long endN = parseCountField(lines.get(dataStart + nInt).trim(), END_PREFIX);
+        // 先用 long 计算头尾偏移，避免 COUNT 接近 int 上限时溢出为负索引。
+        long endIndex = (long) dataStart + nInt;
+        if (nInt >= 0 && endIndex < lines.size()) {
+            Long endN = parseCountField(lines.get((int) endIndex).trim(), END_PREFIX);
             endOk = (endN != null && endN == n);
         }
         // END 之后的额外非空行计入 skipped（可见性）。
         if (nInt >= 0) {
-            for (int i = dataStart + nInt + 1; i < lines.size(); i++) {
-                if (!lines.get(i).trim().isEmpty()) {
+            for (long i = endIndex + 1; i < lines.size(); i++) {
+                if (!lines.get((int) i).trim().isEmpty()) {
                     skipped++;
                 }
             }

@@ -17,6 +17,7 @@
 using namespace rk_core;
 
 #include <chrono>
+#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -29,6 +30,7 @@ using namespace rk_core;
 #include "FaceInferStages.h"
 #include "FaceProfileRequest.h"
 #include "ModelRegistry.h"
+#include "NcnnPrecisionGuard.h"
 #include "adapters/ArcFaceAdapter.h"
 #include "adapters/ScrfdNcnnAdapter.h"
 #include "adapters/YoloFaceAdapter.h"
@@ -109,6 +111,8 @@ static int errorCodeForStage(const std::string& stage) {
     return 1;
 }
 
+
+
 // 当前进程编译 ABI 字符串（用于 profile 的 supportedAbis 校验）。
 // 与 §I5 单图 JNI 同一口径：按**编译期**宏判断，不以设备列表/运行态 ABI 代替。
 static std::string currentAbiString() {
@@ -134,6 +138,16 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
     FaceInferOutcome out;
     const long long tsMs = nowEpochMillis();
     try {
+        // 单帧没有跨调用状态，不能接受一个永远无法累计完成的连续帧要求。
+        if (reqIn.consecutivePassesToTrigger > 1) {
+            out.stage = "request";
+            out.message = "single_frame_consecutive_requires_one";
+            out.errorCode = errorCodeForStage(out.stage);
+            out.auditDir = "ErrorLog";
+            out.auditFilename = "face_infer_" + std::to_string(tsMs) + ".json";
+            out.json = buildSimpleErrorJson(false, out.errorCode, out.stage, out.message, tsMs, reqIn.imagePath);
+            return out;
+        }
         // §I3：profile 模式在装配前一次性派生请求字段（detectorId/embedderId/双后端/模型绝对路径/节点/
         // 尺寸/阈值/int8Enabled）并取回 profile 供 SCRFD 解码语义消费。失败时 req 不变、直接失败。
         FaceInferRequest req = reqIn;
@@ -156,6 +170,27 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
             haveProfile = true;
         }
 
+        if (req.int8Enabled) {
+            const auto precisionFailure = [&](const char* stage, const std::string& message) {
+                out.stage = stage;
+                out.message = message;
+                out.errorCode = errorCodeForStage(out.stage);
+                out.auditDir = "ErrorLog";
+                out.auditFilename = "face_infer_" + std::to_string(tsMs) + ".json";
+                out.json = buildSimpleErrorJson(false, out.errorCode, out.stage, message, tsMs, req.imagePath);
+                return out;
+            };
+            std::string precisionErr;
+            if (!req.fakeDetect && !satisfiesInt8Requirement(req.yoloBackend,
+                    req.yoloNcnnParam.empty() ? req.yoloModelPath : req.yoloNcnnParam, precisionErr)) {
+                return precisionFailure("yolo_load", precisionErr);
+            }
+            if (!req.fakeEmbedding && !satisfiesInt8Requirement(req.arcBackend,
+                    req.arcNcnnParam.empty() ? req.arcModelPath : req.arcNcnnParam, precisionErr)) {
+                return precisionFailure("arc_init", precisionErr);
+            }
+        }
+
         const auto t0 = std::chrono::steady_clock::now();
         FaceInferContext ctx;
         FaceInferMetrics m;
@@ -170,7 +205,7 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
 
         // §I3：所有装配/缓存集中在 runFaceInferOnce；Stages 只消费注入实例或返回装配错误。
         // 检测器按 detectorId 路由（不再 createDetector(yoloBackend)）；缓存 key 含完整相关
-        // ID/后端/spec/节点/尺寸/阈值/precision（profile 模式另含 profile 标识与四文件声明哈希）。
+        // ID/后端/spec/节点/尺寸/阈值/precision；profile 另含标识、四文件哈希与完整解码契约。
         if (!req.fakeDetect) {
             static std::mutex s_detMu;
             static std::string s_detCacheKey;
@@ -204,6 +239,15 @@ FaceInferOutcome runFaceInferOnce(const FaceInferRequest& reqIn) {
                 detKey += "|prof:" + profile.profileId + ":" + profile.detectorParam.sha256 + ":" +
                           profile.detectorBin.sha256 + ":" + profile.embedderParam.sha256 + ":" +
                           profile.embedderBin.sha256;
+                detKey += "|decode:" + std::to_string(static_cast<int>(profile.detectorDecodeMode)) +
+                          "|anchors:" + std::to_string(profile.detectorAnchorsPerPos[0]) + "," +
+                          std::to_string(profile.detectorAnchorsPerPos[1]) + "," +
+                          std::to_string(profile.detectorAnchorsPerPos[2]) +
+                          "|layout:" + std::to_string(static_cast<int>(profile.detectorOutputLayout));
+                // 节点名带长度，避免名字中的分隔符让不同输出清单碰撞。
+                for (const auto& node : profile.detectorOutputs) {
+                    detKey += "|node:" + std::to_string(node.size()) + ":" + node;
+                }
             }
             {
                 std::lock_guard<std::mutex> lock(s_detMu);

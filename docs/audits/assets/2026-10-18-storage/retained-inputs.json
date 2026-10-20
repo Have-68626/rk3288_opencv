@@ -1,0 +1,29 @@
+{
+  "scope": "本轮保留输入摘要，不是模型精度或许可验收",
+  "assets": [
+    {
+      "path": "deps/insightface/det_10g.onnx",
+      "bytes": 16923827,
+      "sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+      "purpose": "保留的父ONNX，不更改预处理或消费件"
+    },
+    {
+      "path": "deps/insightface/w600k_mbf.onnx",
+      "bytes": 13616099,
+      "sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f",
+      "purpose": "保留的父ONNX，不更改预处理或消费件"
+    },
+    {
+      "path": "deps/insightface/w600k_r50.onnx",
+      "bytes": 174383860,
+      "sha256": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43",
+      "purpose": "保留的父ONNX，不更改预处理或消费件"
+    },
+    {
+      "path": "app/libs/ffmpeg-kit.aar",
+      "bytes": 26386523,
+      "sha256": "07dd0dcffbe52023b614e7455694093e9d17003626247f3ac9361b28aaf57eda",
+      "purpose": "既有消费AAR，位置及摘要不变"
+    }
+  ]
+}

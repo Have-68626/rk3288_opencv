@@ -54,7 +54,11 @@ export function SplashPage() {
                 <Button
                   type="primary"
                   icon={<ReloadOutlined />}
-                  onClick={() => refreshServerSettings()}
+                  onClick={async () => {
+                    if (await refreshServerSettings()) {
+                      nav(startPageToRoute(prefs.startPage), { replace: true })
+                    }
+                  }}
                   loading={(serverSettings.status as string) === 'loading'}
                 >
                   重试

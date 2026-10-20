@@ -1,276 +1,304 @@
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <iostream>
+#include <cctype>
+#include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <net.h>
 
-#include "ncnn/net.h"
-
-// ---------------------------------------------------------------------------
-// 精度对比测试：使用 ncnn::Net 直接加载 FP32 和 INT8 模型，跑推理后比较结果
-// 该测试独立编译，不依赖项目适配器代码，仅链接 ncnn + OpenCV
-// ---------------------------------------------------------------------------
+#include "FileHash.h"
+#include "NcnnParamGuard.h"
+#include "NcnnPrecisionGuard.h"
+#include "adapters/ScrfdNcnnAdapter.h"
+#include "rk_win/JsonLite.h"
 
 namespace {
+namespace fs = std::filesystem;
 
-bool fileExists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
+struct Options {
+    fs::path root = ".";
+    fs::path images = "models/calib_images";
+    std::string mode = "all";
+    int maxImages = 50;
+    bool selfTest = false;
+    rk_core::ScrfdNcnnConfig detector;
+};
+
+Options parseArgs(int argc, char** argv) {
+    Options options;
+    options.detector.decodeMode = pipeline::DecodeMode::kDistance;
+    for (int& anchors : options.detector.anchorsPerPos) anchors = 2;
+    for (int i = 1; i < argc; ++i) {
+        const std::string key = argv[i];
+        if (key == "--self-test") { options.selfTest = true; continue; }
+        if (i + 1 == argc) throw std::runtime_error("选项缺少值");
+        const std::string value = argv[++i];
+        if (key == "--root") options.root = value;
+        else if (key == "--images") options.images = value;
+        else if (key == "--mode") options.mode = value;
+        else if (key == "--max-images") options.maxImages = std::stoi(value);
+        else if (key == "--scrfd-input") options.detector.inputName = value;
+        else if (key == "--scrfd-outputs") {
+            std::istringstream input(value);
+            std::string node;
+            std::vector<std::string> names;
+            while (std::getline(input, node, ',')) names.push_back(node);
+            if (names.size() != 9) throw std::runtime_error("SCRFD 必须提供九个输出节点");
+            for (int n = 0; n < 3; ++n) {
+                options.detector.scoreNames[n] = names[n];
+                options.detector.bboxNames[n] = names[n + 3];
+                options.detector.kpsNames[n] = names[n + 6];
+            }
+        } else if (key == "--scrfd-layout") {
+            using Layout = rk_core::ScrfdNcnnConfig::OutputLayout;
+            if (value == "nchw") options.detector.outputLayout = Layout::kNChw;
+            else if (value == "flat") options.detector.outputLayout = Layout::kFlat;
+            else if (value == "auto") options.detector.outputLayout = Layout::kAuto;
+            else throw std::runtime_error("非法 SCRFD 输出布局");
+        } else throw std::runtime_error("未知选项");
+    }
+    if (options.maxImages <= 0 || (options.mode != "all" && options.mode != "scrfd" && options.mode != "arcface"))
+        throw std::runtime_error("非法模型模式或图片数");
+    return options;
 }
 
 double cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size() || a.empty()) return 0.0;
     double dot = 0.0, na = 0.0, nb = 0.0;
-    for (size_t i = 0; i < a.size(); ++i) {
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return 0.0;
         dot += static_cast<double>(a[i]) * b[i];
         na += static_cast<double>(a[i]) * a[i];
         nb += static_cast<double>(b[i]) * b[i];
     }
-    double denom = std::sqrt(na) * std::sqrt(nb);
-    return (denom > 1e-10) ? (dot / denom) : 0.0;
+    const double denominator = std::sqrt(na) * std::sqrt(nb);
+    return denominator > 1e-10 ? dot / denominator : 0.0;
 }
 
-// 计算 IoU
-double computeIou(int x1, int y1, int w1, int h1,
-                  int x2, int y2, int w2, int h2) {
-    int interL = std::max(x1, x2);
-    int interT = std::max(y1, y2);
-    int interR = std::min(x1 + w1, x2 + w2);
-    int interB = std::min(y1 + h1, y2 + h2);
-    int interW = std::max(0, interR - interL);
-    int interH = std::max(0, interB - interT);
-    double interArea = static_cast<double>(interW) * interH;
-    double unionArea = static_cast<double>(w1 * h1) + w2 * h2 - interArea;
-    return (unionArea > 0) ? (interArea / unionArea) : 0.0;
-}
-
-// 使用 ncnn 前处理：加载图片 → resize → BGR→RGB → substract_mean_normalize
-// 返回预处理后的 ncnn::Mat（已归一化到模型期望的范围）
-ncnn::Mat preprocessImage(const cv::Mat& bgr, int targetW, int targetH,
-                           const float* meanVals, const float* normVals) {
+// 精度程序与生产 ArcFace 契约共用 RGB/127.5/1÷127.5 口径，独立于 SCRFD 的 1÷128。
+ncnn::Mat preprocessArcFaceImage(const cv::Mat& bgr) {
+    const float meanVals[3] = {127.5f, 127.5f, 127.5f};
+    const float normVals[3] = {1.f / 127.5f, 1.f / 127.5f, 1.f / 127.5f};
     cv::Mat rgb;
     cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
-    ncnn::Mat in = ncnn::Mat::from_pixels_resize(
-        rgb.data, ncnn::Mat::PIXEL_RGB, rgb.cols, rgb.rows, targetW, targetH);
-    in.substract_mean_normalize(meanVals, normVals);
-    return in;
+    ncnn::Mat input = ncnn::Mat::from_pixels_resize(rgb.data, ncnn::Mat::PIXEL_RGB,
+                                                  rgb.cols, rgb.rows, 112, 112);
+    input.substract_mean_normalize(meanVals, normVals);
+    return input;
 }
 
-// 运行 ncnn 模型推理，提取输出张量
-// modelPath: 模型目录（包含 .param 和 .bin）
-// paramName: .param 文件名（如 "arcface.param"）
-// binName: .bin 文件名（如 "arcface.bin"）
-// inputBlob: 输入 blob 名称
-// outputBlob: 输出 blob 名称
-// inputMat: 预处理好的输入
-// 返回输出特征向量
-std::vector<float> runNcnnModel(const std::string& modelDir,
-                                 const std::string& paramName,
-                                 const std::string& binName,
-                                 const char* inputBlob,
-                                 const char* outputBlob,
-                                 const ncnn::Mat& inputMat) {
-    ncnn::Net net;
-    std::string paramPath = modelDir + "/" + paramName;
-    std::string binPath = modelDir + "/" + binName;
+bool testArcFacePreprocessingContract() {
+    const auto input = preprocessArcFaceImage(cv::Mat(1, 1, CV_8UC3, cv::Scalar(0, 128, 255)));
+    return input.w == 112 && input.h == 112 && input.c == 3 &&
+           std::abs(static_cast<const float*>(input.channel(0))[0] - 1.0f) < 1e-6f &&
+           std::abs(static_cast<const float*>(input.channel(1))[0] - 0.5f / 127.5f) < 1e-6f &&
+           std::abs(static_cast<const float*>(input.channel(2))[0] + 1.0f) < 1e-6f;
+}
 
-    int ret = net.load_param(paramPath.c_str());
-    if (ret != 0) {
-        std::cerr << "load_param failed: " << paramPath << " ret=" << ret << std::endl;
-        return {};
-    }
-    ret = net.load_model(binPath.c_str());
-    if (ret != 0) {
-        std::cerr << "load_model failed: " << binPath << " ret=" << ret << std::endl;
-        return {};
-    }
+struct DetectionMetrics {
+    std::size_t reference = 0, predicted = 0, matched = 0;
+    double iouSum = 0;
+    double precision() const { return predicted ? static_cast<double>(matched) / predicted : 0; }
+    double recall() const { return reference ? static_cast<double>(matched) / reference : 0; }
+    double meanIou() const { return matched ? iouSum / matched : 0; }
+    bool acceptable() const { return matched > 0 && precision() >= 0.90 && recall() >= 0.90 && meanIou() >= 0.80; }
+};
 
-    ncnn::Extractor ex = net.create_extractor();
-    // ⚠️ 返回值**必须检查**（2026-09-26 二次审计补）：`ex.input()` 在 blob 名与模型不符时返回非 0
-    //    （`ncnn_set_input_failed`）而**不抛异常**。此前忽略返回值 ⇒ 输入名写错时 extract 一并失败，
-    //    再看下面 extract 的 ret ⇒ 只会打印 "extract failed"，被上层归因成「本版本不支持解析」并
-    //    **以成功退出**（假 SKIP）。这与 `674f91a` 修的 ncnn 输入名静默失败是同一类形态。
-    int inRet = ex.input(inputBlob, inputMat);
-    if (inRet != 0) {
-        std::cerr << "input failed for blob \"" << inputBlob << "\" ret=" << inRet
-                  << "（blob 名与模型不符？核对 .param 第 3 行的 Input 层名）" << std::endl;
-        return {};
+DetectionMetrics compareDetections(const FaceDetections& reference, const FaceDetections& predicted) {
+    struct Match { double iou; std::size_t reference, predicted; };
+    std::vector<Match> candidates;
+    for (std::size_t r = 0; r < reference.size(); ++r) {
+        for (std::size_t p = 0; p < predicted.size(); ++p) {
+            const auto overlap = reference[r].bbox & predicted[p].bbox;
+            const double intersection = std::max(0.0f, overlap.width) * std::max(0.0f, overlap.height);
+            const double unionArea = reference[r].bbox.area() + predicted[p].bbox.area() - intersection;
+            const double iou = unionArea > 0 ? intersection / unionArea : 0;
+            if (std::isfinite(iou) && iou >= 0.50) candidates.push_back({iou, r, p});
+        }
     }
-
-    ncnn::Mat out;
-    ret = ex.extract(outputBlob, out);
-    if (ret != 0) {
-        std::cerr << "extract failed for blob \"" << outputBlob << "\" ret=" << ret << std::endl;
-        return {};
-    }
-
-    std::vector<float> result;
-    result.reserve(out.total());
-    for (int i = 0; i < out.total(); ++i) {
-        result.push_back(out[i]);
+    std::sort(candidates.begin(), candidates.end(), [](const Match& a, const Match& b) { return a.iou > b.iou; });
+    std::vector<bool> usedReference(reference.size()), usedPredicted(predicted.size());
+    DetectionMetrics result{reference.size(), predicted.size()};
+    for (const auto& candidate : candidates) {
+        if (usedReference[candidate.reference] || usedPredicted[candidate.predicted]) continue;
+        usedReference[candidate.reference] = usedPredicted[candidate.predicted] = true;
+        ++result.matched;
+        result.iouSum += candidate.iou;
     }
     return result;
 }
 
-// =========================================================================
-// 1. ArcFace 精度对比测试
-// =========================================================================
-bool testArcFacePrecision() {
-    const std::string fp32Dir = "models/arcface_ncnn";
-    const std::string int8Dir = "models/arcface_int8_ncnn";
-
-    if (!fileExists(fp32Dir + "/arcface.param") ||
-        !fileExists(int8Dir + "/arcface_int8.param")) {
-        std::cout << "  SKIP: ArcFace models not found" << std::endl;
-        return true;
-    }
-
-    // 找一张校准图片
-    std::string calibImage;
-    {
-        std::string imgDir = "models/calib_images";
-        for (int i = 0; i < 200; ++i) {
-            std::string candidate = imgDir + "/calib_" +
-                (i < 10 ? "000" : i < 100 ? "00" : "0") + std::to_string(i) + "_*.jpg";
-            // Use first .jpg file
-        }
-        // 直接用已知存在的文件
-        calibImage = "models/calib_images/calib_0000_4_Dancing_Dancing_4_1008.jpg";
-    }
-
-    cv::Mat img = cv::imread(calibImage);
-    if (img.empty()) {
-        std::cerr << "  FAIL: cannot load image: " << calibImage << std::endl;
-        return false;
-    }
-
-    // ArcFace 预处理参数
-    const float meanVals[3] = {127.5f, 127.5f, 127.5f};
-    const float normVals[3] = {1.f / 128.f, 1.f / 128.f, 1.f / 128.f};
-
-    ncnn::Mat in = preprocessImage(img, 112, 112, meanVals, normVals);
-
-    // FP32 推理
-    auto fp32Emb = runNcnnModel(fp32Dir, "arcface.param", "arcface.bin",
-                                 "in0", "out0", in);
-    if (fp32Emb.empty()) {
-        std::cerr << "  FAIL: FP32 ArcFace inference failed" << std::endl;
-        return false;
-    }
-
-    // INT8 推理
-    auto int8Emb = runNcnnModel(int8Dir, "arcface_int8.param", "arcface_int8.bin",
-                                 "in0", "out0", in);
-    if (int8Emb.empty()) {
-        std::cerr << "  FAIL: INT8 ArcFace inference failed" << std::endl;
-        return false;
-    }
-
-    if (fp32Emb.size() != int8Emb.size()) {
-        std::cerr << "  FAIL: dimension mismatch FP32=" << fp32Emb.size()
-                  << " INT8=" << int8Emb.size() << std::endl;
-        return false;
-    }
-
-    double sim = cosineSimilarity(fp32Emb, int8Emb);
-    std::cout << "  ArcFace cosine similarity = " << sim
-              << " (dim=" << fp32Emb.size() << ")" << std::endl;
-
-    // 要求余弦相似度 ≥ 0.90
-    if (sim < 0.90) {
-        std::cerr << "  FAIL: cosine similarity " << sim << " < 0.90" << std::endl;
-        return false;
-    }
-    return true;
+bool testDetectionMetricContract() {
+    FaceDetection face;
+    face.bbox = cv::Rect2f(10, 10, 20, 20);
+    const FaceDetections reference{face};
+    if (!compareDetections(reference, reference).acceptable()) return false;
+    const auto duplicate = compareDetections(reference, FaceDetections{face, face});
+    if (duplicate.matched != 1 || duplicate.acceptable() || duplicate.precision() != 0.5) return false;
+    face.bbox.x = 100;
+    return !compareDetections(reference, FaceDetections{face}).acceptable() &&
+           !compareDetections({}, {}).acceptable() && !compareDetections(reference, {}).acceptable();
 }
 
-// =========================================================================
-// 2. 检测模型精度对比测试
-// =========================================================================
-bool testDetectPrecision() {
-    const std::string fp32Dir = "deps/insightface";
-    const std::string int8Dir = "models/yolo_face_int8_ncnn";
+struct ModelPair { fs::path fp32Param, fp32Bin, int8Param, int8Bin; };
 
-    if (!fileExists(fp32Dir + "/det_10g.ncnn.param") ||
-        !fileExists(int8Dir + "/yolo_face_int8.param")) {
-        std::cout << "  SKIP: detection models not found" << std::endl;
-        return true;
-    }
-
-    std::string calibImage = "models/calib_images/calib_0000_4_Dancing_Dancing_4_1008.jpg";
-    cv::Mat img = cv::imread(calibImage);
-    if (img.empty()) {
-        std::cerr << "  FAIL: cannot load image: " << calibImage << std::endl;
-        return false;
-    }
-
-    // SCRFD 预处理参数
-    const float meanVals[3] = {104.f, 117.f, 123.f};
-    const float normVals[3] = {0.017f, 0.017f, 0.017f};
-
-    ncnn::Mat in = preprocessImage(img, 640, 640, meanVals, normVals);
-
-    // FP32 推理（det_10g 有三个输出: out2=score, out5=bbox, out8=关键点）
-    // ⚠️ 输入 blob 名 `"in0"` —— **此处是对的，已核实**（2026-09-26 二次审计）：
-    //    本用例的 `fp32Dir` 是同函数内的常量 `"deps/insightface"`（见上方），实际加载的是
-    //    `deps/insightface/det_10g.ncnn.param`，而该文件第 3 行实测为 `Input in0`。
-    //    ⚠️ 勿用本仓 `models/` 下的 SCRFD 结论去"纠正"它：那 10 个 `.param`（PNNX 转换版）
-    //    第 3 行是 `Input input.1`，**与这份未转换的 ncnn 版不是同一命名系** —— 两者都对。
-    auto fp32Score = runNcnnModel(fp32Dir, "det_10g.ncnn.param", "det_10g.ncnn.bin",
-                                   "in0", "out2", in);
-    auto fp32Bbox = runNcnnModel(fp32Dir, "det_10g.ncnn.param", "det_10g.ncnn.bin",
-                                  "in0", "out5", in);
-
-    // INT8 推理
-    auto int8Score = runNcnnModel(int8Dir, "yolo_face_int8.param", "yolo_face_int8.bin",
-                                   "in0", "out2", in);
-    auto int8Bbox = runNcnnModel(int8Dir, "yolo_face_int8.param", "yolo_face_int8.bin",
-                                  "in0", "out5", in);
-
-    if (fp32Score.empty() || fp32Bbox.empty() ||
-        int8Score.empty() || int8Bbox.empty()) {
-        std::cerr << "  SKIP: detection output parsing not supported in this version" << std::endl;
-        return true;
-    }
-
-    // 对检测模型，输出维度复杂，暂时略过完整 IoU 计算
-    // 仅验证两个模型都产生了输出
-    std::cout << "  Detection: FP32 outputs OK (score="
-              << fp32Score.size() << ", bbox=" << fp32Bbox.size() << ")"
-              << " INT8 outputs OK (score="
-              << int8Score.size() << ", bbox=" << int8Bbox.size() << ")"
-              << std::endl;
-    return true;
+std::string requiredString(const rk_win::JsonValue& report, const std::string& key) {
+    const auto* value = report.find(key);
+    if (!value || !value->isString() || value->s.empty()) throw std::runtime_error("量化报告字段缺失: " + key);
+    return value->s;
 }
 
+ModelPair loadPair(const fs::path& reportPath, const std::string& model) {
+    std::ifstream file(reportPath);
+    const std::string text((std::istreambuf_iterator<char>(file)), {});
+    rk_win::JsonValue report;
+    std::string error;
+    if (!rk_win::parseJson(text, report, error) || !report.isObject()) throw std::runtime_error("量化报告不可解析");
+    if (requiredString(report, "model") != model) throw std::runtime_error("量化报告架构不匹配");
+    if (model == "scrfd" && requiredString(report, "geometry") != "letterbox_center_pad0")
+        throw std::runtime_error("SCRFD 校准几何与生产不一致");
+    ModelPair pair;
+    const std::pair<const char*, fs::path*> paths[] = {
+        {"fp32_param", &pair.fp32Param}, {"fp32_bin", &pair.fp32Bin},
+        {"int8_param", &pair.int8Param}, {"int8_bin", &pair.int8Bin}};
+    for (const auto& item : paths) {
+        *item.second = reportPath.parent_path() / requiredString(report, item.first);
+        const auto hash = rk_wcfr::calculateSHA256(*item.second);
+        if (hash.empty() || hash != requiredString(report, std::string(item.first) + "_sha256"))
+            throw std::runtime_error("量化父模型或产物摘要不匹配");
+    }
+    if (!rk_core::satisfiesInt8Requirement("ncnn", pair.int8Param.string(), error))
+        throw std::runtime_error("INT8 产物缺少实际量化层: " + error);
+    if (rk_core::satisfiesInt8Requirement("ncnn", pair.fp32Param.string(), error))
+        throw std::runtime_error("FP32 父模型实际含 INT8 层");
+    return pair;
+}
+
+bool loadNet(ncnn::Net& net, const fs::path& param, const fs::path& bin) {
+    std::string error;
+    return rk_core::validateNcnnParamFile(param.string().c_str(), error) &&
+           net.load_param(param.string().c_str()) == 0 && net.load_model(bin.string().c_str()) == 0;
+}
+
+std::vector<float> embedding(ncnn::Net& net, const ncnn::Mat& input) {
+    ncnn::Extractor extractor = net.create_extractor();
+    ncnn::Mat output;
+    if (extractor.input("in0", input) != 0 || extractor.extract("out0", output) != 0 || output.empty())
+        throw std::runtime_error("ArcFace 节点或推理失败");
+    std::vector<float> values;
+    for (int channel = 0; channel < output.c; ++channel) {
+        const float* data = output.channel(channel);
+        values.insert(values.end(), data, data + output.w * output.h * output.d);
+    }
+    return values;
+}
+
+bool testArcFacePrecision(const ModelPair& pair, const std::vector<fs::path>& images) {
+    ncnn::Net fp32, int8;
+    if (!loadNet(fp32, pair.fp32Param, pair.fp32Bin) || !loadNet(int8, pair.int8Param, pair.int8Bin)) return false;
+    double minimum = 1.0, sum = 0;
+    for (const auto& image : images) {
+        const auto bgr = cv::imread(image.string());
+        if (bgr.empty()) throw std::runtime_error("测试图片不可读取");
+        const auto input = preprocessArcFaceImage(bgr);
+        const double similarity = cosineSimilarity(embedding(fp32, input), embedding(int8, input));
+        minimum = std::min(minimum, similarity);
+        sum += similarity;
+    }
+    std::cout << "PRECISION_METRIC model=arcface reference=fp32 images=" << images.size()
+              << " cosine_min=" << minimum << " cosine_mean=" << sum / images.size() << '\n';
+    return minimum >= 0.90;
+}
+
+bool testDetectPrecision(const ModelPair& pair, const std::vector<fs::path>& images,
+                         rk_core::ScrfdNcnnConfig config) {
+    config.paramPath = pair.fp32Param.string(); config.binPath = pair.fp32Bin.string();
+    rk_core::ScrfdNcnnAdapter fp32(config);
+    config.paramPath = pair.int8Param.string(); config.binPath = pair.int8Bin.string();
+    rk_core::ScrfdNcnnAdapter int8(config);
+    std::string error;
+    if (!fp32.load(pair.fp32Param.string(), error) || !int8.load(pair.int8Param.string(), error))
+        throw std::runtime_error("SCRFD 模型加载失败: " + error);
+    DetectionMetrics total;
+    for (const auto& image : images) {
+        const auto bgr = cv::imread(image.string());
+        if (bgr.empty()) throw std::runtime_error("测试图片不可读取");
+        const auto reference = fp32.detect(bgr, error);
+        if (!error.empty()) throw std::runtime_error("FP32 SCRFD 失败: " + error);
+        const auto predicted = int8.detect(bgr, error);
+        if (!error.empty()) throw std::runtime_error("INT8 SCRFD 失败: " + error);
+        const auto current = compareDetections(reference, predicted);
+        total.reference += current.reference; total.predicted += current.predicted;
+        total.matched += current.matched; total.iouSum += current.iouSum;
+    }
+    // 这里只衡量相对同父 FP32 的一致性；无标注真值时不得称为 mAP/真实召回率。
+    std::cout << "PRECISION_METRIC model=scrfd reference=fp32 images=" << images.size()
+              << " fp32_faces=" << total.reference << " int8_faces=" << total.predicted
+              << " matched=" << total.matched << " match_iou_threshold=0.5"
+              << " relative_precision=" << total.precision() << " relative_recall=" << total.recall()
+              << " matched_mean_iou=" << total.meanIou() << '\n';
+    return total.acceptable();
+}
+
+std::vector<fs::path> imageFiles(const fs::path& directory, int limit) {
+    std::vector<fs::path> images;
+    if (!fs::is_directory(directory)) return images;
+    for (const auto& entry : fs::recursive_directory_iterator(directory)) {
+        if (!entry.is_regular_file()) continue;
+        auto extension = entry.path().extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".bmp")
+            images.push_back(entry.path());
+    }
+    std::sort(images.begin(), images.end());
+    if (images.size() > static_cast<std::size_t>(limit)) images.resize(limit);
+    return images;
+}
 }  // namespace
 
-int main() {
-    int pass = 0, fail = 0;
-
-    struct TestCase { const char* name; bool (*fn)(); };
-    TestCase cases[] = {
-        {"ncnn_precision_arcface_similarity", testArcFacePrecision},
-        {"ncnn_precision_detection_iou", testDetectPrecision},
-    };
-
-    for (auto& c : cases) {
-        bool ok = c.fn();
-        if (ok) {
-            ++pass;
-            std::cout << "TEST_PASS name=" << c.name << std::endl;
-        } else {
-            ++fail;
-            std::cout << "TEST_FAIL name=" << c.name << std::endl;
+int main(int argc, char** argv) {
+    try {
+        const auto options = parseArgs(argc, argv);
+        if (!testArcFacePreprocessingContract() || !testDetectionMetricContract()) {
+            std::cerr << "TEST_FAIL name=ncnn_precision_contracts\n";
+            return 1;
         }
+        if (options.selfTest) {
+            std::cout << "TEST_PASS name=ncnn_precision_contracts\n";
+            return 0;
+        }
+        const auto images = imageFiles(options.root / options.images, options.maxImages);
+        int pass = 0, fail = 0, unverified = 0;
+        for (const std::string model : {"scrfd", "arcface"}) {
+            if (options.mode != "all" && options.mode != model) continue;
+            const auto report = options.root / "models" / (model + "_int8_ncnn") / "quantize_report.json";
+            if (images.empty() || !fs::is_regular_file(report)) {
+                ++unverified;
+                std::cout << "TEST_UNVERIFIED model=" << model << " reason=missing_model_or_evaluation_images\n";
+                continue;
+            }
+            try {
+                const auto pair = loadPair(report, model);
+                const bool ok = model == "scrfd" ? testDetectPrecision(pair, images, options.detector)
+                                                  : testArcFacePrecision(pair, images);
+                ok ? ++pass : ++fail;
+                std::cout << (ok ? "TEST_PASS" : "TEST_FAIL") << " name=ncnn_precision_" << model << '\n';
+            } catch (const std::exception& error) {
+                ++fail;
+                std::cerr << "TEST_FAIL name=ncnn_precision_" << model << " reason=" << error.what() << '\n';
+            }
+        }
+        std::cout << "TEST_SUMMARY pass=" << pass << " fail=" << fail << " unverified=" << unverified << '\n';
+        return fail ? 1 : unverified ? 77 : 0;
+    } catch (const std::exception& error) {
+        std::cerr << "TEST_FAIL reason=" << error.what() << '\n';
+        return 2;
     }
-    std::cout << "TEST_SUMMARY pass=" << pass << " fail=" << fail
-              << " total=" << (pass + fail) << std::endl;
-    return (fail == 0) ? 0 : 1;
 }

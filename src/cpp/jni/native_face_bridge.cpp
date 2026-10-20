@@ -27,6 +27,7 @@
 
 #include "Engine.h"
 #include "FaceRuntimeProfile.h"
+#include "FaceInferencePipeline.h"
 #include "FaceSearch.h"
 #include "FaceTemplate.h"
 #include "JniMethodRegistry.h"
@@ -75,7 +76,13 @@ JNIEnv* acquireThreadEnv(JavaVM* vm) {
     JNIEnv* env = nullptr;
     const jint st = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     if (st == JNI_EDETACHED) {
-        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK || env == nullptr) return nullptr;
+#ifdef __ANDROID__
+        const jint attached = vm->AttachCurrentThread(&env, nullptr);
+#else
+        // 桌面 JNI 宿主回归使用 JDK 头，其签名与 Android NDK 的 JNIEnv** 不同。
+        const jint attached = vm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr);
+#endif
+        if (attached != JNI_OK || env == nullptr) return nullptr;
         cache.attachedByUs = true;
     } else if (st != JNI_OK || env == nullptr) {
         return nullptr;  // 非 EDETACHED 的其他错误码：env 未初始化，直接放弃本帧
@@ -119,6 +126,7 @@ struct EnrollmentCaptureSlot {
 // 避免「reload 读可变索引」与「replaceGallery 替换索引」并发导致的数据竞争。
 struct GallerySlot {
     std::mutex mutex;
+    std::string spaceId;
     std::shared_ptr<const FaceSearchLinearIndex> snapshot;
 };
 
@@ -126,6 +134,8 @@ struct GallerySlot {
 // 引用，见该字段注；回调线程刻意不持本锁）外，其余字段的读写都在 mutex 下进行；
 // 注册会话模板仅驻内存，取走/取消即清零。
 struct FaceBridgeState {
+    // 激活与换库共用提交顺序，防止候选 reload 读完旧槽后覆盖刚提交的新图库。
+    std::mutex runtimeMutex;
     std::mutex mutex;
     rk_core::FaceRuntimeProfile profile;
     // 仅表示 manifest 已通过格式/ABI 校验并暂存，**不代表**推理管线已加载生效。
@@ -148,6 +158,8 @@ struct FaceBridgeState {
     std::string pendingBaseDir;
     std::string pendingAbi;
     std::string pendingGalleryDir;
+    std::string effectiveBaseDir;
+    std::string effectiveSpaceId;
 };
 
 FaceBridgeState& state() {
@@ -162,11 +174,11 @@ FaceBridgeState& state() {
 rk_core::RealtimePipelineHooks makeActivatedHooks(const std::shared_ptr<GallerySlot>& slot) {
     rk_core::RealtimePipelineHooks hooks = rk_core::makeDefaultRealtimePipelineHooks();
     hooks.loadGallery =
-        [slot](const rk_core::FaceRuntimeProfile&, const std::string&,
+        [slot](const rk_core::FaceRuntimeProfile& profile, const std::string&,
                std::string& err) -> std::shared_ptr<const FaceSearchLinearIndex> {
         err.clear();
         std::lock_guard<std::mutex> lock(slot->mutex);
-        return slot->snapshot;
+        return slot->spaceId == profile.templateSpaceId ? slot->snapshot : nullptr;
     };
     return hooks;
 }
@@ -179,12 +191,12 @@ rk_core::RealtimePipelineHooks makeActivatedHooks(const std::shared_ptr<GalleryS
 // 并无对应，表现为「换模型后持续 VERIFIED <旧id>」直至该人离开画面 2 帧。keepIds 取新库全部
 // personId（FaceSearchLinearIndex::entries() 的 e.id，与 bridge_replaceGallery 同法），未命中者
 // 身份清为 "Unknown"（保留轨迹本体与 bbox）。
-void injectGalleryToEngine(const std::shared_ptr<GallerySlot>& slot) {
-    if (!g_engine) return;
+bool injectGalleryToEngine(const std::shared_ptr<GallerySlot>& slot, const std::string& spaceId) {
+    if (!g_engine) return true;
     std::shared_ptr<const FaceSearchLinearIndex> snap;
     {
         std::lock_guard<std::mutex> lock(slot->mutex);
-        snap = slot->snapshot;
+        if (slot->spaceId == spaceId) snap = slot->snapshot;
     }
     // 由新图库快照构造有效身份集合；空快照 → 空 keepIds → 全部撤销（不丢框）。
     std::vector<std::string> keepIds;
@@ -193,7 +205,7 @@ void injectGalleryToEngine(const std::shared_ptr<GallerySlot>& slot) {
         keepIds.reserve(entries.size());
         for (const FaceSearchEntry& e : entries) keepIds.push_back(e.id);
     }
-    g_engine->applyGalleryUpdate(std::move(snap), keepIds);
+    return g_engine->applyGalleryUpdate(std::move(snap), keepIds, spaceId);
 }
 
 const char* boolJson(bool v) { return v ? "true" : "false"; }
@@ -393,6 +405,7 @@ jstring bridge_loadProfile(JNIEnv* env, jclass /* clazz */,
 jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifestJson,
                               jstring baseDir, jstring currentAbi, jstring galleryDir) {
     try {
+        std::lock_guard<std::mutex> runtimeLock(state().runtimeMutex);
         const std::string manifest = readString(env, manifestJson);
         const std::string base = readString(env, baseDir);
         const std::string abi = readString(env, currentAbi);
@@ -458,11 +471,17 @@ jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifest
             auto pipe = std::make_shared<rk_core::RealtimeFacePipeline>(makeActivatedHooks(slot));
             reload = pipe->reload(manifest, base, abi, gallery);
             if (reload.ok) {
-                g_engine->setRealtimePipeline(pipe);
-                injectGalleryToEngine(slot);
+                if (!g_engine->setRealtimePipeline(pipe)) {
+                    return toJString(env, errJson("FACE_RUNTIME_COMMIT_REJECTED", "模型提交被拒绝，保留原运行态"));
+                }
+                if (!injectGalleryToEngine(slot, profile.templateSpaceId)) {
+                    return toJString(env, errJson("FACE_GALLERY_SPACE_MISMATCH", "生效模型与图库空间不一致"));
+                }
                 // 提交成功才消费 pending，避免 Engine 重建（若未来发生）时重复激活。
                 std::lock_guard<std::mutex> lock(s.mutex);
                 s.pendingActivation = false;
+                s.effectiveBaseDir = base;
+                s.effectiveSpaceId = profile.templateSpaceId;
             }
             // reload 失败：不替换旧管线、不消费 pending（保留参数以便重试）；
             // effective 仍由旧快照决定，不会留下「已生效」假象。
@@ -523,8 +542,16 @@ jstring bridge_activateRuntime(JNIEnv* env, jclass /* clazz */, jstring manifest
 
 // ========== replaceGallery ==========
 jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
-                              jobjectArray personIds, jobjectArray embeddings) {
+                              jstring templateSpaceId, jobjectArray personIds, jobjectArray embeddings) {
     try {
+        std::lock_guard<std::mutex> runtimeLock(state().runtimeMutex);
+        if (!templateSpaceId) {
+            return toJString(env, errJson("FACE_GALLERY_SPACE_INVALID", "必须显式指定图库空间"));
+        }
+        const std::string spaceId = readString(env, templateSpaceId);
+        if (!spaceId.empty() && !rk_core::FaceRuntimeManifest::isValidTemplateSpaceId(spaceId)) {
+            return toJString(env, errJson("FACE_GALLERY_SPACE_INVALID", "图库空间标识无效"));
+        }
         if (!personIds || !embeddings) {
             return toJString(env, errJson("FACE_GALLERY_NULL", "personIds/embeddings 为空"));
         }
@@ -590,26 +617,13 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
 
         std::string indexErr;
         auto& s = state();
-        std::size_t count = 0;
-        std::size_t dim = 0;
-        std::shared_ptr<const FaceSearchLinearIndex> gallerySnap;
-        {
-            std::lock_guard<std::mutex> lock(s.mutex);
-            // reset 仅在全部校验通过后替换索引；失败时保留旧库。
-            if (!s.gallery.reset(std::move(entries), kEmbeddingDim, indexErr)) {
-                return toJString(env, errJson("FACE_GALLERY_INVALID", indexErr));
-            }
-            s.galleryLoaded = true;
-            count = s.gallery.size();
-            dim = s.gallery.dim();
-            // 生成不可变快照供实时管线消费；模板/向量仅驻内存，绝不写入日志。
-            gallerySnap = std::make_shared<const FaceSearchLinearIndex>(s.gallery);
-            {
-                std::lock_guard<std::mutex> slotLock(s.gallerySlot->mutex);
-                s.gallerySlot->snapshot = gallerySnap;
-            }
-            rklog::logInfo(TAG, __func__, "gallery replaced count=" + std::to_string(count));
+        FaceSearchLinearIndex candidate;
+        if (!candidate.reset(std::move(entries), kEmbeddingDim, indexErr)) {
+            return toJString(env, errJson("FACE_GALLERY_INVALID", indexErr));
         }
+        const std::size_t count = candidate.size();
+        const std::size_t dim = candidate.dim();
+        auto gallerySnap = std::make_shared<const FaceSearchLinearIndex>(candidate);
         // 图库变化后同步到 Engine 的实时匹配接缝（Engine 未创建时忽略；激活时会重取快照）。
         if (g_engine) {
             // 删除人员 / 注册提交均经本 replaceGallery 路径。**原子提交（第三波审查 #4 残留竞态
@@ -624,7 +638,18 @@ jstring bridge_replaceGallery(JNIEnv* env, jclass /* clazz */,
             // 空图库 → keepIds 为空 → 全部清为 Unknown（不丢框）。
             // 注：Engine 侧 assignRealtimeIdentities 读库走 realtimeGalleryMu_（非 tracksMu_），
             // 故另有「读库→提交」更小窗口，已由 Engine 的图库代次作废机制闭合（见 applyGalleryUpdate）。
-            g_engine->applyGalleryUpdate(gallerySnap, keepIds);
+            if (!g_engine->applyGalleryUpdate(gallerySnap, keepIds, spaceId)) {
+                return toJString(env, errJson("FACE_GALLERY_SPACE_MISMATCH", "图库不属于当前生效模型，已保留旧库"));
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(s.mutex);
+            s.gallery = std::move(candidate);
+            s.galleryLoaded = true;
+            std::lock_guard<std::mutex> slotLock(s.gallerySlot->mutex);
+            s.gallerySlot->spaceId = spaceId;
+            s.gallerySlot->snapshot = std::move(gallerySnap);
         }
 
         return toJString(env, okJson(
@@ -1052,7 +1077,27 @@ jstring bridge_getRuntimeStatus(JNIEnv* env, jclass /* clazz */) {
 
 }  // anonymous namespace
 
+bool bindActiveFaceInferRequest(rk_core::FaceInferRequest& request, std::string& reason) {
+    auto& s = state();
+    std::lock_guard<std::mutex> runtimeLock(s.runtimeMutex);
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!g_engine || !g_engine->getRealtimeEffective() || s.effectiveBaseDir.empty()) {
+        reason = "missing_model";
+        return false;
+    }
+    request.faceProfileDir = s.effectiveBaseDir;
+    request.templateSpaceId = s.effectiveSpaceId;
+    request.gallerySnapshotSpaceId = s.effectiveSpaceId;
+    std::lock_guard<std::mutex> slotLock(s.gallerySlot->mutex);
+    request.gallerySnapshot = s.gallerySlot->spaceId == s.effectiveSpaceId ? s.gallerySlot->snapshot : nullptr;
+    if (!request.gallerySnapshot) request.gallerySnapshot = std::make_shared<const FaceSearchLinearIndex>();
+    request.galleryDir.clear();
+    reason.clear();
+    return true;
+}
+
 void applyPendingFaceRuntimeActivation() {
+    std::lock_guard<std::mutex> runtimeLock(state().runtimeMutex);
     // 仅在 Engine 已创建时由 jni/engine.cpp 调用；一次性消费 pending 参数。
     std::string manifest;
     std::string base;
@@ -1089,13 +1134,16 @@ void applyPendingFaceRuntimeActivation() {
         rklog::logWarn(TAG, __func__, "pending activation failed reason=" + r.reason);
         return;
     }
-    g_engine->setRealtimePipeline(pipe);
-    injectGalleryToEngine(slot);
+    if (!g_engine->setRealtimePipeline(pipe)) return;
+    const auto snapshot = pipe->snapshot();
+    if (!snapshot || !injectGalleryToEngine(slot, snapshot->profile.templateSpaceId)) return;
     {
         // 提交成功才消费 pending。
         auto& s = state();
         std::lock_guard<std::mutex> lock(s.mutex);
         s.pendingActivation = false;
+        s.effectiveBaseDir = base;
+        s.effectiveSpaceId = snapshot->profile.templateSpaceId;
     }
     rklog::logInfo(TAG, __func__, "pending activation applied");
 }
@@ -1109,7 +1157,7 @@ void registerFaceBridgeMethods(JniMethodRegistry& registry) {
          "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
          reinterpret_cast<void*>(bridge_activateRuntime)},
         {"replaceGallery",
-         "([Ljava/lang/String;[Ljava/nio/ByteBuffer;)Ljava/lang/String;",
+         "(Ljava/lang/String;[Ljava/lang/String;[Ljava/nio/ByteBuffer;)Ljava/lang/String;",
          reinterpret_cast<void*>(bridge_replaceGallery)},
         {"beginEnrollment",
          "(Ljava/lang/String;Ljava/nio/ByteBuffer;)Ljava/lang/String;",

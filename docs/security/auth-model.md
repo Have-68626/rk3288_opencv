@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-09-23
+as_of=2026-10-13
 -->
 
 # HTTP 认证授权模型（S-SEC-B09-001）
@@ -128,8 +128,13 @@ Windows 本地服务（`win_local_service`，HttpFacesServer，Winsock）提供�
 Bearer token 只阻止"无凭据"请求，无法阻止"浏览器自动携带凭据+发起的跨站写"——
 故对写方法须独立校验请求来源。
 
-**判定函数**：`HttpFacesServer::csrfCheckPasses`（`src/win/src/HttpFacesServer.cpp`），
-仅对**写方法（POST/PUT/DELETE）**生效；读方法与 GET 恒放行（无副作用）。
+**Host 前置门禁**：认证通过后，对所有方法验证唯一的 Host 头，仅接受
+`127.0.0.1`、`localhost`、`[::1]`（大小写不敏感，可带 1–65535 的数字端口）。
+缺失、重复、非回环名称或格式非法均返回 403，不分发静态资源、API 或流。
+DNS rebinding 可让浏览器仍报告同站来源，因此读取也必须经过这道门禁。
+
+**来源判定函数**：`HttpFacesServer::csrfCheckPasses`（`src/win/src/HttpFacesServer.cpp`），
+在 Host 门禁通过后，仅对**写方法（POST/PUT/DELETE）**生效；读方法与 GET 放行。
 
 决策树（按序判定，命中即返回）：
 
@@ -147,8 +152,8 @@ Bearer token 只阻止"无凭据"请求，无法阻止"浏览器自动携带凭�
 
 - `Sec-Fetch-Site` 由浏览器设置、**不可被 JS 伪造**，是比 Origin 更强的现代信号；
   缺失时回退 Origin（旧浏览器兼容）。
-- 回环 host **精确匹配**（非子串）：`localhost.evil.com`、`127.0.0.1.evil.com`
-  均不命中白名单 → 拒绝，防 DNS-rebinding 类绕过。
+- 请求 Host 与来源 host 均**精确匹配**（非子串）：`localhost.evil.com`、
+  `127.0.0.1.evil.com` 不命中白名单；请求 Host 独立校验阻止 DNS rebinding。
 - 忽略端口：本机回环任意端口均同机，且兼容 Vite 开发代理（浏览器源为
   `localhost:<devPort>`）。
 - 两头部均缺失 → 放行：保证 curl / API 客户端 / 旧浏览器写不被破坏（与 §3.3
@@ -196,6 +201,9 @@ Bearer token 只阻止"无凭据"请求，无法阻止"浏览器自动携带凭�
 | 同源写放行 | token=test 值 | `PUT /api/v1/settings` Bearer 有效 + `Origin: http://127.0.0.1:*` 或 `http://localhost:*` | **200** |
 | 同源 + Sec-Fetch-Site 放行 | token=test 值 | `PUT /api/v1/settings` Bearer 有效 + `Origin: http://127.0.0.1:8080` + `Sec-Fetch-Site: same-origin` | **200** |
 | 无头客户端写放行 | token=test 值 | `PUT /api/v1/settings` Bearer 有效，无 Origin/Sec-Fetch-Site | **200** |
+| DNS rebinding 拒绝 | 未启用认证 | 非回环 Host，即便带 same-site/same-origin 来源信号 | 所有路由 **403**，写操作无副作用 |
+| 本机 Host 保持兼容 | 未启用认证 | 回环名称、可选合法端口 | health **200** |
+| Host 非法或歧义 | 未启用认证 | 缺失、重复、非数字/越界端口、欺骗性后缀 | **403** |
 
 ## 6. 脱敏纪律
 

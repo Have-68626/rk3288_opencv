@@ -20,6 +20,14 @@
 #include <sstream>
 
 namespace rk_win {
+namespace {
+thread_local const FramePipeline* publishingPipeline = nullptr;
+struct PublicationScope {
+    const FramePipeline* previous;
+    explicit PublicationScope(const FramePipeline* pipeline) : previous(publishingPipeline) { publishingPipeline = pipeline; }
+    ~PublicationScope() { publishingPipeline = previous; }
+};
+}
 
 // 不可变运行时快照：recognizer/dnn/processor 共享所有权。
 // processLoop 与 applyCameraSettings 通过快照持有当前 runtime 整个调用期间，
@@ -58,18 +66,24 @@ FramePipeline::~FramePipeline() {
 }
 
 bool FramePipeline::initialize(const AppConfig& cfg) {
-    cfg_ = cfg;
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
+    // 活跃线程持有相机与运行时；重复初始化必须在任何资源突变前拒绝，避免覆盖 joinable 线程。
+    if (running_ || captureThread_.joinable() || processThread_.joinable()) return false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        cfg_ = cfg;
+    }
     camera_ = std::make_unique<MfCamera>();
     devices_ = MfCamera::enumerateDevices();
 
     // 日志初始化（保留）
-    if (!logger_.open(cfg_.log.logDir, cfg_.log.maxFileBytes, cfg_.log.maxRollFiles)) {
+    if (!logger_.open(cfg.log.logDir, cfg.log.maxFileBytes, cfg.log.maxRollFiles)) {
         std::lock_guard<std::mutex> lock(renderMu_);
         render_.status = "日志打开失败（将继续运行但不会落盘日志）";
     }
 
     // 装配运行时（委托 RuntimeBootstrap）——替代原有的内联构造
-    auto bootstrap = RuntimeBootstrap::build(cfg_);
+    auto bootstrap = RuntimeBootstrap::build(cfg);
     {
         std::lock_guard<std::mutex> lock(modelsMu_);
         activeModels_ = std::move(bootstrap.models);
@@ -77,7 +91,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
     auto snap = std::make_shared<RuntimeSnapshot>();
     snap->recognizer = std::move(bootstrap.recognizer);
     snap->dnn = std::move(bootstrap.detector);
-    snap->processor = std::make_shared<FrameProcessor>(snap->dnn.get(), snap->recognizer.get());
+    snap->processor = std::make_shared<FrameProcessor>(snap->recognizer.get());
     {
         std::lock_guard<std::mutex> lock(runtimeMu_);
         runtime_ = std::move(snap);
@@ -127,6 +141,7 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
 }
 
 void FramePipeline::shutdown() {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
     running_ = false;
     requestStopCamera();
     frameCv_.notify_all();
@@ -147,6 +162,7 @@ std::vector<CameraFormat> FramePipeline::formatsForDeviceIndex(int index) const 
 }
 
 bool FramePipeline::startCameraByIndex(int deviceIndex, int formatIndex) {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
     if (deviceIndex < 0) return false;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -311,7 +327,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 
     const auto td0 = clock::now();
     auto rt = runtimeSnapshot();
-    if (cfg_.dnn.enable && rt && rt->dnn && rt->dnn->ready()) {
+    if (rt && rt->dnn && rt->dnn->ready()) {
         // dnnMu_ 已确认无共享不变式可护（A3）：快照保活 dnn 共享所有权，resetForStream 现为空操作；
         // 删除无用锁不改变线程安全语义（B06-014）
         rt->dnn->resetForStream();
@@ -357,6 +373,7 @@ CameraSwitchResult FramePipeline::startCameraWithRollbackLocked(int deviceIndex,
 }
 
 CameraSwitchResult FramePipeline::applyCameraSettings(int deviceIndex, int width, int height, int fps, int maxTotalMs) {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
     CameraFormat desired;
     desired.width = width;
     desired.height = height;
@@ -434,7 +451,21 @@ void FramePipeline::setPreviewLayout(int previewW, int previewH, int previewScal
 
 // ── ReloadPolicy 热更新方法 ──
 
+void FramePipeline::applyModelAndCameraChanges(const AppConfig& previous, const AppConfig& next) {
+    const bool cameraChanged = previous.camera.preferredDeviceId != next.camera.preferredDeviceId ||
+        previous.camera.width != next.camera.width || previous.camera.height != next.camera.height ||
+        previous.camera.fps != next.camera.fps;
+    const bool modelChanged = previous.model.faceProfileDir != next.model.faceProfileDir ||
+        previous.model.recognition != next.model.recognition || previous.dnn.enable != next.dnn.enable ||
+        previous.dnn.modelPath != next.dnn.modelPath || previous.recognition.cascadePath != next.recognition.cascadePath ||
+        previous.recognition.databasePath != next.recognition.databasePath;
+    // 一域失败不吞掉另一域请求；两个方法各自负责保留对应的旧可用状态。
+    if (modelChanged) reloadRuntime(next);
+    if (cameraChanged) switchCamera(next);
+}
+
 void FramePipeline::switchCamera(const AppConfig& cfg) {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
     // 从 preferredDeviceId 解析设备索引（与 ensureCameraRunning 逻辑一致）
     int idx = 0;
     {
@@ -478,7 +509,7 @@ void FramePipeline::setRecognizerForTest(std::shared_ptr<IRecognizer> rec) {
     std::lock_guard<std::mutex> lock(runtimeMu_);
     if (!runtime_) return;
     runtime_->recognizer = std::move(rec);
-    runtime_->processor = std::make_shared<FrameProcessor>(runtime_->dnn.get(), runtime_->recognizer.get());
+    runtime_->processor = std::make_shared<FrameProcessor>(runtime_->recognizer.get());
 }
 
 int FramePipeline::enrollRemainingForTest() const {
@@ -542,45 +573,87 @@ void FramePipeline::updateDegradedState(bool bootstrapOk, const std::string& boo
     if (firstEntry) degraded_.degradedSinceIso = nowIso8601Local();
 }
 
-void FramePipeline::reloadRuntime(const AppConfig& cfg) {
-    cfg_ = cfg;
+std::string FramePipeline::runtimeReloadWarning() const {
+    std::lock_guard<std::mutex> lock(runtimeMu_);
+    return runtimeReloadWarning_;
+}
+
+bool FramePipeline::reloadRuntime(const AppConfig& cfg) {
+    // 发布回调仍可只读回查；同步重载会形成 publication → lifecycle 的反向锁序，必须提前拒绝。
+    if (publishingPipeline == this) return false;
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
+    // 候选装配会对同一 templateSpaceId 的加密库做整库 load；在途登记/清库帧的 run() 里同样
+    // 会经 recognizer->saveDb() 整库落盘。二者必须互斥：否则候选读到旧快照，提交后新库的
+    // 整库保存会把在途登记的人员覆盖掉（清库则可能被候选快照重新写回而复活人员）。
+    // 锁序：lifecycleMu_ → databaseMutationMu_ → publicationMu_（见头文件字段注释）。
+    std::unique_lock<std::mutex> databaseLock(databaseMutationMu_);
     auto bootstrap = RuntimeBootstrap::build(cfg);
+    if (!bootstrap.ok) {
+        // 候选装配失败不能丢弃仍可工作的配置、快照、模型清单与降级状态。
+        bool initialFailure = false;
+        {
+            std::scoped_lock lock(mu_, runtimeMu_, modelsMu_);
+            if (!runtime_) {
+                // 初次装配没有可保留的旧运行时，须与 initialize 一样发布降级诊断，不能伪装仍在启动。
+                auto failed = std::make_shared<RuntimeSnapshot>();
+                failed->recognizer = std::move(bootstrap.recognizer);
+                failed->dnn = std::move(bootstrap.detector);
+                failed->processor = std::make_shared<FrameProcessor>(failed->recognizer.get());
+                runtime_ = std::move(failed);
+                cfg_ = cfg;
+                activeModels_ = std::move(bootstrap.models);
+                initialFailure = true;
+            }
+            runtimeReloadWarning_ = bootstrap.warning;
+        }
+        if (initialFailure) updateDegradedState(false, bootstrap.warning);
+        {
+            std::lock_guard<std::mutex> lock(renderMu_);
+            render_.status = bootstrap.warning;
+        }
+        {
+            std::lock_guard<std::mutex> lock(eventsMu_);
+            if (events_) events_->append("model_init_failed", bootstrap.warning);
+        }
+        runtimeReloadGen_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    auto snap = std::make_shared<RuntimeSnapshot>();
+    snap->recognizer = std::move(bootstrap.recognizer);
+    snap->dnn = std::move(bootstrap.detector);
+    snap->processor = std::make_shared<FrameProcessor>(snap->recognizer.get());
+    // 装配在屏障外进行，旧预览可继续；提交与整帧发布互斥，不能在检查后释放再发布。
+    std::lock_guard<std::mutex> publicationLock(publicationMu_);
+    bool cancelledEnrollment = false;
     {
-        std::lock_guard<std::mutex> lock(modelsMu_);
+        // 配置读者使用 mu_；同一次成功提交发布配套的配置、运行时和模型快照。
+        std::scoped_lock lock(mu_, runtimeMu_, modelsMu_);
+        cfg_ = cfg;
+        runtime_ = std::move(snap);
+        // 登记与清库只作用于请求时的运行时；切换后必须重新发起，避免写入另一模型空间。
+        ++enrollEpoch_;
+        cancelledEnrollment = enrollRequested_.load();
+        enrollRequested_ = false;
+        enrollRemaining_ = 0;
+        clearDbRequested_ = false;
+        runtimeReloadWarning_.clear();
         activeModels_ = std::move(bootstrap.models);
         // Q4-4：重载成功后重跑 manifest 校验——activeModels_ 已替换为 reload 后的模型，
         // 校验随之重跑，使日志反映重载后的 hash/manifest_match（与 initialize 一致，纯诊断不阻塞）。
         checkModelManifestsLocked();
     }
-    // 构建不可变快照后原子替换：processLoop 已持有的旧快照继续存活到引用归零，
-    // 不会在 run() 执行中被销毁（并发 reload/enroll 无 UAF）
-    auto snap = std::make_shared<RuntimeSnapshot>();
-    snap->recognizer = std::move(bootstrap.recognizer);
-    snap->dnn = std::move(bootstrap.detector);
-    snap->processor = std::make_shared<FrameProcessor>(snap->dnn.get(), snap->recognizer.get());
-    {
-        std::lock_guard<std::mutex> lock(runtimeMu_);
-        runtime_ = std::move(snap);
-    }
     {
         std::lock_guard<std::mutex> lock(renderMu_);
-        render_.status = bootstrap.ok ? "模型运行时已重载" : bootstrap.warning;
+        // 旧画面已绘制身份标签，必须连同结构化身份清空，避免新空间沿用旧叠加像素。
+        render_.faces.clear();
+        render_.bgr.release();
+        render_.status = cancelledEnrollment ? "模型已切换，登记已取消" : "模型运行时已重载";
     }
-    // 与 initialize 同形：装配失败 ⇒ 一等化降级，成功 ⇒ 清除降级；失败另落 model_init_failed 事件。
-    // 注意本处**不改变**「重载必改变代次」的既有契约——下方 fetch_add 仍无条件执行（重载失败
-    // 也会递增代次，该行为与本次改动无关，仅在此如实说明，勿据代次递增推断装配成功）。
-    // ⚠️ 与 initialize 侧那处 append 的**关键差别**（勿照抄那边的不可达结论）：本函数的调用方是
-    //   win_local_service_main.cpp:189 与 HTTP 端点 `POST /api/v1/models/reload`
-    //   （JsonEndpointHandlers.cpp:184），两者执行时 `setEventLogger` 都已完成 ⇒ 本 append **可达**
-    //   （含相机 UI 应用——它在 WM_CREATE 里 setEventLogger 之后才启动该 HTTP 服务）。
-    updateDegradedState(bootstrap.ok, bootstrap.warning);
-    {
-        std::lock_guard<std::mutex> lock(eventsMu_);
-        if (events_ && !bootstrap.ok) events_->append("model_init_failed", bootstrap.warning);
-    }
+    updateDegradedState(true, bootstrap.warning);
     // 重载完成，代次 +1：成功重载必然改变代次（B06-020 治理项，禁止"伪成功"——
     // reload 端点据此向调用方证明重载确实发生，而非仅返回占位状态）。
     runtimeReloadGen_.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 void FramePipeline::updatePreviewLayout(int w, int h, const std::string& scaleMode) {
@@ -603,6 +676,8 @@ void FramePipeline::requestEnroll(const std::string& personId) {
 }
 
 void FramePipeline::requestClearDb() {
+    // 与运行时提交排序，不能在切换的作废窗口中把旧清库请求带给新库。
+    std::lock_guard<std::mutex> lock(mu_);
     clearDbRequested_ = true;
 }
 
@@ -842,7 +917,7 @@ void FramePipeline::processLoop() {
             hasFrame_ = false;
         }
 
-        // ── FPS 统计 + 自适应 stride ──
+        // FPS 与采集覆盖丢帧统计；识别仍逐帧执行，stride 固定为 1。
         frames++;
         const auto now = clock::now();
         const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsT).count();
@@ -861,12 +936,15 @@ void FramePipeline::processLoop() {
 
         // ── 构建控制命令 ──
         ControlCommand cmd;
-        cmd.clearDb = clearDbRequested_.exchange(false);
+        std::shared_ptr<RuntimeSnapshot> rt;
         // enroll 快照在 mu_ 锁内原子读取：enrollRequested_/personId/remaining/epoch 必须来自
         // 同一注册代次；若标志在锁外读、字段在锁内读（TOCTOU），新请求可能被旧命令的
         // 回写吃掉，epoch 守卫也会因"命令携带新 epoch + 旧标志"错配而失效。
         {
-            std::lock_guard<std::mutex> lock(mu_);
+            // 命令和运行时必须来自同一次提交，不能取完旧命令后搭配新识别器。
+            std::scoped_lock lock(mu_, runtimeMu_);
+            rt = runtime_;
+            cmd.clearDb = clearDbRequested_.exchange(false);
             cmd.enrollRequested = enrollRequested_.load();
             cmd.enrollPersonId = enrollPersonId_;
             cmd.enrollRemaining = enrollRemaining_;
@@ -875,11 +953,29 @@ void FramePipeline::processLoop() {
         cmd.detectStride = detectStride_;
         cmd.frameCounter = frameIndex_;
 
-        // ── 纯计算（检测/识别/清库/注册/背压跳过） ──
-        // 取当前运行时快照并持有整个 run()：reloadRuntime 并发替换不影响本帧处理
-        auto rt = runtimeSnapshot();
+        // ── 纯计算（检测/识别/清库/注册） ──
+        // 与命令配套的快照保活整个 run()；重载只会作废旧帧的登记计数回写。
         if (!rt) continue;
+        // 仅对会写库的命令（登记/清库）取数据库锁：与 reloadRuntime 的候选整库 load 互斥，
+        // 保证候选看到的是在途 saveDb 落盘之后的库（不丢在途登记，也不会清库后复活）。
+        // 纯识别不取此锁 ⇒ 候选装配期间旧预览继续发布。
+        // run() 一结束立即释放，再进 publication 屏障，维持
+        // lifecycleMu_ → databaseMutationMu_ → publicationMu_ 的锁序（不可倒置）。
+        const bool mutatesDatabase = cmd.clearDb || (cmd.enrollRequested && cmd.enrollRemaining > 0);
+        std::unique_lock<std::mutex> databaseLock(databaseMutationMu_, std::defer_lock);
+        if (mutatesDatabase) {
+            databaseLock.lock();
+            // 取锁后复核运行时仍是当前：等待期间可能已成功重载（reload 持此锁完成候选加载
+            // 与提交），旧快照不得再把结果写进已切换的空间。
+            if (rt != runtimeSnapshot()) continue;
+        }
         auto result = rt->processor->run(std::move(frameBuffer), cmd);
+        if (databaseLock.owns_lock()) databaseLock.unlock();
+
+        // 成功提交后，旧计算结果不得进入状态、日志或回调；屏障须覆盖下面整段发布。
+        std::lock_guard<std::mutex> publicationLock(publicationMu_);
+        if (rt != runtimeSnapshot()) continue;
+        PublicationScope publicationScope(this);
 
         // ── 同步已消费命令回成员变量 ──
         detectStride_ = result.consumedCommand.detectStride;
@@ -923,9 +1019,8 @@ void FramePipeline::processLoop() {
             }
             if (cmd.enrollRequested) {
                 // B06-018/RW3 遗留：epoch 失配时 status 须读当前 pending，避免显示旧注册。
-                // 回写守卫（上一节）已判定 run() 期间有新 requestEnroll 到达（enrollEpoch_ 递增），
-                // 此时 cmd/consumedCommand 仍是旧请求（personA）信息；改读当前 pending 状态
-                // （enrollRequested_/enrollPersonId_/enrollRemaining_）显示新请求。
+                // 失配表示 run() 期间有新登记或运行时已切换；旧命令的信息不得覆盖当前状态。
+                // 当前有 pending 时显示新请求，否则显示模型切换导致的取消。
                 // epoch 比较与失配分支读当前 pending 共持一把 mu_ 锁：enrollEpoch_ 与
                 // enrollRequested_/enrollPersonId_/enrollRemaining_ 同受 mu_ 保护，原两段相邻
                 // 独立锁块合并为一次获取，减少锁开销并消除两次取锁间请求到达的显示不一致。
@@ -938,11 +1033,8 @@ void FramePipeline::processLoop() {
                             render_.status = "注册中: " + enrollPersonId_
                                 + " 还需样本=" + std::to_string(enrollRemaining_);
                         } else {
-                            // 防御性死代码：epoch 失配意味着 run() 期间有新 requestEnroll 到达，
-                            // 新请求尚未经任何 run() 消费回写（epoch 匹配回写守卫已跳过旧命令），
-                            // 故本分支读到的 enrollRequested_ 恒为 true——"新请求已处理完成却失配"
-                            // 自相矛盾。仅作防御保留，不删除（保持最小改动）。
-                            render_.status = "注册完成: " + enrollPersonId_;
+                            // 成功切换已取消旧登记，不能把未完成采样呈现为注册完成。
+                            render_.status = "模型已切换，登记已取消";
                         }
                     }
                 }
@@ -958,6 +1050,9 @@ void FramePipeline::processLoop() {
                 }
             }
         }
+
+        // 回调可能再入快照读取接口，必须等渲染状态整帧提交并释放 renderMu_ 后执行。
+        sink_->notifyFaces(result.matches);
 
         // ── 序列通知 ──
         {

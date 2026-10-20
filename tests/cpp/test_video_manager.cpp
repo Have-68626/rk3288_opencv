@@ -1,4 +1,5 @@
 #include "VideoManager.h"
+#include "MppDecoder.h"
 #include "NativeLog.h"
 #include <chrono>
 #include <filesystem>
@@ -7,6 +8,106 @@
 #include <string>
 
 using namespace rk_core;
+
+namespace rk_core {
+struct VideoManagerTestPeer {
+    static void publish(VideoManager& manager, const cv::Mat& frame) {
+        std::lock_guard<std::mutex> lock(manager.frameMutex);
+        frame.copyTo(manager.latestFrame);
+        manager.hasNewFrame = true;
+    }
+};
+}
+
+bool test_video_manager_consumes_latest_frame_once() {
+    VideoManager manager;
+    cv::Mat output;
+    if (manager.getLatestFrame(output)) return false;
+    VideoManagerTestPeer::publish(manager, cv::Mat(2, 2, CV_8UC3, cv::Scalar(11, 22, 33)));
+    if (!manager.getLatestFrame(output) || output.at<cv::Vec3b>(0, 0)[0] != 11) return false;
+    if (manager.getLatestFrame(output)) return false;
+    // 新发布必须恢复可读，防止只把标记永久清零的伪修复。
+    VideoManagerTestPeer::publish(manager, cv::Mat(2, 2, CV_8UC3, cv::Scalar(44, 55, 66)));
+    if (!manager.getLatestFrame(output) || output.at<cv::Vec3b>(0, 0)[0] != 44) return false;
+    return !manager.getLatestFrame(output);
+}
+
+bool test_video_manager_close_discards_pending_frame() {
+    VideoManager manager;
+    VideoManagerTestPeer::publish(manager, cv::Mat(2, 2, CV_8UC3, cv::Scalar(11, 22, 33)));
+    manager.close();
+    cv::Mat output;
+    return !manager.getLatestFrame(output);
+}
+
+bool test_mpp_nv12_conversion_preserves_uv_and_strides() {
+    for (const int stride : {4, 8}) {
+        const int width = 4, height = 4, verticalStride = stride;
+        std::vector<uint8_t> pixels(static_cast<std::size_t>(stride * verticalStride * 3 / 2), 0);
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x) pixels[y * stride + x] = 81;
+        for (int y = 0; y < height / 2; ++y)
+            for (int x = 0; x < width; x += 2) {
+                pixels[stride * verticalStride + y * stride + x] = 90;
+                pixels[stride * verticalStride + y * stride + x + 1] = 240;
+            }
+        cv::Mat output;
+        if (!MppDecoder::convertNv12ToBgr(pixels.data(), width, height, stride, verticalStride, output)) return false;
+        if (output.rows != height || output.cols != width || output.type() != CV_8UC3) return false;
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x) {
+                const auto value = output.at<cv::Vec3b>(y, x);
+                if (value[2] < 250 || value[0] > 5 || value[1] > 5) return false;
+            }
+    }
+    return true;
+}
+
+bool test_mpp_nv12_conversion_rejects_invalid_layout() {
+    std::vector<uint8_t> pixels(48, 128);
+    cv::Mat output;
+    return !MppDecoder::convertNv12ToBgr(nullptr, 4, 4, 4, 4, output) &&
+        !MppDecoder::convertNv12ToBgr(pixels.data(), 3, 4, 4, 4, output) &&
+        !MppDecoder::convertNv12ToBgr(pixels.data(), 4, 3, 4, 4, output) &&
+        !MppDecoder::convertNv12ToBgr(pixels.data(), 4, 4, 2, 4, output) &&
+        !MppDecoder::convertNv12ToBgr(pixels.data(), 4, 4, 4, 2, output);
+}
+
+#if defined(RK_ACCEL_TEST_MPP_STUB)
+// 驱动替身仅提供合成 NV12，packet 数据生命周期仍由 SDK 原始 mpp_packet.c 执行。
+void rkTestMppAllowFrames(bool value);
+unsigned rkTestMppCreates();
+bool rkTestMppPacketValid();
+bool test_video_manager_mpp_requires_request_and_decoded_frame() {
+    const auto path = std::filesystem::temp_directory_path() /
+        ("rk_mpp_synthetic_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".bin");
+    struct RemoveSynthetic {
+        std::filesystem::path path;
+        ~RemoveSynthetic() { std::error_code ignored; std::filesystem::remove(path, ignored); }
+    } cleanup{path};
+    { std::ofstream output(path, std::ios::binary); output << "test synthetic packet"; }
+    const unsigned before = rkTestMppCreates();
+    {
+        VideoManager disabled;
+        disabled.setUseMpp(false);
+        disabled.open(path.string());
+        disabled.close();
+        if (rkTestMppCreates() != before) return false;
+    }
+    rkTestMppAllowFrames(false);
+    VideoManager enabled;
+    enabled.setUseMpp(true);
+    if (!enabled.open(path.string()) || !enabled.mppRequested() || enabled.mppEffective()) return false;
+    rkTestMppAllowFrames(true);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!enabled.mppEffective() && std::chrono::steady_clock::now() < until) std::this_thread::yield();
+    const bool actualFrame = enabled.mppEffective() && enabled.mppDecodedFrames() > 0;
+    cv::Mat decoded;
+    const bool readable = enabled.getLatestFrame(decoded) && decoded.rows == 4 && decoded.cols == 4;
+    enabled.close();
+    return actualFrame && readable && !enabled.mppEffective() && enabled.mppDecodedFrames() == 0 && rkTestMppPacketValid();
+}
+#endif
 
 bool test_video_manager_is_url_source_valid_urls() {
     if (!VideoManager::isUrlSource("http://example.com/video.mp4")) return false;

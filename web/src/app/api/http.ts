@@ -174,9 +174,9 @@ export async function fetchJson<T>(
     const hit = getFromCache(init.cacheStrategy, cacheKey)
     if (hit !== undefined) {
       log(init.logLevel, 'debug', '[api] cache hit', cacheKey)
-      if (isValidEnvelope(hit)) { return hit as T }
-      // 缓存数据格式不匹配（版本变更），忽略缓存
-      log(init.logLevel, 'warn', '[api] cache format mismatch, discarding')
+      if (isValidEnvelope(hit) && hit.ok === true) { return hit as T }
+      // 旧失败信封与损坏缓存均须重新请求，否则用户重试仍会看到过期的失败状态。
+      log(init.logLevel, 'warn', '[api] 缓存不是成功信封，重新请求')
     }
   }
 
@@ -188,12 +188,11 @@ export async function fetchJson<T>(
     logLevel: init.logLevel,
   })
 
-  if (init.method?.toUpperCase() === 'GET' && init.cacheStrategy !== 'no-cache') {
-    putToCache(init.cacheStrategy, cacheKey, json)
-  }
-
   if (!isValidEnvelope(json)) {
     throw new ApiError('invalid_response', 'API 响应缺少统一 envelope 结构')
+  }
+  if (init.method?.toUpperCase() === 'GET' && init.cacheStrategy !== 'no-cache' && json.ok === true) {
+    putToCache(init.cacheStrategy, cacheKey, json)
   }
   return json as T
 }

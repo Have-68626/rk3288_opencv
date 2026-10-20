@@ -3,108 +3,131 @@ package com.example.rk3288_opencv;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import java.lang.reflect.Proxy;
+import java.net.URI;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 final class FfmpegRtmpPusher {
-    private volatile Object session;
+    private Run active;
+
+    private static final class Run {
+        final Callback callback;
+        Object session;
+        boolean finished;
+        boolean cancelRequested;
+
+        Run(Callback callback) { this.callback = callback; }
+    }
 
     void start(@NonNull String input, @NonNull String rtmpUrl, @Nullable Callback callback) {
+        startInternal(input, rtmpUrl, 0, 0, 0, callback);
+    }
+
+    void startCamera(@NonNull String input, int width, int height, int fps,
+                     @NonNull String rtmpUrl, @Nullable Callback callback) {
+        startInternal(input, rtmpUrl, width, height, fps, callback);
+    }
+
+    private synchronized void startInternal(String input, String rtmpUrl,
+                                            int width, int height, int fps, Callback callback) {
         stop();
-        // Check if input is a file/url or a raw pipe
-        boolean isRaw = input.startsWith("pipe:");
-        
-        java.util.List<String> cmdArgs = new java.util.ArrayList<>();
-        
-        if (!isRaw) {
-            // For files/network streams, loop indefinitely and read at native framerate
-            cmdArgs.add("-stream_loop");
-            cmdArgs.add("-1");
-            cmdArgs.add("-re");
-            cmdArgs.add("-i");
-            cmdArgs.add(input);
-        } else {
-            // For raw input (e.g. NV21 from camera via pipe)
-            // Assumes 640x480 NV21 @ 30fps
-            cmdArgs.add("-f");
-            cmdArgs.add("rawvideo");
-            cmdArgs.add("-vcodec");
-            cmdArgs.add("rawvideo");
-            cmdArgs.add("-s");
-            cmdArgs.add("640x480");
-            cmdArgs.add("-r");
-            cmdArgs.add("30");
-            cmdArgs.add("-pix_fmt");
-            cmdArgs.add("nv21");
-            cmdArgs.add("-i");
-            cmdArgs.add(input);
-        }
-
-        // Encoding settings for RTMP (FLV container, H.264 video, AAC audio)
-        // Note: -c copy is fast for files, but for raw we need -c:v libx264 or similar
-        // Since we want to support both, we need logic.
-        // For this implementation, we assume Mock Source (File) uses copy if possible, 
-        // or re-encodes if necessary. To be safe and loop-able, we might need re-encoding 
-        // if the source codecs don't match FLV requirements.
-        // But the requirement says "Mock mode... loop playback".
-        // Let's stick to -c copy for file inputs to be safe on CPU, 
-        // assuming users provide compatible MP4/FLV. 
-        // If not, FFmpeg will fail, which is acceptable for "Mock".
-        
-        if (isRaw) {
-             cmdArgs.add("-c:v");
-             cmdArgs.add("libx264");
-             cmdArgs.add("-preset");
-             cmdArgs.add("ultrafast");
-             cmdArgs.add("-tune");
-             cmdArgs.add("zerolatency");
-             cmdArgs.add("-f");
-             cmdArgs.add("flv");
-        } else {
-             cmdArgs.add("-c");
-             cmdArgs.add("copy");
-             cmdArgs.add("-f");
-             cmdArgs.add("flv");
-        }
-        
-        cmdArgs.add(rtmpUrl);
-
-        // Shell 拼接代码已删除（—— 审计 P2.16）
-        // 使用 FFmpeg 参数列表方式传递，避免命令注入
-        // 参数已经由 start() 方法的参数列表直接传入 executeAsync(String[]...)
-        // (原 StringBuilder 循环构建 cmd 为死代码，从未使用)
-
+        Run run = new Run(callback);
+        active = run;
         try {
+            URI target = new URI(rtmpUrl);
+            if (!("rtmp".equalsIgnoreCase(target.getScheme())
+                    || "rtmps".equalsIgnoreCase(target.getScheme())) || target.getHost() == null) {
+                finish(run, false, "INVALID_RTMP_URL");
+                return;
+            }
+            List<String> arguments = new ArrayList<>(Arrays.asList("-hide_banner", "-loglevel", "quiet"));
+            if (width > 0 && height > 0 && fps > 0) {
+                // 回环输入由应用独占，明确像素布局和尺寸，避免旧 pipe:0 空读及 NV21 误解码。
+                URI camera = new URI(input);
+                if (!"tcp".equals(camera.getScheme()) || !"127.0.0.1".equals(camera.getHost())) {
+                    finish(run, false, "INVALID_CAMERA_INPUT");
+                    return;
+                }
+                arguments.addAll(Arrays.asList("-f", "rawvideo", "-pixel_format", "rgba",
+                        "-video_size", width + "x" + height, "-framerate", Integer.toString(fps),
+                        "-i", input, "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-tune", "zerolatency", "-pix_fmt", "yuv420p"));
+            } else {
+                if (input == null || input.isEmpty() || input.startsWith("pipe:")) {
+                    finish(run, false, "INVALID_INPUT");
+                    return;
+                }
+                arguments.addAll(Arrays.asList("-stream_loop", "-1", "-re", "-i", input, "-c", "copy"));
+            }
+            arguments.addAll(Arrays.asList("-f", "flv", rtmpUrl));
             Class<?> kit = Class.forName("com.arthenica.ffmpegkit.FFmpegKit");
-            session = kit.getMethod("executeAsync", String[].class).invoke(null, (Object) cmdArgs.toArray(new String[0]));
-            if (callback != null) {
-                callback.onCompleted(true, "STARTED");
+            Class<?> complete = Class.forName("com.arthenica.ffmpegkit.FFmpegSessionCompleteCallback");
+            Object listener = Proxy.newProxyInstance(complete.getClassLoader(), new Class<?>[]{complete},
+                    (proxy, method, values) -> {
+                        if ("apply".equals(method.getName())) {
+                            complete(run, values[0]);
+                            return null;
+                        }
+                        if ("hashCode".equals(method.getName())) return System.identityHashCode(proxy);
+                        if ("equals".equals(method.getName())) return proxy == values[0];
+                        return "RtmpSessionCallback";
+                    });
+            // 官方数组接口保留参数边界；仅实际会话回调可报告完成，返回 session 不代表推流成功。
+            Object session = kit.getMethod("executeWithArgumentsAsync", String[].class, complete)
+                    .invoke(null, arguments.toArray(new String[0]), listener);
+            if (!run.finished && active == run) {
+                run.session = session;
+                if (run.cancelRequested) cancel(session);
             }
-        } catch (Throwable e) {
-            session = null;
-            if (callback != null) {
-                callback.onCompleted(false, e.getClass().getSimpleName());
-            }
+        } catch (java.net.URISyntaxException e) {
+            finish(run, false, "INVALID_RTMP_URL");
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            // 底层异常可能携带带鉴权的输入地址，只向 UI 返回固定码。
+            finish(run, false, "START_FAILED");
         }
     }
 
-    void stop() {
-        Object s = session;
-        session = null;
-        if (s != null) {
-            try {
-                s.getClass().getMethod("cancel").invoke(s);
-            } catch (Throwable ignored) {
+    private void complete(Run run, Object session) {
+        try {
+            Object result = session.getClass().getMethod("getReturnCode").invoke(session);
+            if (result == null) {
+                finish(run, false, "EXECUTION_FAILED");
+                return;
             }
+            int code = ((Number) result.getClass().getMethod("getValue").invoke(result)).intValue();
+            finish(run, code == 0, code == 255 ? "CANCELLED" : Integer.toString(code));
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            finish(run, false, "EXECUTION_FAILED");
         }
     }
 
-    // visible for testing
+    private void finish(Run run, boolean success, String code) {
+        synchronized (this) {
+            if (active != run || run.finished) return;
+            run.finished = true;
+            run.session = null;
+            active = null;
+        }
+        if (run.callback != null) run.callback.onCompleted(success, code);
+    }
+
+    synchronized void stop() {
+        if (active == null || active.finished || active.cancelRequested) return;
+        active.cancelRequested = true;
+        if (active.session != null) cancel(active.session);
+    }
+
+    private static void cancel(Object session) {
+        try {
+            session.getClass().getMethod("cancel").invoke(session);
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+        }
+    }
+
     static String escapeFFmpegArgument(@NonNull String arg) {
-        if (arg == null) {
-            return "''";
-        }
-        return "'" + arg.replace("'", "'\\''") + "'";
+        return arg == null ? "''" : "'" + arg.replace("'", "'\\''") + "'";
     }
 
     interface Callback {

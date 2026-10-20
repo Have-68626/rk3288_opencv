@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-08-13
+as_of=2026-10-18
 -->
 
 # 安全策略（Security Policy）
@@ -57,7 +57,7 @@ as_of=2026-08-13
 | `docs/security/auth-model.md` | REST API 认证授权模型（冻结）+ CSRF 决策树（冻结） |
 | `docs/security/face-db-encryption.md` | FaceDatabase 加密规格、密钥边界、迁移与回滚（冻结） |
 | `docs/security/enablement-plan.md` | 最小启用方案：默认开/关清单 + 启用建议 + 验收说明 |
-| `docs/security/civetweb-ssl-note.md` | CivetWeb SSL 校验归档说明（当前不适用） |
+| [CivetWeb账本](src/win/third_party/civetweb/LEDGER.md#tls适用性与重新接入要求) | 未编入当前目标；TLS重新接入要求 |
 
 ## 变更纪律
 

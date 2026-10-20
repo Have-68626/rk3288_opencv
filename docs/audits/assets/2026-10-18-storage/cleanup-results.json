@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-18",
+  "scope": "相对路径及准确执行回执；逻辑大小不等于物理净释放，移动不计删除收益",
+  "original_cleanup": [
+    {
+      "manifest_sha256": "0e0de2a2ee7934a05f196939c02ac16299b595a5c59af652e85d57402e510e1f",
+      "status": "deleted",
+      "deleted_files": 52,
+      "deleted_logical_bytes": 1223815206,
+      "part_of_original_repository_savings": true,
+      "targets": [
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_48583089994600/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_48534251171000/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_47962169941200/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_47511271661800/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_47459078808000/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_47090974644300/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_47037520928400/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_46504876569700/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_46037881935800/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_46001852397200/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_45902962741900/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_43687473248300/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_43667118528400/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_42295617257700/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_41908234150400/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_41193595238700/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_41125030411300/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_40292420945600/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_40186337245400/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_37486681282600/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_21863226051900/oversize.jpg",
+        "build_fp15_gtest/tmpprobe/rk3288_opencv_mock_preflight_tests/oversize_21780186858900/oversize.jpg",
+        "build_fp15_gtest/rk3288_opencv_mock_preflight_tests/oversize_46667409062400/oversize.jpg",
+        "web/node_modules/.vite"
+      ],
+      "volume_free_bytes_before": 232620400640,
+      "volume_free_bytes_after": 233844383744
+    },
+    {
+      "manifest_sha256": "2575da494dddc0bc9e193f92e152475ba0ccce77bae8d51b2e3b56eb2ea23ba0",
+      "status": "deleted",
+      "deleted_files": 4176,
+      "deleted_logical_bytes": 3543754750,
+      "part_of_original_repository_savings": true,
+      "targets": [
+        "app/.cxx/Debug/5m54494f",
+        "app/build/intermediates/cxx/Debug/5m54494f",
+        "app/build/intermediates/cmake",
+        "graphify-out/2026-08-08",
+        "graphify-out/2026-08-10",
+        "graphify-out/2026-08-11",
+        "graphify-out/2026-08-13",
+        "graphify-out/2026-09-11",
+        "graphify-out/2026-09-12",
+        "graphify-out/2026-09-15",
+        "graphify-out/2026-09-16",
+        "graphify-out/2026-09-17",
+        "graphify-out/2026-09-18",
+        "graphify-out/2026-09-20",
+        "graphify-out/2026-09-23",
+        "graphify-out/2026-09-24",
+        "graphify-out/2026-09-26",
+        "graphify-out/2026-09-27",
+        "graphify-out/2026-09-29",
+        "graphify-out/2026-09-30",
+        "graphify-out/2026-10-01",
+        "graphify-out/2026-10-12",
+        "graphify-out/2026-10-13"
+      ],
+      "volume_free_bytes_before": 233262415872,
+      "volume_free_bytes_after": 236281860096
+    }
+  ],
+  "original_deleted_files": 4228,
+  "original_deleted_logical_bytes": 4767569956,
+  "own_generated_cleanup": [
+    {
+      "status": "partial_then_resumed",
+      "deleted_files": 10337,
+      "deleted_logical_bytes": 204124742,
+      "part_of_original_repository_savings": false,
+      "reason": "自建Git克隆对象只读位；保持原失败回执，重新冻结剩余清单续批"
+    },
+    {
+      "status": "interrupted_then_reconciled",
+      "deleted_files": 11967,
+      "deleted_logical_bytes": 150171205,
+      "part_of_original_repository_savings": false,
+      "reason": "低速预检进程精确停止后的清单/实际存在性对账；所有剩余文件重新核对摘要和mtime"
+    },
+    {
+      "manifest_sha256": "bc15c4e57323c01da7bd2e272bc09d252c09d97537e810cf7407454c5ccd4422",
+      "status": "deleted",
+      "deleted_files": 21023,
+      "deleted_logical_bytes": 57214373,
+      "part_of_original_repository_savings": false,
+      "targets": [
+        "cache/builds/ffmpegkit-6-lts-verified",
+        "cache/builds/ffmpegkit-java-6-lts"
+      ],
+      "volume_free_bytes_before": 235345989632,
+      "volume_free_bytes_after": 235765751808
+    },
+    {
+      "manifest_sha256": "564ee3af0d722cb9d96c3bba87efbc9ec06b94c738230a3b76880dc17e7c5b91",
+      "status": "deleted",
+      "deleted_files": 42334,
+      "deleted_logical_bytes": 381240721,
+      "part_of_original_repository_savings": false,
+      "targets": [
+        "cache/builds/ffmpegkit-6-lts-offline"
+      ],
+      "volume_free_bytes_before": 235345743872,
+      "volume_free_bytes_after": 235883507712
+    }
+  ],
+  "own_generated_deleted_files": 85661,
+  "own_generated_deleted_logical_bytes": 792751041,
+  "own_generated_file_links_removed": 8,
+  "link_targets_unchanged_during_unlink": true,
+  "link_targets_subsequently_included_in_approved_regular_file_batch": true,
+  "graph_archive": {
+    "path": "cache/reports/graphify/2026-10-18-history.zip",
+    "bytes": 14579600,
+    "sha256": "daa60d6e2de29322464795c42222bfa34c13b1f5fba1d8b70001b9e540c03d5b",
+    "all_members_and_crc_verified": true
+  },
+  "android_negative_inputs": {
+    "path": "cache/reports/android-builds/ncnn-off-5m54494f",
+    "bytes": 32187601,
+    "preservation": "核心库逐字节，配置白名单及原SHA；不保证完整旧构建树可恢复"
+  }
+}

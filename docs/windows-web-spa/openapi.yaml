@@ -396,6 +396,7 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
 
   /api/faces:
+    description: 尚无渲染帧时返回 503 frame_unavailable；Pipeline 不存在时返回 503 pipeline_unavailable。
     get:
       summary: 当前帧人脸快照
       description: |
@@ -440,10 +441,13 @@ paths:
         - `supportedModels`：静态受支持模型注册表，每项含 `id` / `displayName` / `taskType` /
           `notes` / `recommendedFor`（推荐场景：`high_speed` / `balanced`）；
         - `activeModels`：运行期活动模型，每项含 `id` / `displayName` / `taskType` / `backend` /
-          `status`（`loaded` / `failed` / `missing`）/ `isInUse`，并按需含 `hash` /
+          `status`（`loaded` / `failed` / `missing` / `disabled`）/ `isInUse`，并按需含 `hash` /
           `modelVersion` / `lastError`；
         - `summary`：计数汇总 `totalSupported` / `totalConfigured` / `totalLoaded` /
           `totalFailed` / `totalMissing`。
+
+        `disabled` 表示配置关闭或当前平台不支持；不计入 `totalMissing` / `totalFailed`。
+        前端从 `activeModels` 单独统计已禁用项。
 
         注意：`supportedModels` 是静态注册表（当前恒为 `cascade_frontalface` 与
         `dnn_face_detector` 两条），`activeModels` 才是本次运行期实际配置并装载的模型。
@@ -801,6 +805,11 @@ components:
       additionalProperties: false
       description: 模型加载配置（缺省时全部回退默认值）
       properties:
+        faceProfileDir:
+          type: string
+          description: 人脸 profile 目录（含 manifest.json）；非空时按清单装配检测与识别，精度与模板空间由清单决定；留空沿用旧模型入口
+          default: ""
+          example: "storage/profiles/face"
         detection:
           type: string
           description: 检测模型标识

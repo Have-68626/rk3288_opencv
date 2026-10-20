@@ -15,6 +15,7 @@ namespace {
 bool probeCascadePath(std::filesystem::path& out) {
     const std::filesystem::path cwd = std::filesystem::current_path();
     for (const auto& cand : {
+             std::filesystem::path(RK_TEST_SOURCE_ROOT) / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml",
              cwd / "assets" / "lbpcascade_frontalface.xml",
              cwd.parent_path() / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml",
              cwd / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml"}) {

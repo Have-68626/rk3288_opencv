@@ -319,14 +319,25 @@ FaceInferStageStatus FaceInferStages::computeEmbedding(const FaceInferRequest& r
 
 FaceInferStageStatus FaceInferStages::loadGallery(const FaceInferRequest& req, FaceInferContext& ctx) {
     // §I3：内存快照优先——req.gallerySnapshot 非空时直接绑定该不可变索引，**不读磁盘**
-    //（Android 侧已解密并经 replaceGalleryForSpace 建立的内存图库）。旧明文目录夹具仅保留
+    //（Android 侧已解密并经 replaceGallery 显式绑定空间的内存图库）。旧明文目录夹具仅保留
     // 研究兼容；不得把 Android 加密目录交给 loadGalleryDir。
     if (req.gallerySnapshot) {
+        if (req.gallerySnapshotSpaceId != req.templateSpaceId) {
+            return failStatus("gallery_load", "gallery_space_mismatch");
+        }
         ctx.gallerySnapshot = req.gallerySnapshot;
         return okStatus();
     }
     std::string galleryErr;
-    if (!loadGalleryDir(req.galleryDir, ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
+    std::filesystem::path dir(req.galleryDir);
+    if (!req.templateSpaceId.empty() && !req.galleryDir.empty()) {
+        if (req.templateSpaceId.size() != 64 || req.templateSpaceId.find_first_not_of("0123456789abcdef") != std::string::npos) {
+            return failStatus("gallery_load", "gallery_space_invalid");
+        }
+        dir /= "spaces";
+        dir /= req.templateSpaceId;
+    }
+    if (!loadGalleryDir(dir.string(), ctx.galleryEntries, ctx.galleryWarnings, galleryErr)) {
         ctx.galleryEntries.clear();
         return failStatus("gallery_load", galleryErr.empty() ? "gallery_load_failed" : galleryErr);
     }

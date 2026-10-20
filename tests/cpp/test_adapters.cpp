@@ -3,6 +3,8 @@
 #include "adapters/MobileFaceNetAdapter.h"
 
 #include <cstdlib>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -158,4 +160,45 @@ TEST(AdapterTest, MobileFaceNetDefaultsMatchShippedModelFiles) {
                         "注意：这不是「通过」——CI 中本用例不提供任何保护；"
                         "默认值漂移由 MobileFaceNetNodeNamesAndDimAreConfigurable 在 CI 拦截。";
     }
+}
+
+// F32：用真实适配器和带常量偏置的小网络保留缩放差异，避免 L2 将 norm 错误抵消。
+TEST(AdapterTest, MobileFaceNetUsesApprovedParentRgbNormalization) {
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("rk_mobile_preprocess_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    struct Cleanup {
+        std::filesystem::path dir;
+        ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(dir, ignored); }
+    } cleanup{dir};
+    {
+        std::ofstream param(dir / "probe.param");
+        std::ofstream bin(dir / "probe.bin", std::ios::binary);
+        param << "7767517\n3 3\nInput input 0 1 in0\n"
+                 "Pooling pool 1 1 in0 pooled 0=1 4=1\n"
+                 "InnerProduct probe 1 1 pooled out0 0=4 1=1 2=12\n";
+        const unsigned int tag = 0;
+        const float weights[12] = {1,0,0, 0,1,0, 0,0,1, 0,0,0};
+        const float bias[4] = {0,0,0,1};
+        bin.write(reinterpret_cast<const char*>(&tag), sizeof(tag));
+        bin.write(reinterpret_cast<const char*>(weights), sizeof(weights));
+        bin.write(reinterpret_cast<const char*>(bias), sizeof(bias));
+        ASSERT_TRUE(param.good());
+        ASSERT_TRUE(bin.good());
+    }
+    MobileFaceNetAdapter adapter;
+    adapter.setExpectedEmbeddingDim(4);
+    std::string err;
+    ASSERT_TRUE(adapter.load((dir / "probe.param").string(), err)) << err;
+    const auto output = adapter.embed(cv::Mat(112, 112, CV_8UC3, cv::Scalar(0, 128, 255)), err);
+    ASSERT_TRUE(output.has_value()) << err;
+    ASSERT_EQ(output->size(), 4u);
+    const float green = 0.5f / 127.5f;
+    const float length = std::sqrt(3.0f + green * green);
+    const float expected[4] = {1.0f / length, green / length, -1.0f / length, 1.0f / length};
+    for (std::size_t i = 0; i < 4; ++i) EXPECT_NEAR((*output)[i], expected[i], 1e-5f) << "通道 " << i;
+#else
+    GTEST_SKIP() << "真实预处理回归需要 RK_HAVE_NCNN=1；未启用的构建不提供本项行为覆盖";
+#endif
 }

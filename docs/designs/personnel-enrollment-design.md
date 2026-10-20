@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=design
 status=living
-as_of=2026-09-26
+as_of=2026-10-18
 -->
 
 # 人员注册与权限系统顶层设计（Win + Android 双端）
@@ -17,6 +17,8 @@ as_of=2026-09-26
 - Windows 侧已经形成 `本地服务 + Web SPA` 主线，提供本地 REST API、配置热重载、识别结果展示、模型管理等能力。
 - Android 侧已经具备摄像头权限状态机、安全模式和独立的 `FeatureTemplateEncryptedStore` 工具；且该存储工具**已接入人脸注册按钮与人员工作流**——调用链为 `MainActivity.bindModelManagementUi` → `btnRegisterFace` → `MainActivity.showFaceRegisterDialog` → `MainActivity.startEnrollment` → `enrollmentRepository().add(...)` → `AndroidEnrollmentRepository` → `FeatureTemplateEncryptedStore.write`/`readAndConsume`（符号级证据与边界见 `docs/designs/android-enrollment-design.md`）。
 - C++ 侧已有共享的人脸检测、识别、跟踪与注册原型，但当前人员数据模型仍过于简单，只有 `personId + 均值模板 + 样本数`，无法支撑完整人员生命周期和权限治理。
+
+Android现行模板空间、文件布局与恢复约束由[Android注册设计](android-enrollment-design.md#21-加密模板仓库-androidenrollmentrepository任务-16)维护；本顶层文档不重复定义目录或扩大双端互通能力。
 
 ### 1.1 当前落地边界
 

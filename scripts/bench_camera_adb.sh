@@ -48,8 +48,16 @@ wait_for_lines() {
   deadline=$((SECONDS + timeout_sec))
   while (( SECONDS < deadline )); do
     local dump
-    dump="$("${adb_bin}" "${adb_args[@]}" logcat -d -v brief -s "${log_tag}:I" 2>/dev/null || true)"
-    if [[ -n "${dump}" ]]; then
+    if ! dump="$("${adb_bin}" "${adb_args[@]}" logcat -d -v brief -s "${log_tag}:I" 2>/dev/null)"; then
+      echo 'BENCH_QUERY_FAILED' >&2
+      return 1
+    fi
+    # 非空分区标题和部分指标不能作为本轮有效样本。
+    local complete=1 key
+    for key in TTFF_MS CAPTURE_OK CAPTURE_FAIL CAMERA_SERVICE_RESTART; do
+      if [[ -z "$(printf '%s\n' "${dump}" | extract_int "${key}")" ]]; then complete=0; break; fi
+    done
+    if [[ "${complete}" -eq 1 ]]; then
       printf "%s\n" "${dump}"
       return 0
     fi
@@ -60,23 +68,26 @@ wait_for_lines() {
 
 extract_int() {
   local key="$1"
-  awk -v k="${key}" 'match($0, k"=([0-9]+)", a) {print a[1]; exit 0}' || true
+  awk -v k="${key}" '{for (i=1;i<=NF;i++) {split($i,a,"="); if (a[1]==k && a[2]~/^[+]?[0-9]+$/) {sub(/^[+]/,"",a[2]); print a[2]; exit}}}'
 }
 
 # Q-CQ-B08-008：样本计数，零样本时不得宣称完成。
 captured_samples=0
 
 for ((i=1; i<=iterations; i++)); do
-  "${adb_bin}" "${adb_args[@]}" logcat -c >/dev/null 2>&1 || true
-  "${adb_bin}" "${adb_args[@]}" shell am force-stop "${package_name}" >/dev/null 2>&1 || true
-  "${adb_bin}" "${adb_args[@]}" shell am start -n "${package_name}/${activity_name}" --ez BENCH true --ei BENCH_ITERATION "${i}" >/dev/null 2>&1 || true
+  if ! "${adb_bin}" "${adb_args[@]}" logcat -c >/dev/null 2>&1; then echo 'BENCH_CLEAR_FAILED' >&2; exit 1; fi
+  if ! "${adb_bin}" "${adb_args[@]}" shell am force-stop "${package_name}" >/dev/null 2>&1; then echo 'BENCH_STOP_FAILED' >&2; exit 1; fi
+  if ! started="$("${adb_bin}" "${adb_args[@]}" shell am start -n "${package_name}/${activity_name}" --ez BENCH true --ei BENCH_ITERATION "${i}" 2>/dev/null)"; then
+    echo 'BENCH_START_FAILED' >&2; exit 1
+  fi
+  if [[ "${started}" =~ [Ee]rror:|Exception ]]; then echo 'BENCH_START_FAILED' >&2; exit 1; fi
 
   lines="$(wait_for_lines)" || true
   if [[ -z "${lines}" ]]; then
     printf "[%s] Iteration %s: timeout waiting for logcat output, skipping\n" "$(date -Iseconds)" "${i}" >&2
     continue
   fi
-  # 采集到 logcat bench 行才算成功样本。
+  # wait_for_lines已验证全部必需指标，缺测不会计入成功样本。
   captured_samples=$((captured_samples + 1))
   ttff="$(printf "%s\n" "${lines}" | extract_int "TTFF_MS")"
   capture_ok="$(printf "%s\n" "${lines}" | extract_int "CAPTURE_OK")"

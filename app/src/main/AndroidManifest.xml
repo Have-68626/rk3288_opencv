@@ -3,6 +3,7 @@
     package="com.example.rk3288_opencv">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -11,6 +12,11 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <!-- Android 11 起需显式声明包可见性，否则设备分型会把已安装 GMS 误判为缺失。 -->
+    <queries>
+        <package android:name="com.google.android.gms" />
+    </queries>
 
     <application
         android:testOnly="false"

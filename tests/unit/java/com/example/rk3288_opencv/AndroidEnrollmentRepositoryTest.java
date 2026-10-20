@@ -1096,6 +1096,89 @@ public class AndroidEnrollmentRepositoryTest {
         }
     }
 
+    @Test
+    public void freg2MissingOrInvalidCountIsNeverAuthoritative() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertTrue(repo.add("alice", templateBytes(16, 118), MV, TSV).isOk());
+        String row = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8).get(2);
+        String[] damaged = new String[]{
+                "FREG2\n",
+                "FREG2\nCOUNT invalid\n",
+                "FREG2\nCOUNT -1\n" + row + "\nEND -1\n",
+                "FREG2\nCOUNT 99999999999999999999\n" + row + "\nEND 0\n",
+        };
+        for (String content : damaged) {
+            byte[] original = content.getBytes(StandardCharsets.UTF_8);
+            Files.write(repo.registryFile().toPath(), original);
+            AndroidEnrollmentRepository.ListResult list = repo.list();
+            assertTrue("损坏列表仍应允许只读查看", list.isOk());
+            assertFalse("COUNT 缺失或非法时枚举不完整", list.isEnumerationComplete());
+            assertFalse("不完整枚举不能授权删除未枚举人员的派生数据", list.authoritative);
+            assertArrayEquals("读取不得改写损坏原件", original,
+                    Files.readAllBytes(repo.registryFile().toPath()));
+        }
+    }
+
+    @Test
+    public void freg2InvalidCountDoesNotAuthorizeDisplayNameCleanup() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertTrue(repo.add("alice", templateBytes(16, 119), MV, TSV).isOk());
+        File nameDir = tmp.newFolder();
+        PersonDisplayNameStore names = new PersonDisplayNameStore(nameDir);
+        names.setKeyProviderForTesting(provider);
+        assertTrue(names.save("alice", "测试显示名"));
+        File nameFile = FeatureTemplateEncryptedStore.nameFileForPersonInDir(nameDir, "alice");
+        byte[] original = Files.readAllBytes(nameFile.toPath());
+
+        Files.write(repo.registryFile().toPath(), "FREG2\nCOUNT invalid\n".getBytes(StandardCharsets.UTF_8));
+        AndroidEnrollmentRepository.ListResult list = repo.list();
+        assertTrue(list.isOk());
+        assertFalse(list.isEnumerationComplete());
+        // 模拟权威枚举的消费者，验证损坏索引不能触发真实名称文件的差集删除。
+        if (list.authoritative) {
+            java.util.Set<String> liveIds = new java.util.HashSet<>();
+            for (AndroidEnrollmentRepository.Entry entry : list.entries) {
+                liveIds.add(entry.userId);
+            }
+            names.prefetch(liveIds);
+            names.removeOrphans(liveIds);
+        }
+
+        assertTrue("不完整注册表不得授权删除仍保留的显示名密文", nameFile.isFile());
+        assertArrayEquals("显示名密文必须逐字节保留", original, Files.readAllBytes(nameFile.toPath()));
+        assertEquals("测试显示名", names.readFromDisk("alice"));
+        assertTrue("人员模板同样应保留", repo.templateFileFor("alice").isFile());
+    }
+
+    @Test
+    public void freg2CountNearIntegerBoundaryReturnsIncomplete() throws Exception {
+        AndroidEnrollmentRepository repo = newRepo();
+        assertTrue(repo.add("alice", templateBytes(16, 120), MV, TSV).isOk());
+        String row = Files.readAllLines(repo.registryFile().toPath(), StandardCharsets.UTF_8).get(2);
+        long[] counts = new long[]{
+                Integer.MAX_VALUE - 2L,
+                Integer.MAX_VALUE - 1L,
+                Integer.MAX_VALUE,
+                Integer.MAX_VALUE + 1L,
+                Long.MAX_VALUE,
+        };
+        for (long count : counts) {
+            byte[] original = ("FREG2\nCOUNT " + count + "\n" + row + "\nEND " + count + "\n")
+                    .getBytes(StandardCharsets.UTF_8);
+            Files.write(repo.registryFile().toPath(), original);
+            AndroidEnrollmentRepository.ListResult list = repo.list();
+            assertTrue("超大 COUNT 应受控返回只读结果", list.isOk());
+            assertFalse("缺少声明数量的记录时不得判完整", list.isEnumerationComplete());
+            assertFalse("超大 COUNT 的不完整结果不得授权破坏性对账", list.authoritative);
+            if (count <= Integer.MAX_VALUE) {
+                assertEquals("可解析记录仍应保留供查看", 1, list.entries.size());
+                assertEquals("alice", list.entries.get(0).userId);
+            }
+            assertArrayEquals("解析失败不得改写原件", original,
+                    Files.readAllBytes(repo.registryFile().toPath()));
+        }
+    }
+
     /** 枚举不完整时直接 add 拒绝，且**原件逐字节保留**（失败留件）。 */
     @Test
     public void directAddRejectsIncompleteAndKeepsOriginal() throws Exception {

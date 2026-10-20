@@ -12,10 +12,9 @@ model: inherit
 - 入口：`src/win/app/win_local_service_main.cpp`（服务，默认）、`win_camera_face_recognition_main.cpp`（旧 UI，OFF）。
 
 ## 构建与测试
-- CMake + VS2022：`cmake -S . -B build_win -G "Visual Studio 17 2022" -A x64 -DOPENCV_ROOT=... -DOPENCV_CONTRIB_ROOT=...`
-- 测试：`cmake --build build_win --config Release --target win_unit_tests`；`ctest --test-dir build_win -C Release`
-- 配置事实源：`%APPDATA%\rk_wcfr\config.json`（schema 在 docs/windows-web-spa/config.schema.json）
-- 日志默认 `storage/win_logs/`（config.json 的 log.logDir 可覆盖）
+- 统一配置、构建与CTest选择见 `docs/guides/build-and-test.md` 的Windows节，不在只构建单个可执行文件后运行全体CTest。
+- 配置事实源：`%APPDATA%\rk_wcfr\config.json`（Schema在 `docs/windows-web-spa/config.schema.json`）。
+- 日志默认 `storage/win_logs/`，由log.logDir覆盖。
 
 ## 规矩
 - 读源码前先 `graphify query "<问题>"` 定向。

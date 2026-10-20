@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-07-21
+as_of=2026-10-18
 -->
 
 ﻿# Web SPA 前端
@@ -28,10 +28,15 @@ pnpm lint
 # 前端单元测试（Vitest）
 pnpm test
 
-# E2E 测试
+# E2E须先准备服务器，普通执行和覆盖率验收前提见下文
 pnpm e2e:run
-pnpm e2e:run:coverage   # 带覆盖率
 ```
+
+## E2E与覆盖率前提
+
+统一步骤见[构建与测试](../docs/guides/build-and-test.md#cypress-e2e与覆盖率)。Windows从仓库根执行 `pwsh -NoProfile -File scripts/run-web-e2e.ps1` 可运行完整驱动。手动流程须先启动127.0.0.1:5173的Vite，覆盖率变量在服务器启动前设置，再运行带环境隔离的启动器及单独覆盖率检查。
+
+`pnpm e2e:run` 不启动服务器；`pnpm preview` 不是当前覆盖率插桩服务器。API拦截测试通过也不代表真实后端验收通过。
 
 ## 构建输出
 

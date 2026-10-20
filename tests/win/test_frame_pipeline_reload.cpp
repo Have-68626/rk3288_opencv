@@ -1,6 +1,12 @@
 #include "rk_win/FramePipeline.h"
 #include "rk_win/IRecognizer.h"
 #include "rk_win/WinConfig.h"
+#include "rk_win/FrameProcessor.h"
+#include "rk_win/SideEffectSink.h"
+#include "rk_win/FaceDatabase.h"
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+#include "../cpp/ncnn_test_models.h"
+#endif
 #include "FileHash.h"  // rk_wcfr::calculateSHA256：断言捕获日志中 hash 与临时文件实际值一致
 
 #include <atomic>
@@ -18,6 +24,35 @@
 #include <thread>
 
 #include <opencv2/core.hpp>
+
+namespace rk_win {
+struct FramePipelineTestAccess {
+    static bool databaseMutationHeld(FramePipeline& pipeline) {
+        if (!pipeline.databaseMutationMu_.try_lock()) return true;
+        pipeline.databaseMutationMu_.unlock();
+        return false;
+    }
+    static std::unique_lock<std::mutex> lockPublication(FramePipeline& pipeline) {
+        return std::unique_lock<std::mutex>(pipeline.publicationMu_);
+    }
+    static bool lifecycleHeld(FramePipeline& pipeline) {
+        if (!pipeline.lifecycleMu_.try_lock()) return true;
+        pipeline.lifecycleMu_.unlock();
+        return false;
+    }
+    static bool running(FramePipeline& pipeline) { return pipeline.running_.load(); }
+    static std::unique_lock<std::mutex> lockConfig(FramePipeline& pipeline) {
+        return std::unique_lock<std::mutex>(pipeline.mu_);
+    }
+    static std::shared_ptr<void> runtime(FramePipeline& pipeline) {
+        std::lock_guard<std::mutex> lock(pipeline.runtimeMu_);
+        return pipeline.runtime_;
+    }
+    static void setCallback(FramePipeline& pipeline, SideEffectSink::FacesCallback callback) {
+        pipeline.sink_->setFacesCallback(std::move(callback));
+    }
+};
+}
 
 // 并发 reload/enroll 压力测试：processLoop 消费注入帧（执行 processor->run）的同时，
 // reloadRuntime 原子替换 runtime 快照并请求注册/清库。
@@ -492,6 +527,7 @@ ManifestTempFiles makeManifestTempFiles() {
 std::filesystem::path findRealCascade() {
     const std::filesystem::path cwd = std::filesystem::current_path();
     for (const auto& cand : {
+             std::filesystem::path(RK_TEST_SOURCE_ROOT) / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml",
              cwd / "assets" / "lbpcascade_frontalface.xml",
              cwd.parent_path() / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml",
              cwd / "app" / "src" / "main" / "assets" / "lbpcascade_frontalface.xml"}) {
@@ -563,24 +599,25 @@ bool test_pipeline_reload_reruns_manifest_check() {
     rk_win::AppConfig cfgA;
     cfgA.model.recognition = "lbph";
     cfgA.recognition.cascadePath = tmp.fileA;
-    cfgA.recognition.databasePath = ".";
+    // 目录不是有效数据库文件，成功重载的前提必须是合法候选配置。
+    cfgA.recognition.databasePath = tmp.fileA.string() + ".db";
     cfgA.dnn.enable = false;
 
     rk_win::AppConfig cfgB = cfgA;
     cfgB.recognition.cascadePath = tmp.fileB;  // 重载后模型内容变化 → hash 不同
 
-    bool initOk = false;
+    bool initOk = false, reloadOk = false;
     {
         rk_win::FramePipeline fp;
         initOk = fp.initialize(cfgA);
-        fp.reloadRuntime(cfgB);  // 重载：activeModels_ 替换为 hashB 对应模型
+        reloadOk = fp.reloadRuntime(cfgB);  // 重载：activeModels_ 替换为 hashB 对应模型
         fflush(stderr);
         std::cerr.flush();
         _dup2(savedFd, _fileno(stderr));  // 还原 stderr（shutdown 前），后续输出不再进捕获文件
         _close(savedFd);
         fp.shutdown();
     }
-    if (!initOk) return false;
+    if (!initOk || !reloadOk) return false;
 
     std::ifstream in(tmp.capture, std::ios::binary);
     std::ostringstream oss;
@@ -596,4 +633,567 @@ bool test_pipeline_reload_reruns_manifest_check() {
     // 首行反映 initialize 的 hashA；末行必须反映重载后的 hashB（reload 重跑了校验）
     return lines.front().find(shaA) != std::string::npos &&
            lines.back().find(shaB) != std::string::npos;
+}
+
+namespace {
+struct RuntimeTestStorage {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() /
+        ("rk_pipeline_audit_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    RuntimeTestStorage() { std::filesystem::create_directories(dir); }
+    ~RuntimeTestStorage() { std::error_code ec; std::filesystem::remove_all(dir, ec); }
+    rk_win::AppConfig config() const {
+        rk_win::AppConfig cfg;
+        cfg.model.recognition = "lbph";
+        cfg.recognition.cascadePath = std::filesystem::path(RK_TEST_SOURCE_ROOT) /
+            "app/src/main/assets/lbpcascade_frontalface.xml";
+        cfg.recognition.databasePath = dir / "faces.db";
+        cfg.log.logDir = dir / "logs";
+        cfg.recognition.enrollSamples = 7;
+        cfg.dnn.enable = false;
+        return cfg;
+    }
+};
+
+class TimedRecognizer : public rk_win::IRecognizer {
+public:
+    std::atomic<int> calls{0};
+    std::vector<rk_win::FaceMatch> identify(const cv::Mat&) override {
+        const int call = calls.fetch_add(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(call == 0 ? 25 : 2));
+        rk_win::FaceMatch match;
+        match.rect = {4, 4, 12, 12};
+        return {match};
+    }
+    bool enrollFromFrame(const std::string&, const cv::Mat&, int, int& taken) override { taken = 0; return false; }
+    bool saveDb() const override { return true; }
+    void clearDb() override {}
+    double threshold() const override { return 0.0; }
+    void setThreshold(double) override {}
+    std::vector<std::string> personIds() const override { return {}; }
+};
+
+class CloseGateCamera : public FakeCamera {
+public:
+    std::mutex gateMu;
+    std::condition_variable gateCv;
+    bool closing = false;
+    bool released = false;
+    std::atomic<int> closes{0};
+    void close() override {
+        if (closes.fetch_add(1) != 0) return;
+        std::unique_lock<std::mutex> lock(gateMu);
+        closing = true;
+        gateCv.notify_all();
+        gateCv.wait(lock, [&] { return released; });
+    }
+    bool waitClosing() {
+        std::unique_lock<std::mutex> lock(gateMu);
+        return gateCv.wait_for(lock, std::chrono::seconds(2), [&] { return closing; });
+    }
+    void release() {
+        { std::lock_guard<std::mutex> lock(gateMu); released = true; }
+        gateCv.notify_all();
+    }
+};
+}
+
+bool test_pipeline_processor_metrics_match_identify() {
+    TimedRecognizer recognizer;
+    rk_win::FrameProcessor processor(&recognizer);
+    rk_win::ControlCommand command;
+    command.detectStride = 8;
+    cv::Mat frame(32, 32, CV_8UC3, cv::Scalar(64, 64, 64));
+    const auto first = processor.run(frame.clone(), command);
+    const auto second = processor.run(frame.clone(), command);
+    return recognizer.calls == 2 && first.matches.size() == 1 && second.matches.size() == 1 &&
+        first.inferMs >= 15.0 && second.inferMs > 0.0 && second.inferMs < first.inferMs &&
+        first.consumedCommand.detectStride == 1 && second.consumedCommand.detectStride == 1;
+}
+
+bool test_pipeline_failed_reload_preserves_runtime() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg) || pipeline.degraded().active) return false;
+    auto recognizer = std::make_shared<TimedRecognizer>();
+    pipeline.setRecognizerForTest(recognizer);
+    const auto before = rk_win::FramePipelineTestAccess::runtime(pipeline);
+    const auto models = pipeline.getActiveModels();
+    cfg.recognition.cascadePath = storage.dir / "missing-cascade.xml";
+    cfg.recognition.enrollSamples = 321;
+    const bool reloaded = pipeline.reloadRuntime(cfg);
+    pipeline.requestEnroll("测试标记");
+    const auto after = rk_win::FramePipelineTestAccess::runtime(pipeline);
+    const auto currentModels = pipeline.getActiveModels();
+    const auto seq = pipeline.currentFacesSeq();
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    std::uint64_t done = 0;
+    const bool processed = pipeline.waitFacesSeqChanged(seq, 2000, done);
+    const bool preserved = !reloaded && !pipeline.runtimeReloadWarning().empty() &&
+        before == after && models.size() == currentModels.size() &&
+        !models.empty() && models.front().hash == currentModels.front().hash &&
+        !pipeline.degraded().active && pipeline.enrollRemainingForTest() == 7 &&
+        recognizer->calls == 1 && pipeline.runtimeReloadGen() == 1;
+    const bool recovered = pipeline.reloadRuntime(storage.config()) &&
+        pipeline.runtimeReloadWarning().empty() && pipeline.runtimeReloadGen() == 2;
+    pipeline.shutdown();
+    return processed && preserved && recovered;
+}
+
+bool test_pipeline_reload_config_commit_uses_reader_mutex() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg) || pipeline.degraded().active) return false;
+    cfg.recognition.enrollSamples = 321;
+    auto held = rk_win::FramePipelineTestAccess::lockConfig(pipeline);
+    std::atomic<bool> started{false}, finished{false};
+    std::thread reload([&] { started = true; pipeline.reloadRuntime(cfg); finished = true; });
+    const bool attempted = waitUntil([&] { return started.load(); }, 2000);
+    const bool committedWhileHeld = waitUntil([&] { return finished.load(); }, 300);
+    held.unlock();
+    reload.join();
+    pipeline.requestEnroll("测试标记");
+    const bool applied = pipeline.enrollRemainingForTest() == 321;
+    pipeline.shutdown();
+    return attempted && !committedWhileHeld && applied;
+}
+
+bool test_pipeline_shutdown_waits_for_camera_change() {
+    RuntimeTestStorage storage;
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(storage.config())) return false;
+    pipeline.setRecognizerForTest(std::make_shared<TimedRecognizer>());
+    rk_win::CameraFormat format;
+    format.width = 640; format.height = 480; format.fps = 30;
+    pipeline.setDevicesForTest(makeFakeDevices(format));
+    auto fake = std::make_unique<CloseGateCamera>();
+    auto* camera = fake.get();
+    pipeline.setCameraForTest(std::move(fake));
+    std::thread change([&] { pipeline.applyCameraSettings(0, 640, 480, 30, 500); });
+    const bool entered = camera->waitClosing();
+    std::atomic<bool> shutdownStarted{false}, shutdownFinished{false};
+    std::thread stop([&] { shutdownStarted = true; pipeline.shutdown(); shutdownFinished = true; });
+    const bool attempted = waitUntil([&] { return shutdownStarted.load(); }, 2000);
+    const bool stoppedWhileChanging = waitUntil([&] { return shutdownFinished.load(); }, 200);
+    camera->release();
+    change.join(); stop.join();
+    pipeline.shutdown();
+    return entered && attempted && !stoppedWhileChanging;
+}
+
+bool test_pipeline_initialize_rejects_live_threads() {
+    RuntimeTestStorage storage;
+    rk_win::FramePipeline pipeline;
+    const auto cfg = storage.config();
+    if (!pipeline.initialize(cfg)) return false;
+    // 覆盖 joinable thread 的赋值会 terminate，重复初始化必须在修改资源前拒绝。
+    const bool rejected = !pipeline.initialize(cfg);
+    pipeline.shutdown();
+    return rejected;
+}
+
+bool test_pipeline_callback_reentry_does_not_deadlock() {
+    RuntimeTestStorage storage;
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(storage.config())) return false;
+    pipeline.setRecognizerForTest(std::make_shared<TimedRecognizer>());
+    std::atomic<bool> readBack{false}, readerOk{false}, callbackDone{false}, readerDone{false};
+    std::thread reader;
+    rk_win::FramePipelineTestAccess::setCallback(pipeline, [&](const auto&) {
+        // 读者若被回调持有的 renderMu_ 阻塞，超时后让回调返回，保证旧代码也能安全退出。
+        reader = std::thread([&] {
+            rk_win::RenderState render;
+            rk_win::FacesSnapshot faces;
+            readerOk = pipeline.tryGetRenderState(render) && pipeline.snapshotFaces(faces);
+            readerDone = true;
+        });
+        const bool availableDuringCallback = waitUntil([&] { return readerDone.load(); }, 300);
+        readBack = availableDuringCallback && readerOk.load();
+        callbackDone = true;
+    });
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    const bool completed = waitUntil([&] { return callbackDone.load(); }, 2000);
+    if (reader.joinable()) reader.join();
+    const bool unlockedDuringCallback = readBack.load();
+    pipeline.shutdown();
+    return completed && unlockedDuringCallback;
+}
+
+namespace {
+class RuntimeCommandRecognizer final : public rk_win::IRecognizer {
+public:
+    std::atomic<int> enrolls{0}, clears{0}, identifies{0};
+    std::vector<rk_win::FaceMatch> identify(const cv::Mat&) override { ++identifies; return {}; }
+    bool enrollFromFrame(const std::string&, const cv::Mat&, int, int& taken) override { ++enrolls; taken = 1; return true; }
+    bool saveDb() const override { return true; }
+    void clearDb() override { ++clears; }
+    double threshold() const override { return 0.0; }
+    void setThreshold(double) override {}
+    std::vector<std::string> personIds() const override { return {}; }
+};
+bool finishRuntimeCommandFrame(rk_win::FramePipeline& pipeline) {
+    const auto before = pipeline.currentFacesSeq();
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    std::uint64_t after = 0;
+    return pipeline.waitFacesSeqChanged(before, 2000, after);
+}
+}
+
+// 模型运行时更换后，旧登记请求不得自动在新库继续采样。
+bool test_pipeline_reload_cancels_pending_enrollment() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    pipeline.requestEnroll("synthetic_old_runtime");
+    const bool reloaded = pipeline.reloadRuntime(cfg);
+    auto current = std::make_shared<RuntimeCommandRecognizer>();
+    pipeline.setRecognizerForTest(current);
+    const bool processed = finishRuntimeCommandFrame(pipeline);
+    const bool ok = reloaded && processed && current->enrolls == 0 && pipeline.enrollRemainingForTest() == 0;
+    pipeline.shutdown();
+    return ok;
+}
+
+// 清库操作只对请求时的运行时有效，不能越过切换清空另一空间。
+bool test_pipeline_reload_cancels_pending_clear() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    pipeline.requestClearDb();
+    const bool reloaded = pipeline.reloadRuntime(cfg);
+    auto current = std::make_shared<RuntimeCommandRecognizer>();
+    pipeline.setRecognizerForTest(current);
+    const bool processed = finishRuntimeCommandFrame(pipeline);
+    const bool ok = reloaded && processed && current->clears == 0;
+    pipeline.shutdown();
+    return ok;
+}
+
+// 已进入旧识别器的帧可完成，但其计数回写不能复活切换时取消的登记。
+bool test_pipeline_reload_discards_inflight_enrollment_writeback() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    auto old = std::make_shared<GateRecognizer>();
+    pipeline.setRecognizerForTest(old);
+    pipeline.requestEnroll("synthetic_old_runtime");
+    const auto before = pipeline.currentFacesSeq();
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    if (!old->waitEntered(2000)) { old->go(); pipeline.shutdown(); return false; }
+    // 数据库锁序引入后，reload 必须等在途登记帧的 run() 结束（该帧持 databaseMutationMu_、
+    // 正被门控阻塞），故放行门控不能再排在 reload 返回之后 —— 否则双方互等。改为并发执行，
+    // 并在放行前正向确认 reload 已持生命周期锁（不靠超时把"没阻塞"误判为通过）。断言不放宽。
+    std::atomic<bool> reloadOk{false}, reloadDone{false};
+    std::thread reloadThread([&] { reloadOk = pipeline.reloadRuntime(cfg); reloadDone = true; });
+    const bool reachedLifecycle = waitUntil([&] {
+        return rk_win::FramePipelineTestAccess::lifecycleHeld(pipeline);
+    }, 2000);
+    old->go();
+    reloadThread.join();
+    const bool reloaded = reachedLifecycle && reloadOk.load() && reloadDone.load();
+    if (!reloaded) { pipeline.shutdown(); return false; }
+    auto current = std::make_shared<RuntimeCommandRecognizer>();
+    pipeline.setRecognizerForTest(current);
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    const bool newFrame = waitUntil([&] { return current->identifies.load() == 1; }, 2000);
+    std::uint64_t after = 0;
+    const bool processed = newFrame && pipeline.waitFacesSeqChanged(before, 2000, after);
+    rk_win::RenderState render;
+    const bool cancelled = pipeline.enrollRemainingForTest() == 0 && pipeline.tryGetRenderState(render) &&
+        render.status == "模型已切换，登记已取消";
+    pipeline.requestEnroll("synthetic_new_runtime");
+    const bool newProcessed = finishRuntimeCommandFrame(pipeline);
+    const bool ok = reloaded && processed && cancelled && newProcessed && current->enrolls == 1 &&
+        pipeline.enrollRemainingForTest() == cfg.recognition.enrollSamples - 1;
+    pipeline.shutdown();
+    return ok;
+}
+
+// 装配失败没有更换运行时，原请求必须仍由旧识别器消费。
+bool test_pipeline_failed_reload_keeps_pending_commands() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    auto current = std::make_shared<RuntimeCommandRecognizer>();
+    pipeline.setRecognizerForTest(current);
+    pipeline.requestEnroll("synthetic_old_runtime");
+    pipeline.requestClearDb();
+    cfg.recognition.cascadePath = storage.dir / "absent.xml";
+    const bool rejected = !pipeline.reloadRuntime(cfg);
+    const bool processed = finishRuntimeCommandFrame(pipeline);
+    const bool ok = rejected && processed && current->enrolls == 1 && current->clears == 1 &&
+        pipeline.enrollRemainingForTest() == cfg.recognition.enrollSamples - 1;
+    pipeline.shutdown();
+    return ok;
+}
+
+namespace {
+class IdentityGateRecognizer final : public GateRecognizer {
+public:
+    std::vector<rk_win::FaceMatch> identify(const cv::Mat&) override {
+        std::unique_lock<std::mutex> lock(m);
+        entered = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+        rk_win::FaceMatch match;
+        match.rect = {4, 4, 12, 12};
+        match.personId = "synthetic_old_space";
+        match.confidence = 0.99;
+        match.accepted = true;
+        return {match};
+    }
+};
+}
+
+// 已发布的标签像素和在途旧身份都不能跨越成功模型提交，三个输出通道同口径。
+bool test_pipeline_reload_discards_old_identity_outputs() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    auto published = std::make_shared<IdentityGateRecognizer>();
+    published->go();
+    pipeline.setRecognizerForTest(published);
+    if (!finishRuntimeCommandFrame(pipeline)) { pipeline.shutdown(); return false; }
+    auto old = std::make_shared<IdentityGateRecognizer>();
+    pipeline.setRecognizerForTest(old);
+    std::atomic<bool> callbackOld{false};
+    rk_win::FramePipelineTestAccess::setCallback(pipeline, [&](const auto& matches) {
+        for (const auto& match : matches) {
+            if (match.personId == "synthetic_old_space" && match.isIdentified) callbackOld = true;
+        }
+    });
+    const auto before = pipeline.currentFacesSeq();
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    if (!old->waitEntered(2000)) { old->go(); pipeline.shutdown(); return false; }
+    cfg.recognition.databasePath = storage.dir / "different_space_B.db";
+    const bool reloaded = pipeline.reloadRuntime(cfg);
+    rk_win::FacesSnapshot initialFaces;
+    rk_win::RenderState initialRender;
+    const bool cleared = !pipeline.snapshotFaces(initialFaces) && !pipeline.tryGetRenderState(initialRender);
+    auto current = std::make_shared<RuntimeCommandRecognizer>();
+    pipeline.setRecognizerForTest(current);
+    // 后续空身份帧提供确定性推进；不得拿等待旧帧超时当作丢弃成功。
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    old->go();
+    const bool newProcessed = waitUntil([&] { return current->identifies.load() == 1; }, 2000);
+    std::uint64_t after = 0;
+    const bool notified = pipeline.waitFacesSeqChanged(before, 2000, after);
+    rk_win::FacesSnapshot faces;
+    rk_win::RenderState render;
+    const bool clean = pipeline.snapshotFaces(faces) && faces.faces.empty() &&
+        pipeline.tryGetRenderState(render) && render.faces.empty() && !callbackOld.load();
+    pipeline.shutdown();
+    return reloaded && cleared && newProcessed && notified && clean;
+}
+
+// 回调同步重载须明确拒绝；只读回查保持可用，不能形成 publication → lifecycle 锁环。
+bool test_pipeline_callback_rejects_runtime_reload() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    pipeline.setRecognizerForTest(std::make_shared<RuntimeCommandRecognizer>());
+    std::atomic<bool> done{false}, rejected{false}, readable{false};
+    rk_win::FramePipelineTestAccess::setCallback(pipeline, [&](const auto&) {
+        rejected = !pipeline.reloadRuntime(cfg);
+        rk_win::RenderState render;
+        rk_win::FacesSnapshot faces;
+        readable = pipeline.tryGetRenderState(render) && pipeline.snapshotFaces(faces);
+        done = true;
+    });
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    const bool completed = waitUntil([&] { return done.load(); }, 2000);
+    pipeline.shutdown();
+    return completed && rejected && readable;
+}
+
+// reload 等待发布屏障时必须已持生命周期锁；shutdown 置停后旧计算仍可退场，不能形成三方锁环。
+bool test_pipeline_reload_shutdown_and_publication_lock_order() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    auto old = std::make_shared<IdentityGateRecognizer>();
+    pipeline.setRecognizerForTest(old);
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    if (!old->waitEntered(2000)) { old->go(); pipeline.shutdown(); return false; }
+    auto publication = rk_win::FramePipelineTestAccess::lockPublication(pipeline);
+    std::atomic<bool> reloaded{false}, stopped{false};
+    std::thread reload([&] { reloaded = pipeline.reloadRuntime(cfg); });
+    const bool lifecycleFirst = waitUntil([&] {
+        return rk_win::FramePipelineTestAccess::lifecycleHeld(pipeline);
+    }, 2000);
+    if (!lifecycleFirst) {
+        publication.unlock(); old->go(); reload.join(); pipeline.shutdown(); return false;
+    }
+    std::thread stop([&] { pipeline.shutdown(); stopped = true; });
+    publication.unlock();
+    const bool stopping = waitUntil([&] {
+        return !rk_win::FramePipelineTestAccess::running(pipeline);
+    }, 2000);
+    old->go();
+    reload.join(); stop.join();
+    return lifecycleFirst && stopping && reloaded && stopped;
+}
+
+// 先正向确认处理线程持有旧快照，再以新帧发布证明旧帧已退场；
+// 缺少取数据库锁后的运行时复核时，旧登记副作用必须被检出。
+bool test_pipeline_stale_command_does_not_run_after_reload_wait() {
+    RuntimeTestStorage storage;
+    auto cfg = storage.config();
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    auto stale = std::make_shared<RuntimeCommandRecognizer>();
+    pipeline.setRecognizerForTest(stale);
+    auto oldRuntime = rk_win::FramePipelineTestAccess::runtime(pipeline);
+    auto publication = rk_win::FramePipelineTestAccess::lockPublication(pipeline);
+    std::atomic<bool> reloadDone{false}, reloadOk{false};
+    std::thread reload([&] { reloadOk = pipeline.reloadRuntime(cfg); reloadDone = true; });
+    const bool dbLocked = waitUntil([&] {
+        return rk_win::FramePipelineTestAccess::databaseMutationHeld(pipeline);
+    }, 5000);
+    if (!dbLocked) { publication.unlock(); reload.join(); pipeline.shutdown(); return false; }
+    pipeline.requestEnroll("synthetic_stale_request");
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    // 基线只有runtime_与测试引用；新增引用证明处理线程持有旧快照。
+    // 命令字段仍在同一mu_/runtimeMu_临界区，重载提交无法插入其中。
+    const bool captured = waitUntil([&] { return oldRuntime.use_count() > 2; }, 2000);
+    if (!captured) { publication.unlock(); reload.join(); pipeline.shutdown(); return false; }
+    const bool blockedBeforeCommit = stale->enrolls.load() == 0;
+    publication.unlock();
+    reload.join();
+    // 单处理线程必须先退出旧帧才能处理推进帧，以正向完成事件替代负向超时判据。
+    const auto before = pipeline.currentFacesSeq();
+    pipeline.injectFrameForTest(cv::Mat(32, 32, CV_8UC3, cv::Scalar(64, 64, 64)));
+    std::uint64_t after = 0;
+    const bool advanced = pipeline.waitFacesSeqChanged(before, 5000, after);
+    const bool staleNeverRan = stale->enrolls.load() == 0 && stale->identifies.load() == 0;
+    pipeline.shutdown();
+    return dbLocked && captured && blockedBeforeCommit && reloadOk && reloadDone && advanced && staleNeverRan;
+}
+
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+namespace {
+rk_win::AppConfig persistentProfileConfig(const RuntimeTestStorage& storage) {
+    const auto dir = storage.dir / "profile";
+    std::filesystem::create_directories(dir);
+    if (!rk_test::writeConstantScrfdModel(dir, 320) || !rk_test::writeEmbeddingModel(dir, false)) return {};
+    std::ofstream(dir / "manifest.json") <<
+        "{\"schemaVersion\":1,\"profileId\":\"synthetic_persistence\",\"displayName\":\"合成持久化模型\","
+        "\"supportedAbis\":[\"x86_64\"],\"templateSpaceId\":\"" << std::string(64, 'a') << "\","
+        "\"detector\":{\"param\":{\"path\":\"scrfd.param\"},\"bin\":{\"path\":\"scrfd.bin\"},"
+        "\"input\":\"input.1\",\"outputs\":[\"s8\",\"s16\",\"s32\",\"b8\",\"b16\",\"b32\",\"k8\",\"k16\",\"k32\"],"
+        "\"inputWidth\":320,\"inputHeight\":320,\"decodeMode\":\"distance\",\"outputLayout\":\"nchw\",\"anchorsPerPos\":[2,2,2]},"
+        "\"embedder\":{\"param\":{\"path\":\"embedding.param\"},\"bin\":{\"path\":\"embedding.bin\"},"
+        "\"input\":\"in0\",\"output\":\"out0\",\"inputWidth\":112,\"inputHeight\":112,\"embeddingDim\":512},"
+        "\"detectionConfidence\":0.55,\"nmsIou\":0.4,\"identitySimilarity\":0.73,"
+        "\"modelVersion\":\"synthetic-v1\",\"licenseId\":\"test\"}";
+    auto cfg = storage.config();
+    cfg.model.faceProfileDir = dir;
+    cfg.recognition.enrollSamples = 1;
+    return cfg;
+}
+
+class PersistentGateRecognizer final : public rk_win::IRecognizer {
+    std::unique_ptr<rk_win::IRecognizer> real_;
+    bool gateClear_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+    bool entered_ = false, released_ = false;
+    void enter() {
+        std::unique_lock<std::mutex> lock(mu_);
+        entered_ = true; cv_.notify_all();
+        cv_.wait(lock, [&] { return released_; });
+    }
+public:
+    PersistentGateRecognizer(std::unique_ptr<rk_win::IRecognizer> real, bool clear)
+        : real_(std::move(real)), gateClear_(clear) {}
+    bool waitEntered() {
+        std::unique_lock<std::mutex> lock(mu_);
+        return cv_.wait_for(lock, std::chrono::seconds(3), [&] { return entered_; });
+    }
+    void go() { { std::lock_guard<std::mutex> lock(mu_); released_ = true; } cv_.notify_all(); }
+    std::vector<rk_win::FaceMatch> identify(const cv::Mat& image) override { return real_->identify(image); }
+    bool enrollFromFrame(const std::string& id, const cv::Mat& image, int count, int& taken) override {
+        if (!gateClear_) enter();
+        return real_->enrollFromFrame(id, image, count, taken);
+    }
+    bool saveDb() const override { return real_->saveDb(); }
+    void clearDb() override { if (gateClear_) enter(); real_->clearDb(); }
+    double threshold() const override { return real_->threshold(); }
+    void setThreshold(double value) override { real_->setThreshold(value); }
+    std::vector<std::string> personIds() const override { return real_->personIds(); }
+};
+
+bool reloadOrdersPersistentMutation(bool clear) {
+    RuntimeTestStorage storage;
+    auto cfg = persistentProfileConfig(storage);
+    if (cfg.model.faceProfileDir.empty()) return false;
+    const cv::Mat image(320, 320, CV_8UC3, cv::Scalar(80, 120, 160));
+    if (clear) {
+        auto seed = rk_win::RuntimeBootstrap::build(cfg);
+        int taken = 0;
+        if (!seed.ok || !seed.recognizer->enrollFromFrame("synthetic_to_clear", image, 1, taken) ||
+            taken != 1 || !seed.recognizer->saveDb()) return false;
+    }
+    rk_win::FramePipeline pipeline;
+    if (!pipeline.initialize(cfg)) return false;
+    auto initial = rk_win::RuntimeBootstrap::build(cfg);
+    if (!initial.ok) { pipeline.shutdown(); return false; }
+    auto old = std::make_shared<PersistentGateRecognizer>(std::move(initial.recognizer), clear);
+    pipeline.setRecognizerForTest(old);
+    if (clear) pipeline.requestClearDb(); else pipeline.requestEnroll("synthetic_old_request");
+    pipeline.injectFrameForTest(image);
+    if (!old->waitEntered()) { old->go(); pipeline.shutdown(); return false; }
+    const bool mutationProtected = rk_win::FramePipelineTestAccess::databaseMutationHeld(pipeline);
+    std::atomic<bool> reloadDone{false}, reloadOk{false};
+    std::thread reload([&] { reloadOk = pipeline.reloadRuntime(cfg); reloadDone = true; });
+    // 有锁时正向确认重载已进入生命周期边界，再放旧保存；缺锁时先让候选读库完成，确定制造旧覆盖。
+    const bool synchronized = waitUntil([&] {
+        return mutationProtected ? rk_win::FramePipelineTestAccess::lifecycleHeld(pipeline) : reloadDone.load();
+    }, 5000);
+    // 进入生命周期边界后，重载还必须被在途数据库变更挡在候选整库 load 之前：若它能在放行旧保存
+    // 之前跑完，就说明"候选 load 与在途 saveDb 互斥"不成立（候选会读到旧快照）。用有界负向等待
+    // 判别，不把固定 sleep 当通过条件，也不放宽任何行为断言。
+    const bool blockedByMutation = mutationProtected
+        ? !waitUntil([&] { return reloadDone.load(); }, 1000) : true;
+    old->go(); reload.join();
+    if (!synchronized || !blockedByMutation || !reloadOk) { pipeline.shutdown(); return false; }
+    const auto before = pipeline.currentFacesSeq();
+    pipeline.requestEnroll("synthetic_new_request");
+    pipeline.injectFrameForTest(image);
+    std::uint64_t after = 0;
+    const bool processed = pipeline.waitFacesSeqChanged(before, 5000, after);
+    pipeline.shutdown();
+    rk_win::FaceDatabase reopened;
+    const auto path = storage.dir / "face_spaces" / std::string(64, 'a') / "faces.db";
+    const bool loaded = reopened.load(path);
+    const bool oldCorrect = clear ? !reopened.hasPerson("synthetic_to_clear") : reopened.hasPerson("synthetic_old_request");
+    return mutationProtected && processed && loaded && oldCorrect && reopened.hasPerson("synthetic_new_request");
+}
+}
+#endif
+
+// 同空间重新加载必须先看到旧帧完成的真实加密保存，后续新保存不得覆盖旧人员。
+bool test_pipeline_profile_reload_preserves_inflight_enrollment() {
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    return reloadOrdersPersistentMutation(false);
+#else
+    return true;
+#endif
+}
+
+// 清库与候选加载也需排序，不能让候选再次保存时复活已清除人员。
+bool test_pipeline_profile_reload_does_not_restore_cleared_person() {
+#if defined(RK_HAVE_NCNN) && RK_HAVE_NCNN
+    return reloadOrdersPersistentMutation(true);
+#else
+    return true;
+#endif
 }

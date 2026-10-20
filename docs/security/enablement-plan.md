@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=security
 status=living
-as_of=2026-08-13
+as_of=2026-10-18
 -->
 
 # 最小启用方案（Security Enablement Plan）
@@ -24,7 +24,7 @@ as_of=2026-08-13
 | 日志敏感字段脱敏（**仅凭据类键值**） | 开 | 否 | `rklog::maskSensitiveData`（S-SEC-B07-001）：按键白名单掩码 `password` / `token` / `secret` / `api_key` / `authorization` / `bearer` 等 KV 的**值**。⚠️ **射程不含 PII**（`person_id` 不在键集内），且**只作用于 `rklog::` 这条链**——`StructuredLogger` 的 `recognition.csv`/`recognition.jsonl` 与 `EventLogger` 的 `event_log.jsonl` 由 ofstream 直写、`maskSensitiveData` 一次都不经过（全仓调用点仅 `NativeLog.cpp` 一处）。故本行**不得**读成「日志里的个人信息已脱敏」，详见 `face-db-encryption.md` §7 的登记 |
 | 日志 URI userinfo 脱敏 | 开 | 否 | `sanitizeUriForLog`（S-SEC-B07-002） |
 | JNI/整数溢出防护（32 位 checked arithmetic） | 开 | 否 | S-SEC-B09-003 |
-| CivetWeb TLS 证书校验 | 不适用 | — | 未编入构建；重新接入前必须 `SSL_VERIFY_PEER` |
+| CivetWeb TLS 证书校验 | 不适用 | — | 当前未编入；重新接入条件只在[CivetWeb账本](../../src/win/third_party/civetweb/LEDGER.md#tls适用性与重新接入要求)维护 |
 
 **结论**：需要显式启用的仅**一项**——REST API 认证（设环境变量）。加密与 CSRF
 均默认无条件生效，不可关闭。

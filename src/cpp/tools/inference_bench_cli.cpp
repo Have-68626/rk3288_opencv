@@ -363,7 +363,7 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   cv::ocl::setUseOpenCL(args.useOpenCL);
 
   if (args.opencvModel.empty()) {
-    err = "缺少 --qualcomm-model";
+    err = "缺少 --opencv-model";
     return std::nullopt;
   }
 
@@ -482,9 +482,9 @@ static std::optional<Record> runOpenCvDnnBench(const Args &args,
   Record r;
   r.backend = "opencv_dnn";
   r.backendRequested = "opencv_dnn";
-  r.backendEffective = "opencv_dnn";
-  r.backendReason = "ok";
-  r.backendEvidence = "requested_backend=opencv_dnn";
+  r.backendEffective = okIters > 0 ? "opencv_dnn" : "none";
+  r.backendReason = okIters > 0 && errIters == 0 ? "ok" : "runtime_init_failed";
+  r.backendEvidence = "ok_iters=" + std::to_string(okIters) + " err_iters=" + std::to_string(errIters);
   r.opencvModel = args.opencvModel;
   r.opencvConfig = args.opencvConfig;
   r.opencvFramework = args.opencvFramework;
@@ -527,12 +527,12 @@ static std::optional<Record> runQualcommBench(const Args &args,
   cv::ocl::setUseOpenCL(args.useOpenCL);
 
   if (args.qualcommModel.empty()) {
-    err = "缺少 --opencv-model";
+    err = "缺少 --qualcomm-model";
     return std::nullopt;
   }
 
-  // 探测失败或硬件不兼容时回退到 CPU
-  std::cout << "[INFO] Qualcomm SDK fallback to CPU... 待补测" << std::endl;
+  // 本工具没有接入 SNPE；库是否安装不能证明该基准走了 Qualcomm 推理。
+  std::cout << "[INFO] SNPE 未接线，本行使用 OpenCV DNN 回退" << std::endl;
 
   cv::dnn::Net net;
   try {
@@ -649,9 +649,10 @@ static std::optional<Record> runQualcommBench(const Args &args,
   Record r;
   r.backend = "qualcomm";
   r.backendRequested = "qualcomm";
-  r.backendEffective = "opencv_dnn";
-  r.backendReason = "missing_dependency";
-  r.backendEvidence = "qualcomm_requested=1 fallback_backend=opencv_dnn";
+  r.backendEffective = okIters > 0 ? "opencv_dnn" : "none";
+  r.backendReason = "build_disabled";
+  r.backendEvidence = "snpe_integration=absent fallback_backend=opencv_dnn ok_iters=" +
+                      std::to_string(okIters) + " err_iters=" + std::to_string(errIters);
   r.opencvModel = args.qualcommModel;
   r.opencvConfig = args.opencvConfig;
   r.opencvFramework = args.opencvFramework;
@@ -763,8 +764,8 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
 
   ncnn::Mat in = doPreprocess();
 
-  ncnn::Extractor ex_warmup = net.create_extractor();
   for (int i = 0; i < std::max(0, args.warmup); i++) {
+    ncnn::Extractor ex_warmup = net.create_extractor();
     if (ex_warmup.input(args.ncnnInput.c_str(), in) != 0)
       continue;
     ncnn::Mat out;
@@ -786,8 +787,9 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   int okIters = 0;
   int errIters = 0;
 
-  ncnn::Extractor ex = net.create_extractor();
   for (int i = 0; i < std::max(0, args.iters); i++) {
+    // Extractor 缓存中间结果；每轮独立才能计入真实 forward。
+    ncnn::Extractor ex = net.create_extractor();
     const auto t0 = clock::now();
 
     if (ex.input(args.ncnnInput.c_str(), in) == 0) {
@@ -830,9 +832,9 @@ static std::optional<Record> runNcnnBench(const Args &args, std::string &err) {
   Record r;
   r.backend = "ncnn";
   r.backendRequested = "ncnn";
-  r.backendEffective = "ncnn";
-  r.backendReason = "ok";
-  r.backendEvidence = "requested_backend=ncnn";
+  r.backendEffective = okIters > 0 ? "ncnn" : "none";
+  r.backendReason = okIters > 0 && errIters == 0 ? "ok" : "runtime_init_failed";
+  r.backendEvidence = "ok_iters=" + std::to_string(okIters) + " err_iters=" + std::to_string(errIters);
   r.ncnnParam = args.ncnnParam;
   r.ncnnBin = args.ncnnBin;
   r.ncnnInput = args.ncnnInput;

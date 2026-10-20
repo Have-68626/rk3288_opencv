@@ -39,7 +39,7 @@ const BASE: ServerSettingsDoc = {
   recognition: { cascadePath: '', databasePath: '', minFaceSizePx: 100, identifyThreshold: 0.6, identifyThresholdArcFace: 0.45, enrollSamples: 5, arcFaceModelPath: '', arcFaceInputName: '', arcFaceOutputName: '' },
   inference: { throttleMode: 'interval', intervalMs: 100 },
   dnn: { enable: false, modelPath: '', configPath: '', inputWidth: 640, inputHeight: 640, scale: 1, meanB: 0, meanG: 0, meanR: 0, swapRB: false, confThreshold: 0.5, backend: 0, target: 0 },
-  model: { detection: '', recognition: '', backend: '', detectorBackend: '', recognitionBackend: '', autoFallback: true, int8Enabled: false },
+  model: { faceProfileDir: '', detection: '', recognition: '', backend: '', detectorBackend: '', recognitionBackend: '', autoFallback: true, int8Enabled: false },
   http: { enable: true, port: 8080 },
   poster: { enable: false, postUrl: '', throttleMs: 1000, backoffMinMs: 1000, backoffMaxMs: 10000 },
   log: { logDir: '', maxFileBytes: 1048576, maxRollFiles: 3 },
@@ -152,6 +152,31 @@ afterEach(async () => {
 })
 
 describe('AppStore 设置加载/保存竞态（Q-CQ-B08-003）', () => {
+  it.each([true, false])('过期刷新应返回 false，最新刷新成功=%s', async (latestOk) => {
+    const older = deferred<OkEnv>()
+    const latest = deferred<OkEnv>()
+    mockGet.mockReturnValueOnce(older.promise).mockReturnValueOnce(latest.promise)
+    const m = await mountStore()
+    root = m.root
+    let oldResult!: Promise<boolean>
+    let latestResult!: Promise<boolean>
+    await act(async () => {
+      oldResult = m.getStore().refreshServerSettings({ silent: true })
+      latestResult = m.getStore().refreshServerSettings({ silent: true })
+    })
+    await act(async () => {
+      if (latestOk) latest.resolve({ ok: true, data: docWith('latest') })
+      else latest.reject(new Error('最新刷新失败'))
+      expect(await latestResult).toBe(latestOk)
+    })
+    await act(async () => {
+      older.resolve({ ok: true, data: docWith('older') })
+      expect(await oldResult).toBe(false)
+    })
+    expect(m.getStore().serverSettings.status).toBe(latestOk ? 'ready' : 'error')
+    if (latestOk) expect(m.getStore().serverSettings.data?.log.logDir).toBe('latest')
+  })
+
   it('慢 GET#1 最后完成时不得覆盖 GET#2/PUT 的最新状态', async () => {
     const get1 = deferred<OkEnv>()
     const put = deferred<OkEnv>()

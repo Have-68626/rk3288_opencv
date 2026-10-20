@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=reference
 status=living
-as_of=2026-07-21
+as_of=2026-10-18
 -->
 
 # Kernel config 快照目录
@@ -28,4 +28,4 @@ adb shell "zcat /proc/config.gz > /data/local/tmp/kernel.config || gzip -d -c /p
 adb pull /data/local/tmp/kernel.config docs/bsp/kernel-config/kernel.config
 ```
 
-导出后必须确认文件头、`CONFIG_CPU_RK3288=y` 和关键配置项，重新生成审计子集并核对每项值，再同步更新本文件与 `../BSP_RELEASE_NOTES.md` 中的 SHA-256。采集记录应脱敏，不保存设备序列号、账号或内部地址；若 `/proc/config.gz` 不存在，应从对应厂商 BSP 构建产物获取 `.config`，并明确标注来源而不是伪装成运行态快照。
+导出后必须确认文件头、`CONFIG_CPU_RK3288=y` 和关键配置项，重新生成审计子集并核对每项值，再同步更新本文件与 [BSP证据登记](../BSP_EVIDENCE_STATUS.md) 中的 SHA-256。采集记录应脱敏，不保存设备序列号、账号或内部地址；若 `/proc/config.gz` 不存在，应从对应厂商 BSP 构建产物获取 `.config`，并明确标注来源而不是伪装成运行态快照。

@@ -60,7 +60,6 @@ SideEffectSink::SideEffectSink(StructuredLogger* logger, RenderState* render)
 // 1. 在 drawFrame 上绘制 Overlay（矩形 + 人员标签）
 // 2. 更新 render_ 的 bgr / faces（调用方需在外层持有 renderMu_ 锁）
 // 3. 写结构化日志（若 logger_ 已打开）
-// 4. 通知 facesCb_（若已设置）
 // ──────────────────────────────────────────────
 void SideEffectSink::publish(FrameResult& result, FrameLogEntry& logEntry) {
     // ── 1. Overlay 绘制 ──
@@ -96,9 +95,11 @@ void SideEffectSink::publish(FrameResult& result, FrameLogEntry& logEntry) {
         logger_->append(logEntry);
     }
 
-    // ── 4. 回调通知（如 WebSocket 广播） ──
+}
+
+void SideEffectSink::notifyFaces(const std::vector<DetectMatch>& matches) {
     if (facesCb_) {
-        facesCb_(result.matches);
+        facesCb_(matches);
     }
 }
 

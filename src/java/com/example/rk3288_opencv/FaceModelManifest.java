@@ -289,7 +289,7 @@ public final class FaceModelManifest {
         //    **只在 null 时**回落 ⇒ manifest 写 `"input": ""` 时 C++ 得 input.1、Java 得 ""。
         //    该分歧属**已知边界**（空串是坏 manifest，两条路径都会在推理期失败），不在此处改行为。
         // 证据：**`models/` 下全部 10 个** SCRFD .param（含 int8 侧）的 Input 层名都是 input.1；
-        // 勿推广到 `deps/insightface/det_10g.ncnn.param`——那份未转换的 ncnn 版实测是 in0。
+        // 勿推广到 `cache/model-conversion/insightface/det-10g/det_10g.ncnn.param`——那份未转换的 ncnn 版实测是 in0。
         // "in0" 是 ArcFace 侧的名字，曾被人误抄。
         String detInput = strOr(asString(det.get("input")), "input.1");
         List<String> detOutputs = new ArrayList<>();

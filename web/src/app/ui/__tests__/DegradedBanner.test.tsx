@@ -4,7 +4,7 @@
 // FacesPage 整体 mock 掉了 —— 若降级门被写错（**误用 configStatus 而非 status**），
 // 没有任何测试会变红。本文件正是为堵这个洞。
 //
-// 被钉住的语义（见 DegradedBanner.tsx:80-81 的 `if (!data || data.status !== 'degraded') return null`）：
+// 被钉住的语义（见 DegradedBanner.tsx 的 `status !== 'degraded'` 渲染分支）：
 //   · `status`（**运行时装配**）为 degraded ⇒ 渲染横幅；
 //   · `configStatus`（**配置装载**，是另一个量）即使为 degraded/rejected，只要 status 为 ok ⇒ **不渲染**。
 //
@@ -13,7 +13,7 @@
 // DegradedBanner 的结构很浅（未降级/取数失败时直接 return null；降级时渲染一个 antd <Alert>），
 // 该范式足以**真实执行组件的渲染分支** —— 故无需引入 jsdom，也无需为可测性改生产代码。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act } from 'react'
+import { act, type ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import type { HealthData } from '../../api/types'
@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   messageError: vi.fn(),
   messageSuccess: vi.fn(),
   getModels: vi.fn(),
+  reloadModel: vi.fn(),
   // 2026-09-28 新增：组件现在会把「最近一次健康检查的判定」回报给 store（供顶栏徽标降级，
   // 见 AppStore 的 healthProbe）；这里用可断言的 spy。
   setHealthProbe: vi.fn(),
@@ -40,10 +41,10 @@ vi.mock('../../api/health', async (importOriginal) => {
   return { ...actual, getHealth: h.getHealth }
 })
 
-// 组件虽会 import 这两个（重试路径用），但本文件不触发重试 —— mock 掉以免真发网络请求。
+// 网络边界由可控 promise 驱动；轮询、重试、状态提交均运行真实组件。
 vi.mock('../../api/models', () => ({
   getModels: h.getModels,
-  reloadModel: h.getModels,
+  reloadModel: h.reloadModel,
 }))
 
 // 避免为取 prefs 去搭 AppStoreProvider：组件只用到 useAppStore().prefs 与 .setHealthProbe。
@@ -62,7 +63,7 @@ vi.mock('@ant-design/icons', () => ({
 // antd 重组件在无 DOM 环境不可渲染：mock 为探针/空实现。
 // <Alert> 被渲染与否 = 横幅是否出现，故在 Alert 上挂探针记录每次渲染的 props。
 vi.mock('antd', () => ({
-  Alert: (props: { message?: unknown; description?: unknown }) => {
+  Alert: (props: { message?: unknown; description?: unknown; action?: ReactElement }) => {
     h.alert(props)
     return null
   },
@@ -167,6 +168,7 @@ beforeEach(() => {
   h.messageError.mockReset()
   h.messageSuccess.mockReset()
   h.getModels.mockReset()
+  h.reloadModel.mockReset()
   h.setHealthProbe.mockReset()
   h.prefsBox.current = null
 })
@@ -179,6 +181,7 @@ afterEach(async () => {
     root = null
   }
   cleanupGlobals()
+  vi.useRealTimers()
 })
 
 describe('DegradedBanner 渲染门（Fake getHealth 驱动）', () => {
@@ -309,5 +312,166 @@ describe('过期响应守卫与健康判定回报（2026-09-28 修复项）', ()
     root = await mountBanner()
     // 修复前顶栏只由 serverSettings 驱动，断线后**无限期**显示「已连接」（见 AppStore 的 healthProbe 说明）。
     expect(h.setHealthProbe).toHaveBeenCalledWith(false)
+  })
+})
+
+function retryBanner() {
+  const action = h.alert.mock.calls.at(-1)?.[0].action as ReactElement<{
+    onClick: () => Promise<void>
+  }>
+  return action.props.onClick()
+}
+
+async function advanceTime(ms: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+}
+
+describe('健康探针调度与生命周期', () => {
+  it('已连接后 60 秒超时必须发布断线，不能被 15 秒轮询永久淘汰', async () => {
+    vi.useFakeTimers()
+    h.prefsBox.current = { ...defaultPrefs, apiTimeoutMs: 60000 }
+    h.getHealth.mockResolvedValueOnce(okEnvelope(healthData({})))
+      .mockImplementation(() => new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('timeout')), 60000)
+      }))
+    root = await mountBanner()
+    expect(h.setHealthProbe).toHaveBeenCalledWith(true)
+    for (let i = 0; i < 6; i++) await advanceTime(15000)
+    expect(h.setHealthProbe).toHaveBeenCalledWith(false)
+    expect(h.getHealth).toHaveBeenCalledTimes(3)
+  })
+
+  it('探针持续等待时不重叠，完成后再等待 15 秒发起下一次', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<ReturnType<typeof okEnvelope>>()
+    h.getHealth.mockReturnValueOnce(pending.promise).mockResolvedValue(okEnvelope(healthData({})))
+    root = await mountBanner()
+    await advanceTime(90000)
+    expect(h.getHealth).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      pending.resolve(okEnvelope(healthData({ status: 'degraded' })))
+    })
+    expect(h.alert).toHaveBeenCalledTimes(1)
+    await advanceTime(14999)
+    expect(h.getHealth).toHaveBeenCalledTimes(1)
+    await advanceTime(1)
+    expect(h.getHealth).toHaveBeenCalledTimes(2)
+  })
+
+  it('偏好变化后的旧超时不发布断线，也不启动旧轮询', async () => {
+    vi.useFakeTimers()
+    const old = deferred<ReturnType<typeof okEnvelope>>()
+    h.getHealth.mockReturnValueOnce(old.promise).mockResolvedValue(okEnvelope(healthData({})))
+    root = await mountBanner()
+    h.prefsBox.current = { ...defaultPrefs, apiTimeoutMs: 60000 }
+    await act(async () => { root!.render(<DegradedBanner />) })
+    await act(async () => { old.reject(new Error('旧请求超时')) })
+    expect(h.setHealthProbe.mock.calls.map(([ok]) => ok)).toEqual([true])
+    await advanceTime(15000)
+    expect(h.getHealth).toHaveBeenCalledTimes(3)
+  })
+
+  it('重载与在途探针相遇时只排队一次刷新，且丢弃重载前结果', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<ReturnType<typeof okEnvelope>>()
+    h.getHealth.mockResolvedValueOnce(okEnvelope(healthData({ status: 'degraded' })))
+      .mockReturnValueOnce(pending.promise).mockResolvedValue(okEnvelope(healthData({})))
+    h.getModels.mockResolvedValue({ ok: true, data: { activeModels: [{ id: 'cascade' }] } })
+    h.reloadModel.mockResolvedValue({ ok: true, data: { ok: true } })
+    root = await mountBanner()
+    await advanceTime(15000)
+    await act(async () => { await Promise.all([retryBanner(), retryBanner()]) })
+    expect(h.reloadModel).toHaveBeenCalledTimes(1)
+    expect(h.getHealth).toHaveBeenCalledTimes(2)
+    h.alert.mockClear()
+    await act(async () => { pending.resolve(okEnvelope(healthData({ status: 'degraded' }))) })
+    expect(h.getHealth).toHaveBeenCalledTimes(3)
+    expect(h.alert).not.toHaveBeenCalled()
+    await advanceTime(15000)
+    expect(h.getHealth).toHaveBeenCalledTimes(4)
+  })
+
+  it('重试尚未取得模型时改变偏好，不再重载或发布旧提示', async () => {
+    vi.useFakeTimers()
+    const models = deferred<{ ok: true; data: { activeModels: { id: string }[] } }>()
+    h.getHealth.mockResolvedValue(okEnvelope(healthData({ status: 'degraded' })))
+    h.getModels.mockReturnValue(models.promise)
+    root = await mountBanner()
+    let retry!: Promise<void>
+    await act(async () => { retry = retryBanner() })
+    h.prefsBox.current = { ...defaultPrefs, apiTimeoutMs: 60000 }
+    await act(async () => { root!.render(<DegradedBanner />) })
+    await act(async () => {
+      models.resolve({ ok: true, data: { activeModels: [{ id: 'cascade' }] } })
+      await retry
+    })
+    expect(h.reloadModel).not.toHaveBeenCalled()
+    expect(h.messageSuccess).not.toHaveBeenCalled()
+    expect(h.messageError).not.toHaveBeenCalled()
+    expect(h.getHealth).toHaveBeenCalledTimes(2)
+  })
+
+  it('没有在途探针时重试立即刷新，且取消先前待触发的轮询', async () => {
+    vi.useFakeTimers()
+    h.getHealth.mockResolvedValueOnce(okEnvelope(healthData({ status: 'degraded' })))
+      .mockResolvedValue(okEnvelope(healthData({})))
+    h.getModels.mockResolvedValue({ ok: true, data: { activeModels: [{ id: 'cascade' }] } })
+    h.reloadModel.mockResolvedValue({ ok: true, data: { ok: true } })
+    root = await mountBanner()
+    await advanceTime(5000)
+    await act(async () => { await retryBanner() })
+    expect(h.getHealth).toHaveBeenCalledTimes(2)
+    await advanceTime(10000)
+    expect(h.getHealth).toHaveBeenCalledTimes(2)
+    await advanceTime(5000)
+    expect(h.getHealth).toHaveBeenCalledTimes(3)
+  })
+
+  it('偏好变化后旧重载失败，不弹旧错误也不额外刷新新生命周期', async () => {
+    vi.useFakeTimers()
+    const reload = deferred<{ ok: true; data: { ok: true } }>()
+    h.getHealth.mockResolvedValue(okEnvelope(healthData({ status: 'degraded' })))
+    h.getModels.mockResolvedValue({ ok: true, data: { activeModels: [{ id: 'cascade' }] } })
+    h.reloadModel.mockReturnValue(reload.promise)
+    root = await mountBanner()
+    let retry!: Promise<void>
+    await act(async () => { retry = retryBanner() })
+    h.prefsBox.current = { ...defaultPrefs, apiTimeoutMs: 60000 }
+    await act(async () => { root!.render(<DegradedBanner />) })
+    await act(async () => { reload.reject(new Error('旧重载超时')); await retry })
+    expect(h.messageError).not.toHaveBeenCalled()
+    expect(h.getHealth).toHaveBeenCalledTimes(2)
+  })
+
+  it('卸载后在途探针完成不发布结果、不续排定时器', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<ReturnType<typeof okEnvelope>>()
+    h.getHealth.mockReturnValue(pending.promise)
+    root = await mountBanner()
+    await act(async () => { root!.unmount() })
+    root = null
+    await act(async () => { pending.resolve(okEnvelope(healthData({ status: 'degraded' }))) })
+    await advanceTime(90000)
+    expect(h.setHealthProbe).not.toHaveBeenCalled()
+    expect(h.alert).not.toHaveBeenCalled()
+    expect(h.getHealth).toHaveBeenCalledTimes(1)
+  })
+
+  it('卸载后重载才完成，不发布提示或发起健康请求', async () => {
+    vi.useFakeTimers()
+    const reload = deferred<{ ok: true; data: { ok: true } }>()
+    h.getHealth.mockResolvedValue(okEnvelope(healthData({ status: 'degraded' })))
+    h.getModels.mockResolvedValue({ ok: true, data: { activeModels: [{ id: 'cascade' }] } })
+    h.reloadModel.mockReturnValue(reload.promise)
+    root = await mountBanner()
+    let retry!: Promise<void>
+    await act(async () => { retry = retryBanner() })
+    await act(async () => { root!.unmount() })
+    root = null
+    await act(async () => { reload.resolve({ ok: true, data: { ok: true } }); await retry })
+    await advanceTime(90000)
+    expect(h.messageSuccess).not.toHaveBeenCalled()
+    expect(h.messageError).not.toHaveBeenCalled()
+    expect(h.getHealth).toHaveBeenCalledTimes(1)
   })
 })

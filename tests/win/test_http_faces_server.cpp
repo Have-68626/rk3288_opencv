@@ -149,9 +149,69 @@ TEST(StaticFileToctouIntegration, OpensRelativeToPinnedRootWithoutReparsePoints)
 #include "rk_win/FramePipeline.h"
 #include "rk_win/JsonEndpointHandlers.h"  // FACE-ARCWIN-003：直调 health / reload handler
 #include "rk_win/WinJsonConfig.h"
+#include "rk_win/HttpFacesPoster.h"
+#include "rk_win/EventLogger.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+
+TEST(HttpFacesPoster, RequiresAnExplicitHttpDestination) {
+    rk_win::FramePipeline pipe;
+    rk_win::HttpFacesPoster poster;
+    EXPECT_TRUE(rk_win::AppConfig{}.poster.postUrl.empty());
+    const char* invalid[] = {"", "file:///tmp/result", "ftp://localhost/result", "http:///result",
+                             "https://", "http://localhost/has space", "http://localhost/\r\n"};
+    for (const char* url : invalid) {
+        // 不输出输入值，避免以后误把真实凭证带进失败诊断。
+        EXPECT_FALSE(poster.start(&pipe, nullptr, url, 0, 50, 50));
+        poster.stop();
+    }
+    for (const char* url : {"http://127.0.0.1/result", "HTTPS://localhost/result"}) {
+        ASSERT_TRUE(poster.start(&pipe, nullptr, url, 0, 50, 50));
+        poster.stop();
+    }
+}
+
+TEST(HttpFacesPoster, RejectsControlBytesMalformedIpv6AndZeroPort) {
+    rk_win::FramePipeline pipe;
+    rk_win::HttpFacesPoster poster;
+    for (int byte = 0; byte <= 0x20; ++byte) {
+        const std::string url = "http://localhost/path" + std::string(1, static_cast<char>(byte));
+        EXPECT_FALSE(poster.start(&pipe, nullptr, url, 0, 50, 50)) << "byte=" << byte;
+        poster.stop();
+    }
+    for (const std::string url : {std::string("http://localhost/path") + char(0x7f),
+             std::string("http://[malformed]/"), std::string("http://localhost:0/")}) {
+        EXPECT_FALSE(poster.start(&pipe, nullptr, url, 0, 50, 50));
+        poster.stop();
+    }
+    for (const char* url : {"http://[::1]/", "http://localhost:65535/", "http://localhost?x=fixture"}) {
+        EXPECT_TRUE(poster.start(&pipe, nullptr, url, 0, 50, 50));
+        poster.stop();
+    }
+}
+
+TEST(HttpFacesPoster, LifecycleLogsNeverContainDestinationCredentials) {
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("rk_poster_privacy_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    rk_win::EventLogger events;
+    ASSERT_TRUE(events.open(dir));
+    rk_win::FramePipeline pipe;
+    rk_win::HttpFacesPoster poster;
+    // 仅使用合成标记；没有输入帧，工作线程不会发送任何 HTTP 请求。
+    const std::string url = "https://fixture-user:fixture-pass@localhost/result?token=fixture-secret";
+    ASSERT_TRUE(poster.start(&pipe, &events, url, 0, 50, 50));
+    poster.stop();
+    events.close();
+    std::ifstream input(dir / "event_log.jsonl");
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    const std::string log = contents.str();
+    EXPECT_NE(log.find("post_start"), std::string::npos);
+    EXPECT_NE(log.find("post_stop"), std::string::npos);
+    EXPECT_EQ(log.find("fixture-"), std::string::npos);
+    EXPECT_EQ(log.find("localhost"), std::string::npos);
+}
 
 TEST(ClientThreadPool, ReclaimsFinishedThreads) {
     rk_win::HttpFacesServer::ClientThreadPool pool;
@@ -266,7 +326,7 @@ TEST(HttpFacesServer, ClientThreadsBoundedAfterConnectionFlood) {
             closesocket(s);  // 配额满时服务器直接关闭连接；继续下一轮
             continue;
         }
-        const char* req = "GET /rk-flood-no-such-file HTTP/1.1\r\nHost: t\r\n\r\n";
+        const char* req = "GET /rk-flood-no-such-file HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         send(s, req, static_cast<int>(std::strlen(req)), 0);
         char buf[256];
         while (recv(s, buf, sizeof(buf), 0) > 0) {}  // 读到 EOF（Connection: close）
@@ -341,7 +401,7 @@ struct RawHttpResult {
 };
 
 // 发送原始 HTTP 请求并读取完整响应（非流式响应均为 Connection: close，读到 EOF）。
-RawHttpResult rawHttpExchange(int port, const std::string& request) {
+RawHttpResult rawHttpExchange(int port, const std::string& request, bool headersOnly = false) {
     RawHttpResult out;
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return out;
@@ -359,6 +419,8 @@ RawHttpResult rawHttpExchange(int port, const std::string& request) {
     int n;
     while ((n = recv(s, buf, static_cast<int>(sizeof(buf)), 0)) > 0) {
         out.response.append(buf, buf + n);
+        // 流式拒绝测试在旧实现上会进入无限流；取响应头后断开，才能有限地证明门禁失效。
+        if (headersOnly && out.response.find("\r\n\r\n") != std::string::npos) break;
     }
     closesocket(s);
     const auto sp = out.response.find(' ');
@@ -371,7 +433,7 @@ RawHttpResult rawHttpExchange(int port, const std::string& request) {
 // 设置 token 环境变量 → 启动真实服务端 → 执行一次 HTTP 请求 → 停止。
 // tokenValue==nullptr 表示"未配置 token"（兼容模式）。
 RawHttpResult runHttpRequest(const wchar_t* tokenValue, const std::string& request,
-                             rk_win::WinJsonConfigStore* store) {
+                             rk_win::WinJsonConfigStore* store, bool headersOnly = false) {
     AuthEnvGuard tokenGuard(L"RK_WCFR_HTTP_AUTH_TOKEN", tokenValue);
     // findFreePort 使用 socket()，须先 WSAStartup（与洪泛用例一致；HttpFacesServer 内部
     // 的静态 WsaGuard 也会再调用一次，Winsock 引用计数递增，进程内无害）。
@@ -384,7 +446,7 @@ RawHttpResult runHttpRequest(const wchar_t* tokenValue, const std::string& reque
     if (port == 0 || !server.start(nullptr, nullptr, port, store)) {
         return RawHttpResult{};
     }
-    RawHttpResult r = rawHttpExchange(port, request);
+    RawHttpResult r = rawHttpExchange(port, request, headersOnly);
     server.stop();
     return r;
 }
@@ -450,10 +512,48 @@ std::unique_ptr<rk_win::WinJsonConfigStore> makeDegradedConfigStore(const std::w
 // exploit 证据（兼容模式）：未配置 token 时，无 Authorization 头的管理写请求先成功。
 // 修复前后均返回 200 —— 证明"未认证写可达"是真实存在的状态，并记录 auth-model.md §3.3
 // 的残余风险（未配置 token = 匿名兼容）。
+TEST(HttpFacesOpenApi, AliasReturnsSameJsonAsApiRoute) {
+    const auto canonical = runHttpRequest(nullptr,
+        "GET /api/v1/openapi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", nullptr);
+    const auto alias = runHttpRequest(nullptr,
+        "GET /openapi.json HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", nullptr);
+    ASSERT_TRUE(canonical.connected);
+    ASSERT_TRUE(alias.connected);
+    ASSERT_EQ(canonical.status, 200);
+    ASSERT_EQ(alias.status, 200);
+    const auto bodyStart = canonical.response.find("\r\n\r\n");
+    const auto aliasBodyStart = alias.response.find("\r\n\r\n");
+    ASSERT_NE(bodyStart, std::string::npos);
+    ASSERT_NE(aliasBodyStart, std::string::npos);
+    EXPECT_EQ(alias.response.substr(aliasBodyStart + 4), canonical.response.substr(bodyStart + 4));
+    EXPECT_NE(alias.response.find("\"openapi\""), std::string::npos);
+    EXPECT_NE(alias.response.find("application/json"), std::string::npos);
+}
+
+TEST(HttpFacesOpenApi, AliasUsesRegistryMethodValidation) {
+    const auto response = runHttpRequest(nullptr,
+        "POST /openapi.json HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n", nullptr);
+    ASSERT_TRUE(response.connected);
+    EXPECT_EQ(response.status, 405);
+}
+
+TEST(HttpFacesOpenApi, AliasRequiresAuthenticationLikeCanonicalRoute) {
+    for (const std::string path : {"/api/v1/openapi", "/openapi.json"}) {
+        const auto response = runHttpRequest(L"test-secret-token",
+            "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", nullptr);
+        ASSERT_TRUE(response.connected);
+        EXPECT_EQ(response.status, 401) << path;
+    }
+    const auto authenticated = runHttpRequest(L"test-secret-token",
+        "GET /openapi.json HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Authorization: Bearer test-secret-token\r\n\r\n", nullptr);
+    EXPECT_EQ(authenticated.status, 200);
+}
+
 TEST(HttpFacesAuth, AnonymousWriteReachableWithoutToken) {
     auto store = makeAuthConfigStore(L"anonymous_write");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
                             std::to_string(body.size()) + "\r\n\r\n" + body;
     const auto r = runHttpRequest(nullptr, req, store.get());
@@ -466,7 +566,7 @@ TEST(HttpFacesAuth, AnonymousWriteReachableWithoutToken) {
 TEST(HttpFacesAuth, UnauthenticatedWriteRejectedWhenAuthEnabled) {
     auto store = makeAuthConfigStore(L"unauth_write_reject");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
                             std::to_string(body.size()) + "\r\n\r\n" + body;
     const auto r = runHttpRequest(L"test-secret-token", req, store.get());
@@ -477,7 +577,7 @@ TEST(HttpFacesAuth, UnauthenticatedWriteRejectedWhenAuthEnabled) {
 // RED→GREEN：配置 token 后，未认证 POST 动作（enroll）必须 401。
 TEST(HttpFacesAuth, UnauthenticatedActionRejectedWhenAuthEnabled) {
     const std::string body = "{\"personId\":\"test\"}";
-    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
                             std::to_string(body.size()) + "\r\n\r\n" + body;
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
@@ -488,7 +588,7 @@ TEST(HttpFacesAuth, UnauthenticatedActionRejectedWhenAuthEnabled) {
 // RED→GREEN：错误 token 必须 401，且 401 体须符合规格 §3.4/§6：
 // 含 unauthorized 错误码、不发送 WWW-Authenticate、不回显请求中的 token。
 TEST(HttpFacesAuth, WrongBearerTokenRejected) {
-    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer wrong-token\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
     ASSERT_TRUE(r.connected);
@@ -500,7 +600,7 @@ TEST(HttpFacesAuth, WrongBearerTokenRejected) {
 
 // 安全要求：有效 token 放行（管理读端点返回 200）。
 TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
-    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
     ASSERT_TRUE(r.connected);
@@ -514,7 +614,7 @@ TEST(HttpFacesAuth, ValidBearerTokenAccepted) {
 // 与本用例的「真实服务端 + 匿名白名单」路径不重叠，故上句的「唯一」限定为 HTTP 路径。
 TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
     {
-        const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+        const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 200) << r.response;
@@ -526,7 +626,7 @@ TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
         EXPECT_NE(r.response.find("\"port\":"), std::string::npos) << r.response;
     }
     {
-        const std::string req = "GET /api/v1/acceleration HTTP/1.1\r\nHost: t\r\n\r\n";
+        const std::string req = "GET /api/v1/acceleration HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 200) << r.response;
@@ -538,7 +638,7 @@ TEST(HttpFacesAuth, AnonymousWhitelistRemainsPublic) {
 // 断言 configStatus 的存在性即证明旧配置被拒时的监控语义可与「对端旧版本」区分。
 TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
     auto store = makeAuthConfigStore(L"health_ok_config");
-    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
     const auto r = runHttpRequest(nullptr, req, store.get());
     ASSERT_TRUE(r.connected);
     EXPECT_EQ(r.status, 200) << r.response;
@@ -554,7 +654,7 @@ TEST(HttpFacesAuth, HealthExposesConfigStatusOk) {
 // 若其实现改变（例如解析失败不触发隔离），此处会如实变红。
 TEST(HttpFacesAuth, HealthExposesRejectedConfigStatus) {
     auto store = makeRejectedConfigStore(L"health_rejected_config");
-    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
     const auto r = runHttpRequest(nullptr, req, store.get());
     ASSERT_TRUE(r.connected);
     EXPECT_EQ(r.status, 200) << r.response;
@@ -572,7 +672,7 @@ TEST(HttpFacesAuth, HealthExposesDegradedConfigStatus) {
     auto store = makeDegradedConfigStore(L"health_degraded_config");
     ASSERT_FALSE(store->configRejectedOnLoad()) << "前置：降级场景不得被误判为 rejected";
     ASSERT_FALSE(store->initWarning().empty()) << "前置：降级场景必须有告警文本";
-    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: t\r\n\r\n";
+    const std::string req = "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
     const auto r = runHttpRequest(nullptr, req, store.get());
     ASSERT_TRUE(r.connected);
     EXPECT_EQ(r.status, 200) << r.response;
@@ -584,13 +684,60 @@ TEST(HttpFacesAuth, HealthExposesDegradedConfigStatus) {
 // RED→GREEN：SSE 流（StreamSessionRunner 旁路）在启用认证后必须 401。
 // 修复前：无鉴权直通旁路 → pipe=null 返回 503（本用例失败=RED）；修复后：401。
 TEST(HttpFacesAuth, UnauthenticatedStreamRejectedWhenAuthEnabled) {
-    const std::string req = "GET /api/v1/faces/stream HTTP/1.1\r\nHost: t\r\n\r\n";
+    const std::string req = "GET /api/v1/faces/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
     ASSERT_TRUE(r.connected);
     EXPECT_EQ(r.status, 401) << r.response;
 }
 
 // ── S-SEC-B09-004：跨站请求伪造（CSRF）防护 ─────────────────────
+TEST(HttpFacesHost, DnsRebindingWriteRejectedBeforeMutation) {
+    auto store = makeAuthConfigStore(L"dns_rebinding");
+    const int previousPort = store->current().http.port;
+    const std::string body = "{\"http\":{\"port\":8090}}";
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: evil.example\r\n"
+                            "Sec-Fetch-Site: same-site\r\n"
+                            "Content-Type: application/json\r\nContent-Length: " +
+                            std::to_string(body.size()) + "\r\n\r\n" + body;
+    const auto r = runHttpRequest(nullptr, req, store.get());
+    ASSERT_TRUE(r.connected);
+    EXPECT_EQ(r.status, 403);
+    EXPECT_EQ(store->current().http.port, previousPort);
+}
+
+TEST(HttpFacesHost, RebindingCannotReadApiStaticOrStreams) {
+    for (const auto* path : {"/api/v1/health", "/", "/api/v1/faces/stream", "/api/v1/preview.mjpeg"}) {
+        const auto r = runHttpRequest(nullptr, std::string("GET ") + path +
+            " HTTP/1.1\r\nHost: evil.example\r\nSec-Fetch-Site: same-origin\r\n\r\n", nullptr, true);
+        ASSERT_TRUE(r.connected);
+        EXPECT_EQ(r.status, 403) << path;
+    }
+}
+
+TEST(HttpFacesHost, LoopbackAuthoritiesAccepted) {
+    for (const auto* authority : {"127.0.0.1", "127.0.0.1:8080", "localhost",
+            "LOCALHOST:5173", "[::1]", "[::1]:65535"}) {
+        const auto r = runHttpRequest(nullptr, std::string(
+            "GET /api/v1/health HTTP/1.1\r\nHost: ") + authority + "\r\n\r\n", nullptr);
+        ASSERT_TRUE(r.connected);
+        EXPECT_EQ(r.status, 200) << authority;
+    }
+}
+
+TEST(HttpFacesHost, MissingMalformedOrDuplicateAuthoritiesRejected) {
+    for (const auto* headers : {"", "Host: \r\n", "Host: localhost.evil.example\r\n",
+            "Host: 127.0.0.1.evil.example\r\n", "Host: localhost:abc\r\n",
+            "Host: localhost:65536\r\n", "Host: localhost:\r\n", "Host: ::1\r\n",
+            "Host: [::1]:80:90\r\n", "Host: user@localhost\r\n",
+            "Host: 127.0.0.1\r\nhOsT: evil.example\r\n",
+            "Host: 127.0.0.1\r\nHost: 127.0.0.1\r\n"}) {
+        const auto r = runHttpRequest(nullptr,
+            std::string("GET /api/v1/health HTTP/1.1\r\n") + headers + "\r\n", nullptr);
+        ASSERT_TRUE(r.connected);
+        EXPECT_EQ(r.status, 403);
+    }
+}
+
 // 决策树（冻结于 docs/security/auth-model.md §3.5）：
 //  - 仅对写方法（POST/PUT/DELETE）校验；读方法与 GET 不受影响；
 //  - Sec-Fetch-Site: cross-site → 拒绝（现代浏览器强信号，独立于 Origin）；
@@ -605,7 +752,7 @@ TEST(HttpFacesAuth, UnauthenticatedStreamRejectedWhenAuthEnabled) {
 TEST(HttpFacesAuth, CrossSiteOriginWriteRejected) {
     auto store = makeAuthConfigStore(L"csrf_cross_site_origin");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Origin: https://evil.example\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
@@ -619,7 +766,7 @@ TEST(HttpFacesAuth, CrossSiteOriginWriteRejected) {
 // 同样必须 403：浏览器强制携带 Origin，host 为攻击源。
 TEST(HttpFacesAuth, CrossSiteFormPostRejected) {
     const std::string body = "personId=attacker";
-    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Origin: https://evil.example\r\n"
                             "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " +
@@ -633,7 +780,7 @@ TEST(HttpFacesAuth, CrossSiteFormPostRejected) {
 TEST(HttpFacesAuth, CrossSiteSecFetchSiteRejected) {
     auto store = makeAuthConfigStore(L"csrf_cross_site_sec_fetch");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Sec-Fetch-Site: cross-site\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
@@ -647,7 +794,7 @@ TEST(HttpFacesAuth, CrossSiteSecFetchSiteRejected) {
 TEST(HttpFacesAuth, SameOriginLoopbackWriteAccepted) {
     auto store = makeAuthConfigStore(L"csrf_same_origin_127");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Origin: http://127.0.0.1:8080\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
@@ -661,7 +808,7 @@ TEST(HttpFacesAuth, SameOriginLoopbackWriteAccepted) {
 TEST(HttpFacesAuth, SameOriginLocalhostWriteAccepted) {
     auto store = makeAuthConfigStore(L"csrf_same_origin_localhost");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Origin: http://localhost:9000\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
@@ -675,7 +822,7 @@ TEST(HttpFacesAuth, SameOriginLocalhostWriteAccepted) {
 TEST(HttpFacesAuth, SameOriginSecFetchSiteAccepted) {
     auto store = makeAuthConfigStore(L"csrf_same_origin_sec_fetch");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Origin: http://127.0.0.1:8080\r\n"
                             "Sec-Fetch-Site: same-origin\r\n"
@@ -690,7 +837,7 @@ TEST(HttpFacesAuth, SameOriginSecFetchSiteAccepted) {
 TEST(HttpFacesAuth, HeadlessClientWriteAcceptedWithoutOrigin) {
     auto store = makeAuthConfigStore(L"csrf_headless_client");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
                             std::to_string(body.size()) + "\r\n\r\n" + body;
@@ -705,7 +852,7 @@ TEST(HttpFacesAuth, HeadlessClientWriteAcceptedWithoutOrigin) {
 TEST(HttpFacesAuth, WriteWithEmptyOriginRejected) {
     auto store = makeAuthConfigStore(L"csrf_empty_origin");
     const std::string body = "{\"http\":{\"port\":8090}}";
-    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "PUT /api/v1/settings HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer test-secret-token\r\n"
                             "Origin:\r\n"
                             "Content-Type: application/json\r\nContent-Length: " +
@@ -724,7 +871,7 @@ TEST(HttpFacesAuth, WriteWithEmptyOriginRejected) {
 
 // Basic scheme（合法 HTTP 认证 scheme，但本项目只接受 Bearer）→ 401。
 TEST(HttpFacesAuth, BasicSchemeRejected) {
-    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Basic dXNlcjpwYXNz\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
     ASSERT_TRUE(r.connected);
@@ -734,7 +881,7 @@ TEST(HttpFacesAuth, BasicSchemeRejected) {
 
 // `Bearer` 无空格无 token（find(' ') 为 npos）→ 401。
 TEST(HttpFacesAuth, BearerWithoutSpaceRejected) {
-    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
     ASSERT_TRUE(r.connected);
@@ -746,14 +893,14 @@ TEST(HttpFacesAuth, BearerWithoutSpaceRejected) {
 // 绕过——携带错误 token 时仍必须 401；同时以正确 token 断言大写 scheme 不破坏 RFC 契约。
 TEST(HttpFacesAuth, UppercaseSchemeDoesNotBypassTokenCheck) {
     {
-        const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+        const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                                 "Authorization: BEARER wrong-token\r\n\r\n";
         const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
         ASSERT_TRUE(r.connected);
         EXPECT_EQ(r.status, 401) << r.response;
     }
     {
-        const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+        const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                                 "Authorization: BEARER test-secret-token\r\n\r\n";
         const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
         ASSERT_TRUE(r.connected);
@@ -764,7 +911,7 @@ TEST(HttpFacesAuth, UppercaseSchemeDoesNotBypassTokenCheck) {
 // tab 分隔 `Bearer\t<token>`：解析器只认空格，tab 使 find(' ') 为 npos →
 // 即使 token 正确也畸形 → 401（fail-closed）。
 TEST(HttpFacesAuth, TabSeparatedSchemeRejected) {
-    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Bearer\ttest-secret-token\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
     ASSERT_TRUE(r.connected);
@@ -774,7 +921,7 @@ TEST(HttpFacesAuth, TabSeparatedSchemeRejected) {
 // 多个 Authorization 头：读取仅取第一个，首条为畸形 Basic 时即使后随有效 Bearer 也必须
 // 401 —— 头歧义不得通过"追加一条有效头"绕过校验（fail-closed）。
 TEST(HttpFacesAuth, DuplicateAuthorizationMalformedFirstRejected) {
-    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "GET /api/v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Authorization: Basic dXNlcjpwYXNz\r\n"
                             "Authorization: Bearer test-secret-token\r\n\r\n";
     const auto r = runHttpRequest(L"test-secret-token", req, nullptr);
@@ -787,7 +934,7 @@ TEST(HttpFacesAuth, DuplicateAuthorizationMalformedFirstRejected) {
 // 在无 token 配置下同样必须 403。判别点：无 Authorization 头 + 跨站 Origin 的 POST。
 TEST(HttpFacesAuth, CrossSiteWriteRejectedWithoutAuthToken) {
     const std::string body = "personId=attacker";
-    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: t\r\n"
+    const std::string req = "POST /api/v1/actions/enroll HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                             "Origin: https://evil.example\r\n"
                             "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " +
                             std::to_string(body.size()) + "\r\n\r\n" + body;
@@ -1518,6 +1665,57 @@ TEST(HttpFacesRuntimeStatus, HealthReportsStartingWhenNotAssembled) {
 // ④ 重载响应回归钉住：**新增** ok/warning 两键，而 status 仍恒为 "reloaded"。
 // status 的恒值属既有对外契约（既有消费者按字面值判断），把它改成受成败影响是破坏性变更，
 // 本用例即为该变更的防线：把 status 改成 "ok"/"failed" 之类 ⇒ 本用例红。
+TEST(HttpFacesRuntimeStatus, FailedReloadReportsFailureWhileOldRuntimeStaysHealthy) {
+    auto store = makeAuthConfigStore(L"reload_keeps_healthy_runtime");
+    auto cfg = store->current();
+    cfg.model.recognition = "lbph";
+    cfg.recognition.cascadePath = std::filesystem::path(RK_TEST_SOURCE_ROOT) /
+        "app/src/main/assets/lbpcascade_frontalface.xml";
+    cfg.recognition.databasePath = std::filesystem::temp_directory_path() / "reload_old_runtime_fixture.yml";
+    cfg.dnn.enable = false;
+    rk_win::FramePipeline pipe;
+    ASSERT_TRUE(pipe.initialize(cfg));
+    ASSERT_FALSE(pipe.degraded().active);
+    const auto updated = store->updateFromJsonBody(
+        "{\"recognition\":{\"cascadePath\":\"missing/reload_fixture.xml\"},\"dnn\":{\"enable\":false}}");
+    ASSERT_TRUE(updated.ok);
+    rk_win::EndpointContext ctx;
+    ctx.pipe = &pipe;
+    ctx.settings = store.get();
+    rk_win::HttpFacesServer::HttpRequest request;
+    request.method = "POST";
+    request.path = "/api/v1/models/reload";
+    request.body = "{\"id\":\"cascade_frontalface\"}";
+    const auto response = rk_win::handlers::handleReloadModel(request, ctx);
+    ASSERT_EQ(response.status, 200);
+    rk_win::JsonValue envelope;
+    std::string error;
+    ASSERT_TRUE(rk_win::parseJson(response.body, envelope, error));
+    const auto* data = envelope.find("data");
+    ASSERT_NE(data, nullptr);
+    const auto* ok = data->find("ok");
+    ASSERT_NE(ok, nullptr);
+    EXPECT_TRUE(ok->isBool());
+    EXPECT_FALSE(ok->b);
+    EXPECT_NE(data->find("warning"), nullptr);
+    EXPECT_FALSE(pipe.degraded().active);
+}
+
+TEST(HttpFacesRuntimeStatus, FacesWithoutFrameUsesFrameUnavailable) {
+    rk_win::FramePipeline pipe;
+    rk_win::EndpointContext ctx;
+    ctx.pipe = &pipe;
+    rk_win::HttpFacesServer::HttpRequest request;
+    request.method = "GET";
+    request.path = "/api/faces";
+    const auto response = rk_win::handlers::handleGetFaces(request, ctx);
+    EXPECT_EQ(response.status, 503);
+    EXPECT_NE(response.body.find("\"frame_unavailable\""), std::string::npos);
+    ctx.pipe = nullptr;
+    const auto absent = rk_win::handlers::handleGetFaces(request, ctx);
+    EXPECT_NE(absent.body.find("\"pipeline_unavailable\""), std::string::npos);
+}
+
 TEST(HttpFacesRuntimeStatus, ReloadResponseKeepsReloadedStatusAndAddsOutcome) {
     rk_win::FramePipeline pipe;
     std::filesystem::path cascade;

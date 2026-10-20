@@ -33,15 +33,17 @@ TrackCoordinator::TrackCoordinator(const TrackConfig& cfg) : config_(cfg) {}
 void TrackCoordinator::clearIdentity(InternalTrack& t) {
     t.view.stableId = "Unknown";
     t.view.stableConfidence = 0.0f;
+    t.view.identityPending = false;
     t.candidateId.clear();
     t.candidateHits = 0;
 }
 
 // A2 三次实际识别：仅当**连续**观察到同一真实身份达到固定门槛（3 次）时才置 stableId。
-// 未认证 / 空身份 / "Unknown" 一律撤销（不参与累计）；换人先撤销再以新身份重新从 1 计。
+// 未认证 / 空身份 / "Unknown"（含兼容 LBPH 的小写 "unknown"）一律撤销；换人从 1 重新累计。
 // 门槛刻意写死为 3（不受 TrackConfig::stableFrames 影响）——stableFrames 管的是**框**的确认。
 void TrackCoordinator::observeIdentity(InternalTrack& t, const DetectedFace& face) {
-    if (!face.isAuthenticated || face.identityId.empty() || face.identityId == "Unknown") {
+    if (!face.isAuthenticated || face.identityId.empty() ||
+        face.identityId == "Unknown" || face.identityId == "unknown") {
         clearIdentity(t);
         return;
     }
@@ -53,9 +55,11 @@ void TrackCoordinator::observeIdentity(InternalTrack& t, const DetectedFace& fac
         t.candidateHits = std::min(3, t.candidateHits + 1);
     }
     if (t.candidateHits == 3) {
+        t.view.identityPending = false;
         t.view.stableId = face.identityId;
         t.view.stableConfidence = face.confidence;
     } else {
+        t.view.identityPending = true;
         t.view.stableId = "Unknown";
         t.view.stableConfidence = 0.0f;
     }
@@ -202,7 +206,7 @@ void TrackCoordinator::resetIdentitiesExcept(const std::vector<std::string>& kee
     // A2：候选身份（candidateId）是「正在累计、尚未确认」的另一半身份真相，同样按 keepIds 撤销——
     // 只按 stableId 保留会让被删除者的候选继续累计、在第 3 次「确认」出已不在图库的身份。
     auto kept = [&keepIds](const std::string& id) {
-        if (id.empty() || id == "Unknown") return false;
+        if (id.empty() || id == "Unknown" || id == "unknown") return false;
         for (const auto& k : keepIds) {
             if (k == id) return true;
         }
@@ -216,6 +220,7 @@ void TrackCoordinator::resetIdentitiesExcept(const std::vector<std::string>& kee
         if (!t.candidateId.empty() && !kept(t.candidateId)) {
             t.candidateId.clear();
             t.candidateHits = 0;
+            t.view.identityPending = false;
         }
     }
 }

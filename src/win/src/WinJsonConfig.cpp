@@ -430,6 +430,7 @@ static JsonValue toSettingsDocObject(const AppConfig& cfg, bool redacted, bool e
     // model
     {
         JsonValue md = JsonValue::makeObject();
+        md.o["faceProfileDir"] = JsonValue::makeString(cfg.model.faceProfileDir.string());
         md.o["detection"] = JsonValue::makeString(cfg.model.detection);
         md.o["recognition"] = JsonValue::makeString(cfg.model.recognition);
         md.o["backend"] = JsonValue::makeString(rk_accel::normalizeBackendName(cfg.model.backend, "opencv_dnn"));
@@ -713,6 +714,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
     // model (optional, silently fall back to defaults if missing)
     if (const JsonValue* m = doc.find("model"); m && m->isObject()) {
         std::string s;
+        if (getString(*m, "faceProfileDir", s)) cfg.model.faceProfileDir = s.empty() ? std::filesystem::path{} : resolvePathFromExeDir(s);
         if (getString(*m, "detection", s)) cfg.model.detection = s;
         if (getString(*m, "recognition", s)) cfg.model.recognition = s;
         if (getString(*m, "backend", s)) cfg.model.backend = rk_accel::normalizeBackendName(s, cfg.model.backend);
@@ -983,6 +985,7 @@ static void warnUnsafeConfigPaths(JsonValue& doc) {
         {"recognition", "arcFaceModelPath", false},
         {"dnn", "modelPath", false},
         {"dnn", "configPath", false},
+        {"model", "faceProfileDir", false},
     };
     for (const PathField& f : kFields) {
         const JsonValue* sec = doc.find(f.section);
