@@ -35,3 +35,5 @@ as_of=2026-10-20
 ## 本地测试统筹
 
 统一调度入口为 `scripts/run-test-suites.py`，支持list/plan/run和明确套件选择；使用说明、环境参数、互斥、退出码及证据边界见[测试统筹](../docs/guides/test-suite-coordination.md)。不会安装依赖、访问设备或将跳过/旧报告签署为通过；原有独立脚本继续有效。
+
+`scripts/check-test-suite-mutations.py`在隔离副本执行固定六组行为变异，先验证未修改基线，外层清理自有进程；只有当前JUnit中的真实断言失败才计检出。参数、退出码与本次报告位置同见[测试统筹](../docs/guides/test-suite-coordination.md#验证统筹器自身)，不依赖cache中的旧驱动。

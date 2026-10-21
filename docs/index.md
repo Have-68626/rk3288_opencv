@@ -133,6 +133,7 @@ as_of=2026-10-20
 | `plans/2026-10-19-directory-optimization.md` | living | R01—R06目录优化、独立全量重建及本地CI验收 |
 | `plans/2026-10-19-cyber-cricket-arena-benchmark-spec.md` | living | 代码修复竞技靶场可行性、题目证据边界及裁判器验收草案 |
 | `plans/2026-10-20-test-suite-coordination-plan.md` | living | 已批准套件统筹设计的TDD实施与实际验收步骤 |
+| `plans/2026-10-20-test-suite-hardening-plan.md` | living | 统筹取消终态、复现信息与六组正式变异的第一批实施 |
 
 ### 历史计划
 
@@ -163,6 +164,7 @@ as_of=2026-10-20
 | `specs/2026-07-06-architecture-governance-design.md` | snapshot | 架构治理设计（5 条契约的**目标**定义） |
 | `specs/2026-10-17-rtmp-hidden-preview-design.md` | living | 实机推流测试隐藏预览的临时控制器与正式模式取舍 |
 | `specs/2026-10-20-test-suite-coordination-design.md` | living | 已批准的本地套件统筹设计：选择、前置、互斥、失败传播及可信汇总 |
+| `specs/2026-10-20-test-suite-hardening-design.md` | living | 第一批统筹加固的终态、元数据白名单与变异判据 |
 
 ## audits/（近期结果与设备基线）
 

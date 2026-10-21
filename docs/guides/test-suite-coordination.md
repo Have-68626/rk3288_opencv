@@ -68,6 +68,10 @@ E2E会再次检查5173端口，已有服务不属于本次所有权，不会被�
 
 每步将校验后的JUnit独占归档到自身evidence目录；XML按节点脱敏，保留原路径、原摘要及归档摘要。后续Gradle覆盖共享报告不影响已归档证据；校验与归档之间内容变化也会被拒绝。
 
+每次run独占保存plan.json，包含实际命令、cwd、超时、报告位置/单位和明确输入身份；summary记录其摘要。只保留选定配置文件及公共工具的摘要，不遍历整个SDK、模型或媒体目录；目录身份明确限定为这些配置文件。PATH等环境值不落盘，只保留环境键名，Java/SDK等有效路径由白名单输入记录。plan的终端输出仍是套件数组，不创建运行报告。
+
+Python版本直接记录当前解释器；Node/pnpm/CMake/CTest/PowerShell/Java按所选套件通过受控Job采集版本，原始退出码与脱敏日志保留在versions目录。Gradle使用wrapper配置身份，不为取版本额外下载发行包。版本缺失或无效阻塞执行；探测禁用Corepack联网。取消仍返回130，边界异常将未完成步骤收束为cancelled或blocked，不遗留running；已完成结果保留。取消期间同时发现源码变化会记录source_changed，不覆盖取消退出码。
+
 JSON包含schema版本、运行ID、源码HEAD/工作区摘要、选择/未选范围、步骤原始退出码、时长、状态、计数单位、证据路径及摘要。运行前后源码绑定变化会使整体非零；受跟踪webroot是构建输出，与源码绑定分开处理。汇总无全局唯一用例总数：不同套件可能重复覆盖相同用例，不跨套件相加。
 
 工作区摘要覆盖受跟踪差异，以及scripts/tests/src/app/web/docs/cmake/config中约定扩展名的未跟踪源码文本；排除依赖、构建、报告、private目录、媒体二进制和链接目标，不作为全磁盘完整性签名。
@@ -89,3 +93,15 @@ JUnit读取真实用例节点并核对声明计数，拒绝缺失、畸形、零
 原 `scripts/run-web-e2e.ps1` 调用保留，可选WebDirectory、PnpmPath、SkipInstall和ReportDirectory用于统筹。默认安装使用冻结锁文件；统筹指定SkipInstall，只消费已准备的依赖。Cypress启动器透传本次CLI报告参数，仍保留旧覆盖率归档、环境隔离和退出码。
 
 [现有构建指南](build-and-test.md)的手工命令继续有效；本工具不改CI的非阻断策略或覆盖率阈值。本地所选套件通过不等于远端CI、真实服务、设备加载或生物识别精度验收。
+
+## 验证统筹器自身
+
+```powershell
+python scripts/check-test-suite-mutations.py --list
+python scripts/check-test-suite-mutations.py
+python scripts/check-test-suite-mutations.py --mutation leak-descendants
+```
+
+固定六组：吞退出码、接受旧报告、接受空报告、失败后继续、绕互斥、漏清后代。先在未修改隔离副本运行相同测试，基线不通过则不执行变异。每组仅修改独立副本，外层使用未变异的执行器收回后代，包括变异故意造成的泄漏。
+
+结果位于cache/reports/test-suite-mutations/唯一标识/results.json。退出1且本轮JUnit包含断言失败、无收集/导入错误才算检出；原源码摘要须保持不变。存活、超时、基线失败或无效证据均不构成检出。可用--timeout调整每组正的有限秒数；工具退出0表示全部所选变异检出，非零须读取具体原因和原始退出码，不能以pytest失败本身当作成功。该工具独立运行，不增加第八套件，不自动接入CI。

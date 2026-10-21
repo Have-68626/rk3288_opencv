@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """按明确范围运行本地测试，保留本次证据，不代替远端CI。"""
-from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -15,6 +14,8 @@ import uuid
 from audit._common import Parser, redact
 from testing.catalog import SUITES, make_suites
 from testing.runner import RepoLock, execute_step
+from testing.reports import identity
+from testing.metadata import plan_snapshot, collect_versions
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -178,30 +179,10 @@ def main(argv=None):
         return 2
     if options.action == "plan":
         print(
-            redact(
-                json.dumps(
-                    [
-                        dict(
-                            id=s["id"],
-                            errors=s["errors"],
-                            steps=[
-                                dict(
-                                    **{
-                                        key: value
-                                        for key, value in asdict(step).items()
-                                        if key != "env"
-                                    },
-                                    environment_keys=sorted(step.env),
-                                )
-                                for step in s["steps"]
-                            ],
-                        )
-                        for s in suites
-                    ],
-                    default=str,
-                    ensure_ascii=False,
-                    indent=2,
-                )
+            json.dumps(
+                sanitize(plan_snapshot(ROOT, suites, options)["suites"]),
+                ensure_ascii=False,
+                indent=2,
             )
         )
         return 0
@@ -213,6 +194,7 @@ def main(argv=None):
         not_selected=[s for s in SUITES if s not in options.suite],
         started=datetime.now(timezone.utc).isoformat(),
         steps=[],
+        tools={},
         source_start=binding(ROOT),
     )
     # cache中的链接不能把本次输出重定向到其他工作区。
@@ -231,12 +213,23 @@ def main(argv=None):
         for step in s["steps"]
     ]
     out.mkdir(parents=True, exist_ok=False)
+    plan_file = out / "plan.json"
+    with plan_file.open("x", encoding="utf-8") as stream:
+        json.dump(
+            sanitize(plan_snapshot(ROOT, suites, options)),
+            stream,
+            ensure_ascii=False,
+            indent=2,
+        )
+    report["execution_plan"] = dict(path=str(plan_file), **identity(plan_file))
     save(out, report)
     exit_code = 0
     stopped = False
     position = 0
     try:
         with RepoLock(ROOT):
+            collect_versions(suites, out / "versions", report["tools"])
+            save(out, report)
             for suite in suites:
                 for step in suite["steps"]:
                     row = dict(
@@ -289,6 +282,7 @@ def main(argv=None):
                 "LOCK_FAILED",
                 "LOCK_RELEASE_FAILED",
                 "UNSUPPORTED_HOST",
+                "TOOL_VERSION_UNVERIFIED",
             )
             else "COORDINATION_OR_REPORT_FAILED"
         )
@@ -296,10 +290,29 @@ def main(argv=None):
     except (OSError, ValueError):
         report["reason"] = "COORDINATION_OR_REPORT_FAILED"
         exit_code = 2
-    report["source_end"] = binding(ROOT)
-    if report["source_start"] != report["source_end"]:
-        report["reason"] = "SOURCE_CHANGED_DURING_RUN"
-        exit_code = 2
+    try:
+        report["source_end"] = binding(ROOT)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        report["source_end"] = None
+        report["source_binding_error"] = "SOURCE_BINDING_UNAVAILABLE"
+        if exit_code == 0:
+            report["reason"] = "SOURCE_BINDING_UNAVAILABLE"
+            exit_code = 2
+    if (
+        report["source_end"] is not None
+        and report["source_start"] != report["source_end"]
+    ):
+        report["source_changed"] = True
+        if exit_code != 130:
+            report["reason"] = "SOURCE_CHANGED_DURING_RUN"
+            exit_code = 2
+    # 边界异常可能发生在执行器接手前，终态不能残留running；已完成证据不重写。
+    for row in report["steps"]:
+        if row["status"] == "running":
+            row.update(
+                status="cancelled" if exit_code == 130 else "blocked",
+                reason=report.get("reason", "COORDINATION_OR_REPORT_FAILED"),
+            )
     report["selected_execution_complete"] = all(
         row["status"] in ("passed", "failed") for row in report["steps"]
     )

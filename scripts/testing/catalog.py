@@ -57,6 +57,7 @@ def make_suites(root, names, options, out):
     for name in select(names):
         errors = []
         steps = []
+        tools = {}
         base = out / name
         env = {}
 
@@ -66,6 +67,7 @@ def make_suites(root, names, options, out):
             if not resolved:
                 errors.append("MISSING_" + key.upper())
                 return str(value)
+            tools[key] = resolved
             return resolved
 
         node = (
@@ -254,6 +256,7 @@ def make_suites(root, names, options, out):
             if not java or not (Path(java) / "bin/java.exe").is_file():
                 errors.append("MISSING_JAVA_HOME")
             else:
+                tools["java"] = str(Path(java).resolve() / "bin/java.exe")
                 env.update(
                     JAVA_HOME=str(Path(java).resolve()),
                     PATH=str(Path(java) / "bin")
@@ -432,5 +435,7 @@ def make_suites(root, names, options, out):
                     junit=[base / "web-e2e/cypress-*.xml"],
                     timeout=1200,
                 )
-        result.append(dict(id=name, errors=sorted(set(errors)), steps=steps))
+        result.append(
+            dict(id=name, errors=sorted(set(errors)), steps=steps, tools=tools)
+        )
     return result

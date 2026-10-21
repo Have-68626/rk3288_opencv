@@ -282,6 +282,89 @@ def test_windows_source_root_uses_path_semantics(tmp_path, same_root):
     assert ("WINDOWS_BUILD_SOURCE_MISMATCH" in suite["errors"]) != same_root
 
 
+@pytest.mark.parametrize(
+    "error,code,state",
+    [
+        (KeyboardInterrupt, 130, "cancelled"),
+        (OSError, 2, "blocked"),
+        (RuntimeError, 2, "blocked"),
+        (ValueError, 2, "blocked"),
+    ],
+)
+def test_boundary_exception_closes_running_step(
+    tmp_path, monkeypatch, error, code, state
+):
+    import json
+    from testing.runner import Step
+
+    cli = load_cli()
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "binding", lambda root: {"head": "fixture"})
+    monkeypatch.setattr(
+        cli,
+        "make_suites",
+        lambda *args: [
+            dict(
+                id="docs",
+                errors=[],
+                steps=[
+                    Step("boundary", [sys.executable, "-c", "pass"], tmp_path),
+                    Step("never", [sys.executable, "-c", "pass"], tmp_path),
+                ],
+            )
+        ],
+    )
+
+    def fail(*args):
+        raise error()
+
+    monkeypatch.setattr(cli, "execute_step", fail)
+    assert cli.main(["run", "--suite", "docs"]) == code
+    report = json.loads(
+        next((tmp_path / "cache/reports/test-suites").glob("*/summary.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [row["status"] for row in report["steps"]] == [state, "not_run"]
+    assert report["steps"][0]["raw_exit_code"] is None
+
+
+def test_source_binding_failure_still_saves_completed_result(tmp_path, monkeypatch):
+    import json
+    from testing.runner import Step
+
+    cli = load_cli()
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    calls = []
+
+    def binding(root):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError()
+        return {"head": "fixture"}
+
+    monkeypatch.setattr(cli, "binding", binding)
+    monkeypatch.setattr(
+        cli,
+        "make_suites",
+        lambda *args: [
+            dict(
+                id="docs",
+                errors=[],
+                steps=[Step("done", [sys.executable, "-c", "pass"], tmp_path)],
+            )
+        ],
+    )
+    assert cli.main(["run", "--suite", "docs"]) == 2
+    report = json.loads(
+        next((tmp_path / "cache/reports/test-suites").glob("*/summary.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["steps"][0]["status"] == "passed"
+    assert report["source_binding_error"] == "SOURCE_BINDING_UNAVAILABLE"
+
+
 def test_explicit_node_controls_child_path(tmp_path):
     suite = make_suites(
         ROOT, ["docs"], SimpleNamespace(node=sys.executable), tmp_path / "out"
@@ -290,3 +373,25 @@ def test_explicit_node_controls_child_path(tmp_path):
         Path(suite["steps"][0].env["PATH"].split(os.pathsep)[0])
         == Path(sys.executable).parent
     )
+
+
+def test_cancel_retains_130_if_source_changes_during_interrupt(tmp_path, monkeypatch):
+    from testing.runner import Step
+
+    cli = load_cli()
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    snapshots = iter([{"head": "a"}, {"head": "b"}])
+    monkeypatch.setattr(cli, "binding", lambda root: next(snapshots))
+    monkeypatch.setattr(
+        cli,
+        "make_suites",
+        lambda *args: [
+            dict(id="docs", errors=[], steps=[Step("cancel", [], tmp_path)])
+        ],
+    )
+
+    def cancel(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "execute_step", cancel)
+    assert cli.main(["run", "--suite", "docs"]) == 130
