@@ -134,6 +134,7 @@ as_of=2026-10-20
 | `plans/2026-10-19-cyber-cricket-arena-benchmark-spec.md` | living | 代码修复竞技靶场可行性、题目证据边界及裁判器验收草案 |
 | `plans/2026-10-20-test-suite-coordination-plan.md` | living | 已批准套件统筹设计的TDD实施与实际验收步骤 |
 | `plans/2026-10-20-test-suite-hardening-plan.md` | living | 统筹取消终态、复现信息与六组正式变异的第一批实施 |
+| `plans/2026-10-21-test-suite-expansion-plan.md` | living | R04—R09原生计数、CI证据、真实回环契约、规则与环境加固及资产预检边界 |
 
 ### 历史计划
 

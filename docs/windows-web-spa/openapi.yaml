@@ -549,7 +549,7 @@ components:
             code:
               type: string
               description: 错误码
-              example: "SCHEMA_VALIDATION_FAILED"
+              example: "invalid_request"
             message:
               type: string
               description: 人类可读的错误描述
@@ -1157,7 +1157,7 @@ components:
                     properties:
                       code:
                         type: string
-                        example: "SCHEMA_VALIDATION_FAILED"
+                        example: "invalid_request"
                       message:
                         type: string
                         example: "字段 camera.width 超出范围 [1, 8192]"

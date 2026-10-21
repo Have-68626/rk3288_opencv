@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-20
+as_of=2026-10-21
 -->
 
 # 本地测试套件统筹
@@ -84,7 +84,7 @@ CI对应关系：docs对应文档审计；tooling对应卫生和Windows工具回
 - unverified：报告缺失/过时/无效，或实际Android构建绑定不足。
 - timed_out / cancelled / not_run：分别为超时、取消及未执行。
 
-JUnit读取真实用例节点并核对声明计数，拒绝缺失、畸形、零用例及矛盾报告。CTest计数单位为target，内部用例数明确未知；其system-out中的缺测/跳过标记也保留。框架允许的skip不会自动变成失败，但报告保留数量、原因所在证据和覆盖限制。TEST_UNVERIFIED和TEST_SKIP_ABSENT不构成精度通过。
+JUnit读取真实用例节点并核对声明计数，拒绝缺失、畸形、零用例及矛盾报告。Windows适配器逐目标采集CTest日志、GoogleTest XML和bool汇总，分别保留目标数、case_execution及unique_cases；混合框架分开读取，不把默认禁用用例算作执行。独立重入目标按实际可执行文件和用例名辨别身份。CTest日志上限为16MiB，截断或缺汇总导致未验证，不猜计数。缺资产目标、框架跳过和未运行禁用条目分别保留；TEST_UNVERIFIED和TEST_SKIP_ABSENT不构成精度通过。
 
 整体退出码：0满足所选执行判据；1测试/门禁失败；2前置、资源、源码或证据问题；124超时；130取消。原始步骤码单独保留。异常或无法写入汇总时返回非零，不伪造报告。selected_execution_complete及has_skips_or_unverified须连同逐步状态阅读，不是全覆盖签名。
 
@@ -95,6 +95,34 @@ JUnit读取真实用例节点并核对声明计数，拒绝缺失、畸形、零
 [现有构建指南](build-and-test.md)的手工命令继续有效；本工具不改CI的非阻断策略或覆盖率阈值。本地所选套件通过不等于远端CI、真实服务、设备加载或生物识别精度验收。
 
 ## 验证统筹器自身
+
+### 扩展验证入口
+
+真实前后端契约是Windows套件的显式选项，不改变七类套件，也不改变已有mock E2E：
+
+```powershell
+python scripts/run-test-suites.py run --suite windows `
+  --windows-build-dir cache/builds/windows-vs2022-x64-ncnn `
+  --contract-web-dir cache/builds/web-pnpm-10.33.0/web
+```
+
+该目录仅提供已安装的Vite，加载的API模块来自当前仓库。测试宿主复用真实HttpFacesServer和配置存储，以独占临时配置、动态回环端口、空pipeline运行；不启动生产服务、不读取用户配置、不访问相机。检查health诊断、settings JSON Schema、OpenAPI操作、前端ApiError及拒绝更新的原子性。独立入口为scripts/check-web-contract.py；原生独立入口scripts/run-native-tests.py本身不提供Windows Job，建议通过统筹器调用。
+
+scripts/record-ci-result.py的start/finish用于CI运行前后快照，保存真实退出码、JUnit或LCOV身份及Step Summary；缺失、空白或未改变证据不算通过。workflow保留E2E非阻断策略，页面状态与最终job阻断性质分别解释。
+
+增量工程检查使用`python scripts/check-raii-violations.py --changed --base HEAD`及`git diff --check`。不带--changed时扫描跟踪C++文件；旧sh入口转发同一Python实现。词法规则只覆盖ANativeWindow与AndroidBitmap锁族及指定封装类体，不展开宏、追踪别名或证明open/close配对；全仓扫描通过不等于全部RAII契约完成。规则尚未作为新CI静态门禁。
+
+执行器在启动前对本次短TEMP进行UTF-8写读检查，只删除自身探针文件。环境和协调边界异常保留类型、errno、winerror及阶段，不写异常正文或环境全集。卫生目录缓存分别限于一次只读盘点或scan规则展开，不缓存文件stat；clean/restore及后续快照重新读盘，不共享过期缓存。
+
+### 离线验证输入
+
+`python scripts/check-validation-inputs.py --manifest <显式清单.json>`只校验声明的输入身份。合成清单scope为synthetic；本地模型清单scope为local-assets，须额外传--allow-local-assets。两者都不读取图像或视频，不调用设备。
+
+清单schema_version=1，files至少含model_param和model_bin的path/sha256；可另列parent_model（onnx）和apk。source、license_reference、parent_sha256必须明确；preprocessing包含channel_order、三通道mean/norm、input_shape、input_node、output_node、embedding_dim；measurement为samples、warmup、steady_samples的计划值。相对文件路径以清单目录为准，链接与媒体后缀拒绝。来源/许可仅记录声明，不独立确认法律许可或转换父链。
+
+输出在cache/reports/validation-inputs，缺项退出2/blocked；身份检查通过仍退出77，accuracy=unverified、device=not_run、performance=not_run。输入摘要通过、测量计划存在均不能替代真实精度或性能数据；真人、真机、显示方式与推流另行确认。
+
+### 六组固定变异
 
 ```powershell
 python scripts/check-test-suite-mutations.py --list
