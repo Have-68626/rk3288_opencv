@@ -13,6 +13,7 @@ from .reports import identity
 CONFIGS = {
     "windows_build_dir": ("CMakeCache.txt",),
     "web_dir": ("package.json", "pnpm-lock.yaml"),
+    "contract_web_dir": ("package.json", "pnpm-lock.yaml"),
     "java_home": ("release",),
     "android_sdk": ("source.properties",),
     "opencv_root": ("CMakeLists.txt", "modules/core/include/opencv2/core/version.hpp"),

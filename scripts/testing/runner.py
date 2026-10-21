@@ -33,6 +33,7 @@ class Step:
     env: dict = field(default_factory=dict)
     audit: Path | None = None
     android_ncnn: Path | None = None
+    native_report: Path | None = None
 
 
 class RepoLock:
@@ -168,14 +169,19 @@ def execute_step(step, output, heartbeat=30):
     environment = os.environ.copy()
     environment.update(step.env)
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    stage='temporary_preflight'
     try:
+        from .environment import probe_temporary, diagnostic
         temporary = Path(step.env.get("TMP", output / "tmp"))
         if temporary.resolve() != temporary.absolute():
             raise ValueError("UNSAFE_TEMP")
-        temporary.mkdir(parents=True, exist_ok=True)
+        result['environment_preflight']=probe_temporary(temporary)
+        stage='process_setup'
         environment.update(TEMP=str(temporary), TMP=str(temporary))
         result["temporary_directory"] = str(temporary)
         before = snapshot(step.junit)
+        if step.native_report and step.native_report.exists():
+            raise ValueError('NATIVE_OUTPUT_ALREADY_EXISTS')
         job = _Job()
         process = subprocess.Popen(
             [
@@ -257,8 +263,9 @@ def execute_step(step, output, heartbeat=30):
                 result.update(status="blocked", reason="CHILD_START_FAILED")
     except KeyboardInterrupt:
         result.update(status="cancelled", reason="CANCELLED")
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError) as error:
         result.update(status="blocked", reason="EXECUTION_SETUP_FAILED")
+        result['diagnostic']=diagnostic(error,stage)
     finally:
         if process and process.stdin and not process.stdin.closed:
             process.stdin.close()
@@ -298,6 +305,17 @@ def execute_step(step, output, heartbeat=30):
                 result.update(status="failed", reason="JUNIT_FAILURE")
         except (ValueError, OSError):
             result.update(status="unverified", reason="INVALID_OR_STALE_JUNIT")
+    if result['status'] in ('passed', 'failed') and step.native_report:
+        try:
+            from .native import verify_bundle
+            details, paths = verify_bundle(step.native_report)
+            result['native'] = details
+            result['native_evidence'] = archive_junit(
+                [dict(path=str(path), **identity(path)) for path in paths],
+                output / 'native-evidence',
+            )
+        except (ValueError, OSError):
+            result.update(status='unverified', reason='INVALID_NATIVE_EVIDENCE')
     if result["status"] == "passed" and step.android_ncnn:
         try:
             result["android_build_binding"] = verify_android_build(

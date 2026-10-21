@@ -16,6 +16,7 @@ from testing.catalog import SUITES, make_suites
 from testing.runner import RepoLock, execute_step
 from testing.reports import identity
 from testing.metadata import plan_snapshot, collect_versions
+from testing.environment import diagnostic
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -131,6 +132,7 @@ def parser():
     p.add_argument("--timeout", type=float)
     for flag in (
         "windows-build-dir",
+        "contract-web-dir",
         "web-dir",
         "java-home",
         "android-sdk",
@@ -274,6 +276,7 @@ def main(argv=None):
         report["reason"] = "CANCELLED"
         exit_code = 130
     except RuntimeError as error:
+        report['diagnostic']=diagnostic(error,'coordination')
         report["reason"] = (
             str(error)
             if str(error)
@@ -287,7 +290,8 @@ def main(argv=None):
             else "COORDINATION_OR_REPORT_FAILED"
         )
         exit_code = 2
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        report['diagnostic']=diagnostic(error,'coordination')
         report["reason"] = "COORDINATION_OR_REPORT_FAILED"
         exit_code = 2
     try:
@@ -319,6 +323,7 @@ def main(argv=None):
     report["has_skips_or_unverified"] = any(
         row.get("counts", {}).get("skipped")
         or row.get("observed_markers")
+        or row.get('native',{}).get('asset_unverified_targets')
         or row["status"] == "unverified"
         for row in report["steps"]
     )
@@ -340,6 +345,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("CANCELLED", file=sys.stderr)
         raise SystemExit(130)
-    except Exception:
+    except Exception as error:
         print("COORDINATOR_FAILED", file=sys.stderr)
+        print(json.dumps(diagnostic(error,'unhandled_boundary')),file=sys.stderr)
         raise SystemExit(2)

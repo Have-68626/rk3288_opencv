@@ -237,20 +237,27 @@ def make_suites(root, names, options, out):
             add(
                 "windows-ctest",
                 [
-                    ctest,
-                    "--test-dir",
+                    sys.executable,
+                    str(root / 'scripts/run-native-tests.py'),
+                    '--ctest', ctest,
+                    "--build-dir",
                     str(build),
-                    "-C",
-                    "Release",
-                    "-R",
-                    "^(core_unit_tests|win_unit_tests|face_infer_unit_tests|core_gtest_tests|engine_run_reentry_behavior)$",
-                    "--output-on-failure",
-                    "--output-junit",
-                    str(base / "windows-ctest/junit.xml"),
+                    '--report-dir', str(base / 'windows-ctest/native'),
                 ],
-                junit=[base / "windows-ctest/junit.xml"],
-                unit="target",
+                junit=[base / 'windows-ctest/native/cases.xml'],
+                unit='case_execution',
             )
+            steps[-1].native_report = base / 'windows-ctest/native'
+            contract_web = getattr(options, 'contract_web_dir', None)
+            if contract_web:
+                contract_web = Path(contract_web).resolve()
+                node = tool('node', 'node')
+                if not (contract_web/'node_modules/vite').is_dir():
+                    errors.append('MISSING_CONTRACT_WEB_DEPENDENCIES')
+                add('windows-web-contract', [node, str(root/'scripts/testing/web-contract.cjs'),
+                    str(root.resolve()), str(contract_web), str(build/'bin/Release/win_unit_tests.exe'),
+                    str(base/'windows-web-contract/work')],
+                    junit=[base/'windows-web-contract/work/junit.xml'], timeout=60)
         elif name.startswith("android-"):
             java = getattr(options, "java_home", None) or os.environ.get("JAVA_HOME")
             if not java or not (Path(java) / "bin/java.exe").is_file():
