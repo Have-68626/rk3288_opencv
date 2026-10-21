@@ -4,6 +4,7 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const readline = require("readline");
+const { createSnapshotIO } = require('./lib/snapshot-io');
 
 function toPosixPath(p) {
   return p.replace(/\\/g, "/");
@@ -107,9 +108,9 @@ async function pathExists(p) {
   }
 }
 
-async function statSafe(p) {
+async function statSafe(p, io = fsp) {
   try {
-    return await fsp.lstat(p);
+    return await io.lstat(p);
   } catch {
     return null;
   }
@@ -168,7 +169,7 @@ function shouldExcludeDirent(absPath, dirent, excludeDirNamesLower, excludeAbsPa
   return false;
 }
 
-async function computeDirStatsWithExcludes(dirAbs, excludeDirNamesLower, excludeAbsPaths) {
+async function computeDirStatsWithExcludes(dirAbs, excludeDirNamesLower, excludeAbsPaths, io = fsp) {
   let bytes = 0;
   let filesCount = 0;
   let dirsCount = 0;
@@ -179,7 +180,7 @@ async function computeDirStatsWithExcludes(dirAbs, excludeDirNamesLower, exclude
     if (excludeAbsPaths && excludeAbsPaths.some((ex) => isSameOrSubPath(cur, ex))) continue;
     let dirents;
     try {
-      dirents = await fsp.readdir(cur, { withFileTypes: true });
+      dirents = await io.readdir(cur, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -191,7 +192,7 @@ async function computeDirStatsWithExcludes(dirAbs, excludeDirNamesLower, exclude
           dirsCount += 1;
           stack.push(p);
         } else {
-          const st = await fsp.lstat(p);
+          const st = await io.lstat(p);
           filesCount += 1;
           if (st.isFile()) bytes += st.size;
         }
@@ -203,12 +204,12 @@ async function computeDirStatsWithExcludes(dirAbs, excludeDirNamesLower, exclude
   return { bytes, filesCount, dirsCount };
 }
 
-async function getPathStatsWithExcludes(absPath, excludeDirNamesLower, excludeAbsPaths) {
+async function getPathStatsWithExcludes(absPath, excludeDirNamesLower, excludeAbsPaths, io = fsp) {
   if (excludeAbsPaths && excludeAbsPaths.some((ex) => isSameOrSubPath(absPath, ex))) return null;
-  const st = await statSafe(absPath);
+  const st = await statSafe(absPath, io);
   if (!st) return null;
   if (st.isDirectory()) {
-    const ds = await computeDirStatsWithExcludes(absPath, excludeDirNamesLower, excludeAbsPaths);
+    const ds = await computeDirStatsWithExcludes(absPath, excludeDirNamesLower, excludeAbsPaths, io);
     return { kind: "dir", bytes: ds.bytes, filesCount: ds.filesCount, dirsCount: ds.dirsCount };
   }
   if (st.isFile()) {
@@ -225,7 +226,7 @@ function relPathOrFallback(absPath, repoRoot) {
   }
 }
 
-async function buildTreeSnapshotText(repoRoot, opts) {
+async function buildTreeSnapshotText(repoRoot, opts, io = fsp) {
   const createdAt = new Date().toISOString();
   const excludeDirNamesLower = new Set((opts.excludeDirNames || []).map((s) => String(s).toLowerCase()));
   const excludeAbsPaths = Array.isArray(opts.excludeAbsPaths) ? opts.excludeAbsPaths : [];
@@ -256,7 +257,7 @@ async function buildTreeSnapshotText(repoRoot, opts) {
 
     let dirents;
     try {
-      dirents = await fsp.readdir(cur.abs, { withFileTypes: true });
+      dirents = await io.readdir(cur.abs, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -296,7 +297,7 @@ async function buildTreeSnapshotText(repoRoot, opts) {
   return lines.join("\n");
 }
 
-async function buildDiskUsageReport(repoRoot, outputDirAbs, cfg) {
+async function buildDiskUsageReport(repoRoot, outputDirAbs, cfg, io = fsp) {
   const createdAt = new Date().toISOString();
   const opts = normalizeSnapshotOptions(cfg);
   const topN = opts.disk.topN;
@@ -307,7 +308,7 @@ async function buildDiskUsageReport(repoRoot, outputDirAbs, cfg) {
 
   let dirents;
   try {
-    dirents = await fsp.readdir(repoRoot, { withFileTypes: true });
+    dirents = await io.readdir(repoRoot, { withFileTypes: true });
   } catch {
     dirents = [];
   }
@@ -316,7 +317,7 @@ async function buildDiskUsageReport(repoRoot, outputDirAbs, cfg) {
   for (const d of dirents) {
     const abs = path.join(repoRoot, d.name);
     if (shouldExcludeDirent(abs, d, excludeDirNamesLower, excludeAbsPaths)) continue;
-    const st = await getPathStatsWithExcludes(abs, excludeDirNamesLower, excludeAbsPaths);
+    const st = await getPathStatsWithExcludes(abs, excludeDirNamesLower, excludeAbsPaths, io);
     if (!st) continue;
     topLevel.push({
       name: d.name,
@@ -471,6 +472,7 @@ function renderSnapshotSummaryText(meta, beforeDisk, afterDisk, diff) {
 }
 
 async function writeWorkspaceSnapshots(repoRoot, outputDirAbs, cfg, runId, cmd, stage) {
+  const io = createSnapshotIO();
   const opts = normalizeSnapshotOptions(cfg);
   const excludeAbsPaths = [];
   if (outputDirAbs && isSameOrSubPath(outputDirAbs, repoRoot)) excludeAbsPaths.push(outputDirAbs);
@@ -481,12 +483,12 @@ async function writeWorkspaceSnapshots(repoRoot, outputDirAbs, cfg, runId, cmd, 
     maxChildrenPerDir: opts.tree.maxChildrenPerDir,
     excludeDirNames: [".git", ".trae"],
     excludeAbsPaths,
-  });
+  }, io);
 
   const treePath = path.join(outputDirAbs, `tree-${makeSnapshotLabel(cmd, stage)}-${runId}.txt`);
   await writeText(treePath, treeText);
 
-  const diskReport = await buildDiskUsageReport(repoRoot, outputDirAbs, cfg);
+  const diskReport = await buildDiskUsageReport(repoRoot, outputDirAbs, cfg, io);
   const diskJsonPath = path.join(outputDirAbs, `disk-usage-${makeSnapshotLabel(cmd, stage)}-${runId}.json`);
   const diskTxtPath = path.join(outputDirAbs, `disk-usage-${makeSnapshotLabel(cmd, stage)}-${runId}.txt`);
   await writeJson(diskJsonPath, diskReport);
@@ -756,7 +758,7 @@ function segmentGlobToRegExp(seg) {
   return new RegExp(out, "i");
 }
 
-async function expandGlob(repoRoot, pattern, skipDirNames) {
+async function expandGlob(repoRoot, pattern, skipDirNames, io = fsp) {
   const norm = normalizePattern(pattern);
   const segments = norm.split("/").filter((s) => s.length > 0);
   const results = new Set();
@@ -772,7 +774,7 @@ async function expandGlob(repoRoot, pattern, skipDirNames) {
       await rec(curAbs, idx + 1);
       let dirents;
       try {
-        dirents = await fsp.readdir(curAbs, { withFileTypes: true });
+        dirents = await io.readdir(curAbs, { withFileTypes: true });
       } catch {
         return;
       }
@@ -793,7 +795,7 @@ async function expandGlob(repoRoot, pattern, skipDirNames) {
 
     let dirents;
     try {
-      dirents = await fsp.readdir(curAbs, { withFileTypes: true });
+      dirents = await io.readdir(curAbs, { withFileTypes: true });
     } catch {
       return;
     }
@@ -866,7 +868,7 @@ function joinReasons(existing, add) {
   return Array.from(s);
 }
 
-async function buildPlan(repoRoot, cfg) {
+async function buildPlan(repoRoot, cfg, io = fsp) {
   const skipDirNames = Array.isArray(cfg.scan?.skipDirs) ? cfg.scan.skipDirs : [];
   const whitelist = cfg.whitelist.map(normalizePattern);
   const protect = cfg.protect.map(normalizePattern);
@@ -885,7 +887,7 @@ async function buildPlan(repoRoot, cfg) {
       const p = path.isAbsolute(pattern) ? pattern : path.join(repoRoot, pattern);
       if (await pathExists(p)) matched = [p];
     } else if (kind === "glob") {
-      matched = await expandGlob(repoRoot, pattern, skipDirNames);
+      matched = await expandGlob(repoRoot, pattern, skipDirNames, io);
     } else {
       continue;
     }
@@ -1099,7 +1101,7 @@ async function detectRepoRoot(startDir) {
 }
 
 async function runScan(repoRoot, cfg, outputDir, runId) {
-  const plan = await buildPlan(repoRoot, cfg);
+  const plan = await buildPlan(repoRoot, cfg, createSnapshotIO());
   const report = {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
