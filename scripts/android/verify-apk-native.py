@@ -36,10 +36,19 @@ def elf_info(data):
         return strings[index:].split(b"\0", 1)[0]
     names = content(sections[names_index])
     text_hash, needed, textrel = None, [], False
+    loadable_hash, loadable_count = hashlib.sha256(), 0
     for section in sections:
         if section[1] != 8:
             content(section)
         name = cstring(names, section[0])
+        if section[2] & 2:
+            payload = b"" if section[1] == 8 else content(section)
+            loadable_hash.update(struct.pack("<IQQQQQ", section[1], section[2], section[3],
+                                             section[5], section[8], section[9]))
+            loadable_hash.update(struct.pack("<I", len(name)))
+            loadable_hash.update(name)
+            loadable_hash.update(payload)
+            loadable_count += 1
         if name == b".text" and section[5]:
             text_hash = hashlib.sha256(content(section)).hexdigest()
         if section[1] != 6:
@@ -69,7 +78,10 @@ def elf_info(data):
             raise ToolError("ELF_DYNAMIC_UNTERMINATED")
     if text_hash is None:
         raise ToolError("ELF_TEXT_MISSING")
+    if not loadable_count:
+        raise ToolError("ELF_LOADABLE_MISSING")
     return {"elf_class": bits, "machine": machine, "text_sha256": text_hash,
+            "loadable_sha256": loadable_hash.hexdigest(),
             "needed": needed, "has_textrel": textrel}
 
 

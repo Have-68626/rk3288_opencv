@@ -35,9 +35,9 @@ def elf(elf_class=1, machine=40, needed=("libc.so",), textrel=False, core=False)
     data[320:320+len(dynamic)] = dynamic
     sections = [(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
                 (1, 3, 0, 0, 128, len(names), 0, 0, 1, 0),
-                (11, 1, 0, 0, 200, 16, 0, 0, 1, 0),
-                (17, 3, 0, 0, 240, len(strings), 0, 0, 1, 0),
-                (25, 6, 0, 0, 320, len(dynamic), 3, 0, 1, struct.calcsize(fmt))]
+                (11, 1, 2, 0, 200, 16, 0, 0, 1, 0),
+                (17, 3, 2, 0, 240, len(strings), 0, 0, 1, 0),
+                (25, 6, 2, 0, 320, len(dynamic), 3, 0, 1, struct.calcsize(fmt))]
     section_fmt = "<IIIIIIIIII" if elf_class == 1 else "<IIQQQQIIQQ"
     stride = struct.calcsize(section_fmt)
     for i, section in enumerate(sections): struct.pack_into(section_fmt, data, 400+i*stride, *section)
@@ -70,6 +70,18 @@ def test_elf_inspects_both_android_abis(bits, machine):
     assert info["machine"] == machine
     assert info["needed"] == ["libc.so"]
     assert len(info["text_sha256"]) == 64
+
+
+def test_elf_loadable_digest_covers_non_text_runtime_data_but_ignores_debug_tail():
+    tool = load_tool("verify-apk-native.py")
+    original = elf()
+    changed_data = original[:244] + b"d" + original[245:]
+    debug_tail = original + b"synthetic-debug-symbols"
+
+    original_digest = tool.elf_info(original)["loadable_sha256"]
+
+    assert tool.elf_info(changed_data)["loadable_sha256"] != original_digest
+    assert tool.elf_info(debug_tail)["loadable_sha256"] == original_digest
 
 
 def test_static_apk_does_not_claim_runtime_or_ncnn_binding(tmp_path):
