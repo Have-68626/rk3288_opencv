@@ -1,6 +1,7 @@
 """结构化报告必须有本次证据，不能从汇总字段反推通过。"""
 
 from pathlib import Path
+import hashlib
 import sys
 import pytest
 
@@ -75,7 +76,7 @@ def test_touching_old_report_does_not_make_it_new(tmp_path):
         verify_junit([str(path)], before, "case")
 
 
-@pytest.mark.parametrize("bad", ["none", "wrong_text", "disabled"])
+@pytest.mark.parametrize("bad", ["none", "debug_tail", "wrong_text", "wrong_non_text", "disabled"])
 def test_android_apk_binding_rejects_wrong_build(tmp_path, bad):
     import zipfile
     from test_apk_native_inspection import ABIS, elf
@@ -106,10 +107,19 @@ def test_android_apk_binding_rejects_wrong_build(tmp_path, bad):
             (cache / "build.ninja").write_text(
                 "FLAGS = -Dnative_lib_EXPORTS -DRK_HAVE_NCNN=1", encoding="utf-8"
             )
-            if bad == "wrong_text":
+            if bad == "debug_tail":
+                binary.write_bytes(data + b"synthetic-debug-symbols")
+            elif bad == "wrong_text":
                 binary.write_bytes(data[:200] + b"X" + data[201:])
-    if bad == "none":
-        assert set(verify_android_build(tmp_path, ncnn)) == set(ABIS)
+            elif bad == "wrong_non_text":
+                binary.write_bytes(data[:244] + b"d" + data[245:])
+    if bad in ("none", "debug_tail"):
+        binding = verify_android_build(tmp_path, ncnn)
+        assert set(binding) == set(ABIS)
+        assert binding["armeabi-v7a"]["package_sha256"] == hashlib.sha256(elf(1, 40)).hexdigest()
+        expected_build = elf(1, 40) + (b"synthetic-debug-symbols" if bad == "debug_tail" else b"")
+        assert binding["armeabi-v7a"]["build_sha256"] == hashlib.sha256(expected_build).hexdigest()
+        assert len(binding["armeabi-v7a"]["loadable_sha256"]) == 64
     else:
         with pytest.raises(ValueError):
             verify_android_build(tmp_path, ncnn)
@@ -141,3 +151,47 @@ def test_archive_rejects_source_changed_after_verification(tmp_path):
     )
     with pytest.raises(ValueError):
         archive_junit(verified["evidence"], tmp_path / "owned")
+
+
+def test_suite_markdown_marks_unobserved_resources_as_unavailable(tmp_path):
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[2] / "scripts/run-test-suites.py"
+    spec = importlib.util.spec_from_file_location("suite_cli", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.save(
+        tmp_path,
+        dict(
+            status="incomplete",
+            run_id="synthetic-run",
+            reason="JOB_ASSIGN_FAILED",
+            selected=["tooling"],
+            not_selected=[],
+            resource_budget=dict(
+                cpu_slots=2, memory_budget_mb=None, max_parallel_steps=1
+            ),
+            max_parallel_steps_observed=1,
+            steps=[
+                dict(
+                    suite="tooling",
+                    name="python-tools",
+                    status="blocked",
+                    raw_exit_code=None,
+                    reason="JOB_ASSIGN_FAILED",
+                    resources=dict(
+                        declared=dict(cpu_slots=1),
+                        observed=dict(
+                            peak_active_processes=None,
+                            peak_job_memory_bytes=None,
+                        ),
+                    ),
+                )
+            ],
+        ),
+    )
+    report = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "资源预算：CPU 2；内存 仅观测 MB；阶段并发上限 1" in report
+    assert "阶段并发观测峰值：1" in report
+    assert "峰值进程 不可用" in report
+    assert "峰值内存字节 不可用" in report

@@ -20,6 +20,7 @@ from .reports import (
     identity,
     archive_junit,
 )
+from .resources import ResourceBudget, ResourceClaim, ResourceCoordinator
 
 
 @dataclass
@@ -34,6 +35,18 @@ class Step:
     audit: Path | None = None
     android_ncnn: Path | None = None
     native_report: Path | None = None
+    cpu_slots: int = 1
+    memory_budget_mb: int | None = None
+    exclusive_resources: tuple = ()
+    resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
+
+    @property
+    def resource_claim(self):
+        return ResourceClaim(
+            cpu_slots=self.cpu_slots,
+            memory_budget_mb=self.memory_budget_mb,
+            exclusive=tuple(self.exclusive_resources),
+        )
 
 
 class RepoLock:
@@ -107,6 +120,19 @@ class _Extended(ctypes.Structure):
     ]
 
 
+class _Accounting(ctypes.Structure):
+    _fields_ = [
+        ("total_user_time", ctypes.c_longlong),
+        ("total_kernel_time", ctypes.c_longlong),
+        ("period_user_time", ctypes.c_longlong),
+        ("period_kernel_time", ctypes.c_longlong),
+        ("page_faults", W.DWORD),
+        ("total_processes", W.DWORD),
+        ("active_processes", W.DWORD),
+        ("terminated_processes", W.DWORD),
+    ]
+
+
 class _Job:
     def __init__(self):
         if os.name != "nt":
@@ -119,6 +145,13 @@ class _Job:
             ctypes.c_int,
             W.LPVOID,
             W.DWORD,
+        ]
+        self.api.QueryInformationJobObject.argtypes = [
+            W.HANDLE,
+            ctypes.c_int,
+            W.LPVOID,
+            W.DWORD,
+            ctypes.POINTER(W.DWORD),
         ]
         self.api.AssignProcessToJobObject.argtypes = [W.HANDLE, W.HANDLE]
         self.api.TerminateJobObject.argtypes = [W.HANDLE, W.UINT]
@@ -142,6 +175,24 @@ class _Job:
         ):
             raise RuntimeError("JOB_ASSIGN_FAILED")
 
+    def sample(self):
+        accounting = _Accounting()
+        extended = _Extended()
+        if not self.api.QueryInformationJobObject(
+            self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+        ) or not self.api.QueryInformationJobObject(
+            self.handle, 9, ctypes.byref(extended), ctypes.sizeof(extended), None
+        ):
+            raise RuntimeError("JOB_QUERY_FAILED")
+        return dict(
+            active_processes=accounting.active_processes,
+            peak_job_memory_bytes=extended.peak_job,
+        )
+
+    def terminate(self, exit_code=1):
+        if not self.api.TerminateJobObject(self.handle, exit_code):
+            raise RuntimeError("PROCESS_CLEANUP_FAILED")
+
     def close(self):
         stopped = self.api.TerminateJobObject(self.handle, 1)
         closed = self.api.CloseHandle(self.handle)
@@ -154,10 +205,29 @@ _GATE = "import sys,json,subprocess\nif sys.stdin.buffer.read(1)!=b'R':sys.exit(
 
 
 def execute_step(step, output, heartbeat=30):
+    claim = step.resource_claim
+    ResourceCoordinator(step.resource_budget).validate(claim)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     result = dict(
         name=step.name, status="blocked", raw_exit_code=None, reason="", elapsed=0
+    )
+    result["resources"] = dict(
+        declared=dict(
+            cpu_slots=claim.cpu_slots,
+            memory_budget_mb=claim.memory_budget_mb,
+            exclusive=list(claim.exclusive),
+        ),
+        observed=dict(
+            measurement="unavailable",
+            peak_active_processes=None,
+            peak_job_memory_bytes=None,
+            memory_limit_bytes=(
+                claim.memory_budget_mb * 1024 * 1024
+                if claim.memory_budget_mb is not None
+                else None
+            ),
+        ),
     )
     if not step.timeout > 0:
         raise ValueError("INVALID_TIMEOUT")
@@ -238,10 +308,37 @@ def execute_step(step, output, heartbeat=30):
         process.stdin.close()
         result["pid"] = process.pid
         beat = started
-        while process.poll() is None:
+        observed = result["resources"]["observed"]
+        while True:
             now = time.monotonic()
             if errors:
                 raise RuntimeError(errors[0])
+            usage = job.sample()
+            observed["measurement"] = "windows_job_object"
+            for key, value in (
+                ("peak_active_processes", usage["active_processes"]),
+                ("peak_job_memory_bytes", usage["peak_job_memory_bytes"]),
+            ):
+                previous = observed[key]
+                observed[key] = value if previous is None else max(previous, value)
+            memory_limit = observed["memory_limit_bytes"]
+            if memory_limit is not None and observed["peak_job_memory_bytes"] > memory_limit:
+                job.terminate(1)
+                result.update(
+                    status="resource_limit_exceeded",
+                    reason="MEMORY_BUDGET_EXCEEDED",
+                )
+                break
+            if process.poll() is not None:
+                code = process.returncode
+                result.update(
+                    status="passed" if code == 0 else "failed",
+                    raw_exit_code=code,
+                    reason="" if code == 0 else "PROCESS_EXIT_NONZERO",
+                )
+                if code == 127:
+                    result.update(status="blocked", reason="CHILD_START_FAILED")
+                break
             if now - started >= step.timeout:
                 result.update(status="timed_out", reason="TIMEOUT")
                 break
@@ -252,15 +349,6 @@ def execute_step(step, output, heartbeat=30):
                 )
                 beat = now
             time.sleep(0.05)
-        else:
-            code = process.returncode
-            result.update(
-                status="passed" if code == 0 else "failed",
-                raw_exit_code=code,
-                reason="" if code == 0 else "PROCESS_EXIT_NONZERO",
-            )
-            if code == 127:
-                result.update(status="blocked", reason="CHILD_START_FAILED")
     except KeyboardInterrupt:
         result.update(status="cancelled", reason="CANCELLED")
     except (OSError, RuntimeError, ValueError) as error:

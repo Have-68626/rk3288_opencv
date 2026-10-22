@@ -166,7 +166,8 @@ def verify_android_build(root, ncnn):
     result = {}
     with zipfile.ZipFile(root / "app/build/outputs/apk/debug/app-debug.apk") as apk:
         for abi, expected in inspector.ABIS.items():
-            packaged = inspector.elf_info(apk.read("lib/" + abi + "/libnative-lib.so"))
+            packaged_bytes = apk.read("lib/" + abi + "/libnative-lib.so")
+            packaged = inspector.elf_info(packaged_bytes)
             if (packaged["elf_class"], packaged["machine"]) != expected:
                 raise ValueError("APK_ABI_MISMATCH")
             for cache in (root / "app/.cxx/Debug").glob("*/" + abi + "/CMakeCache.txt"):
@@ -202,10 +203,17 @@ def verify_android_build(root, ncnn):
                 )
                 if not binary.resolve().is_relative_to(root) or not binary.is_file():
                     continue
-                compiled = inspector.elf_info(binary.read_bytes())
-                if compiled["text_sha256"] != packaged["text_sha256"]:
+                binary_bytes = binary.read_bytes()
+                compiled = inspector.elf_info(binary_bytes)
+                build_sha256 = hashlib.sha256(binary_bytes).hexdigest()
+                package_sha256 = hashlib.sha256(packaged_bytes).hexdigest()
+                if (compiled["text_sha256"] != packaged["text_sha256"]
+                        or compiled["loadable_sha256"] != packaged["loadable_sha256"]):
                     continue
                 result[abi] = dict(
+                    package_sha256=package_sha256,
+                    build_sha256=build_sha256,
+                    loadable_sha256=compiled["loadable_sha256"],
                     text_sha256=compiled["text_sha256"],
                     cmake_sha256=hashlib.sha256(cache.read_bytes()).hexdigest(),
                     ninja_sha256=hashlib.sha256(ninja.read_bytes()).hexdigest(),

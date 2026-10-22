@@ -42,6 +42,8 @@ def load_cli():
 
 
 def test_plan_does_not_execute_or_create_output(monkeypatch, tmp_path, capsys):
+    import json
+
     cli = load_cli()
     monkeypatch.setattr(cli, "execute_step", lambda *a: pytest.fail("plan执行了子进程"))
     before = (
@@ -49,8 +51,11 @@ def test_plan_does_not_execute_or_create_output(monkeypatch, tmp_path, capsys):
         if (ROOT / "cache/reports/test-suites").exists()
         else set()
     )
-    assert cli.main(["plan", "--suite", "docs"]) == 0
-    assert "docs-tests" in capsys.readouterr().out
+    assert cli.main(["plan", "--suite", "docs", "--cpu-budget", "3", "--memory-budget-mb", "4096"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["resource_budget"]["cpu_slots"] == 3
+    assert plan["resource_budget"]["memory_budget_mb"] == 4096
+    assert "docs-tests" in json.dumps(plan)
     after = (
         set((ROOT / "cache/reports/test-suites").glob("*"))
         if (ROOT / "cache/reports/test-suites").exists()
@@ -373,6 +378,70 @@ def test_explicit_node_controls_child_path(tmp_path):
         Path(suite["steps"][0].env["PATH"].split(os.pathsep)[0])
         == Path(sys.executable).parent
     )
+
+
+def test_android_workers_follow_shared_resource_budget(tmp_path, monkeypatch):
+    java = tmp_path / "jdk"
+    (java / "bin").mkdir(parents=True)
+    (java / "bin/java.exe").touch()
+    sdk = tmp_path / "sdk"
+    (sdk / "platforms").mkdir(parents=True)
+    cv = tmp_path / "opencv"
+    cv.mkdir()
+    (cv / "CMakeLists.txt").touch()
+    contrib = tmp_path / "contrib"
+    (contrib / "modules").mkdir(parents=True)
+    ncnn = tmp_path / "ncnn"
+    for abi in ("armeabi-v7a", "arm64-v8a"):
+        path = ncnn / abi / "lib/cmake/ncnn/ncnnConfig.cmake"
+        path.parent.mkdir(parents=True)
+        path.touch()
+    monkeypatch.setattr(
+        "testing.catalog.subprocess.run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout="", stderr='openjdk version "21.0.1"'
+        ),
+    )
+    options = SimpleNamespace(
+        java_home=java,
+        android_sdk=sdk,
+        opencv_root=cv,
+        opencv_contrib_root=contrib,
+        android_ncnn_dir=ncnn,
+        cpu_budget=3,
+        memory_budget_mb=4096,
+    )
+    suite = make_suites(ROOT, ["android-real"], options, tmp_path / "out")[0]
+    step = suite["steps"][0]
+    assert "--max-workers=3" in step.command
+    assert step.cpu_slots == 3
+    assert step.memory_budget_mb == 4096
+
+
+def test_suite_coordinator_rejects_overbudget_before_child(tmp_path, monkeypatch):
+    import json
+    from testing.runner import Step
+
+    cli = load_cli()
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "binding", lambda root: {"head": "fixture"})
+    monkeypatch.setattr(cli, "collect_versions", lambda *args: None)
+    monkeypatch.setattr(
+        cli,
+        "make_suites",
+        lambda *args: [
+            dict(
+                id="docs",
+                errors=[],
+                steps=[Step("too-wide", [sys.executable, "-c", "pass"], tmp_path, cpu_slots=2)],
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "execute_step", lambda *args: pytest.fail("overbudget child started"))
+    assert cli.main(["run", "--suite", "docs", "--cpu-budget", "1"]) == 2
+    report = json.loads(next((tmp_path / "cache/reports/test-suites").glob("*/summary.json")).read_text())
+    assert report["steps"][0]["status"] == "blocked"
+    assert report["reason"] == "CPU_BUDGET_EXCEEDED"
 
 
 def test_cancel_retains_130_if_source_changes_during_interrupt(tmp_path, monkeypatch):

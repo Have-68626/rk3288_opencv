@@ -108,6 +108,9 @@ def test_job_assignment_failure_never_starts_actual_command(tmp_path, monkeypatc
         tmp_path / "out",
     )
     assert result["status"] == "blocked" and not marker.exists()
+    assert result["resources"]["observed"]["measurement"] == "unavailable"
+    assert result["resources"]["observed"]["peak_active_processes"] is None
+    assert result["resources"]["observed"]["peak_job_memory_bytes"] is None
     assert time.monotonic() - start < 3
 
 
@@ -153,3 +156,50 @@ def test_step_retains_its_junit_after_shared_report_is_overwritten(tmp_path):
     assert saved.is_relative_to(tmp_path / "out")
     assert read_junit([saved])["passed"] == 1
     assert identity(saved)["sha256"] == result["evidence"][0]["sha256"]
+
+
+def test_job_usage_is_reported_for_successful_step(tmp_path):
+    item = Step(
+        "measured",
+        [sys.executable, "-c", "import time;time.sleep(.3)"],
+        tmp_path,
+        cpu_slots=1,
+        exclusive_resources=("output:measured",),
+    )
+    result = execute_step(item, tmp_path / "measured")
+    assert result["status"] == "passed"
+    assert result["resources"]["declared"]["cpu_slots"] == 1
+    observed = result["resources"]["observed"]
+    assert observed["measurement"] == "windows_job_object"
+    assert observed["peak_job_memory_bytes"] > 0
+    assert observed["peak_active_processes"] >= 1
+
+
+def test_memory_budget_terminates_only_owned_job(tmp_path):
+    pidfile = tmp_path / "descendant.txt"
+    code = (
+        "import subprocess,sys,time;from pathlib import Path;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+        "Path(sys.argv[1]).write_text(str(p.pid));"
+        "data=bytearray(96*1024*1024);time.sleep(60)"
+    )
+    item = Step(
+        "over-budget",
+        [sys.executable, "-c", code, str(pidfile)],
+        tmp_path,
+        timeout=5,
+        memory_budget_mb=48,
+    )
+    result = execute_step(item, tmp_path / "over-budget", heartbeat=0.05)
+    assert result["status"] == "resource_limit_exceeded"
+    assert result["reason"] == "MEMORY_BUDGET_EXCEEDED"
+    assert result["resources"]["observed"]["peak_job_memory_bytes"] > 48 * 1024 * 1024
+    assert pidfile.exists()
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pidfile.read_text()))
+    if handle:
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        assert code.value != 259, "预算终止后仍有本次后代进程运行"

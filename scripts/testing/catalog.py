@@ -11,6 +11,7 @@ import importlib.util
 import json
 import hashlib
 from .runner import Step
+from .resources import budget_from_options
 
 SUITES = (
     "docs",
@@ -53,6 +54,7 @@ def native(executable, *arguments):
 def make_suites(root, names, options, out):
     root = Path(root)
     out = Path(out)
+    budget = budget_from_options(options)
     result = []
     for name in select(names):
         errors = []
@@ -83,7 +85,16 @@ def make_suites(root, names, options, out):
             )
 
         def add(
-            label, command, *, cwd=root, junit=(), unit="case", audit=None, timeout=600
+            label,
+            command,
+            *,
+            cwd=root,
+            junit=(),
+            unit="case",
+            audit=None,
+            timeout=600,
+            cpu_slots=1,
+            resources=(),
         ):
             steps.append(
                 Step(
@@ -107,6 +118,11 @@ def make_suites(root, names, options, out):
                         ),
                     ),
                     audit,
+                    cpu_slots=cpu_slots,
+                    memory_budget_mb=budget.memory_budget_mb,
+                    exclusive_resources=tuple(resources)
+                    or (f"report:{name}:{label}",),
+                    resource_budget=budget,
                 )
             )
 
@@ -225,7 +241,7 @@ def make_suites(root, names, options, out):
                     "--config",
                     "Release",
                     "--parallel",
-                    "2",
+                    str(budget.cpu_slots),
                     "--target",
                     "core_unit_tests",
                     "win_unit_tests",
@@ -233,6 +249,8 @@ def make_suites(root, names, options, out):
                     "core_gtest_tests",
                 ],
                 timeout=3600,
+                cpu_slots=budget.cpu_slots,
+                resources=("build:windows-tree",),
             )
             add(
                 "windows-ctest",
@@ -299,7 +317,11 @@ def make_suites(root, names, options, out):
                 )
             elif not (root / "local.properties").is_file():
                 errors.append("MISSING_ANDROID_SDK")
-            command = [str(root / "gradlew.bat"), "--no-daemon", "--max-workers=2"]
+            command = [
+                str(root / "gradlew.bat"),
+                "--no-daemon",
+                f"--max-workers={budget.cpu_slots}",
+            ]
             if name == "android-mock":
                 command += ["-PRK_SKIP_OPENCV=true"]
             else:
@@ -338,6 +360,8 @@ def make_suites(root, names, options, out):
                 native(*command),
                 junit=[root / "app/build/test-results/testDebugUnitTest/TEST-*.xml"],
                 timeout=3600,
+                cpu_slots=budget.cpu_slots,
+                resources=("output:android-app-build", "output:android-apk"),
             )
             if name == "android-real" and ncnn:
                 steps[-1].android_ncnn = Path(ncnn)
@@ -404,6 +428,11 @@ def make_suites(root, names, options, out):
                         native(pnpm, *args),
                         cwd=web,
                         junit=[base / "web-test/junit.xml"] if task == "test" else (),
+                        resources=(
+                            ("output:webroot",)
+                            if task == "build"
+                            else (f"web:{task}",)
+                        ),
                     )
             else:
                 try:
@@ -441,6 +470,7 @@ def make_suites(root, names, options, out):
                     ],
                     junit=[base / "web-e2e/cypress-*.xml"],
                     timeout=1200,
+                    resources=("network:web-e2e-ports",),
                 )
         result.append(
             dict(id=name, errors=sorted(set(errors)), steps=steps, tools=tools)

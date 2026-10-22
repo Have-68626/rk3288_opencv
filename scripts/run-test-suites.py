@@ -17,6 +17,7 @@ from testing.runner import RepoLock, execute_step
 from testing.reports import identity
 from testing.metadata import plan_snapshot, collect_versions
 from testing.environment import diagnostic
+from testing.resources import add_budget_arguments, budget_from_options, ResourceCoordinator
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,6 +100,22 @@ def save(out, report):
         "原因：" + report.get("reason", ""),
         "范围：" + ", ".join(report["selected"]),
         "未选：" + ", ".join(report["not_selected"]),
+        "资源预算：CPU "
+        + str(report.get("resource_budget", {}).get("cpu_slots", 2))
+        + "；内存 "
+        + str(
+            report.get("resource_budget", {}).get("memory_budget_mb")
+            if report.get("resource_budget", {}).get("memory_budget_mb") is not None
+            else "仅观测"
+        )
+        + " MB；阶段并发上限 "
+        + str(report.get("resource_budget", {}).get("max_parallel_steps", 1)),
+        "阶段并发观测峰值："
+        + str(
+            report.get("max_parallel_steps_observed")
+            if report.get("max_parallel_steps_observed") is not None
+            else "不可用"
+        ),
         "",
         "| 套件 | 步骤 | 状态 | 原始退出码 | 计数与单位 | 原因 |",
         "|---|---|---|---|---|",
@@ -110,6 +127,17 @@ def save(out, report):
             detail = f"{counts['unit']}: 总计{counts['total']}，失败{counts['failed']}，跳过{counts['skipped']}"
         if row.get("internal_case_counts") == "unknown":
             detail += "；内部用例数未知"
+        resources = row.get("resources", {})
+        if resources:
+            declared = resources.get("declared", {})
+            observed = resources.get("observed", {})
+            peak_processes = observed.get("peak_active_processes")
+            peak_memory = observed.get("peak_job_memory_bytes")
+            detail += (
+                f"；CPU槽位 {declared.get('cpu_slots', '—')}"
+                f"；峰值进程 {peak_processes if peak_processes is not None else '不可用'}"
+                f"；峰值内存字节 {peak_memory if peak_memory is not None else '不可用'}"
+            )
         if row.get("observed_markers"):
             detail += "；" + ", ".join(row["observed_markers"])
         lines.append(
@@ -150,12 +178,17 @@ def parser():
         "pwsh",
     ):
         p.add_argument("--" + flag)
+    add_budget_arguments(p)
     return p
 
 
 def main(argv=None):
     p = parser()
     options = p.parse_args(argv)
+    try:
+        budget = budget_from_options(options)
+    except ValueError as error:
+        p.error(str(error))
     if options.action == "list":
         print("\n".join(SUITES))
         return 0
@@ -180,9 +213,15 @@ def main(argv=None):
         print("PLAN_FAILED", file=sys.stderr)
         return 2
     if options.action == "plan":
+        planned = plan_snapshot(ROOT, suites, options)
+        planned["resource_budget"] = dict(
+            cpu_slots=budget.cpu_slots,
+            memory_budget_mb=budget.memory_budget_mb,
+            max_parallel_steps=budget.max_parallel_steps,
+        )
         print(
             json.dumps(
-                sanitize(plan_snapshot(ROOT, suites, options)["suites"]),
+                sanitize(planned),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -198,6 +237,12 @@ def main(argv=None):
         steps=[],
         tools={},
         source_start=binding(ROOT),
+        resource_budget=dict(
+            cpu_slots=budget.cpu_slots,
+            memory_budget_mb=budget.memory_budget_mb,
+            max_parallel_steps=budget.max_parallel_steps,
+        ),
+        max_parallel_steps_observed=0,
     )
     # cache中的链接不能把本次输出重定向到其他工作区。
     if out.parent.resolve() != out.parent.absolute():
@@ -217,8 +262,10 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=False)
     plan_file = out / "plan.json"
     with plan_file.open("x", encoding="utf-8") as stream:
+        planned = plan_snapshot(ROOT, suites, options)
+        planned["resource_budget"] = report["resource_budget"]
         json.dump(
-            sanitize(plan_snapshot(ROOT, suites, options)),
+            sanitize(planned),
             stream,
             ensure_ascii=False,
             indent=2,
@@ -228,6 +275,7 @@ def main(argv=None):
     exit_code = 0
     stopped = False
     position = 0
+    resource_coordinator = ResourceCoordinator(budget)
     try:
         with RepoLock(ROOT):
             collect_versions(suites, out / "versions", report["tools"])
@@ -255,9 +303,13 @@ def main(argv=None):
                             row["status"] = "running"
                             report["steps"][position] = row
                             save(out, report)
-                            row.update(
-                                execute_step(step, out / suite["id"] / step.name)
-                            )
+                            with resource_coordinator.acquire(step.resource_claim):
+                                report["max_parallel_steps_observed"] = max(
+                                    report["max_parallel_steps_observed"], 1
+                                )
+                                row.update(
+                                    execute_step(step, out / suite["id"] / step.name)
+                                )
                             print(
                                 f"END suite={suite['id']} step={step.name} status={row['status']}",
                                 flush=True,
@@ -267,6 +319,7 @@ def main(argv=None):
                                     "failed": 1,
                                     "timed_out": 124,
                                     "cancelled": 130,
+                                    "resource_limit_exceeded": 1,
                                 }.get(row["status"], 2)
                         stopped = exit_code != 0
                     report["steps"][position] = row
@@ -292,7 +345,19 @@ def main(argv=None):
         exit_code = 2
     except (OSError, ValueError) as error:
         report['diagnostic']=diagnostic(error,'coordination')
-        report["reason"] = "COORDINATION_OR_REPORT_FAILED"
+        report["reason"] = (
+            str(error)
+            if str(error)
+            in (
+                "INVALID_CPU_CLAIM",
+                "CPU_BUDGET_EXCEEDED",
+                "INVALID_MEMORY_CLAIM",
+                "MEMORY_BUDGET_EXCEEDED",
+                "INVALID_RESOURCE_KEY",
+                "DUPLICATE_RESOURCE_KEY",
+            )
+            else "COORDINATION_OR_REPORT_FAILED"
+        )
         exit_code = 2
     try:
         report["source_end"] = binding(ROOT)
