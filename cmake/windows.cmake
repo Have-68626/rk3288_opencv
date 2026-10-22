@@ -3,6 +3,9 @@
 # ═══════════════════════════════════════════════════════════════════
 # 注意：仅在 WIN32 AND NOT RK_SKIP_OPENCV AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION 时被包含
 
+# 受控产品构建不复制开发模型；默认保留原有本机开发行为。
+option(RK_COPY_DEV_MODELS "复制本机开发模型到程序目录" ON)
+
 if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
     add_executable(win_local_service
         "src/win/app/win_local_service_main.cpp"
@@ -100,7 +103,7 @@ if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
     #    `arcface_w600k_r50.onnx`（默认路径在 WinJsonConfig.cpp 指向它）；DNN 默认路径则在
     #    `<exeDir>/storage/models/`，也不受影响。本项只把 ncnn 权重 / 校准图 / 清单搬到 exe 同级，
     #    便利开发机上直接跑；部署机走 install()、本就不含这些目录。
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
+    if(RK_COPY_DEV_MODELS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
         add_custom_command(TARGET win_local_service POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     ${CMAKE_CURRENT_SOURCE_DIR}/models
@@ -193,7 +196,7 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
     # 则本 POST_BUILD 步骤不会被注册，需重新 configure 才会生效。
     # ⚠️ 收益边界（如实）：本项**不会**让默认 ArcFace 权重变可用——`models/` 内并没有
     #    `arcface_w600k_r50.onnx`（默认路径在 WinJsonConfig.cpp 指向它）。
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
+    if(RK_COPY_DEV_MODELS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models")
         add_custom_command(TARGET win_camera_face_recognition POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     ${CMAKE_CURRENT_SOURCE_DIR}/models

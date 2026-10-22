@@ -18,7 +18,15 @@ const BUDGET_BYTES = BUDGET_KB * 1024
 
 // 构建产物输出到仓库根 src/win/app/webroot（见 vite.config.ts build.outDir），
 // 本脚本位于 web/scripts/，需上溯两级到仓库根再进入 src/win/app/webroot。
-const webroot = fileURLToPath(new URL('../../src/win/app/webroot', import.meta.url))
+const args = process.argv.slice(2)
+if (args.length && (args.length !== 2 || args[0] !== '--webroot' || !args[1])) {
+  console.error('[bundle-budget] FAIL: 参数必须为 --webroot <明确输出目录>')
+  process.exit(2)
+}
+// 独立产品构建须核验本轮输出，默认入口继续兼容原webroot。
+const webroot = args.length
+  ? path.resolve(args[1])
+  : fileURLToPath(new URL('../../src/win/app/webroot', import.meta.url))
 const assetsDir = path.join(webroot, 'assets')
 
 let indexHtml
