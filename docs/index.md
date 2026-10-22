@@ -49,6 +49,8 @@ as_of=2026-10-20
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `designs/int8-quantization-design.md` | living | INT8 量化工具链架构设计 |
+| `designs/2026-10-21-build-coordination-design.md` | living | 固定构建配置、产品依赖与独占发布的B01/B02设计 |
+| `designs/2026-10-21-build-resource-coordination-design.md` | living | B04资源预算、串行互斥、Job计量与超限回收设计 |
 | `designs/personnel-enrollment-design.md` | living | 人员注册与权限系统顶层设计 |
 | `designs/android-enrollment-design.md` | living | Android 端人员注册设计 |
 | `designs/model-acquisition-import.md` | living | 模型获取与导入流程 |
@@ -60,6 +62,7 @@ as_of=2026-10-20
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `guides/build-and-test.md` | living | 统一shell、构建目标/CTest筛选、E2E服务器与覆盖率前提 |
+| `guides/build-coordination.md` | living | 固定构建配置、独占产品装配、分阶段验证与证据限制 |
 | `guides/test-suite-coordination.md` | living | 本地七类套件选择、前置、串行互斥、退出码与可信汇总 |
 | `guides/int8-quantization.md` | living | 唯一输入配对、校准sidecar、预处理/几何与量化报告 |
 | `guides/model-storage-and-consumers.md` | living | 模型父图、中间件、消费件与历史路径消费者导航 |
@@ -124,6 +127,7 @@ as_of=2026-10-20
 
 | 文件 | 状态 | 说明 |
 |---|---|---|
+| `plans/2026-10-21-build-coordination-plan.md` | snapshot | B01/B02实施结果、最终构建与测试报告位置及未验收边界 |
 | `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
 | `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
 | `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |

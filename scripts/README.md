@@ -14,6 +14,7 @@ as_of=2026-10-21
 | android/ | 设备状态、运行采样、离线证据与APK检查，说明见Android验证指南 |
 | audit/ | 审计映射、评分、展示，具体边界见本目录README |
 | testing/ | 套件目录、执行器、证据与原生/前后端契约适配；公开命令保留scripts根入口 |
+| building/ | 固定构建配置、身份及独占发布装配；公开入口run-builds.py，复用testing执行器与互斥 |
 | lib/ | 单次只读快照的I/O复用，不缓存清理操作的判定 |
 | ffmpegkit/ | 固定来源的AAR重建链，具体阶段与消费边界见本目录README |
 | src/cpp/tools/ | 需CMake编译的独立工具源码，包括ncnn_calibration_images |
@@ -35,6 +36,8 @@ as_of=2026-10-21
 
 
 ## 本地测试统筹
+
+构建调度使用`run-builds.py`，输入、固定配置、分阶段退出码与产物复核见[本地构建统筹](../docs/guides/build-coordination.md)；不改变下述七类测试套件。
 
 统一调度入口为 `scripts/run-test-suites.py`，支持list/plan/run和明确套件选择；使用说明、环境参数、互斥、退出码及证据边界见[测试统筹](../docs/guides/test-suite-coordination.md)。不会安装依赖、访问设备或将跳过/旧报告签署为通过；原有独立脚本继续有效。
 

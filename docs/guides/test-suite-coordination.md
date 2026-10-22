@@ -54,6 +54,17 @@ python scripts/run-test-suites.py plan --suite android-mock `
 
 每个步骤有用途对应超时，可用 `--timeout` 覆盖为正的有限秒数；0、负数和NaN/Infinity会被拒绝。心跳每30秒显示当前步骤/PID/时长，只代表存活，不代表用例已经开始。
 
+## 资源预算
+
+所有动作可用`--cpu-budget N`设置正整数CPU槽位，默认2；CMake构建与Gradle worker使用该值，单步声明不得超过预算。可选`--memory-budget-mb N`为每个步骤设Job进程树峰值上限；超限会终止该步骤自有Job并阻断后续步骤。省略内存上限时仍采样峰值，但只观测、不限额。阶段始终串行；输出目录、构建树和端口通过独占资源键登记，冲突时以`RESOURCE_BUSY`拒绝。
+
+```powershell
+python scripts/run-test-suites.py plan --suite windows --cpu-budget 4 --memory-budget-mb 8192
+python scripts/run-test-suites.py run --suite windows --cpu-budget 4 --memory-budget-mb 8192
+```
+
+JSON与Markdown报告记录全局预算、每步CPU声明、峰值活动进程数和峰值Job内存；Job计量未取得时峰值为`null`并显示“不可用”，不以零代替缺测。
+
 子进程使用本轮 `cache/reports/.tmp/<短标识>` 作为TEMP/TMP，保留现场，不修改父进程或系统环境。显式Node入口也加入子进程PATH，供pnpm和E2E驱动调用。
 
 ## 资源与取消
