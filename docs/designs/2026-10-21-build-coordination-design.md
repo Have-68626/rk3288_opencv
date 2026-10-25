@@ -18,7 +18,8 @@ as_of=2026-10-21
 
 ## 入口和边界
 
-入口为scripts/run-builds.py，动作固定为list、plan、configure、build、verify；通过`--profile`选择core、windows、android-mock、android-real、android-cli、web、windows-product。windows-product是Web与Windows的产品依赖链，其余是独立构建配置。动作不接受用户提供的任意命令；操作见[构建统筹](../guides/build-coordination.md)。
+入口为scripts/run-builds.py，动作固定为list、plan、configure、build、verify（B05 补充 `incremental`，
+见下文）；通过`--profile`选择core、windows、android-mock、android-real、android-cli、web、windows-product。windows-product是Web与Windows的产品依赖链，其余是独立构建配置。动作不接受用户提供的任意命令；操作见[构建统筹](../guides/build-coordination.md)。
 
 输入使用显式`--inputs <本地JSON>`，schema_version=1。只接受已知工具、JDK、SDK/NDK、OpenCV/contrib、ncnn、GoogleTest源码和Web依赖目录；未定义字段、凭据字段、相互矛盾输入和链接重定向拒绝。相对路径以输入文件所在目录为基准，本机绝对路径不写入公共默认配置。工具不安装依赖、不下载模型，不修改全局环境。
 
@@ -42,6 +43,20 @@ as_of=2026-10-21
 用户后续确认补齐Android快照摘要与双通道验证。不同profile继续使用不同配置身份构建树，每次运行仍把APK复制到独占run-id目录；不改Gradle输出路径、Android ABI配置或Windows模型复制策略。Android快照记录profile、run-id、APK SHA-256和每个`lib/<ABI>/*.so`的SHA-256/大小，verify重新读取APK并核对完整清单，阻止旧快照或清单漂移。
 
 真实通道的APK主库可能因AGP去掉调试节而与CMake输出文件不完全相同。核验分别记录两份`.so`的完整SHA-256，再比较ELF的`.text`和所有`SHF_ALLOC`节（含节名、类型、地址、大小、对齐、元素大小及内容）的摘要；因此运行代码/数据变更会阻断，非加载调试数据移除可通过。该摘要绑定只证明本次装配对应关系，不宣称设备加载、模型精度或真机行为通过。
+
+## B05增量测量补充设计
+
+用户后续确认推进 B05（先评估原生增量，再决定是否引入编译缓存）。新增 `incremental` 动作，只复用编译阶段
+与该配置既有的 verify 步骤，不新增依赖、不改变既有动作的步骤序列。
+
+- `scripts/building/incremental.py`：对象快照与差异、产物摘要、从生成工程文件（`*.vcxproj` / `build.ninja`）
+  反推源文件与 include 根、只改 mtime 的扰动与还原。扰动必须用「当前时刻」而不是「原 mtime + 常量」：
+  源文件通常远早于对象文件，加常数仍会旧于产物，构建系统不会重编，测量就会把「没触发」误读成「无增量」。
+- `coordinator.py` 的 `_run_incremental`：同一构建树内按 repeat/source/header 顺序，每轮记录前后对象快照、
+  在 `finally` 里还原 mtime，再用该配置的 verify 步骤验证产物；判据失败以 `INCREMENTAL_*` 原因码中止。
+- 配置身份不同（ABI/CRT/STL/后端/工具链）即不同构建树，不参与同一组比较；本轮不为此交叉编译。
+- `build`（允许增量）与 `verify`（必须重跑检查，Android 用 `--rerun`）的区分保持不变；`incremental` 只是测量。
+- 退出前若状态仍为 `running` 一律判 `REPORT_STATUS_UNSET`，避免「报告运行中却返回 0」的自相矛盾成功。
 
 ## 配置、执行和证据
 

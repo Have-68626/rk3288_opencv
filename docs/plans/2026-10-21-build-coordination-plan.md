@@ -92,7 +92,34 @@ as_of=2026-10-21
 - 未执行真机、摄像头、模型真实精度或网络推流验收。Android MPP/Qualcomm SDK缺失时回退CPU；不宣称硬件加速或真实识别精度通过。
 - 工作区改动未提交、未推送；原始日志、模型、依赖与历史证据均保留。
 
-## B03后续补充进度（2026-10-21）
+## B05 增量行为评估（2026-10-22）
+
+- [x] 新增 `scripts/building/incremental.py` 与 `incremental` 动作：同一构建树内 repeat/source/header 三对受控比较，只扰动 mtime 并在 `finally` 还原；重建后用该配置既有 verify 步骤证明产物正确。
+- [x] 拒绝不支持的配置（Gradle 构建树）、非 passed 报告与缺失构建树；退出前残留 `running` 判 `REPORT_STATUS_UNSET`。
+- [x] 回归 `tests/scripts/test_build_incremental.py`（7 条，含真实 VS2022 增量测量）；新增 `incremental-diff` 行为变异，全部 9 条变异可检出。
+- [x] core 实测（身份 `f296bb65f3f4`）：repeat **0**、source **1**（`EventManager.cpp`）、header **4**（`FaceSearch.h`），三组 verify 均 passed；`artifact_changed` 在 source/header 为真。
+- [x] 结论：原生增量可解释且未失效，**不引入编译缓存**；配置身份不同不参与同组比较，未做 ABI/CRT 交叉编译。
+
+## B07 本地/CI 目标映射（2026-10-22）
+
+- [x] 新增 `docs/guides/ci-local-mapping.md`：七个 CI job（`changes`/`repo-hygiene`/`unit-tests`/`docs-audit`/`web`/`android`/`windows`）与七个本地套件、七个构建配置的对应表，逐条登记门禁边界与**未运行/非阻断/缺资产/跳过**的判读规则。
+- [x] 覆盖回归 `tests/scripts/test_ci_local_mapping.py`：解析 `ci.yml`+`docs-audit.yml` 的 job 列表与 `SUITES`、`PROFILES`，缺登记即失败。
+- [x] 明确未覆盖项：CI 只跑 `android-mock`（真实后端仅本地 `android-real`）；本地 `core` 是 `RK_SKIP_OPENCV` 快通道，不等价于 `windows` job；`unit-tests` 为 Linux 非门禁参考。
+- [x] 不修改任何 CI 配置；CI 变更仍需另行报批。
+
+## B06 构建时间与可复现（2026-10-22）
+
+- [x] 统筹侧已落地：`--build-time` 显式输入、`validate_build_time` 校验、`BUILD_TIME_INVALID` / `BUILD_TIME_ANDROID_APP_ONLY` / `BUILD_TIME_MISMATCH` / `PRIOR_BUILD_TIME_UNAVAILABLE` 四个原因码；verify 复用原报告时间；NDK/CMake 有效版本由 `record_android_toolchain` 逐 ABI 登记。
+- [x] 回归：`test_android_plan_accepts_and_reports_a_fixed_build_time`、`test_android_build_time_is_validated_without_forking_the_build_tree`（不同时间共用同一构建树）、`test_android_verify_reuses_the_original_build_time`、新增 `test_android_verify_never_reuses_stale_test_results`（verify 必须 `--rerun`，不得跳过测试）。
+- [x] **已按批准应用 `app/build.gradle` 补丁**：`BuildConfig.BUILD_TIME` 优先取 `-Prk.buildTime`，未给出才回退当前分钟；
+  形状不符抛 `GradleException`。
+- [x] 复现性实测（android-mock）：`20261022-2000` 连续两次构建 **APK 摘要相同**（`037f1cad…`）；`20261022-2001`
+  **摘要不同**（`8b873640…`）；APK 内 `classes*.dex` 分别含 `20261022-2000` / `20261022-2001`，三次 `status=passed`。
+- [x] 新增静态 tripwire `tests/scripts/test_build_time_contract.py`：锁住「Gradle 读 `rk.buildTime`」与
+  「`buildStamp` 进 `BuildConfig.BUILD_TIME`」这条接线，防止再次退化成「只把参数写在命令行里」。
+- [x] 新增 `test_android_verify_never_reuses_stale_test_results`：verify 必须 `--rerun`，不得跳过测试。
+- 边界：Gradle 侧形状校验未单独用 `gradlew -Prk.buildTime=<非法>` 实测（统筹侧会先拒绝），属**防御性**第二道闸。
+
 
 - [x] 为Android快照补入profile、run-id和APK内所有原生库的SHA-256/大小清单；verify校验ABI、模型禁入、清单摘要和真实通道构建绑定。
 - [x] 增加ELF可加载节摘要；真实通道同时记录构建文件与APK内文件的SHA-256，区分AGP剥离调试节与运行内容漂移。

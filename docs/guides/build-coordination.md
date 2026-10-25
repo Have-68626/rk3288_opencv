@@ -65,6 +65,50 @@ python scripts/run-builds.py build --profile core --inputs cache/local-inputs/bu
 
 构建树在`cache/builds/build-coordination/<配置>-<身份>/`，报告在`cache/reports/build-coordination/<运行ID>/`。普通源文件变化沿用同树增量构建；工具、CRT/STL、ABI、后端或依赖元数据变化使用不同身份。长构建期间修改源码会令结果变为unverified，修正后须重新运行，不能重写旧报告。
 
+## 增量行为测量（B05）
+
+`incremental` 只做受控比较，不改变构建结论：它要求一份 **passed 的 build 报告**，在同一构建树上依次跑
+repeat / source / header 三对比较。每对只把目标文件的 mtime 前移（**内容与摘要不变**，每轮在 `finally` 里还原），
+重建后用该配置既有的 verify 步骤证明产物仍然正确。
+
+```powershell
+python scripts/run-builds.py incremental --profile core --inputs cache/local-inputs/core.json --report cache/reports/build-coordination/<运行ID>/summary.json
+```
+
+判据：`repeat` 必须**零重编**（否则说明增量失效或树不热）；`source` 至少重编 1 个对象；`header` 至少重编
+包含它的那些对象。报告另记 `artifact_changed`，仅作观测，不参与判据。
+
+边界：
+
+- 只支持 CMake 构建树（core / windows / android-cli）；Gradle 与 Web 的增量由各自工具链负责，不在此冒充。
+- 配置身份（ABI/CRT/STL/后端/工具链）不同即不同构建树，不参与同一组比较；报告 `scope` 记录本次身份。
+- ⚠️ **构建目录不能落在系统临时目录**：MSBuild 会报 `MSB8029` 并放弃可靠增量，头文件改动不会触发重编，
+  测量会变成假阴性。仓库内 `cache/builds/...` 不受影响。
+- `build` 允许复用构建树（开发增量），`verify` 始终重跑该配置的检查（Android 用 `--rerun`），两者分别签署；
+  `incremental` 只是测量，不替代 `verify`。
+
+2026-10-22 实测（core，身份 `f296bb65f3f4`）：repeat **0** / source **1**（`EventManager.cpp`）/
+header **4**（`FaceSearch.h` → `FaceSearch`、`RealtimeFacePipeline`、`test_face_search`、
+`test_realtime_face_pipeline` 四个对象），三组 verify 均 passed，source/header 两组产物确有变化。
+⇒ 当前原生增量行为可解释且未失效，**不引入编译缓存**；B05 的「再评估缓存」以本基线为前提，需要时按同一口径扩展。
+
+## 构建诊断时间与可复现（B06）
+
+Android 的 `BuildConfig.BUILD_TIME` 优先取显式 `--build-time`（`YYYYMMDD-HHmm`），未给出时才回退到当前分钟。
+该值既进 Gradle 命令行（`-Prk.buildTime=`），也进产物内容 ⇒ **同一时间与输入得到相同 APK，不同时间得到不同 APK**。
+
+```powershell
+python scripts/run-builds.py build --profile android-mock --inputs cache/local-inputs/builds.json --build-time 20261022-2000
+```
+
+- `build` 报告记录 `build_time`；`verify` **必须**复用原报告的时间（`BUILD_TIME_MISMATCH` /
+  `PRIOR_BUILD_TIME_UNAVAILABLE` 会拒绝），且 Android 的测试步骤固定带 `--rerun`，不会因产物未变而跳过测试。
+- 形状不符（含非法日历日）在统筹侧即被拒绝（`BUILD_TIME_INVALID`）；`app/build.gradle` 另有同样的形状校验，
+  直接 `gradlew -Prk.buildTime=` 也不会把非法值注入 `BuildConfig`。
+- 有效 NDK / CMake 版本由 `record_android_toolchain` 逐 ABI 从实际 CMakeCache 登记，报告单独成节。
+- 2026-10-22 实测：`20261022-2000` 连续两次构建 APK 摘要相同（`037f1cad…`），`20261022-2001` 不同
+  （`8b873640…`），APK 内 `classes*.dex` 分别含对应时间串。
+
 ## 产品装配与验收边界
 
 windows-product每次在本轮报告下新建`product/windows/`，仅包含服务exe、完整Web文件、公共cascade和样例INI。逐文件比较集合/摘要、检查index本地引用以及PE普通/延迟动态依赖；拒绝额外旧资源、动态OpenCV/ncnn/CRT和未覆盖的非系统DLL。不把复制成功称作签名发行或真机验收。
