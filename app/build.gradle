@@ -25,7 +25,15 @@ def gitHeadShort = {
         return 'unknown'
     }
 }()
-def buildStamp = new Date().format("yyyyMMdd-HHmm")
+// 构建诊断时间：优先显式 -Prk.buildTime（YYYYMMDD-HHmm，由构建统筹登记），否则取当前分钟。
+// 显式输入是可复现构建的前提；形状不符直接失败，避免把非法值注入 BuildConfig。
+def declaredBuildTime = project.findProperty('rk.buildTime')
+def buildStamp = declaredBuildTime == null
+        ? new Date().format("yyyyMMdd-HHmm")
+        : declaredBuildTime.toString()
+if (!(buildStamp ==~ /\d{8}-\d{4}/)) {
+    throw new GradleException("无效的 rk.buildTime: ${buildStamp}，应为 YYYYMMDD-HHmm")
+}
 
 android {
     namespace 'com.example.rk3288_opencv'

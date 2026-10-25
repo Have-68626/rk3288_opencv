@@ -234,6 +234,18 @@ def test_android_verify_reuses_the_original_build_time(tmp_path, monkeypatch):
     assert f'-Prk.buildTime={old_time}' in ' '.join(map(str, commands[0]))
 
 
+def test_android_verify_never_reuses_stale_test_results(tmp_path):
+    """B06：verify 必须强制重跑单元测试——只改时间或产物未变都不能跳过测试拿绿灯。"""
+    plan = make_plan(ROOT, 'android-mock', fixture_inputs(tmp_path), tmp_path / 'verify')
+    plan['build_time'] = '20261022-1630'
+    steps = [step for _, step in module.command_steps('verify', plan)
+             if any(':app:testDebugUnitTest' in str(item) for item in step.command)]
+    assert len(steps) == 1
+    command = [str(item) for item in steps[0].command]
+    assert '--rerun' in command
+    assert '-Prk.buildTime=20261022-1630' in command
+
+
 def test_android_toolchain_report_uses_effective_cmake_path_and_version(tmp_path, monkeypatch):
     inputs = fixture_inputs(tmp_path)
     plan = make_plan(tmp_path, 'android-mock', inputs, tmp_path / 'run')
