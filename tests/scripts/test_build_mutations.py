@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MUTATIONS = (
     ('identity', 'building/artifacts.py', 'if not equal:', 'if False:',
      'test_build_artifacts.py::test_cache_contract_accepts_only_same_source_generator_and_flags'),
-    ('exit', 'building/coordinator.py', "if result['status'] != 'passed':", 'if False:',
+    ('exit', 'building/coordinator.py',
+     "                    if result['status'] != 'passed':\n                        report.update(",
+     "                    if False:\n                        report.update(",
      'test_build_coordinator.py::test_failed_configure_never_builds_or_archives[failed-7]'),
     ('stale-web', 'building/artifacts.py', '    web_files = inventory(web)',
      "    if (destination.parent / 'product/webroot').is_dir():\n        web = destination.parent / 'product/webroot'\n    web_files = inventory(web)",
@@ -34,6 +36,10 @@ MUTATIONS = (
      'if memory_limit is not None and observed["peak_job_memory_bytes"] > memory_limit:',
      'if False:',
      'test_suite_runner.py::test_memory_budget_terminates_only_owned_job'),
+    ('incremental-diff', 'building/incremental.py',
+     'changed = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))',
+     'changed = sorted(name for name in set(before) & set(after) if before.get(name) != after.get(name))',
+     'test_build_incremental.py::test_diff_objects_reports_changed_missing_and_added'),
 )
 
 
@@ -46,6 +52,7 @@ def test_behavior_mutation_is_detected(tmp_path, name, filename, old, new, test)
                ROOT / 'scripts/audit/_common.py', ROOT / 'scripts/run-builds.py',
                *[ROOT / 'tests/scripts' / item for item in (
                    'test_build_profiles.py', 'test_build_artifacts.py', 'test_build_coordinator.py',
+                   'test_build_incremental.py',
                    'test_suite_reports.py', 'test_suite_runner.py', 'test_resource_contract.py',
                    'test_apk_native_inspection.py', 'android_tool_test_support.py')]]
     before = {source: hashlib.sha256(source.read_bytes()).hexdigest() for source in sources}

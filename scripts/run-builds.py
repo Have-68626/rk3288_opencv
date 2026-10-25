@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def parser():
     value = Parser(description=__doc__)
-    value.add_argument('action', choices=('list', 'plan', 'configure', 'build', 'verify'))
+    value.add_argument('action', choices=('list', 'plan', 'configure', 'build', 'verify', 'incremental'))
     value.add_argument('--profile', choices=PROFILES)
     value.add_argument('--inputs')
     value.add_argument('--report')
@@ -38,7 +38,7 @@ def main(argv=None):
     if options.action == 'list':
         print('\n'.join(PROFILES))
         return 0
-    if not options.profile or not options.inputs or (options.action == 'verify' and not options.report):
+    if not options.profile or not options.inputs or (options.action in ('verify', 'incremental') and not options.report):
         argument_parser.error('MISSING_ARGUMENTS')
     if options.build_time is not None:
         if options.profile not in ('android-mock', 'android-real'):

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import time
 import zipfile
 
 from audit._common import redact
@@ -17,6 +18,7 @@ from testing.metadata import collect_versions
 from testing.runner import RepoLock, Step, execute_step
 from testing.resources import ResourceBudget, ResourceCoordinator
 from testing.reports import verify_android_build
+from . import incremental
 from .profiles import digest, safe_path, input_file, validate_build_time
 from .artifacts import (check_cache, check_android_cache, inventory, check_web,
                         assemble_product, verify_manifest, android_native_libraries)
@@ -104,7 +106,7 @@ def command_steps(action, plan):
             gradle += ['-PRK_SKIP_OPENCV=true']
         else:
             gradle += ['-POPENCV_ROOT=' + paths['opencv_root'], '-POPENCV_CONTRIB_ROOT=' + paths['opencv_contrib_root']]
-    if action != 'verify':
+    def configure_steps():
         if profile in ('core', 'windows', 'android-cli'):
             command = [paths.get('cmake', 'cmake'), '-S', root, '-B', build, '-G', plan['contract']['CMAKE_GENERATOR']]
             if profile in ('core', 'windows'):
@@ -127,14 +129,15 @@ def command_steps(action, plan):
         elif android:
             add('configure', profile + '-configure', native(*gradle, *[':app:configureCMakeDebug[' + abi + ']' for abi in plan['abis']]), timeout=1800,
                 cpu_slots=budget.cpu_slots, resources=('output:android-app-build',))
-        if action == 'configure':
-            return result
-        if plan['profile'] == 'windows-product' or profile == 'web':
-            web = Path(paths['web_dir'])
-            add('build', 'web-typescript', [paths['node'], input_file(web, 'node_modules/typescript/bin/tsc', 'web_dir'), '-b'], cwd=web)
-            add('build', 'web-bundle', [paths['node'], input_file(web, 'node_modules/vite/bin/vite.js', 'web_dir'),
-                                       'build', '--outDir', plan['web_output']], cwd=web)
-            add('build', 'web-budget', [paths['node'], root / 'web/scripts/check-bundle-budget.mjs', '--webroot', plan['web_output']], cwd=web)
+
+    def web_build_steps():
+        web = Path(paths['web_dir'])
+        add('build', 'web-typescript', [paths['node'], input_file(web, 'node_modules/typescript/bin/tsc', 'web_dir'), '-b'], cwd=web)
+        add('build', 'web-bundle', [paths['node'], input_file(web, 'node_modules/vite/bin/vite.js', 'web_dir'),
+                                   'build', '--outDir', plan['web_output']], cwd=web)
+        add('build', 'web-budget', [paths['node'], root / 'web/scripts/check-bundle-budget.mjs', '--webroot', plan['web_output']], cwd=web)
+
+    def build_steps():
         if profile in ('core', 'windows', 'android-cli'):
             add('build', profile + '-build', [paths.get('cmake', 'cmake'), '--build', build, '--config', 'Release',
                                              '--parallel', str(budget.cpu_slots), '--target', *plan['targets']], timeout=14400,
@@ -142,27 +145,48 @@ def command_steps(action, plan):
         elif android:
             add('build', profile + '-build', native(*gradle, *plan['targets']), timeout=7200,
                 cpu_slots=budget.cpu_slots, resources=('output:android-app-build', 'output:android-apk'))
-    elif profile == 'core':
-        add('verify', 'core-tests', [paths['ctest'], '--test-dir', build, '-C', 'Release', '-R', '^core_unit_tests$',
-                                    '--output-on-failure', '--output-junit', out / 'checks/core.xml'], junit=[out / 'checks/core.xml'], unit='target')
-    elif profile == 'windows':
-        add('verify', 'windows-native', [sys.executable, root / 'scripts/run-native-tests.py', '--ctest', paths['ctest'],
-                                       '--build-dir', build, '--report-dir', out / 'checks/native'], junit=[out / 'checks/native/cases.xml'], unit='case_execution')
-        result[-1][1].native_report = out / 'checks/native'
-        if plan['profile'] == 'windows-product':
-            add('verify', 'windows-web-contract', [paths['node'], root / 'scripts/testing/web-contract.cjs', root,
-                paths['web_dir'], build / 'bin/Release/win_unit_tests.exe', out / 'checks/http'], junit=[out / 'checks/http/junit.xml'], timeout=90)
-    elif android:
-        add('verify', 'android-tests', native(*gradle, ':app:testDebugUnitTest', '--rerun', ':app:lintDebug'),
-            junit=[build / 'app/build/test-results/testDebugUnitTest/TEST-*.xml'], timeout=3600,
-            cpu_slots=budget.cpu_slots, resources=('output:android-test-results',))
-    if action == 'verify' and (profile == 'web' or plan['profile'] == 'windows-product'):
+
+    def verify_steps():
+        if profile == 'core':
+            add('verify', 'core-tests', [paths['ctest'], '--test-dir', build, '-C', 'Release', '-R', '^core_unit_tests$',
+                                        '--output-on-failure', '--output-junit', out / 'checks/core.xml'], junit=[out / 'checks/core.xml'], unit='target')
+        elif profile == 'windows':
+            add('verify', 'windows-native', [sys.executable, root / 'scripts/run-native-tests.py', '--ctest', paths['ctest'],
+                                           '--build-dir', build, '--report-dir', out / 'checks/native'], junit=[out / 'checks/native/cases.xml'], unit='case_execution')
+            result[-1][1].native_report = out / 'checks/native'
+            if plan['profile'] == 'windows-product':
+                add('verify', 'windows-web-contract', [paths['node'], root / 'scripts/testing/web-contract.cjs', root,
+                    paths['web_dir'], build / 'bin/Release/win_unit_tests.exe', out / 'checks/http'], junit=[out / 'checks/http/junit.xml'], timeout=90)
+        elif android:
+            add('verify', 'android-tests', native(*gradle, ':app:testDebugUnitTest', '--rerun', ':app:lintDebug'),
+                junit=[build / 'app/build/test-results/testDebugUnitTest/TEST-*.xml'], timeout=3600,
+                cpu_slots=budget.cpu_slots, resources=('output:android-test-results',))
+
+    def web_verify_steps():
         web = Path(paths['web_dir'])
         add('verify', 'web-budget', [paths['node'], root / 'web/scripts/check-bundle-budget.mjs', '--webroot',
                                     plan.get('verify_web_output', plan['web_output'])], cwd=web)
         add('verify', 'web-lint', native(paths['pnpm'], 'run', 'lint'), cwd=web)
         add('verify', 'web-tests', native(paths['pnpm'], 'run', 'test', '--outputFile.junit=' + str(out / 'checks/web.xml')),
             cwd=web, junit=[out / 'checks/web.xml'])
+
+    # incremental 只复用编译阶段：配置与验证由调用方按需另行取用，避免把「重建」与「验签」混在一步里。
+    if action == 'incremental':
+        if profile not in incremental.SUPPORTED:
+            raise ValueError('INCREMENTAL_PROFILE_UNSUPPORTED')
+        build_steps()
+        return result
+    if action != 'verify':
+        configure_steps()
+        if action == 'configure':
+            return result
+        if plan['profile'] == 'windows-product' or profile == 'web':
+            web_build_steps()
+        build_steps()
+    else:
+        verify_steps()
+    if action == 'verify' and (profile == 'web' or plan['profile'] == 'windows-product'):
+        web_verify_steps()
     return result
 
 
@@ -247,6 +271,77 @@ def record_android_toolchain(plan, out, tool_records):
     return toolchain
 
 
+INCREMENTAL_MIN_REBUILDS = {'repeat': 0, 'source': 1, 'header': 1}
+
+
+def _run_incremental(plan, out, report, steps, coordinator, save):
+    """B05：在同一构建树上做受控增量比较；每轮只扰动 mtime 并立即还原。
+
+    判据三条：repeat 必须零重编；source/header 至少重编一个对象；每个用例重建后
+    都要用该配置既有的 verify 步骤证明产物仍然正确。只测原生增量，不引入编译缓存。
+    """
+    build, root = Path(plan['build_dir']), Path(plan['root'])
+    check_cache(plan)
+    if not (build / 'CMakeCache.txt').is_file():
+        raise ValueError('INCREMENTAL_BUILD_TREE_MISSING')
+    verify_steps = command_steps('verify', plan)
+    report['steps'] = []
+    rows = []
+    for case in incremental.CASES:
+        target = incremental.case_targets(case, build, root)
+        before_objects = incremental.object_digests(build)
+        before_artifacts = incremental.artifact_digests(plan)
+        before_mtime, started = None, time.monotonic()
+        try:
+            if target:
+                before_mtime = incremental.perturb(target)
+            for phase, step in steps:
+                with coordinator.acquire(step.resource_claim):
+                    report['max_parallel_steps_observed'] = max(report['max_parallel_steps_observed'], 1)
+                    result = execute_step(step, out / 'incremental' / case / 'build')
+                report['steps'].append(dict(result, phase=phase, case=case))
+                save()
+                if result['status'] != 'passed':
+                    raise RuntimeError(result.get('reason', 'STEP_FAILED'))
+        finally:
+            if before_mtime is not None:
+                incremental.restore(target, before_mtime)
+        after_objects = incremental.object_digests(build)
+        after_artifacts = incremental.artifact_digests(plan)
+        checks = []
+        for phase, step in verify_steps:
+            with coordinator.acquire(step.resource_claim):
+                result = execute_step(step, out / 'incremental' / case / 'verify')
+            report['steps'].append(dict(result, phase=phase, case=case))
+            save()
+            checks.append(result['status'])
+            if result['status'] != 'passed':
+                raise RuntimeError(result.get('reason', 'INCREMENTAL_VERIFY_FAILED'))
+        rows.append(dict(case=case, target=target, elapsed_ms=int((time.monotonic() - started) * 1000),
+                         objects=incremental.diff_objects(before_objects, after_objects),
+                         artifact_changed=before_artifacts != after_artifacts,
+                         artifacts=after_artifacts, checks=checks))
+    failures = []
+    for row in rows:
+        if row['case'] == 'repeat':
+            if row['objects']['changed_count'] != 0:
+                failures.append('INCREMENTAL_REPEAT_REBUILT')
+        elif row['objects']['changed_count'] < INCREMENTAL_MIN_REBUILDS[row['case']]:
+            failures.append('INCREMENTAL_' + row['case'].upper() + '_NOT_REBUILT')
+        if not row['artifacts']:
+            failures.append('INCREMENTAL_ARTIFACT_MISSING')
+    report['incremental'] = dict(
+        cases=rows, failures=sorted(set(failures)),
+        scope=dict(profiles=list(incremental.SUPPORTED), identity=plan['identity'],
+                   note='配置身份（ABI/CRT/STL/后端/工具链）不同时使用不同构建树，不参与同一组增量比较；'
+                        '本动作只测原生增量行为，不引入编译缓存。'),
+    )
+    save()
+    if failures:
+        raise ValueError(sorted(set(failures))[0])
+    report.update(status='passed', exit_code=0)
+
+
 def run(action, plan, prior_report=None):
     out = safe_path(plan['run_dir'])
     out.mkdir(parents=True, exist_ok=False)
@@ -291,6 +386,14 @@ def run(action, plan, prior_report=None):
             lines += ['', '## Android有效工具链', '', '| ABI | NDK版本 | CMake版本 | CMake执行文件 |', '|---|---|---|---|']
             for abi, item in report['android_toolchain']['abis'].items():
                 lines.append(f"| {abi} | {item['ndk_version']} | {item['cmake_version']} | {item['cmake_executable']} |")
+        if report.get('incremental'):
+            lines += ['', '## 受控增量比较', '', '| 用例 | 扰动目标 | 重编对象 | 产物变化 | 验证 |', '|---|---|---:|---|---|']
+            for row in report['incremental']['cases']:
+                name = Path(row['target']).name if row['target'] else '无'
+                lines.append(f"| {row['case']} | {name} | {row['objects']['changed_count']} | "
+                             f"{'是' if row['artifact_changed'] else '否'} | {'/'.join(row['checks']) or '无'} |")
+            if report['incremental']['failures']:
+                lines += ['', '失败：' + ', '.join(report['incremental']['failures'])]
         lines += ['', '配置、构建、验证与设备验收分别判读；本报告不代表远端CI通过。']
         (out / 'summary.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     try:
@@ -300,7 +403,7 @@ def run(action, plan, prior_report=None):
             if plan['errors']:
                 raise ValueError('PREFLIGHT_FAILED')
             check_cache(plan, require_cache=False)
-            if action == 'verify':
+            if action in ('verify', 'incremental'):
                 original = safe_path(prior_report)
                 before = digest(original)
                 old = json.loads(original.read_text(encoding='utf-8'))
@@ -349,39 +452,42 @@ def run(action, plan, prior_report=None):
             report['steps'] = [dict(name=step.name, phase=phase, status='not_run', raw_exit_code=None) for phase, step in steps]
             report.update(status='running', exit_code=0)
             save()
-            for index, (phase, step) in enumerate(steps):
-                print('START build=' + plan['profile'] + ' step=' + step.name, flush=True)
-                report['steps'][index]['status'] = 'running'
-                save()
-                with resource_coordinator.acquire(step.resource_claim):
-                    report['max_parallel_steps_observed'] = max(
-                        report['max_parallel_steps_observed'], 1
-                    )
-                    result = execute_step(step, out / 'steps' / step.name)
-                report['steps'][index].update(result)
-                save()
-                print('END step=' + step.name + ' status=' + result['status'], flush=True)
-                if result['status'] != 'passed':
-                    report.update(status=result['status'], exit_code=130 if result['status'] == 'cancelled' else 1,
-                                  reason=result.get('reason', 'STEP_FAILED'))
-                    break
-                if phase == 'configure' and plan['canonical'] in ('core', 'windows', 'android-cli'):
-                    check_cache(plan)
-                if phase == 'configure' and plan['canonical'] in ('android-mock', 'android-real'):
-                    report['android_toolchain'] = record_android_toolchain(plan, out, report['tools'])
+            if action == 'incremental':
+                _run_incremental(plan, out, report, steps, resource_coordinator, save)
             else:
-                check_cache(plan, require_cache=plan['canonical'] in ('core', 'windows', 'android-cli'))
-                if plan['canonical'] in ('android-mock', 'android-real'):
-                    if not report.get('android_toolchain'):
+                for index, (phase, step) in enumerate(steps):
+                    print('START build=' + plan['profile'] + ' step=' + step.name, flush=True)
+                    report['steps'][index]['status'] = 'running'
+                    save()
+                    with resource_coordinator.acquire(step.resource_claim):
+                        report['max_parallel_steps_observed'] = max(
+                            report['max_parallel_steps_observed'], 1
+                        )
+                        result = execute_step(step, out / 'steps' / step.name)
+                    report['steps'][index].update(result)
+                    save()
+                    print('END step=' + step.name + ' status=' + result['status'], flush=True)
+                    if result['status'] != 'passed':
+                        report.update(status=result['status'], exit_code=130 if result['status'] == 'cancelled' else 1,
+                                      reason=result.get('reason', 'STEP_FAILED'))
+                        break
+                    if phase == 'configure' and plan['canonical'] in ('core', 'windows', 'android-cli'):
+                        check_cache(plan)
+                    if phase == 'configure' and plan['canonical'] in ('android-mock', 'android-real'):
                         report['android_toolchain'] = record_android_toolchain(plan, out, report['tools'])
-                if action == 'build':
-                    report['artifacts'] = record_outputs(plan)
-                    verify_manifest(report['artifacts'])
-                if action == 'verify':
-                    verify_manifest(report['artifacts'])
-                    if digest(original) != before:
-                        raise ValueError('PRIOR_REPORT_CHANGED')
-                report.update(status='passed', exit_code=0)
+                else:
+                    check_cache(plan, require_cache=plan['canonical'] in ('core', 'windows', 'android-cli'))
+                    if plan['canonical'] in ('android-mock', 'android-real'):
+                        if not report.get('android_toolchain'):
+                            report['android_toolchain'] = record_android_toolchain(plan, out, report['tools'])
+                    if action == 'build':
+                        report['artifacts'] = record_outputs(plan)
+                        verify_manifest(report['artifacts'])
+                    if action == 'verify':
+                        verify_manifest(report['artifacts'])
+                        if digest(original) != before:
+                            raise ValueError('PRIOR_REPORT_CHANGED')
+                    report.update(status='passed', exit_code=0)
     except KeyboardInterrupt:
         report.update(status='cancelled', exit_code=130, reason='CANCELLED')
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, zipfile.BadZipFile) as error:
@@ -398,5 +504,8 @@ def run(action, plan, prior_report=None):
                     report.update(status='unverified', exit_code=2, reason='SOURCE_CHANGED')
         except (OSError, ValueError, RuntimeError):
             report.update(status='unverified', exit_code=2, reason='SOURCE_BINDING_UNAVAILABLE')
+        # 退出前不允许残留 running：否则会出现「报告显示运行中、退出码却是 0」的自相矛盾成功。
+        if report['status'] == 'running':
+            report.update(status='unverified', exit_code=2, reason='REPORT_STATUS_UNSET')
         save()
     return report
