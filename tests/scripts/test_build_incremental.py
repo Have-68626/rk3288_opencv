@@ -58,6 +58,17 @@ def test_perturb_moves_only_mtime_and_restore_is_exact(tmp_path):
     assert path.stat().st_mtime == original
 
 
+def test_perturb_advances_even_when_clock_reads_behind_file(tmp_path, monkeypatch):
+    """Windows 时钟粒度可能让 time.time() 略旧于文件 mtime；扰动仍须严格前进。"""
+    path = tmp_path / 'unit.cpp'
+    path.write_text('int main() { return 0; }\n', encoding='utf-8')
+    before = path.stat().st_mtime
+    monkeypatch.setattr(incremental.time, 'time', lambda: before - 0.5)
+    original = incremental.perturb(path)
+    assert original == before
+    assert path.stat().st_mtime > before
+
+
 def test_pick_targets_fails_loudly_without_project_sources(tmp_path):
     with pytest.raises(ValueError, match='INCREMENTAL_SOURCES_UNAVAILABLE'):
         incremental.pick_targets(tmp_path, tmp_path)

@@ -136,7 +136,10 @@ def perturb(path):
     target = safe_path(path)
     before = target.stat().st_mtime
     now = time.time()
-    os.utime(target, (now, now))
+    # Windows 的 time.time() 粒度约 15.6ms，刚写入文件的 mtime 可能略新于下一次读数；
+    # 相等或倒退都会让构建系统不重编，因此保证比原 mtime 严格前进。
+    stamp = now if now > before else before + 1.0
+    os.utime(target, (stamp, stamp))
     return before
 
 

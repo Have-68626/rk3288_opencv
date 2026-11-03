@@ -22,6 +22,16 @@ def cli():
     return value
 
 
+def synthetic_gradle(tmp_path, monkeypatch):
+    """android 计划只校验发行包与完成标记；用合成发行包，避免依赖本机 Gradle 缓存。"""
+    program = tmp_path / 'tools' / 'gradle.bat'
+    program.parent.mkdir(parents=True, exist_ok=True)
+    program.write_bytes(b'synthetic-gradle')
+    home = tmp_path / 'gradle-home'
+    home.mkdir(exist_ok=True)
+    monkeypatch.setattr('building.profiles.cached_gradle', lambda root: (home, program, None))
+
+
 def setup_run(tmp_path, monkeypatch):
     plan = make_plan(tmp_path, 'core', fixture_inputs(tmp_path), tmp_path / 'run')
     monkeypatch.setattr(module, 'source_binding', lambda root: dict(head='a' * 40, workspace_sha256='b' * 64))
@@ -186,6 +196,7 @@ def test_android_configure_runs_real_abi_tasks_and_isolates_outputs(tmp_path):
 
 
 def test_android_plan_accepts_and_reports_a_fixed_build_time(tmp_path, monkeypatch, capsys):
+    synthetic_gradle(tmp_path, monkeypatch)
     entry = cli()
     monkeypatch.setattr(entry, 'ROOT', ROOT)
     inputs = tmp_path / 'inputs.json'
@@ -210,6 +221,7 @@ def test_android_plan_rejects_invalid_calendar_time(tmp_path, monkeypatch, capsy
 
 
 def test_android_verify_reuses_the_original_build_time(tmp_path, monkeypatch):
+    synthetic_gradle(tmp_path, monkeypatch)
     plan = make_plan(ROOT, 'android-mock', fixture_inputs(tmp_path), tmp_path / 'verify')
     old_time = '20261020-0801'
     binding = dict(head='a' * 40, workspace_sha256='b' * 64)
