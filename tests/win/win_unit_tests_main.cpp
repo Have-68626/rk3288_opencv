@@ -281,7 +281,11 @@ bool test_bootstrap_consumes_int8_enabled_flag() {
     return true;
 }
 
+int run_http_contract_host();
+
 int main(int argc, char** argv) {
+    // 契约宿主不执行bool套件或装配FramePipeline，避免真实服务测试打开相机。
+    if (argc == 2 && std::string(argv[1]) == "--contract-host") return run_http_contract_host();
     using namespace rk_win_test;
     const TestCase cases[] = {
         {"lbph_embedder_dim_and_distance", test_lbph_embedder_dim_and_distance},

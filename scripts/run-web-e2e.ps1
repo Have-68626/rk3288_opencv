@@ -1,73 +1,86 @@
 param(
   [int]$BackendPort = 8080,
-  [string]$BackendExe = ""
+  [string]$BackendExe = "",
+  [string]$WebDirectory = "",
+  [string]$PnpmPath = "",
+  [switch]$SkipInstall,
+  [string]$ReportDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
-
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$webDir = Join-Path $repoRoot "web"
-
-$backendProc = $null
-if ($BackendExe -ne "") {
-  $backendProc = Start-Process -FilePath $BackendExe -PassThru
+$webDir = if ($WebDirectory) { (Resolve-Path -LiteralPath $WebDirectory).Path } else { Join-Path $repoRoot "web" }
+if ($ReportDirectory) {
+  $ReportDirectory = [System.IO.Path]::GetFullPath($ReportDirectory)
+  if (Get-ChildItem -LiteralPath $ReportDirectory -Filter 'cypress-*.xml' -ErrorAction SilentlyContinue) {
+    throw '本次JUnit输出已有报告，拒绝复用旧证据'
+  }
+  New-Item -ItemType Directory -Force -Path $ReportDirectory | Out-Null
 }
-
-# Q-CQ-B08-006：devJob 先初始化为 $null，finally 兜底清理时按 null 跳过
+$priorEnvironment = @{}
+foreach ($name in @('VITE_DEV_PROXY_TARGET', 'CYPRESS_COVERAGE')) {
+  $priorEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+$backendProc = $null
 $devJob = $null
-
-Push-Location $webDir
+Push-Location -LiteralPath $webDir
 try {
-  # 本脚本只清理自己启动的服务，端口被占用时不能误测其他 Vite 实例。
+  # 本脚本只清理自己启动的服务，端口被占用时不能误测其他Vite实例。
   $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 5173)
   try { $portProbe.Start() }
-  catch { throw "E2E 端口 5173 无法绑定，请先确认端口占用情况" }
+  catch { throw 'E2E端口5173无法绑定，请先确认占用情况' }
   finally { $portProbe.Stop() }
-
+  if ($BackendExe -ne '') {
+    $backendProc = Start-Process -FilePath $BackendExe -WindowStyle Hidden -PassThru
+  }
   $env:VITE_DEV_PROXY_TARGET = "http://127.0.0.1:$BackendPort"
-  $env:CYPRESS_COVERAGE = "1"
-
-  corepack pnpm install | Out-Host
-  # Q-CQ-B08-006：$ErrorActionPreference="Stop" 不影响原生命令退出码，必须显式检查 $LASTEXITCODE
-  if ($LASTEXITCODE -ne 0) { throw "pnpm install failed (exit=$LASTEXITCODE)" }
-
+  $env:CYPRESS_COVERAGE = '1'
+  if (-not $SkipInstall) {
+    if ($PnpmPath) { & $PnpmPath install --frozen-lockfile | Out-Host }
+    else { corepack pnpm install --frozen-lockfile | Out-Host }
+    if ($LASTEXITCODE -ne 0) { throw "pnpm install failed (exit=$LASTEXITCODE)" }
+  }
   $devJob = Start-Job -ScriptBlock {
     param($dir)
-    Set-Location $dir
-    $env:VITE_DEV_PROXY_TARGET = $env:VITE_DEV_PROXY_TARGET
-    $env:CYPRESS_COVERAGE = $env:CYPRESS_COVERAGE
-    # 与 CI 一致直接调用 Vite，避免 pnpm 原样转发 -- 后忽略端口参数。
+    Set-Location -LiteralPath $dir
+    $env:CYPRESS_COVERAGE = '1'
     node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort | Out-Host
   } -ArgumentList $webDir
-
-  # Wait for Vite dev server to be ready (up to 30s)
   $viteReady = $false
   for ($i = 0; $i -lt 30; $i++) {
     try {
-      $req = [System.Net.WebRequest]::Create("http://127.0.0.1:5173")
+      $req = [System.Net.WebRequest]::Create('http://127.0.0.1:5173')
       $req.Timeout = 1000
       $resp = $req.GetResponse()
-      if ($resp.StatusCode -eq 200) { $viteReady = $true; $resp.Close(); break }
-      $resp.Close()
+      try { if ($resp.StatusCode -eq 200) { $viteReady = $true; break } }
+      finally { $resp.Close() }
     } catch { }
     Start-Sleep -Seconds 1
   }
-  if (-not $viteReady) { throw "Vite dev server did not become ready within 30s" }
-
-  corepack pnpm run e2e:run:coverage | Out-Host
+  if (-not $viteReady) { throw 'Vite dev server did not become ready within 30s' }
+  if ($ReportDirectory) {
+    # 直接传给Node启动器，避免pnpm版本对双横线转发语义不同。
+    node scripts/e2e-run.mjs --reporter junit --reporter-options "mochaFile=$ReportDirectory/cypress-[hash].xml" | Out-Host
+  } elseif ($PnpmPath) { & $PnpmPath run e2e:run:coverage | Out-Host }
+  else { corepack pnpm run e2e:run:coverage | Out-Host }
   if ($LASTEXITCODE -ne 0) { throw "e2e:run:coverage failed (exit=$LASTEXITCODE)" }
-
-  corepack pnpm run coverage:report | Out-Host
+  if ($PnpmPath) { & $PnpmPath run coverage:report | Out-Host }
+  else { corepack pnpm run coverage:report | Out-Host }
   if ($LASTEXITCODE -ne 0) { throw "coverage:report failed (exit=$LASTEXITCODE)" }
 } finally {
   Pop-Location
-  # Q-CQ-B08-006：任何退出路径（含 throw 提前退出）都兜底清理后台 job，避免残留
-  if ($devJob -ne $null) {
-    Stop-Job $devJob -ErrorAction SilentlyContinue | Out-Null
-    Remove-Job $devJob -Force -ErrorAction SilentlyContinue | Out-Null
-  }
-  if ($backendProc -ne $null -and !$backendProc.HasExited) {
-    Stop-Process -Id $backendProc.Id -Force
+  try {
+    if ($devJob -ne $null) {
+      Stop-Job $devJob -ErrorAction Stop | Out-Null
+      Remove-Job $devJob -Force -ErrorAction Stop | Out-Null
+    }
+  } finally {
+    try {
+      if ($backendProc -ne $null -and !$backendProc.HasExited) { Stop-Process -Id $backendProc.Id -ErrorAction Stop }
+    } finally {
+      foreach ($name in $priorEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $priorEnvironment[$name], 'Process')
+      }
+    }
   }
 }
-

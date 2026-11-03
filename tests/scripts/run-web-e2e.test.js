@@ -98,3 +98,21 @@ test('真实作业在正常和失败退出后均被移除', () => {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+
+test('协调调用尊重Web目录、跳过安装并指定本次JUnit', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-coordinate-'));
+  try {
+    fs.mkdirSync(path.join(base, 'scripts')); fs.mkdirSync(path.join(base, 'web'));
+    const driver = path.join(base, 'scripts/run-web-e2e.ps1'); fs.copyFileSync(PS1_PATH, driver);
+    const report = path.join(base, 'report.json');
+    const run = spawnSync('pwsh', ['-NoProfile', '-File', path.join(__dirname, 'fixtures/e2e-driver-harness.ps1'),
+      '-Driver', driver, '-Case', 'coordinated', '-Report', report], { encoding: 'utf8', timeout: 45000 });
+    assert.equal(run.status, 0, run.stderr);
+    const result = JSON.parse(fs.readFileSync(report, 'utf8').replace(/^\uFEFF/, ''));
+    assert.equal(result.failed, false, result.reason); assert.equal(result.remaining, 0);
+    assert.ok(result.calls.some(line => line.includes('--reporter|junit')));
+    assert.ok(result.calls.some(line => line.includes('coverage:report')));
+    assert.ok(!result.calls.some(line => line.includes('install')));
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});

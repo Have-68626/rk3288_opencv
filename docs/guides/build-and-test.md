@@ -1,7 +1,7 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-19
+as_of=2026-10-20
 -->
 
 # 构建与测试
@@ -11,6 +11,8 @@ as_of=2026-10-19
 新建独立CMake树放在 `cache/builds/`；已有树含绝对路径，不直接搬移。示例中的OpenCV路径须替换为本机源码目录，不能指向安装目录。
 
 本地CMake预设名称保持default/windows/android，新树分别进入cache/builds/core-ninja、windows-vs2022-x64、android-ninja-armeabi-v7a。批处理CLI独立树另以用途/ABI命名；已有树不直接移动。Android真实测试源目录见[模块入口](../../app/README.md)。
+
+需要固定配置、隔离构建树及Web→Windows独占产品装配时，使用[本地构建统筹](build-coordination.md)。构建与verify分别出具报告，保留本页原生入口及现有验收门槛。
 
 ## C++核心快通道（PowerShell）
 
@@ -108,3 +110,6 @@ if ($LASTEXITCODE -ne 0) { throw '覆盖率未达到现有门槛' }
 ## 本地门禁与验收边界
 
 文档修改运行 `node scripts/docs-sync-audit.js --skip-links` 与 `git diff --check`。完整CI的job与非门禁边界见[CI说明](../../AGENTS.md#ci-pipeline)；本页的选定命令不能冒充全量CI。
+
+
+需要串行协调多个套件并汇总新鲜证据时，使用[本地测试统筹](test-suite-coordination.md)。先list/plan确认前置，再明确run范围；统筹结果不替代远端CI或真机验收。

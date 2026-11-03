@@ -1,5 +1,12 @@
 param([string]$Driver, [string]$Case, [string]$Report)
 $ErrorActionPreference = 'Stop'
+$global:fixtureCalls = [System.Collections.Generic.List[string]]::new()
+function global:fixture-pnpm {
+    $global:fixtureCalls.Add(($args -join '|')); $global:LASTEXITCODE = 0
+}
+function global:node {
+    $global:fixtureCalls.Add(($args -join '|')); $global:LASTEXITCODE = 0
+}
 $global:fixtureJobIds = [System.Collections.Generic.List[int]]::new()
 function global:corepack {
     $global:LASTEXITCODE = 0
@@ -39,10 +46,13 @@ function global:Start-Sleep {
 }
 $failed = $false
 $reason = ''
-try { & $Driver } catch { $failed = $true; $reason = $_.FullyQualifiedErrorId }
+try {
+    if ($Case -eq 'coordinated') { & $Driver -WebDirectory (Join-Path (Split-Path (Split-Path $Driver)) 'web') -PnpmPath 'fixture-pnpm' -SkipInstall -ReportDirectory (Join-Path (Split-Path $Report) 'junit') }
+    else { & $Driver }
+} catch { $failed = $true; $reason = $_.FullyQualifiedErrorId }
 $remaining = @($global:fixtureJobIds | ForEach-Object { Get-Job -Id $_ -ErrorAction SilentlyContinue })
 try {
-    @{ failed = $failed; created = $global:fixtureJobIds.Count; remaining = $remaining.Count; reason = $reason } |
+    @{ failed = $failed; created = $global:fixtureJobIds.Count; remaining = $remaining.Count; reason = $reason; calls = @($global:fixtureCalls) } |
         ConvertTo-Json | Set-Content -LiteralPath $Report -Encoding utf8
 } finally {
     # 检测结果先落盘；即使变异破坏正式清理，夹具也只收回自己的作业。

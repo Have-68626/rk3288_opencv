@@ -259,6 +259,7 @@ jobs:
           # 直接调用保证 --host/--port 生效并绑定 127.0.0.1（与 baseUrl 对齐）。
           CYPRESS_COVERAGE=1 node_modules/.bin/vite --host 127.0.0.1 --port 5173 > /tmp/preview.log 2>&1 &
           DEV_PID=$!
+          trap 'kill "$DEV_PID" 2>/dev/null || true' EXIT
           # 轮询等待 dev server 就绪（最多 60s），避免固定 sleep 的启动竞态
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then break; fi
@@ -271,9 +272,20 @@ jobs:
             cat /tmp/preview.log || true
             exit 1
           fi
-          pnpm e2e:run:coverage || echo "E2E tests failed but continuing..."
-          pnpm coverage:report || echo "coverage:report failed but continuing..."
-          kill $DEV_PID || true
+          python3 ../scripts/record-ci-result.py start --output tests/reports/ci-observed/e2e --junit 'tests/reports/ci-observed/cypress/*.xml'
+          # 插件会在Cypress内部生成LCOV，快照必须早于该次生成。
+          python3 ../scripts/record-ci-result.py start --output tests/reports/ci-observed/coverage --lcov coverage/lcov.info
+          set +e
+          pnpm e2e:run:coverage --reporter junit --reporter-options 'mochaFile=tests/reports/ci-observed/cypress/results-[hash].xml'
+          E2E_RAW=$?
+          python3 ../scripts/record-ci-result.py finish --output tests/reports/ci-observed/e2e --exit-code "$E2E_RAW"
+          E2E_RESULT=$?
+          pnpm coverage:report
+          COVERAGE_RAW=$?
+          python3 ../scripts/record-ci-result.py finish --output tests/reports/ci-observed/coverage --exit-code "$COVERAGE_RAW"
+          COVERAGE_RESULT=$?
+          if [ "$E2E_RESULT" -ne 0 ]; then exit "$E2E_RESULT"; fi
+          exit "$COVERAGE_RESULT"
 
       - name: Upload Artifacts
         if: always()
@@ -282,6 +294,7 @@ jobs:
           name: web-coverage-reports
           path: |
             web/coverage/
+            web/tests/reports/ci-observed/
             web/cypress/videos/
             web/cypress/screenshots/
             /tmp/preview.log
@@ -757,7 +770,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           # 仅运行单元测试套件，排除性能基准 win_face_database_perf
           # engine_run_reentry_behavior 是 DISABLED_ 用例，须由独立 CTest 显式启用（见 CMakeLists.txt）
-          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior" --output-on-failure
+          $report = Join-Path $env:BUILD_DIR "Testing/ci-ctest.xml"
+          python scripts/record-ci-result.py start --output tests/reports/ci-observed/windows-ctest --unit target --junit $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # --output-junit 的相对路径以 --test-dir 为基准；传构建树内路径才能与上面相对仓库根的 $report 指向同一文件。
+          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior" --output-on-failure --output-junit "Testing/ci-ctest.xml"
+          $raw = $LASTEXITCODE
+          python scripts/record-ci-result.py finish --output tests/reports/ci-observed/windows-ctest --exit-code $raw
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run tool behavior regressions with synthetic assets
         shell: pwsh
@@ -771,8 +791,12 @@ jobs:
           $env:RK_PUBLIC_CASCADE_PATH = Join-Path $env:OPENCV_ROOT "data/lbpcascades/lbpcascade_frontalface.xml"
           $env:PATH = "$env:RK_PRECISION_TOOLS_DIR;$env:PATH"
           # 目录发现覆盖新增工具回归，避免显式清单遗漏。
-          python -m pytest tests/scripts/ -q
-          if ($LASTEXITCODE -ne 0) { throw "tool behavior regression failed" }
+          python scripts/record-ci-result.py start --output tests/reports/ci-observed/windows-tools --junit tests/reports/ci-observed/python-tools.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest tests/scripts/ -q --junitxml=tests/reports/ci-observed/python-tools.xml
+          $raw = $LASTEXITCODE
+          python scripts/record-ci-result.py finish --output tests/reports/ci-observed/windows-tools --exit-code $raw
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check for model/quantize changes
         id: changed-int8
@@ -840,5 +864,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-unit-tests-reports
-          path: ${{ env.BUILD_DIR }}/Testing/
+          path: |
+            ${{ env.BUILD_DIR }}/Testing/
+            tests/reports/ci-observed/
           if-no-files-found: ignore

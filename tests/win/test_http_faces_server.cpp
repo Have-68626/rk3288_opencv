@@ -1773,7 +1773,39 @@ TEST(HttpFacesRuntimeStatus, ReloadResponseKeepsReloadedStatusAndAddsOutcome) {
               degAfter.active && !degAfter.warning.empty())
         << resp.body;
 }
+int run_http_contract_host() {
+    wchar_t enabled[4]{};
+    wchar_t configPath[32768]{};
+    if (GetEnvironmentVariableW(L"RK_TEST_HTTP_CONTRACT", enabled, 4) != 1 || enabled[0] != L'1' ||
+        GetEnvironmentVariableW(L"RK_WCFR_CONFIG", configPath, 32768) == 0) return 2;
+    const std::filesystem::path config(configPath);
+    if (!config.is_absolute() || config.filename() != L"config.json" ||
+        config.parent_path() != std::filesystem::current_path() ||
+        !std::filesystem::is_regular_file(config)) return 2;
+    const auto directory = config.parent_path();
+    rk_win::WinJsonConfigStore store;
+    std::string warning;
+    if (!store.initialize(warning)) return 2;
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 2;
+    rk_win::HttpFacesServer server;
+    const int port = findFreePort();
+    if (port == 0 || !server.start(nullptr, nullptr, port, &store)) {
+        WSACleanup();
+        return 2;
+    }
+    { std::ofstream ready(directory / L"ready.txt"); ready << port; }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    while (!std::filesystem::exists(directory / L"stop.txt") && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const bool stopped = std::filesystem::exists(directory / L"stop.txt");
+    server.stop();
+    WSACleanup();
+    return stopped ? 0 : 2;
+}
 #else
+int run_http_contract_host() { return 2; }
 TEST(ClientThreadPool, ReclaimsFinishedThreads) {
     GTEST_SKIP() << "std::thread 用例仅在 win_unit_tests (Windows + OpenCV) 下运行";
 }
