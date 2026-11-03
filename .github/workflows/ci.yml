@@ -773,7 +773,8 @@ jobs:
           $report = Join-Path $env:BUILD_DIR "Testing/ci-ctest.xml"
           python scripts/record-ci-result.py start --output tests/reports/ci-observed/windows-ctest --unit target --junit $report
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior" --output-on-failure --output-junit $report
+          # --output-junit 的相对路径以 --test-dir 为基准；传构建树内路径才能与上面相对仓库根的 $report 指向同一文件。
+          ctest --test-dir $env:BUILD_DIR -C $env:CMAKE_BUILD_CONFIG -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior" --output-on-failure --output-junit "Testing/ci-ctest.xml"
           $raw = $LASTEXITCODE
           python scripts/record-ci-result.py finish --output tests/reports/ci-observed/windows-ctest --exit-code $raw
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
