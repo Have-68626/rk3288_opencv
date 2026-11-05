@@ -16,6 +16,7 @@
 
 using namespace rk_core;
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <sstream>

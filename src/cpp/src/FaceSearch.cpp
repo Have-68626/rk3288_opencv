@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)

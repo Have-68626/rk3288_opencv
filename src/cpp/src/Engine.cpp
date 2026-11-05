@@ -24,7 +24,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
-#elif defined(__ANDROID__)
+#elif defined(__linux__)
 #include <fstream>
 #include <unistd.h>
 #endif
@@ -1593,7 +1593,9 @@ void Engine::collectStats() {
     if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
         currentStats_.rssBytes = static_cast<long long>(counters.WorkingSetSize);
     }
-#elif defined(__ANDROID__)
+#elif defined(__linux__)
+    // Android 与桌面 Linux 同走 /proc/self/statm；statm 第 2 字段是常驻页数，
+    // 与 Windows 的 WorkingSetSize 同为「当前」RSS（不是峰值）。
     long long pages = 0, residentPages = 0;
     const long pageSize = sysconf(_SC_PAGESIZE);
     std::ifstream statm("/proc/self/statm");
