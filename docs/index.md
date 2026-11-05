@@ -129,6 +129,7 @@ as_of=2026-10-20
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `plans/2026-10-21-build-coordination-plan.md` | snapshot | B01/B02实施结果、最终构建与测试报告位置及未验收边界 |
+| `plans/2026-11-05-linux-restoration.md` | snapshot | Linux 恢复阶段 1–2：三处编译/运行时修复、`unit-tests` 转阻断、`linux` 全量构建 job 与验证边界 |
 | `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
 | `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
 | `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |

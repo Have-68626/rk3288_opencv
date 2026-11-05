@@ -42,7 +42,7 @@ merge_strategy=squash_and_merge
 
 ## 开发目标与入口
 
-当前只开发 **Android 与 Windows**。Ubuntu runner 可作为 Web/Android 工具链宿主；Linux C++ 编译 job 保留为非门禁参考，不作为新增代码的开发验收目标。不要因 Linux 非目标而删除 CI job，也不要删除 `if(UNIX AND NOT APPLE)` 下的 Android `-fPIE -pie` 加固。
+当前开发目标是 **Android、Windows 与 Linux**。Linux（x86_64，Ubuntu 24.04 / GCC 13）是 C++ 核心与 CLI 的验收目标：`linux` job 用源码 OpenCV 构建核心、CLI 与测试目标并运行 CTest。ARM（armhf / aarch64）当前只做交叉编译检查，不运行测试；Linux 运行时服务（HTTP 服务、相机采集、配置与加密）仍在规划，Windows 实现不自动等价于 Linux 可用。不要删除 `if(UNIX AND NOT APPLE)` 下的 Android `-fPIE -pie` 加固。
 
 | 领域 | 源码与运行入口 | 验证入口 |
 |---|---|---|
@@ -50,6 +50,7 @@ merge_strategy=squash_and_merge
 | Windows | `src/win/app/win_local_service_main.cpp`；旧相机 UI 不是默认服务入口 | CMake 显式构建目标后，按名称筛选 CTest |
 | Web | `web/src/`；Vite 开发代理，Windows 服务托管生产 webroot | lint、Vitest、build、Cypress 与覆盖率 |
 | C++ 核心 | 实时 `Engine::initialize()` / `Engine::run()`；单图 `runFaceInferOnce()` | `core_unit_tests`、`face_infer_unit_tests` 等；不要混淆是否需要 OpenCV |
+| Linux | `src/cpp` 的核心与 CLI；Linux 运行时服务尚无实现（规划中） | `linux` job；本地 WSL 命令见[构建与测试](docs/guides/build-and-test.md#linux-wsl) |
 
 模块关系见 [DEVELOP](DEVELOP.md)及[架构契约](docs/architecture/ARCHITECTURE.md)。`Engine` 仍持有状态，已有 `TrackCoordinator` / `ResultPublisher` / `PerfReporter` 拆分不代表整体纯函数化；Windows 的 `RuntimeBootstrap` / `FrameProcessor` / `SideEffectSink` 和 HTTP 路由/流式边界也须按现行源码判断。不要引用已不存在的 `EngineRuntime` / `FrameSource`。
 
@@ -70,6 +71,7 @@ merge_strategy=squash_and_merge
 | 其他加速 | 标准 Android Gradle 显式禁用 libyuv；CMake 默认值不能代表 Gradle 实际值。MPP、SNPE、OpenCL 依赖与有效状态须分别核验 |
 | Web | CI 固定 Node 22 / pnpm 10.33.0，冻结锁文件安装；显式准备 Cypress 二进制。不擅自重建原依赖目录。产物 `src/win/app/webroot/` 受 Git 跟踪，更新须核对差异 |
 | Python | 文件文本显式 UTF-8；CLI 中文标准流不能依赖宿主区域编码。新增工具回归覆盖非 UTF-8 默认环境，避免仅在本机中文环境通过 |
+| Linux | Ubuntu 24.04 + GCC 13；OpenCV 仍按源码 `add_subdirectory` 构建，不使用系统 `libopencv-dev`。Ninja 单配置必须显式 `-DCMAKE_BUILD_TYPE=Release`，否则 OpenCV 自带的 libjpeg-turbo 脚本在 configure 阶段报错。WSL 本地构建须净化 `PATH`，避免把 Windows 侧包（如 Anaconda 的 OpenJPEG/tiff）当成本机依赖；步骤见[构建与测试](docs/guides/build-and-test.md#linux-wsl) |
 
 目标设备的旧 VPU 驱动与 MPP 适配边界见[设备能力调查](docs/research/rk3288-device-capability-survey-2026-09-17.md)。本机能编过不证明设备可用，不能把软件 ncnn 推理称作已验收的硬件加速。
 
@@ -124,13 +126,14 @@ merge_strategy=squash_and_merge
 <a id="ci-pipeline"></a>
 ## CI 与本地验收
 
-仓库维护[主 CI](.github/workflows/ci.yml)和[独立文档审计](.github/workflows/docs-audit.yml)。主 CI 的七个 job 如下；实际触发、步骤与条件以 workflow 为准，不由文档或缓存测试数量推断。
+仓库维护[主 CI](.github/workflows/ci.yml)和[独立文档审计](.github/workflows/docs-audit.yml)。主 CI 的八个 job 如下；实际触发、步骤与条件以 workflow 为准，不由文档或缓存测试数量推断。
 
 | Job ID / 检查名 | 主要检查与门禁边界 |
 |---|---|
 | `changes` / `classify-changes` | 主 CI 入口为面向 master 的 PR、master push、手动触发；按路径判断 `docs_only`，比较不可靠时保守运行 |
 | `repo-hygiene` | 仓库卫生、JNI 同步、action 版本固定、Node 工具回归及量化配对 pytest；纯文档时跳过 |
-| `unit-tests` | Linux 核心测试与指定 Windows 共享源的 GCC 编译检查；job 级非阻断，保留参考信号，不作为 Windows/Android 验收替代 |
+| `unit-tests` | Linux 核心测试与指定 Windows 共享源的 GCC 编译检查；阻断失败（非纯文档时） |
+| `linux` / `linux-build-test` | 仅 PR/push 且非纯文档；源码构建 OpenCV，构建核心/CLI/测试目标并运行选定 CTest。当前非必需检查，稳定后另行授权转门禁 |
 | `docs-audit` | high=0 且 medium=0；纯文档也运行。独立工作流另先执行审计器单测 |
 | `web` / `web-build-test` | pnpm 10.33.0 冻结安装、漏洞审计、lint、Vitest、build、显式安装 Cypress；E2E与覆盖率仍为非阻断步骤，须另读结果 |
 | `android` / `android-build-test` | Java 21 的桩 APK、模型禁入检查、单测、lint；另有非阻断的 JNI 语法检查及失败/未就绪可见化，不等于真实后端或真机验收 |
@@ -138,7 +141,7 @@ merge_strategy=squash_and_merge
 
 纯文档时，主 CI 的分类与文档 job 保留，其他 job 跳过；独立文档工作流按自身触发规则执行。手动触发时 Windows job 不运行，不能把一次手动 workflow 全绿写成 Windows 检查通过。
 
-本地按变更范围运行必要回归；单独的选定命令不是全量 CI。生成 PR 描述并推送前须探测并完成项目定义的全量本地 CI，全部通过后再继续；失败则暂停 PR 推进、报告原因，等待用户修复指令。Linux 非开发目标的既有边界保留，未运行或不等价的部分如实说明，不为绿灯降低门槛。
+本地按变更范围运行必要回归；单独的选定命令不是全量 CI。生成 PR 描述并推送前须探测并完成项目定义的全量本地 CI，全部通过后再继续；失败则暂停 PR 推进、报告原因，等待用户修复指令。未运行或不等价的部分如实说明，不为绿灯降低门槛。
 
 ## 提交、PR 与合并权限
 

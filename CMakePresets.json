@@ -25,6 +25,17 @@
       }
     },
     {
+      "name": "linux",
+      "displayName": "Linux (Ninja, GCC, OpenCV)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cache/builds/linux-gcc13",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENCV_ROOT": "$env{OPENCV_ROOT}",
+        "OPENCV_CONTRIB_ROOT": "$env{OPENCV_CONTRIB_ROOT}"
+      }
+    },
+    {
       "name": "android",
       "displayName": "Android RK3288",
       "generator": "Ninja",
@@ -53,6 +64,10 @@
       "configuration": "Release"
     },
     {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
       "name": "android",
       "configurePreset": "android"
     }
@@ -69,6 +84,13 @@
       "name": "windows",
       "configurePreset": "windows",
       "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
       "output": {
         "outputOnFailure": true
       }

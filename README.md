@@ -17,7 +17,7 @@ as_of=2026-10-20
 | Windows 服务 | 摄像头与模型配置、REST API、SSE/MJPEG、静态页面托管 | `src/win/app/win_local_service_main.cpp` |
 | Web SPA | 浏览器管理与预览，Vite + React + Ant Design | `web/src/` |
 
-当前开发目标为 **Android 与 Windows**。RK3288 为 Cortex-A17 / ARMv7，设备约束见 [RK3288 约束](docs/RK3288_CONSTRAINTS.md)。Android 构建还包含其他 ABI；这不改变 RK3288 的硬件能力。Linux 编译 CI 保留为非门禁参考，不是当前开发验收目标。
+当前开发目标为 **Android、Windows 与 Linux**。RK3288 为 Cortex-A17 / ARMv7，设备约束见 [RK3288 约束](docs/RK3288_CONSTRAINTS.md)。Android 构建还包含其他 ABI；这不改变 RK3288 的硬件能力。Linux 以 x86_64 原生构建为验收目标（`linux` CI job 与 WSL 本地命令），ARM 仅做交叉编译检查；Linux 运行时服务仍在规划。
 
 ### 能力与验收边界
 
@@ -137,9 +137,9 @@ node scripts/docs-sync-audit.js --skip-links
 
 ## CI 流水线与合并
 
-[主 CI](.github/workflows/ci.yml)包含变更分类、仓库卫生、核心测试、文档、Web、Android 和 Windows 检查；另有[独立文档工作流](.github/workflows/docs-audit.yml)。主 CI 支持面向 master 的 PR、master push 和手动触发，Windows job 不在手动触发时运行。
+[主 CI](.github/workflows/ci.yml)包含变更分类、仓库卫生、核心测试、Linux 全量构建、文档、Web、Android 和 Windows 检查；另有[独立文档工作流](.github/workflows/docs-audit.yml)。主 CI 支持面向 master 的 PR、master push 和手动触发，Windows 与 Linux 全量构建 job 不在手动触发时运行。
 
-纯文档变更保留分类及文档门禁，其余主 CI job 按条件跳过。Linux 核心测试、Web E2E/覆盖率及部分设备无关辅助步骤为既有非阻断信号，须人工查看结果，不能由 job 绿色推断全部检查通过。具体门禁边界见 [CI 说明](AGENTS.md#ci-pipeline)。
+纯文档变更保留分类及文档门禁，其余主 CI job 按条件跳过。Web E2E/覆盖率及部分设备无关辅助步骤为既有非阻断信号，须人工查看结果，不能由 job 绿色推断全部检查通过。Linux 全量构建当前不是必需检查，稳定后再单独授权转门禁。具体门禁边界见 [CI 说明](AGENTS.md#ci-pipeline)。
 
 合并前须处理审查意见、核对冲突和必需检查；仅使用 squash and merge。提交、推送、创建 PR 与实际合并分别遵循用户授权，Draft PR 不自动获得合并授权。
 

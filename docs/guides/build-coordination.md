@@ -10,7 +10,7 @@ as_of=2026-10-21
 
 ## 输入与前置
 
-从仓库根运行，使用Python3.10+和Windows宿主。先准备已安装依赖，不自动安装、下载或重建原node_modules。本机输入JSON留在忽略的`cache/local-inputs/`；相对路径基于该JSON所在目录，不能加入命令、环境变量、凭据或自定义CMake选项。
+从仓库根运行，使用Python3.10+和Windows宿主。先准备已安装依赖，不自动安装、下载或重建原node_modules。本机输入JSON留在忽略的`cache/local-inputs/`；相对路径基于该JSON所在目录，不能加入命令、环境变量、凭据或自定义CMake选项。Linux 构建不在这些配置内（以 WSL 命令为准，见[构建与测试](build-and-test.md#linux-wsl)）。
 
 以下为Web配置示意；将路径替换为实际已存在位置再运行：
 
