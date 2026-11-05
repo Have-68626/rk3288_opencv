@@ -1,0 +1,24 @@
+[Unit]
+Description=rk_wcfr face recognition service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rk-wcfr
+Group=rk-wcfr
+ExecStart=/opt/rk_wcfr/linux_local_service
+Environment=XDG_CONFIG_HOME=/var/lib/rk-wcfr/.config
+Environment=HOME=/var/lib/rk-wcfr
+Restart=on-failure
+RestartSec=3
+# 服务自行处理 SIGTERM：停止时先等待进程退出码 0
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/rk-wcfr
+
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,7 @@
 #include "rk_win/FramePipeline.h"
 #include "rk_win/HttpFacesPoster.h"
 #include "rk_win/HttpFacesServer.h"
+#include "rk_win/Platform.h"
 #include "rk_win/WinJsonConfig.h"
 
 #include <atomic>
@@ -26,21 +27,10 @@ namespace {
 
 std::atomic<bool> g_running{true};
 
-#ifdef _WIN32
-BOOL WINAPI consoleCtrlHandler(DWORD type) {
-    switch (type) {
-        case CTRL_C_EVENT:
-        case CTRL_BREAK_EVENT:
-        case CTRL_CLOSE_EVENT:
-        case CTRL_LOGOFF_EVENT:
-        case CTRL_SHUTDOWN_EVENT:
-            g_running = false;
-            return TRUE;
-        default:
-            return FALSE;
-    }
+// 终止回调：只置原子标志（Windows 控制事件与 POSIX 信号共用）。
+void onTermination() {
+    g_running = false;
 }
-#endif
 
 int findDeviceIndexById(const std::vector<CameraDevice>& devices, const std::wstring& preferredId) {
     if (devices.empty()) return -1;
@@ -107,9 +97,7 @@ ChangeKind classifyChange(const AppConfig& prev, const AppConfig& next) {
 }  // namespace rk_win
 
 int main() {
-#ifdef _WIN32
-    SetConsoleCtrlHandler(rk_win::consoleCtrlHandler, TRUE);
-#endif
+    rk_win::platform::installTerminationHandler(&rk_win::onTermination);
 
     rk_win::WinJsonConfigStore settings;
     std::string warn;
@@ -158,6 +146,7 @@ int main() {
         // pollReloadOnce 无法据此感知，消费统一由 generation 判定（两来源各一次、无重复/遗漏）
         settings.pollReloadOnce(applied, err);
         const std::uint64_t curGen = settings.generation();
+
         if (curGen != lastAppliedGen) {
             lastAppliedGen = curGen;
             rk_win::AppConfig next = settings.current();
@@ -174,7 +163,7 @@ int main() {
                 (next.poster.backoffMinMs != cfg.poster.backoffMinMs) ||
                 (next.poster.backoffMaxMs != cfg.poster.backoffMaxMs);
             if (posterChanged) {
-                poster.stop();
+    poster.stop();
                 if (next.poster.enable) {
                     poster.start(&pipe, &events, next.poster.postUrl, next.poster.throttleMs, next.poster.backoffMinMs, next.poster.backoffMaxMs);
                 }
@@ -213,6 +202,7 @@ int main() {
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
     }
 
     poster.stop();

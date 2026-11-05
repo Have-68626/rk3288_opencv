@@ -11,6 +11,12 @@
 #include <windows.h>
 #include <winternl.h>
 #include <cstdint>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>
 #endif
 
 namespace rk_win {
@@ -285,18 +291,24 @@ bool StaticFileRoot::open(const std::filesystem::path& docRoot) {
     nativeHandle_ = reinterpret_cast<std::uintptr_t>(handle);
     return true;
 #else
-    fallbackRoot_ = docRoot;
+    // POSIX：固定根目录 fd；逐层 openat + O_NOFOLLOW 读取，根目录重绑定与 symlink 换出均 fail-closed。
+    const int fd = ::open(docRoot.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return false;
+    nativeHandle_ = static_cast<std::uintptr_t>(fd) + 1;  // 0 保留给「未打开」
+    fallbackRoot_.clear();
     return true;
 #endif
 }
 
 void StaticFileRoot::close() {
-#ifdef _WIN32
     if (nativeHandle_ != 0) {
+#ifdef _WIN32
         CloseHandle(reinterpret_cast<HANDLE>(nativeHandle_));
+#else
+        ::close(static_cast<int>(nativeHandle_ - 1));
+#endif
         nativeHandle_ = 0;
     }
-#endif
     fallbackRoot_.clear();
 }
 
@@ -304,11 +316,7 @@ bool StaticFileRoot::resolve(const std::string& urlPath, std::filesystem::path& 
     std::filesystem::path relativePath;
     if (!parseSafeUrlRelativePath(urlPath, relativePath)) return false;
 
-#ifdef _WIN32
     if (nativeHandle_ == 0) return false;
-#else
-    if (fallbackRoot_.empty()) return false;
-#endif
     resolvedOut = std::move(relativePath);
     return true;
 }
@@ -348,9 +356,62 @@ bool readFileWithinRoot(const StaticFileRoot& docRoot,
     }
     return true;
 #else
-    (void)docRoot;
-    (void)path;
-    return false;
+    if (docRoot.nativeHandle_ == 0) return false;
+    if (!isSafeRelativeSegments(path)) return false;
+
+    const int rootFd = static_cast<int>(docRoot.nativeHandle_ - 1);
+    int dirFd = ::dup(rootFd);
+    if (dirFd < 0) return false;
+
+    std::vector<std::string> segments;
+    for (const auto& part : path) {
+        const std::string value = part.string();
+        if (value.empty() || value == ".") continue;
+        if (value == "..") {
+            ::close(dirFd);
+            return false;
+        }
+        segments.push_back(value);
+    }
+    if (segments.empty()) {
+        ::close(dirFd);
+        return false;
+    }
+
+    for (std::size_t i = 0; i + 1 < segments.size(); ++i) {
+        const int next = ::openat(dirFd, segments[i].c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        ::close(dirFd);
+        if (next < 0) return false;
+        dirFd = next;
+    }
+    const int fd = ::openat(dirFd, segments.back().c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    ::close(dirFd);
+    if (fd < 0) return false;
+
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+        ::close(fd);
+        return false;
+    }
+    out.resize(static_cast<std::size_t>(st.st_size));
+    std::size_t offset = 0;
+    while (offset < out.size()) {
+        const ssize_t n = ::read(fd, out.data() + offset, out.size() - offset);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            out.clear();
+            return false;
+        }
+        if (n == 0) break;
+        offset += static_cast<std::size_t>(n);
+    }
+    ::close(fd);
+    if (offset != out.size()) {
+        out.clear();
+        return false;
+    }
+    return true;
 #endif
 }
 

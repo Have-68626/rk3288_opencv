@@ -31,7 +31,7 @@ as_of=2026-11-05
 |---|---|---|---|---|
 | D1 | 加密密钥保护 | ① 0600 文件 ② kernel keyring ③ systemd-creds ④ 口令派生 | ① 0600 文件；文档写明弱于 DPAPI（同机同用户进程可读） | 已定 |
 | D2 | 加密库 | OpenSSL libcrypto / mbedTLS / libsodium | OpenSSL libcrypto；不得宣称硬件加速 | 已定 |
-| D3 | 密文互通 | 与 Windows 互通（AAD 按现状） / 修正后升 v2 | **按代码判定：AAD 参与认证**（`WinCrypto.cpp` 先用 `BCRYPT_AUTHENTICATED_CIPHER_MODE_CHAIN_CALL_FLAG` 以 AAD 为输入做一次链式调用，再以相同 `BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO` 加密数据），Linux 实现使用相同 AAD 字节即可互通；跨平台向量测试待补 | 待向量测试 |
+| D3 | 密文互通 | 与 Windows 互通（AAD 按现状） / 修正后升 v2 | **已定：修正 Windows + 迁移**。实测（2026-11-05 向量回归）旧 Windows 的 AAD 链式调用并未把 AAD 计入 tag；已改为 `pbAuthData/cbAuthData` 正确绑定 AAD，两端对同一向量产出相同密文与 tag。旧密文在读取时按空 AAD 回退解密，下次保存以新语义重写（配置与人脸库同样处理） | 已定 |
 | D4 | 配置路径 | XDG（`$XDG_CONFIG_HOME/rk_wcfr`） / `/etc` + `/var/lib` | XDG，沿用同一 JSON Schema | 已定 |
 | D5 | 字符串模型 | 保留 `wstring` / 内部统一 UTF-8 | 内部统一 UTF-8，接口收窄处再转换 | 已定 |
 | D6 | 上报客户端 | libcurl / 自研 POSIX HTTP（无 HTTPS） | libcurl（HTTPS、代理、超时齐全） | 已定 |
@@ -41,11 +41,26 @@ as_of=2026-11-05
 
 ## 实施切分（决策通过后）
 
-- **4a 平台层**：socket、路径与 exe 目录、进程信号；`HttpFacesServer` 改走平台层，Windows 行为与既有测试不变。安全项：`MSG_NOSIGNAL`、`shutdown` 唤醒 accept、`socklen_t`、认证 Token 的 Linux 来源。
-- **4b 相机**：抽出 `ICameraSource` 到跨平台头，新增 V4L2 实现；`FramePipeline` 用平台工厂；设备枚举自写。
-- **4c 配置与加密**：XDG 路径、`rename` + `fsync` 原子写、权限位；Linux 加密实现（D1/D2 定后），补权限与密文格式回归。
-- **4d 服务入口**：`linux_local_service`、`cmake/linux.cmake`、可移植测试 `linux_unit_tests`，接入 `linux` 与 `linux-arm-cross` job。
-- **4e 文档与部署**：部署指南、OpenAPI/配置 Schema 平台说明。
+| 步骤 | 状态（2026-11-05） |
+|---|---|
+| 4a 平台层（socket/路径/env/UTF/原子替换/信号） | **初版完成**：`rk_win/platform::*`、`rk_win/net::*`；Windows 与 Linux 均编译 |
+| 4b 相机（`ICameraSource` 抽出 + V4L2 适配） | **初版完成**：`CameraSource.h` + `CameraSource.cpp`（VideoCapture(CAP_V4L2)/NullCamera） |
+| 4c 配置与加密（XDG、0600、OpenSSL） | **初版完成**：XDG 路径、密钥 0600、OpenSSL AES-256-GCM、base64、`RAND_bytes` |
+| 4d 服务入口（`linux_local_service`） | **初版完成**：`cmake/linux.cmake`，冒烟 `/api/v1/health` 200、SIGTERM 退出码 0 |
+| 4e 文档与部署 | **初版完成**：[部署指南](../guides/linux-service-deploy.md) + systemd unit 示例；未做实机验证 |
+
+- 4a 平台层：socket、路径与 exe 目录、进程信号；`HttpFacesServer` 改走平台层，Windows 行为与既有测试不变。安全项：`MSG_NOSIGNAL`、`shutdown` 唤醒 accept、`socklen_t`、认证 Token 的 Linux 来源。
+- 4b 相机：抽出 `ICameraSource` 到跨平台头，新增 V4L2 实现；`FramePipeline` 用平台工厂；设备枚举自写。
+- 4c 配置与加密：XDG 路径、`rename` + `fsync` 原子写、权限位；Linux 加密实现（D1/D2 定后），补权限与密文格式回归。
+- 4d 服务入口：`linux_local_service`、`cmake/linux.cmake`、可移植测试 `linux_unit_tests`，接入 `linux` 与 `linux-arm-cross` job。
+- 4e 文档与部署：部署指南、OpenAPI/配置 Schema 平台说明。
+
+## 已验证 / 未验证（4a–4d 初版）
+
+- 已验证（WSL2 x86_64）：`linux_local_service` 编译链接 0 错误；CTest `linux_service_smoke` 自动完成「启动 → `/api/v1/health` 200 → SIGTERM 退出码 0」（端口占用时记 SKIP），已接入 CI 的 `linux` job ctest 过滤；缺模型资产时健康接口报告 `degraded`，属预期。
+- 已验证：`Platform.cpp`/`PlatformNet.cpp` 的 6 个单测在 Linux 与 Windows 编译并通过；移植后的 `HttpFacesServer`/`HttpFacesPoster`/`HttpFacesServerPath` 在 Linux `-fsyntax-only` 通过。
+- 已验证：**跨平台 AES-256-GCM 向量回归**（`tests/cpp/test_crypto_vectors.cpp`，固定 nonce，Windows BCrypt 与 Linux OpenSSL 对同一向量产出相同密文/tag；含空 AAD、短 AAD 与 `poster.postUrl` 三种）。该用例暴露并驱动修复了 Windows 旧实现的 AAD 未认证缺陷。
+- 未验证：真实摄像头（WSL 无设备）、Windows 端的完整回归（由本轮构建与 CI 覆盖）、ARM 交叉构建服务目标、密钥文件权限与密文互通的自动化回归、systemd 部署。
 
 ## 验收（每步都必须满足）
 

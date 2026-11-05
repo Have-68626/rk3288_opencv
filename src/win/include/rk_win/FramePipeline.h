@@ -3,7 +3,7 @@
 #include "rk_win/RuntimeBootstrap.h"
 #include "FaceRecognizer.h"  // FaceMatch
 #include "IRecognizer.h"
-#include "MfCamera.h"
+#include "CameraSource.h"
 #include "StructuredLogger.h"
 #include "WinConfig.h"
 #include "rk_win/FrameProcessor.h"

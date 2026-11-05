@@ -1,4 +1,5 @@
 #include "rk_win/WinConfig.h"
+#include "rk_win/Platform.h"
 #include "AccelerationContract.h"
 
 #ifdef _WIN32
@@ -121,35 +122,20 @@ std::wstring getEnvW(const wchar_t* name) {
     if (n == 0 || n >= std::size(buf)) return L"";
     return std::wstring(buf, buf + n);
 #else
-    (void)name;
-    return L"";
+    // POSIX 环境变量是字节串；按 UTF-8 解释（与 D5：内部统一 UTF-8 一致）。
+    if (!name) return L"";
+    const std::string key = platform::utf8FromWide(name);
+    const char* value = std::getenv(key.c_str());
+    return value ? platform::wideFromUtf8(value) : L"";
 #endif
 }
 
 std::string utf8FromWide(const std::wstring& ws) {
-    if (ws.empty()) return {};
-#ifdef _WIN32
-    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
-    if (n <= 0) return {};
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), static_cast<int>(ws.size()), out.data(), n, nullptr, nullptr);
-    return out;
-#else
-    return std::string(ws.begin(), ws.end());
-#endif
+    return platform::utf8FromWide(ws);
 }
 
 std::wstring wideFromUtf8(const std::string& s) {
-    if (s.empty()) return L"";
-#ifdef _WIN32
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-    if (n <= 0) return L"";
-    std::wstring out(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-#else
-    return std::wstring(s.begin(), s.end());
-#endif
+    return platform::wideFromUtf8(s);
 }
 
 std::string asciiLower(std::string s) {
@@ -265,15 +251,7 @@ bool checkConfigPath(const std::filesystem::path& p, PathPolicy pol, std::string
 // ─── 路径解析 ─────────────────────────────────────────────────
 
 std::filesystem::path getExeDir() {
-#ifdef _WIN32
-    wchar_t path[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return std::filesystem::current_path();
-    std::filesystem::path p(path);
-    return p.parent_path();
-#else
-    return std::filesystem::current_path();
-#endif
+    return platform::executableDir();
 }
 
 std::filesystem::path resolvePathFromExeDir(const std::filesystem::path& p) {

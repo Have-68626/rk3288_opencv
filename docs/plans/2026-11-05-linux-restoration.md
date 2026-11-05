@@ -46,5 +46,5 @@ as_of=2026-11-05
 
 ## 后续
 
-- 阶段 4：Linux 运行时服务（HTTP 服务、相机、配置与加密）——设计见 [Linux 运行时服务设计](../designs/linux-runtime-service.md)（决策已定，未落地）。
+- 阶段 4（进行中，初版已落地）：Linux 运行时服务——[设计](../designs/linux-runtime-service.md)；4a–4e 初版完成（平台层、V4L2 相机适配、XDG/0600/OpenSSL、`linux_local_service`、部署指南与 systemd 示例）。加密侧新增固定向量回归并据此修正 Windows AAD 未认证缺陷（`pbAuthData`，旧密文空 AAD 回退、下次保存重写）。真实摄像头、ARM 运行、systemd 实机仍未验收。
 - 阶段 5：`linux`、`linux-arm-cross` 稳定后转必需检查（需远端分支保护与 ruleset 授权）。

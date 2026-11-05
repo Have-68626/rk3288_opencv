@@ -2,6 +2,7 @@
 
 #include "AccelerationContract.h"
 #include "rk_win/JsonLite.h"
+#include "rk_win/Platform.h"
 #include "rk_win/WinCrypto.h"
 #include "rk_win/JsonSchemaValidator.h"
 
@@ -123,6 +124,12 @@ bool writeFileAll(const std::filesystem::path& p, const std::string& data, std::
     return true;
 }
 
+// 密钥文件：写入后强制 0600（POSIX）。Windows 无操作，DPAPI 保护仍生效。
+bool writeKeyFile(const std::filesystem::path& p, const std::string& data, std::string& err) {
+    if (!writeFileAll(p, data, err)) return false;
+    return platform::restrictFileOwnerOnly(p, err);
+}
+
 bool ensureParentDir(const std::filesystem::path& p, std::string& err) {
     err.clear();
     const auto dir = p.parent_path();
@@ -137,20 +144,11 @@ bool ensureParentDir(const std::filesystem::path& p, std::string& err) {
 }
 
 bool moveReplaceWriteThrough(const std::filesystem::path& src, const std::filesystem::path& dst, std::string& err) {
-#ifdef _WIN32
-    err.clear();
-    if (MoveFileExW(src.wstring().c_str(), dst.wstring().c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-        err = "MoveFileExW(REPLACE|WRITE_THROUGH) 失败";
+    if (!platform::replaceFileWriteThrough(src, dst, err)) {
+        err = "MoveFileExW(REPLACE|WRITE_THROUGH) 失败（等价语义）: " + err;
         return false;
     }
     return true;
-#else
-    (void)src;
-    (void)dst;
-    err = "平台不支持原子替换";
-    return false;
-#endif
 }
 
 // 保全证据：把无法装载的 config.json 改名另存。命名对齐 Java 侧
@@ -264,6 +262,25 @@ static JsonValue buildEncryptedStringObject(const AesGcmCiphertext& ct, std::str
     return o;
 }
 
+
+// 旧版 Windows 未把 AAD 计入 GCM tag（见 WinCrypto 的 AAD 注释与 2026-11-05 向量回归）。
+// 读取时先按当前 AAD 解密，失败再按空 AAD 回退一次；回退成功即 legacy 密文，
+// 下次保存会以新语义（pbAuthData）重写。
+static bool decryptSensitiveWithLegacyFallback(const std::vector<std::uint8_t>& key,
+                                               const AesGcmCiphertext& ct,
+                                               std::vector<std::uint8_t>& plain,
+                                               std::string& err) {
+    if (aes256gcmDecrypt(key, ct, plain, err, "poster.postUrl")) return true;
+    std::string legacyErr;
+    std::vector<std::uint8_t> legacyPlain;
+    if (aes256gcmDecrypt(key, ct, legacyPlain, legacyErr, {})) {
+        plain = std::move(legacyPlain);
+        err.clear();
+        return true;
+    }
+    return false;
+}
+
 // 剔除脱敏回写哨兵（kMaskedSentinel="***"）：GET 输出中敏感字段以 "***" 占位，
 // 客户端全量回写会把 "***" 原样带回；若直接 deepMerge 会覆盖 base 中的真实密文，
 // 且校验仅拦 isObject() 放过字符串，buildSettingsJson 重加密后密文永久丢失
@@ -299,14 +316,30 @@ std::filesystem::path WinJsonConfigStore::defaultConfigPath() {
     if (!envPath.empty()) {
         return std::filesystem::path(envPath);
     }
+#ifdef _WIN32
     const std::wstring appdata = getEnvW(L"APPDATA");
     std::filesystem::path base = appdata.empty() ? std::filesystem::current_path() : std::filesystem::path(appdata);
+#else
+    // 决策 D4：XDG 约定；未设置 XDG_CONFIG_HOME 时回落 ~/.config。
+    const std::wstring xdg = getEnvW(L"XDG_CONFIG_HOME");
+    std::filesystem::path base;
+    if (!xdg.empty()) {
+        base = std::filesystem::path(xdg);
+    } else {
+        const std::wstring home = getEnvW(L"HOME");
+        base = home.empty() ? std::filesystem::current_path() : std::filesystem::path(home) / L".config";
+    }
+#endif
     base /= kConfigDirNameW;
     return base / L"config.json";
 }
 
 std::filesystem::path WinJsonConfigStore::defaultKeyPath(const std::filesystem::path& cfgPath) {
+#ifdef _WIN32
     return cfgPath.parent_path() / L"config.key.dpapi";
+#else
+    return cfgPath.parent_path() / L"config.key";  // Linux 无 DPAPI：0600 权限文件
+#endif
 }
 
 std::filesystem::path WinJsonConfigStore::defaultBakPath(const std::filesystem::path& cfgPath) {
@@ -351,7 +384,7 @@ bool WinJsonConfigStore::ensureOrLoadKey(std::vector<std::uint8_t>& keyOut, std:
         outErr = ioErr;
         return false;
     }
-    if (!writeFileAll(keyPath_, b64, ioErr)) {
+    if (!writeKeyFile(keyPath_, b64, ioErr)) {
         outErr = ioErr;
         return false;
     }
@@ -752,7 +785,7 @@ bool WinJsonConfigStore::parseAndValidateSettingsDoc(const std::string& jsonText
                     return false;
                 }
                 std::vector<std::uint8_t> plain;
-                if (!aes256gcmDecrypt(key, ct, plain, e, "poster.postUrl")) {
+                if (!decryptSensitiveWithLegacyFallback(key, ct, plain, e)) {
                     outErr = "postUrl 解密失败: " + e;
                     return false;
                 }
@@ -1399,7 +1432,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::updateFromJsonBody(const st
                 std::vector<std::uint8_t> key, plain;
                 std::string e;
                 if (!parseEncryptedStringObject(*pu, ct, e) || !ensureOrLoadKey(key, e) ||
-                    !aes256gcmDecrypt(key, ct, plain, e, "poster.postUrl")) {
+                    !decryptSensitiveWithLegacyFallback(key, ct, plain, e)) {
                     r.message = "settings 未应用：poster.postUrl 加密对象不可解析/解密";
                     r.details = {"poster.postUrl 加密对象校验失败"};
                     return r;  // 400，不落盘
@@ -1662,7 +1695,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
                 const auto restoreOldKey = [&]() {
                     if (hadOldKey) {
                         std::string e;
-                        (void)writeFileAll(keyPath_, oldKeyB64, e);
+                        (void)writeKeyFile(keyPath_, oldKeyB64, e);
                     } else {
                         std::error_code ec;
                         std::filesystem::remove(keyPath_, ec);
@@ -1671,7 +1704,7 @@ WinJsonConfigStore::UpdateResult WinJsonConfigStore::rotateKeyAndReencrypt() {
 
                 // ★ 成对写入：写新密钥 → 用新密钥加密（ensureOrLoadKey 读到的即刚写入的新密钥）
                 //   → 写 config.json → 提交。整段持锁，故外部看不到「新密钥 + 旧密文」的中间态。
-                if (!writeFileAll(keyPath_, newKeyB64, ioErr)) {
+                if (!writeKeyFile(keyPath_, newKeyB64, ioErr)) {
                     r.code = "io_error";
                     r.message = "写入新密钥失败";
                     r.details.push_back(ioErr);

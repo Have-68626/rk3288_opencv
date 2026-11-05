@@ -99,6 +99,22 @@ done
 
 交叉编译通过只证明可在该架构编译，不证明运行、性能或 RK3288 真机可用。
 
+Linux 运行时服务（阶段 4 初版；需要 `libssl-dev` 与 `libcurl4-openssl-dev`）：
+
+```bash
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export OPENCV_ROOT=/mnt/d/ProgramData/OpenCV/opencv-4.10.0
+export OPENCV_CONTRIB_ROOT=/mnt/d/ProgramData/OpenCV/opencv_contrib-4.10.0
+cmake --preset linux
+cmake --build --preset linux -j "$(nproc)" --target linux_local_service
+# 冒烟：默认绑定 127.0.0.1:8080，配置走 XDG（$XDG_CONFIG_HOME/rk_wcfr 或 ~/.config/rk_wcfr）
+RK_WCFR_CONFIG=/tmp/rk-wcfr/config.json ./cache/builds/linux-gcc13/bin/linux_local_service &
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/health   # 期望 200
+kill -TERM %1
+```
+
+缺模型资产时健康接口返回 `degraded` 属预期；密钥文件在 Linux 上以 0600 权限保存（无 DPAPI 等价物），密文格式与 Windows 使用相同 AAD 字节即可互通（跨平台向量测试待补）。
+
 ## Android
 
 PowerShell：

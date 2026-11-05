@@ -66,6 +66,7 @@ as_of=2026-10-20
 | `guides/build-coordination.md` | living | 固定构建配置、独占产品装配、分阶段验证与证据限制 |
 | `guides/test-suite-coordination.md` | living | 本地七类套件选择、前置、串行互斥、退出码与可信汇总 |
 | `guides/ci-local-mapping.md` | living | 本地套件/构建配置与 CI job 的对应、门禁差异与判读规则 |
+| `guides/linux-service-deploy.md` | living | Linux 服务初版部署：构建安装、XDG/0600 配置、systemd 示例、验证与回滚（**未覆盖真机与 ARM 运行**） |
 | `guides/int8-quantization.md` | living | 唯一输入配对、校准sidecar、预处理/几何与量化报告 |
 | `guides/model-storage-and-consumers.md` | living | 模型父图、中间件、消费件与历史路径消费者导航 |
 | `../app/README.md` | living | Android模块职责、真实测试源与构建入口 |

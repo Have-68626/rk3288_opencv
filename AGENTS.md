@@ -71,7 +71,7 @@ merge_strategy=squash_and_merge
 | 其他加速 | 标准 Android Gradle 显式禁用 libyuv；CMake 默认值不能代表 Gradle 实际值。MPP、SNPE、OpenCL 依赖与有效状态须分别核验 |
 | Web | CI 固定 Node 22 / pnpm 10.33.0，冻结锁文件安装；显式准备 Cypress 二进制。不擅自重建原依赖目录。产物 `src/win/app/webroot/` 受 Git 跟踪，更新须核对差异 |
 | Python | 文件文本显式 UTF-8；CLI 中文标准流不能依赖宿主区域编码。新增工具回归覆盖非 UTF-8 默认环境，避免仅在本机中文环境通过 |
-| Linux | Ubuntu 24.04 + GCC 13；OpenCV 仍按源码 `add_subdirectory` 构建，不使用系统 `libopencv-dev`。Ninja 单配置必须显式 `-DCMAKE_BUILD_TYPE=Release`，否则 OpenCV 自带的 libjpeg-turbo 脚本在 configure 阶段报错。WSL 本地构建须净化 `PATH`，避免把 Windows 侧包（如 Anaconda 的 OpenJPEG/tiff）当成本机依赖；步骤见[构建与测试](docs/guides/build-and-test.md#linux-wsl) |
+| Linux | Ubuntu 24.04 + GCC 13；OpenCV 仍按源码 `add_subdirectory` 构建，不使用系统 `libopencv-dev`。Ninja 单配置必须显式 `-DCMAKE_BUILD_TYPE=Release`，否则 OpenCV 自带的 libjpeg-turbo 脚本在 configure 阶段报错。WSL 本地构建须净化 `PATH`，避免把 Windows 侧包（如 Anaconda 的 OpenJPEG/tiff）当成本机依赖；步骤见[构建与测试](docs/guides/build-and-test.md#linux-wsl)。Linux 服务目标 `linux_local_service` 另需 OpenSSL 与 libcurl 开发包，配置走 XDG、密钥文件 0600（无 DPAPI 等价物） |
 
 目标设备的旧 VPU 驱动与 MPP 适配边界见[设备能力调查](docs/research/rk3288-device-capability-survey-2026-09-17.md)。本机能编过不证明设备可用，不能把软件 ncnn 推理称作已验收的硬件加速。
 

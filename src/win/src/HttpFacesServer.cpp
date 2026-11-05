@@ -12,11 +12,7 @@
 #include "rk_win/WinJsonConfig.h"
 
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#endif
+#include "rk_win/PlatformNet.h"
 
 #include <algorithm>
 #include <chrono>
@@ -32,39 +28,26 @@ constexpr int kRecvBufSize = 2048;
 constexpr std::size_t kMaxHeaderSize = 64 * 1024;
 constexpr std::size_t kMaxBodySize = 1024 * 1024;
 constexpr std::size_t kSendChunkSize = 1u << 20;   // 1 MiB
-#ifdef _WIN32
-constexpr DWORD kSocketTimeoutMs = 5000;
-#else
 constexpr int kSocketTimeoutMs = 5000;
-#endif
 constexpr int kStaticCacheMaxAge = 31536000;        // 1 year
 constexpr int kAcceptRetryMs = 50;
 
-// RAII 封装 SOCKET: 析构时自动 closesocket, 消除手动关闭遗漏风险
+// RAII 封装 rk_win::net::Socket: 析构时自动 closesocket, 消除手动关闭遗漏风险
 struct SocketGuard {
-    SOCKET s = INVALID_SOCKET;
-    explicit SocketGuard(SOCKET s_) : s(s_) {}
-    ~SocketGuard() { if (s != INVALID_SOCKET) closesocket(s); }
+    rk_win::net::Socket s = rk_win::net::kInvalidSocket;
+    explicit SocketGuard(rk_win::net::Socket s_) : s(s_) {}
+    ~SocketGuard() { if (s != rk_win::net::kInvalidSocket) rk_win::net::closeSocket(s); }
     SocketGuard(const SocketGuard&) = delete;
     SocketGuard& operator=(const SocketGuard&) = delete;
-    SocketGuard(SocketGuard&& other) noexcept : s(other.s) { other.s = INVALID_SOCKET; }
-    SocketGuard& operator=(SocketGuard&& other) noexcept { if (this != &other) { if (s != INVALID_SOCKET) closesocket(s); s = other.s; other.s = INVALID_SOCKET; } return *this; }
-    void release() { s = INVALID_SOCKET; }
+    SocketGuard(SocketGuard&& other) noexcept : s(other.s) { other.s = rk_win::net::kInvalidSocket; }
+    SocketGuard& operator=(SocketGuard&& other) noexcept { if (this != &other) { if (s != rk_win::net::kInvalidSocket) rk_win::net::closeSocket(s); s = other.s; other.s = rk_win::net::kInvalidSocket; } return *this; }
+    void release() { s = rk_win::net::kInvalidSocket; }
 };
 
 struct WsaGuard {
     bool ok = false;
-    WsaGuard() {
-#ifdef _WIN32
-        WSADATA wsa;
-        ok = (WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
-#endif
-    }
-    ~WsaGuard() {
-#ifdef _WIN32
-        if (ok) WSACleanup();
-#endif
-    }
+    WsaGuard() { ok = net::ensureRuntime(); }
+    ~WsaGuard() { if (ok) net::shutdownRuntime(); }
 };
 
 static std::string toLower(std::string s) {
@@ -234,23 +217,23 @@ bool HttpFacesServer::start(FramePipeline* pipe, EventLogger* events, int port, 
     static WsaGuard wsa;
     if (!wsa.ok) return false;
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) return false;
+    rk_win::net::Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == rk_win::net::kInvalidSocket) return false;
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<u_short>(port));
+    addr.sin_port = htons(static_cast<std::uint16_t>(port));
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
     const int reuse = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
     if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        closesocket(s);
+        rk_win::net::closeSocket(s);
         return false;
     }
     if (listen(s, SOMAXCONN) != 0) {
-        closesocket(s);
+        rk_win::net::closeSocket(s);
         return false;
     }
     // webroot 缺失时保留既有服务启动语义；静态读取会因未固定根句柄而 fail-closed。
@@ -262,7 +245,7 @@ bool HttpFacesServer::start(FramePipeline* pipe, EventLogger* events, int port, 
         acceptThread_ = std::thread([this]() { acceptLoop(); });
     } catch (...) {
         running_ = false;
-        closesocket(s);
+        rk_win::net::closeSocket(s);
         listenSock_ = 0;
         staticRoot_.close();
         return false;
@@ -277,9 +260,11 @@ void HttpFacesServer::stop() {
     }
     running_ = false;
 
-    const auto ls = static_cast<SOCKET>(listenSock_);
+    const auto ls = static_cast<rk_win::net::Socket>(listenSock_);
     if (ls != 0) {
-        closesocket(ls);
+        // POSIX：close 不保证唤醒阻塞中的 accept，必须先 shutdown；Windows 上 shutdown 同样安全。
+        rk_win::net::shutdownBoth(ls);
+        rk_win::net::closeSocket(ls);
         listenSock_ = 0;
     }
 
@@ -291,8 +276,8 @@ void HttpFacesServer::stop() {
         socks = clientSocks_;
     }
     for (const auto sp : socks) {
-        const SOCKET s = static_cast<SOCKET>(sp);
-        shutdown(s, SD_BOTH);
+        const rk_win::net::Socket s = static_cast<rk_win::net::Socket>(sp);
+        rk_win::net::shutdownBoth(s);
     }
 
     std::unique_lock<std::mutex> lk(stopMu_);
@@ -312,12 +297,12 @@ void HttpFacesServer::stop() {
 // ──── 连接 / I/O ────────────────────────────────────────────
 
 void HttpFacesServer::acceptLoop() {
-    const SOCKET ls = static_cast<SOCKET>(listenSock_);
+    const rk_win::net::Socket ls = static_cast<rk_win::net::Socket>(listenSock_);
     while (running_) {
         sockaddr_in caddr{};
-        int clen = sizeof(caddr);
-        SOCKET cs = accept(ls, reinterpret_cast<sockaddr*>(&caddr), &clen);
-        if (cs == INVALID_SOCKET) {
+        rk_win::net::SockLen clen = sizeof(caddr);
+        rk_win::net::Socket cs = accept(ls, reinterpret_cast<sockaddr*>(&caddr), &clen);
+        if (cs == rk_win::net::kInvalidSocket) {
             if (!running_) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(kAcceptRetryMs));
             continue;
@@ -325,7 +310,7 @@ void HttpFacesServer::acceptLoop() {
 
         auto lease = quota_.tryAcquire();
         if (!lease.has_value()) {
-            closesocket(cs);
+            rk_win::net::closeSocket(cs);
             continue;
         }
 
@@ -397,7 +382,7 @@ void HttpFacesServer::acceptLoop() {
             }
             activeClients_--;
             stopCv_.notify_all();
-            closesocket(cs);
+            rk_win::net::closeSocket(cs);
         }
         // 线程入池与回收在 try 之外（S3 CONFIRMED）：add() 成功即拥有线程，
         // 其后的异常（理论仅 bad_alloc）不得触发 catch 回滚，否则会二次递减
@@ -419,7 +404,7 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
     std::string buf;
     buf.reserve(8192);
     char tmp[kRecvBufSize];
-    const SOCKET s = static_cast<SOCKET>(sock);
+    const rk_win::net::Socket s = static_cast<rk_win::net::Socket>(sock);
 
     auto findHeaderEnd = [&]() -> std::size_t { return buf.find("\r\n\r\n"); };
     while (buf.size() < kMaxHeaderSize) {
@@ -531,11 +516,11 @@ bool HttpFacesServer::readRequest(std::uintptr_t sock, HttpRequest& out, std::st
 }
 
 bool HttpFacesServer::writeRaw(std::uintptr_t sock, const void* data, std::size_t n) {
-    const SOCKET s = static_cast<SOCKET>(sock);
+    const rk_win::net::Socket s = static_cast<rk_win::net::Socket>(sock);
     const char* p = static_cast<const char*>(data);
     std::size_t left = n;
     while (left > 0) {
-        const int w = send(s, p, static_cast<int>(std::min<std::size_t>(left, kSendChunkSize)), 0);
+        const auto w = rk_win::net::sendSome(s, p, std::min<std::size_t>(left, kSendChunkSize));
         if (w <= 0) return false;
         p += w;
         left -= static_cast<std::size_t>(w);
@@ -756,7 +741,7 @@ bool HttpFacesServer::csrfCheckPasses(const HttpRequest& req) const {
 // ──── 客户端处理 ─────────────────────────────────────────────
 
 void HttpFacesServer::handleClient(std::uintptr_t sock) {
-    SocketGuard sg(static_cast<SOCKET>(sock));
+    SocketGuard sg(static_cast<rk_win::net::Socket>(sock));
     HttpRequest req;
     std::string err;
 
