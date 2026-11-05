@@ -60,7 +60,8 @@ as_of=2026-11-05
 - 已验证（WSL2 x86_64）：`linux_local_service` 编译链接 0 错误；CTest `linux_service_smoke` 自动完成「启动 → `/api/v1/health` 200 → SIGTERM 退出码 0」（端口占用时记 SKIP），已接入 CI 的 `linux` job ctest 过滤；缺模型资产时健康接口报告 `degraded`，属预期。
 - 已验证：`Platform.cpp`/`PlatformNet.cpp` 的 6 个单测在 Linux 与 Windows 编译并通过；移植后的 `HttpFacesServer`/`HttpFacesPoster`/`HttpFacesServerPath` 在 Linux `-fsyntax-only` 通过。
 - 已验证：**跨平台 AES-256-GCM 向量回归**（`tests/cpp/test_crypto_vectors.cpp`，固定 nonce，Windows BCrypt 与 Linux OpenSSL 对同一向量产出相同密文/tag；含空 AAD、短 AAD 与 `poster.postUrl` 三种）。该用例暴露并驱动修复了 Windows 旧实现的 AAD 未认证缺陷。
-- 未验证：真实摄像头（WSL 无设备）、Windows 端的完整回归（由本轮构建与 CI 覆盖）、ARM 交叉构建服务目标、密钥文件权限与密文互通的自动化回归、systemd 部署。
+- ARM 交叉构建未包含 `linux_local_service`（缺 ARM 版 OpenSSL/libcurl；`cmake/linux.cmake` 以 `NOT CMAKE_CROSSCOMPILING` 为包含条件）。
+- 未验证：真实 V4L2 摄像头（WSL 无设备）、ARM 上运行服务、systemd 实机部署；密钥权限与跨平台密文的**端到端**回归（算法级固定向量已覆盖）。
 
 ## 验收（每步都必须满足）
 

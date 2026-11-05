@@ -159,7 +159,9 @@ if(WIN32 AND NOT RK_SKIP_OPENCV AND RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION)
     include(cmake/windows.cmake)
 endif()
 
-if(UNIX AND NOT ANDROID AND NOT APPLE AND NOT RK_SKIP_OPENCV)
+if(UNIX AND NOT ANDROID AND NOT APPLE AND NOT RK_SKIP_OPENCV AND NOT CMAKE_CROSSCOMPILING)
+    # 服务目标依赖 OpenSSL/libcurl 的宿主编译包；交叉构建（linux-arm-cross）目前不提供服务，
+    # 也不应在无对应开发包时因 find_package(... REQUIRED) 让整个 configure 失败。
     include(cmake/linux.cmake)
 endif()
 
@@ -344,11 +346,9 @@ if(NOT ANDROID)
         "tests/cpp/test_scrfd_ncnn_adapter.cpp"
         "tests/cpp/test_frame_transform.cpp"
         "tests/cpp/test_platform.cpp"
-        "tests/cpp/test_crypto_vectors.cpp"
         "src/win/src/JsonLite.cpp"
         "src/win/src/Platform.cpp"
         "src/win/src/PlatformNet.cpp"
-        "src/win/src/WinCrypto.cpp"
         ${RK_CORE_LITE_SOURCES} ${RK_FACE_INFER_CORE_SOURCES} ${RK_ADAPTER_SOURCES}
         ${RK_PIPELINE_SOURCES}
         "src/win/src/DnnSsdFaceDetector.cpp" "src/win/src/FaceDetector.cpp"
@@ -389,10 +389,17 @@ if(NOT ANDROID)
     if(WIN32)
         # PlatformNet.cpp（套接字兼容层）在 Windows 需 Winsock 导入库；WinCrypto 需 CNG/Crypt32。
         target_link_libraries(core_gtest_tests ws2_32 bcrypt crypt32)
-    else()
+    elseif(NOT CMAKE_CROSSCOMPILING)
         # WinCrypto 的 POSIX 实现使用 OpenSSL libcrypto（决策 D2）。
+        # 交叉构建（linux-arm-cross）没有 ARM 版 OpenSSL 开发包 ⇒ 不编加密测试，避免
+        # find_package(REQUIRED) 让整个交叉 configure 失败。
         find_package(OpenSSL REQUIRED)
         target_link_libraries(core_gtest_tests OpenSSL::Crypto)
+    endif()
+    if(WIN32 OR NOT CMAKE_CROSSCOMPILING)
+        target_sources(core_gtest_tests PRIVATE
+            "tests/cpp/test_crypto_vectors.cpp"
+            "src/win/src/WinCrypto.cpp")
     endif()
     if(RK_HAVE_NCNN AND RK_NCNN_TARGET)
         target_link_libraries(core_gtest_tests ${RK_NCNN_TARGET})
