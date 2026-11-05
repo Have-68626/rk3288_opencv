@@ -10,12 +10,15 @@ if(RK_BUILD_WINDOWS_LOCAL_WEB_SERVICE)
     add_executable(win_local_service
         "src/win/app/win_local_service_main.cpp"
         "src/win/src/WinConfig.cpp"
+        "src/win/src/Platform.cpp"
+        "src/win/src/PlatformNet.cpp"
         "src/win/src/JsonLite.cpp"
         "src/win/src/WinCrypto.cpp"
         "src/win/src/WinJsonConfig.cpp"
         "src/win/src/JsonSchemaValidator.cpp"
         "src/win/src/StructuredLogger.cpp"
         "src/win/src/MfCamera.cpp"
+        "src/win/src/CameraSource.cpp"
         "src/win/src/FaceDetector.cpp"
         "src/win/src/LbphEmbedder.cpp"
         "src/win/src/FaceDatabase.cpp"
@@ -117,6 +120,8 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
     add_executable(win_camera_face_recognition WIN32
         "src/win/app/win_camera_face_recognition_main.cpp"
         "src/win/src/WinConfig.cpp"
+        "src/win/src/Platform.cpp"
+        "src/win/src/PlatformNet.cpp"
         "src/win/src/JsonLite.cpp"
         "src/win/src/WinCrypto.cpp"
         "src/win/src/WinJsonConfig.cpp"
@@ -137,6 +142,7 @@ if(RK_BUILD_WINDOWS_CAMERA_FACE_RECOGNITION_UI)
         "src/win/src/HttpFacesPoster.cpp"
         "src/win/src/AbcTestRunner.cpp"
         "src/win/src/FramePipeline.cpp"
+        "src/win/src/CameraSource.cpp"
         "src/win/src/FrameProcessor.cpp"
         "src/win/src/SideEffectSink.cpp"
         "src/win/src/RuntimeBootstrap.cpp"
@@ -211,6 +217,7 @@ endif()
 add_executable(win_face_eval_cli
     "src/win/tools/win_face_eval_cli.cpp"
     "src/win/src/WinConfig.cpp"
+        "src/win/src/Platform.cpp"
     "src/win/src/JsonLite.cpp"
     "src/win/src/WinCrypto.cpp"
     "src/win/src/WinJsonConfig.cpp"
@@ -244,6 +251,7 @@ target_link_libraries(win_face_eval_cli
 add_executable(win_face_bench_cli
     "src/win/tools/win_face_bench_cli.cpp"
     "src/win/src/WinConfig.cpp"
+        "src/win/src/Platform.cpp"
     "src/win/src/JsonLite.cpp"
     "src/win/src/WinCrypto.cpp"
     "src/win/src/WinJsonConfig.cpp"
@@ -279,6 +287,7 @@ add_executable(win_replay_export_cli
     "src/cpp/src/pipeline/ReplayScriptWriter.cpp"
     "src/cpp/src/FileHash.cpp"
     "src/win/src/WinConfig.cpp"
+        "src/win/src/Platform.cpp"
     "src/win/src/JsonLite.cpp"
     "src/win/src/WinCrypto.cpp"
     "src/win/src/WinJsonConfig.cpp"
@@ -325,6 +334,7 @@ add_executable(win_unit_tests
     "tests/win/test_face_database_encryption.cpp"
     "src/win/src/RuntimeBootstrap.cpp"
     "src/win/src/FramePipeline.cpp"
+        "src/win/src/CameraSource.cpp"
     "src/win/src/MfCamera.cpp"
     "src/win/src/EndpointRegistry.cpp"
     "src/win/src/HttpFacesServer.cpp"
@@ -340,6 +350,8 @@ add_executable(win_unit_tests
     "src/win/src/FaceDatabase.cpp"
     "src/win/src/FaceDetector.cpp"
     "src/win/src/WinConfig.cpp"
+        "src/win/src/Platform.cpp"
+        "src/win/src/PlatformNet.cpp"
     "src/win/src/JsonLite.cpp"
     "src/win/src/WinCrypto.cpp"
     "src/win/src/WinJsonConfig.cpp"
@@ -452,6 +464,7 @@ add_executable(win_face_database_perf
     "tests/win/test_face_database_perf.cpp"
     "src/win/src/FaceDatabase.cpp"
     "src/win/src/WinCrypto.cpp"
+    "src/win/src/Platform.cpp"
 )
 target_include_directories(win_face_database_perf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include

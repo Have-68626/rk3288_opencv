@@ -33,7 +33,8 @@ private:
                                    std::string& out);
 };
 
-// 仅接受 StaticFileRoot::resolve 返回的相对路径；非 Windows 构建 fail-closed。
+// 仅接受 StaticFileRoot::resolve 返回的相对路径；POSIX 用逐层 openat + O_NOFOLLOW 读取。
+// 无法固定根目录或路径不安全时 fail-closed。
 bool readFileWithinRoot(const StaticFileRoot& docRoot,
                         const std::filesystem::path& path,
                         std::string& out);

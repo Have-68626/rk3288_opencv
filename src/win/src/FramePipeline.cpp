@@ -73,8 +73,8 @@ bool FramePipeline::initialize(const AppConfig& cfg) {
         std::lock_guard<std::mutex> lock(mu_);
         cfg_ = cfg;
     }
-    camera_ = std::make_unique<MfCamera>();
-    devices_ = MfCamera::enumerateDevices();
+    camera_ = createCameraSource();
+    devices_ = enumerateCameraDevices();
 
     // 日志初始化（保留）
     if (!logger_.open(cfg.log.logDir, cfg.log.maxFileBytes, cfg.log.maxRollFiles)) {

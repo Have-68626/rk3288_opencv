@@ -9,13 +9,7 @@
 #include <thread>
 #include <vector>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
-#include <sys/socket.h>
-#define SOCKET int
-#endif
+#include "rk_win/PlatformNet.h"
 
 #if RK_WIN_HAS_OPENCV
 #include <opencv2/imgcodecs.hpp>
@@ -59,11 +53,11 @@ bool StreamSessionRunner::writeRaw(std::uintptr_t sock, const void* data, std::s
         if (bytesWritten_ >= maxBytes || n > maxBytes - bytesWritten_) return false;
         bytesWritten_ += n;
     }
-    const auto s = static_cast<SOCKET>(sock);
+    const auto s = static_cast<rk_win::net::Socket>(sock);
     const char* p = static_cast<const char*>(data);
     std::size_t left = n;
     while (left > 0) {
-        const int w = ::send(s, p, static_cast<int>(std::min<std::size_t>(left, kSendChunkSize)), 0);
+        const auto w = rk_win::net::sendSome(s, p, std::min<std::size_t>(left, kSendChunkSize));
         if (w <= 0) return false;
         p += w;
         left -= static_cast<std::size_t>(w);

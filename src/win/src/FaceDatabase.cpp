@@ -1,5 +1,6 @@
 #include "rk_win/FaceDatabase.h"
 
+#include "rk_win/Platform.h"
 #include "rk_win/WinCrypto.h"
 
 #include <opencv2/core.hpp>
@@ -78,6 +79,25 @@ std::string makeHeader() {
     h.push_back(static_cast<char>(kGcmNonceLen));
     h.push_back(static_cast<char>(kGcmTagLen));
     return h;
+}
+
+
+// 旧版 Windows 未把 AAD 计入 GCM tag（见 WinCrypto 的 AAD 注释与 2026-11-05 向量回归）。
+// 人脸库 AAD 为容器头 11 字节；读取时先按头解密，失败再按空 AAD 回退一次。
+// 回退成功表示 legacy 容器，后续写入（save）会以新语义重写。
+bool decryptPayloadWithAadFallback(const std::vector<std::uint8_t>& key,
+                                   const AesGcmCiphertext& ct,
+                                   std::vector<std::uint8_t>& plain,
+                                   std::string& err) {
+    if (aes256gcmDecrypt(key, ct, plain, err, makeHeader())) return true;
+    std::string legacyErr;
+    std::vector<std::uint8_t> legacyPlain;
+    if (aes256gcmDecrypt(key, ct, legacyPlain, legacyErr, {})) {
+        plain = std::move(legacyPlain);
+        err.clear();
+        return true;
+    }
+    return false;
 }
 
 std::string hexEncode(const std::uint8_t* data, std::size_t n) {
@@ -216,30 +236,26 @@ bool ensureOrLoadKey(const std::filesystem::path& keyPath, std::vector<std::uint
         ofs.flush();
         if (!ofs.good()) { err = "密钥文件写入失败"; return false; }
     }
+    // Linux 无 DPAPI：密钥以 0600 权限落盘（替换前先收窄临时文件，rename 后权限随文件保留）。
+    if (!rk_win::platform::restrictFileOwnerOnly(tmp, err)) {
+        std::error_code ecRm;
+        std::filesystem::remove(tmp, ecRm);
+        return false;
+    }
     if (!replaceFile(tmp, keyPath, err)) {
         std::error_code ec2;
         std::filesystem::remove(tmp, ec2);
         return false;
     }
-    return true;
-}
+    return true;}
 
-// 原子替换：临时文件 → 目标路径（Windows MoveFileExW WRITE_THROUGH，防断电半写）。
+// 原子替换：临时文件 → 目标路径（Windows MoveFileExW WRITE_THROUGH；POSIX fsync+rename+目录 fsync）。
 bool replaceFile(const std::filesystem::path& src, const std::filesystem::path& dst, std::string& err) {
-#ifdef _WIN32
-    err.clear();
-    if (MoveFileExW(src.wstring().c_str(), dst.wstring().c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-        err = "原子替换失败";
+    if (!rk_win::platform::replaceFileWriteThrough(src, dst, err)) {
+        err = "原子替换失败: " + err;
         return false;
     }
     return true;
-#else
-    (void)src;
-    (void)dst;
-    err = "平台不支持原子替换";
-    return false;
-#endif
 }
 
 // 加密并写容器文件（AAD = 11 字节头部）。
@@ -290,7 +306,7 @@ bool encryptedPayloadMatches(const std::filesystem::path& path,
     if (!readContainer(path, nonce, tag, ciphertext, errOut)) return false;
     AesGcmCiphertext ct{std::move(nonce), std::move(ciphertext), std::move(tag)};
     std::vector<std::uint8_t> plain;
-    if (!aes256gcmDecrypt(key, ct, plain, errOut, makeHeader())) return false;
+    if (!decryptPayloadWithAadFallback(key, ct, plain, errOut)) return false;
     const std::string payload(reinterpret_cast<const char*>(plain.data()), plain.size());
     std::unordered_map<std::string, PersonEntry> got;
     if (!deserializePayload(payload, got)) {
@@ -324,7 +340,11 @@ bool encryptedPayloadMatches(const std::filesystem::path& path,
 }  // namespace
 
 std::filesystem::path FaceDatabase::keyPathFor(const std::filesystem::path& dbPath) {
+#ifdef _WIN32
     return std::filesystem::path(dbPath.string() + ".key.dpapi");
+#else
+    return std::filesystem::path(dbPath.string() + ".key");  // Linux 无 DPAPI：0600 权限文件
+#endif
 }
 
 bool FaceDatabase::load(const std::filesystem::path& path) {
@@ -373,7 +393,7 @@ bool FaceDatabase::load(const std::filesystem::path& path) {
         }
         AesGcmCiphertext ct{std::move(nonce), std::move(ciphertext), std::move(tag)};
         std::vector<std::uint8_t> plain;
-        if (!aes256gcmDecrypt(key, ct, plain, err, makeHeader())) {
+        if (!decryptPayloadWithAadFallback(key, ct, plain, err)) {
             // 错误密钥/密文被篡改：GCM tag 校验失败 → 受控失败（不崩溃、不写明文、数据不可读）。
             std::lock_guard<std::mutex> lock(mu_);
             persons_.clear();

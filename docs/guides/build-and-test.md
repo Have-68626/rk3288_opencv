@@ -1,16 +1,16 @@
 <!-- DOCSYNC_DOC
 type=guide
 status=living
-as_of=2026-10-20
+as_of=2026-11-05
 -->
 
 # 构建与测试
 
-以下命令从仓库根目录执行。只开发Android与Windows；CI中的Linux编译信号保留为参考。依赖版本与来源见[CREDITS](../../CREDITS.md)，本页统一维护操作前提和命令。
+以下命令从仓库根目录执行。Android、Windows 与 Linux 均为开发目标；Linux 用 WSL 构建，见本页「Linux（WSL）」一节，CI 中由 `linux` job 覆盖全量 OpenCV 构建。依赖版本与来源见[CREDITS](../../CREDITS.md)，本页统一维护操作前提和命令。
 
 新建独立CMake树放在 `cache/builds/`；已有树含绝对路径，不直接搬移。示例中的OpenCV路径须替换为本机源码目录，不能指向安装目录。
 
-本地CMake预设名称保持default/windows/android，新树分别进入cache/builds/core-ninja、windows-vs2022-x64、android-ninja-armeabi-v7a。批处理CLI独立树另以用途/ABI命名；已有树不直接移动。Android真实测试源目录见[模块入口](../../app/README.md)。
+本地CMake预设名称保持default/windows/linux/android，新树分别进入cache/builds/core-ninja、windows-vs2022-x64、linux-gcc13、android-ninja-armeabi-v7a。批处理CLI独立树另以用途/ABI命名；已有树不直接移动。Android真实测试源目录见[模块入口](../../app/README.md)。
 
 需要固定配置、隔离构建树及Web→Windows独占产品装配时，使用[本地构建统筹](build-coordination.md)。构建与verify分别出具报告，保留本页原生入口及现有验收门槛。
 
@@ -45,6 +45,75 @@ ctest --test-dir cache/builds/windows-tests -C Release `
 这是选定四个测试目标，非全量CI。其他目标或独立ncnn精度测试须先构建，再用相应CTest名称筛选；精度缺输入的跳过不等于精度通过。框架与跳过说明见[DEVELOP](../../DEVELOP.md#43-测试框架)。
 
 本机原生程序若在系统临时目录写入时返回Windows错误码5，应先核验目录访问权限。可在独立测试进程内将TEMP/TMP指向本次cache/reports下的可写临时目录，并给pytest显式传入--basetemp；不改系统环境或目录ACL。CTest与Python回归分别使用独立临时目录，保留原失败记录后完整复跑，不能跳过工具行为用例。
+
+<a id="linux-wsl"></a>
+## Linux（WSL）
+
+前提：WSL2 Ubuntu 24.04（GCC 13、CMake ≥3.28、Ninja），以及 OpenCV 与 opencv_contrib 源码目录（版本与 CI 一致，4.10.0）。构建树放仓库内 `cache/builds/linux-gcc13`。
+
+```bash
+# WSL 默认继承 Windows PATH；不净化时 CMake 会把 Anaconda 的 Windows 版 OpenJPEG/tiff 当成依赖
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export OPENCV_ROOT=/mnt/d/ProgramData/OpenCV/opencv-4.10.0
+export OPENCV_CONTRIB_ROOT=/mnt/d/ProgramData/OpenCV/opencv_contrib-4.10.0
+cmake --preset linux
+cmake --build --preset linux -j "$(nproc)" --target \
+  core_unit_tests core_gtest_tests face_infer_unit_tests \
+  rk3288_cli opencv_verify_cli inference_bench_cli
+ctest --preset linux -R 'unit_tests|core_gtest_tests|engine_run_reentry_behavior' --output-on-failure
+```
+
+只跑核心快通道（不带 OpenCV，约两分钟）：
+
+```bash
+cmake -S . -B cache/builds/linux-core -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DRK_SKIP_OPENCV=ON -DRK_BUILD_CORE_UNIT_TESTS=ON
+cmake --build cache/builds/linux-core --target core_unit_tests -j "$(nproc)"
+ctest --test-dir cache/builds/linux-core -R '^core_unit_tests$' --output-on-failure
+```
+
+注意：
+
+- Ninja 单配置必须显式 `CMAKE_BUILD_TYPE`（`linux` 预设已设 Release）；缺省时 OpenCV 自带的 libjpeg-turbo 在 configure 阶段报 `string no output variable specified`。
+- GitHub 网络抖动时 FetchContent 拉 googletest 会连续失败；可先克隆 `release-1.12.1` 到 `cache/deps/googletest`，再加 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<该目录>`。
+- 若仍解析到 Windows 侧包，先删除 `CMakeCache.txt` 重配；需要确定性时可加 `-DWITH_TIFF=OFF -DWITH_OPENJPEG=OFF`（本用途不需要这两个编码）。
+- `scripts/run-builds.py` 的各配置以 Windows 宿主为前提，不覆盖 Linux；Linux 以本节命令为准。
+
+ARM 交叉编译（只编不跑，工具链文件在 `cmake/toolchains/`；本机需先安装 `g++-arm-linux-gnueabihf` 与 `g++-aarch64-linux-gnu`）：
+
+```bash
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export OPENCV_ROOT=/mnt/d/ProgramData/OpenCV/opencv-4.10.0
+export OPENCV_CONTRIB_ROOT=/mnt/d/ProgramData/OpenCV/opencv_contrib-4.10.0
+for a in armhf aarch64; do
+  cmake -S . -B "cache/builds/linux-$a-cross" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/linux-$a.cmake" \
+    -DCMAKE_BUILD_TYPE=Release -DOPENCV_ROOT="$OPENCV_ROOT" \
+    -DOPENCV_CONTRIB_ROOT="$OPENCV_CONTRIB_ROOT"
+  cmake --build "cache/builds/linux-$a-cross" -j "$(nproc)" --target \
+    core_unit_tests core_gtest_tests face_infer_unit_tests \
+    rk3288_cli opencv_verify_cli inference_bench_cli
+  file "cache/builds/linux-$a-cross/bin/rk3288_cli"   # 确认确为目标架构
+done
+```
+
+交叉编译通过只证明可在该架构编译，不证明运行、性能或 RK3288 真机可用。
+
+Linux 运行时服务（阶段 4 初版；需要 `libssl-dev` 与 `libcurl4-openssl-dev`）：
+
+```bash
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export OPENCV_ROOT=/mnt/d/ProgramData/OpenCV/opencv-4.10.0
+export OPENCV_CONTRIB_ROOT=/mnt/d/ProgramData/OpenCV/opencv_contrib-4.10.0
+cmake --preset linux
+cmake --build --preset linux -j "$(nproc)" --target linux_local_service
+# 冒烟：默认绑定 127.0.0.1:8080，配置走 XDG（$XDG_CONFIG_HOME/rk_wcfr 或 ~/.config/rk_wcfr）
+RK_WCFR_CONFIG=/tmp/rk-wcfr/config.json ./cache/builds/linux-gcc13/bin/linux_local_service &
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/health   # 期望 200
+kill -TERM %1
+```
+
+缺模型资产时健康接口返回 `degraded` 属预期；密钥文件在 Linux 上以 0600 权限保存（无 DPAPI 等价物），密文格式与 Windows 使用相同 AAD 字节即可互通（跨平台向量测试待补）。
 
 ## Android
 

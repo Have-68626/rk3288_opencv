@@ -39,5 +39,12 @@ bool aes256gcmDecrypt(const std::vector<std::uint8_t>& key32,
 // 安全随机数
 bool randomBytes(std::size_t n, std::vector<std::uint8_t>& out, std::string& errOut);
 
+#if defined(RK_ENABLE_TEST_SEAMS)
+// 测试接缝（仅 RK_ENABLE_TEST_SEAMS 构建；生产不定义该宏）：固定 nonce 以便跨平台
+// 对同一 AES-256-GCM 向量比对（Windows BCrypt vs Linux OpenSSL）。
+bool aes256gcmSetNonceForTesting(const std::vector<std::uint8_t>& nonce);
+void aes256gcmClearNonceForTesting();
+#endif
+
 }  // namespace rk_win
 

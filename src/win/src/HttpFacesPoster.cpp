@@ -11,10 +11,17 @@
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
+#else
+// 决策 D6：Linux 上报使用 libcurl（HTTPS、代理、超时齐全），禁用系统代理以对齐 Windows 的 NO_PROXY。
+#include <curl/curl.h>
+#include <strings.h>
 #endif
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <mutex>
+#include <thread>
 
 namespace rk_win {
 namespace {
@@ -102,6 +109,62 @@ bool httpPostJson(const std::string& urlUtf8, const std::string& body, int timeo
 
     return ok && (status >= 200 && status < 300);
 }
+#else
+// Linux：URL 校验与 libcurl 发送。语义对齐 Windows 侧：只允许 http/https、拒绝控制字符与空白、
+// 不使用系统代理、四项超时同值、2xx 视为成功。
+bool isValidDestination(const std::string& value) {
+    if (value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char c) {
+        return c <= 0x20 || c == 0x7f;
+    })) return false;
+    CURLU* u = curl_url();
+    if (!u) return false;
+    bool ok = false;
+    if (curl_url_set(u, CURLUPART_URL, value.c_str(), 0) == CURLUE_OK) {
+        char* scheme = nullptr;
+        char* host = nullptr;
+        if (curl_url_get(u, CURLUPART_SCHEME, &scheme, 0) == CURLUE_OK &&
+            curl_url_get(u, CURLUPART_HOST, &host, 0) == CURLUE_OK &&
+            scheme && host && *host &&
+            (strcasecmp(scheme, "http") == 0 || strcasecmp(scheme, "https") == 0)) {
+            ok = true;
+        }
+        if (scheme) curl_free(scheme);
+        if (host) curl_free(host);
+    }
+    curl_url_cleanup(u);
+    return ok;
+}
+
+std::once_flag g_curlOnce;
+std::size_t discardBody(char*, std::size_t size, std::size_t n, void*) { return size * n; }
+
+bool httpPostJson(const std::string& urlUtf8, const std::string& body, int timeoutMs, int& statusOut) {
+    statusOut = 0;
+    std::call_once(g_curlOnce, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+    CURL* h = curl_easy_init();
+    if (!h) return false;
+    curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/json; charset=utf-8");
+    curl_easy_setopt(h, CURLOPT_URL, urlUtf8.c_str());
+    curl_easy_setopt(h, CURLOPT_POST, 1L);
+    curl_easy_setopt(h, CURLOPT_POSTFIELDS, body.data());
+    curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(h, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(h, CURLOPT_NOPROXY, "*");
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(timeoutMs));
+    curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, static_cast<long>(timeoutMs));
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(h, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, discardBody);
+    const CURLcode rc = curl_easy_perform(h);
+    long status = 0;
+    curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
+    statusOut = static_cast<int>(status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(h);
+    return rc == CURLE_OK && status >= 200 && status < 300;
+}
 #endif
 
 }  // namespace
@@ -115,11 +178,7 @@ HttpFacesPoster::~HttpFacesPoster() {
 bool HttpFacesPoster::start(FramePipeline* pipe, EventLogger* events, const std::string& postUrl, int throttleMs, int backoffMinMs, int backoffMaxMs) {
     stop();
     if (!pipe) return false;
-#ifdef _WIN32
     if (!isValidDestination(postUrl)) return false;
-#else
-    return false;
-#endif
     pipe_ = pipe;
     events_ = events;
     postUrl_ = postUrl;
@@ -137,7 +196,6 @@ void HttpFacesPoster::stop() {
 }
 
 void HttpFacesPoster::run() {
-#ifdef _WIN32
     if (events_) events_->append("post_start", "url=[已脱敏]");
 
     std::uint64_t lastSeqSent = 0;
@@ -180,7 +238,6 @@ void HttpFacesPoster::run() {
     }
 
     if (events_) events_->append("post_stop", "url=[已脱敏]");
-#endif
 }
 
 }  // namespace rk_win

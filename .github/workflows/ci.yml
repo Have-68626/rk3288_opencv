@@ -101,18 +101,13 @@ jobs:
     name: unit-tests
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
-    # 本 job 已降级为「非门禁的参考信号」（job 级 continue-on-error）：
-    # 1) 为什么降级——开发目标已收窄为 Android + Windows（见 AGENTS.md / CLAUDE.md 的
-    #    「开发目标平台」一节），Linux/GCC 侧不再作为验收依据。
-    # 2) 为什么不删除 job——它的 name 仍在经典分支保护
-    #    （required_status_checks.contexts=["repo-hygiene","unit-tests"]）与仓库 ruleset
-    #    的 required checks 中；直接删掉会让每个 PR 永久卡在
-    #    「Expected — waiting for status to be reported」。
-    # 3) 覆盖不丢——`windows` job 同样构建并运行 core_unit_tests。
-    # ⚠️ 不确定性：job 级 continue-on-error 会让该 job 对分支保护报告 success，此行为来自
-    #    actions/toolkit issue #1739 / #581 的实测报告，不是 GitHub 官方文档的明文承诺。
-    continue-on-error: true
+    runs-on: ubuntu-24.04
+    # Linux 开发目标已恢复（见 AGENTS.md「开发目标与入口」）：本 job 阻断失败。
+    # 1) 保留 job 名与 id —— `unit-tests` 仍是远端必需检查（经典分支保护与 ruleset），
+    #    改名或删除会让每个 PR 永久卡在「Expected — waiting for status to be reported」。
+    # 2) 职责边界 —— 本 job 只跑不带 OpenCV 的核心快通道与 3 个 Windows 共享源的 GCC
+    #    编译检查；全量 OpenCV 的 Linux 构建与 CTest 由 `linux` job 承担。
+    # 3) 与 WSL 本地验证同代 —— 钉 ubuntu-24.04，与本地 WSL 的 GCC 13 对齐，便于复现。
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -144,6 +139,199 @@ jobs:
           name: linux-unit-tests-reports
           path: build_ci/Testing/
           if-no-files-found: ignore
+
+  linux:
+    name: linux-build-test
+    needs: changes
+    if: >
+      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      OPENCV_VERSION: "4.10.0"
+      OPENCV_CONTRIB_VERSION: "4.10.0"
+      DEPS_DIR: _deps
+      BUILD_DIR: build_ci_linux
+      # 必须覆盖 RK_OPENCV_FULL_LIBS（cmake/opencv.cmake），与 windows job 保持同一份清单。
+      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          # linux job 构建 linux_local_service：需要 OpenSSL 与 libcurl 开发包（决策 D2/D6）。
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev libcurl4-openssl-dev
+
+      - name: Cache _deps (opencv sources)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.DEPS_DIR }}
+          key: deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-v1
+          restore-keys: |
+            deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-
+            deps-${{ runner.os }}-opencv-
+
+      - name: Fetch OpenCV + opencv_contrib sources into _deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps="$GITHUB_WORKSPACE/$DEPS_DIR"
+          mkdir -p "$deps"
+          ensure_repo() {
+            local url="$1" dest="$2" ref="$3"
+            if [ ! -d "$dest/.git" ]; then
+              git clone --depth 1 --branch "$ref" "$url" "$dest"
+              return
+            fi
+            git -C "$dest" fetch --depth 1 origin "$ref"
+            git -C "$dest" checkout --force FETCH_HEAD
+          }
+          ensure_repo https://github.com/opencv/opencv.git "$deps/opencv" "$OPENCV_VERSION"
+          ensure_repo https://github.com/opencv/opencv_contrib.git "$deps/opencv_contrib" "$OPENCV_CONTRIB_VERSION"
+          echo "OPENCV_ROOT=$deps/opencv" >> "$GITHUB_ENV"
+          echo "OPENCV_CONTRIB_ROOT=$deps/opencv_contrib" >> "$GITHUB_ENV"
+
+      - name: Configure (CMake)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --version
+          # 必须显式 CMAKE_BUILD_TYPE：Ninja 单配置下 OpenCV 自带 libjpeg-turbo 的
+          # `string(TOUPPER ${CMAKE_BUILD_TYPE} …)` 会因空展开而在 configure 阶段失败。
+          cmake -S . -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENCV_ROOT="$OPENCV_ROOT" \
+            -DOPENCV_CONTRIB_ROOT="$OPENCV_CONTRIB_ROOT" \
+            -DBUILD_LIST="$OPENCV_BUILD_LIST"
+
+      - name: Build core, CLI and test targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" -j "$(nproc)" --target \
+            core_unit_tests core_gtest_tests face_infer_unit_tests \
+            rk3288_cli opencv_verify_cli inference_bench_cli linux_local_service
+
+      - name: Run selected CTest
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir "$BUILD_DIR" \
+            -R "unit_tests|core_gtest_tests|engine_run_reentry_behavior|linux_service_smoke" \
+            --output-on-failure
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-build-reports
+          path: ${{ env.BUILD_DIR }}/Testing/
+          if-no-files-found: ignore
+
+  linux-arm-cross:
+    name: linux-arm-cross
+    needs: changes
+    if: >
+      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    # 阶段 3：ARM 只做交叉编译检查（不运行、不验证性能）。先以非阻断信号运行，
+    # 稳定后与 `linux` 一起另行授权转门禁。
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: armhf
+            toolchain: cmake/toolchains/linux-armhf.cmake
+            packages: g++-arm-linux-gnueabihf
+          - arch: aarch64
+            toolchain: cmake/toolchains/linux-aarch64.cmake
+            packages: g++-aarch64-linux-gnu
+    env:
+      OPENCV_VERSION: "4.10.0"
+      OPENCV_CONTRIB_VERSION: "4.10.0"
+      DEPS_DIR: _deps
+      BUILD_DIR: build_ci_linux_${{ matrix.arch }}
+      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential ${{ matrix.packages }}
+
+      - name: Cache _deps (opencv sources)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.DEPS_DIR }}
+          key: deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-v1
+          restore-keys: |
+            deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-
+            deps-${{ runner.os }}-opencv-
+
+      - name: Fetch OpenCV + opencv_contrib sources into _deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps="$GITHUB_WORKSPACE/$DEPS_DIR"
+          mkdir -p "$deps"
+          ensure_repo() {
+            local url="$1" dest="$2" ref="$3"
+            if [ ! -d "$dest/.git" ]; then
+              git clone --depth 1 --branch "$ref" "$url" "$dest"
+              return
+            fi
+            git -C "$dest" fetch --depth 1 origin "$ref"
+            git -C "$dest" checkout --force FETCH_HEAD
+          }
+          ensure_repo https://github.com/opencv/opencv.git "$deps/opencv" "$OPENCV_VERSION"
+          ensure_repo https://github.com/opencv/opencv_contrib.git "$deps/opencv_contrib" "$OPENCV_CONTRIB_VERSION"
+          echo "OPENCV_ROOT=$deps/opencv" >> "$GITHUB_ENV"
+          echo "OPENCV_CONTRIB_ROOT=$deps/opencv_contrib" >> "$GITHUB_ENV"
+
+      - name: Configure (CMake, cross)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --version
+          cmake -S . -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/${{ matrix.toolchain }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENCV_ROOT="$OPENCV_ROOT" \
+            -DOPENCV_CONTRIB_ROOT="$OPENCV_CONTRIB_ROOT" \
+            -DBUILD_LIST="$OPENCV_BUILD_LIST"
+
+      - name: Build core, CLI and test targets (compile only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" -j "$(nproc)" --target \
+            core_unit_tests core_gtest_tests face_infer_unit_tests \
+            rk3288_cli opencv_verify_cli inference_bench_cli
+
+      - name: Assert cross output architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 证明产物确实是目标架构，而不是宿主编译结果。
+          file "$BUILD_DIR/bin/rk3288_cli"
+          case "${{ matrix.arch }}" in
+            armhf) pat='ARM, EABI5' ;;
+            aarch64) pat='ARM aarch64' ;;
+          esac
+          file "$BUILD_DIR/bin/rk3288_cli" | grep -q "$pat"
+          file "$BUILD_DIR/bin/core_gtest_tests" | grep -q "$pat"
 
   docs-audit:
     name: docs-audit
