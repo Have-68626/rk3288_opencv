@@ -465,7 +465,6 @@ add_executable(win_face_database_perf
     "src/win/src/FaceDatabase.cpp"
     "src/win/src/WinCrypto.cpp"
     "src/win/src/Platform.cpp"
-    "src/win/src/PlatformNet.cpp"
 )
 target_include_directories(win_face_database_perf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/win/include
