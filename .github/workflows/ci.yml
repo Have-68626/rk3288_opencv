@@ -232,6 +232,106 @@ jobs:
           path: ${{ env.BUILD_DIR }}/Testing/
           if-no-files-found: ignore
 
+  linux-arm-cross:
+    name: linux-arm-cross
+    needs: changes
+    if: >
+      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    # 阶段 3：ARM 只做交叉编译检查（不运行、不验证性能）。先以非阻断信号运行，
+    # 稳定后与 `linux` 一起另行授权转门禁。
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: armhf
+            toolchain: cmake/toolchains/linux-armhf.cmake
+            packages: g++-arm-linux-gnueabihf
+          - arch: aarch64
+            toolchain: cmake/toolchains/linux-aarch64.cmake
+            packages: g++-aarch64-linux-gnu
+    env:
+      OPENCV_VERSION: "4.10.0"
+      OPENCV_CONTRIB_VERSION: "4.10.0"
+      DEPS_DIR: _deps
+      BUILD_DIR: build_ci_linux_${{ matrix.arch }}
+      OPENCV_BUILD_LIST: "core,imgproc,imgcodecs,objdetect,features2d,flann,calib3d,dnn,ml,photo,face,video,videoio,highgui,stitching"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential ${{ matrix.packages }}
+
+      - name: Cache _deps (opencv sources)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.DEPS_DIR }}
+          key: deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-v1
+          restore-keys: |
+            deps-${{ runner.os }}-opencv-${{ env.OPENCV_VERSION }}-contrib-${{ env.OPENCV_CONTRIB_VERSION }}-
+            deps-${{ runner.os }}-opencv-
+
+      - name: Fetch OpenCV + opencv_contrib sources into _deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps="$GITHUB_WORKSPACE/$DEPS_DIR"
+          mkdir -p "$deps"
+          ensure_repo() {
+            local url="$1" dest="$2" ref="$3"
+            if [ ! -d "$dest/.git" ]; then
+              git clone --depth 1 --branch "$ref" "$url" "$dest"
+              return
+            fi
+            git -C "$dest" fetch --depth 1 origin "$ref"
+            git -C "$dest" checkout --force FETCH_HEAD
+          }
+          ensure_repo https://github.com/opencv/opencv.git "$deps/opencv" "$OPENCV_VERSION"
+          ensure_repo https://github.com/opencv/opencv_contrib.git "$deps/opencv_contrib" "$OPENCV_CONTRIB_VERSION"
+          echo "OPENCV_ROOT=$deps/opencv" >> "$GITHUB_ENV"
+          echo "OPENCV_CONTRIB_ROOT=$deps/opencv_contrib" >> "$GITHUB_ENV"
+
+      - name: Configure (CMake, cross)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --version
+          cmake -S . -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/${{ matrix.toolchain }}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENCV_ROOT="$OPENCV_ROOT" \
+            -DOPENCV_CONTRIB_ROOT="$OPENCV_CONTRIB_ROOT" \
+            -DBUILD_LIST="$OPENCV_BUILD_LIST"
+
+      - name: Build core, CLI and test targets (compile only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" -j "$(nproc)" --target \
+            core_unit_tests core_gtest_tests face_infer_unit_tests \
+            rk3288_cli opencv_verify_cli inference_bench_cli
+
+      - name: Assert cross output architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 证明产物确实是目标架构，而不是宿主编译结果。
+          file "$BUILD_DIR/bin/rk3288_cli"
+          case "${{ matrix.arch }}" in
+            armhf) pat='ARM, EABI5' ;;
+            aarch64) pat='ARM aarch64' ;;
+          esac
+          file "$BUILD_DIR/bin/rk3288_cli" | grep -q "$pat"
+          file "$BUILD_DIR/bin/core_gtest_tests" | grep -q "$pat"
+
   docs-audit:
     name: docs-audit
     runs-on: ubuntu-latest

@@ -17,6 +17,7 @@ as_of=2026-11-05
 | `repo-hygiene` | 卫生扫描、Node 工具回归、量化配对 pytest；纯文档时跳过 | `node scripts/clean-repo-junk.js scan --ci`；`node --test tests/scripts/*.test.js`；`python -m pytest tests/scripts -q`；套件 `tooling` | 本地 pytest 范围更宽，缺工具链的用例会 skip；CI 只在 ubuntu 上跑 |
 | `unit-tests` | Linux 核心快通道（不带 OpenCV）+ 3 个 Windows 共享源的 GCC 编译检查；阻断失败 | WSL 快通道命令见[构建与测试](build-and-test.md#linux-wsl) | 只覆盖核心，**不等价**于全量 OpenCV；与 `linux` job 分工不同 |
 | `linux` / `linux-build-test` | Ubuntu 24.04 源码构建 OpenCV，构建核心/CLI/测试目标并运行选定 CTest；当前**非必需检查**（稳定后另行授权转门禁） | 套件：无；命令见[构建与测试 Linux 一节](build-and-test.md#linux-wsl) | 本地 WSL 与 runner 同为 GCC 13；本地缺模型资产时对应用例仍 skip |
+| `linux-arm-cross` | armhf / aarch64 交叉编译同批目标，**只编不跑**；**job 级非阻断**、非必需检查 | 套件：无；交叉命令见[构建与测试 Linux 一节](build-and-test.md#linux-wsl) | 不证明 ARM 运行、性能或真机可用；本机需 `g++-*-linux-gnu*` 交叉包 |
 | `docs-audit` | high=0 且 medium=0；纯文档也运行 | `node scripts/docs-sync-audit.js --skip-links`；套件 `docs` | 判据一致；独立 workflow 另跑审计器单测 |
 | `web` / `web-build-test` | pnpm 10.33.0 冻结安装、漏洞审计、lint、Vitest、build、Cypress；E2E 非阻断 | 套件 `web`；E2E 单独用 `web-e2e` | CI 的 E2E 与覆盖率是非阻断步骤；本地 Cypress 二进制可能不可用 |
 | `android` / `android-build-test` | 桩 APK、模型禁入、单测、lint；JNI 语法检查非阻断 | 套件 `android-mock`（`android-real` 需另行运行） | **CI 只跑 mock**；真实后端的构建绑定只有本地 `android-real` 覆盖 |
@@ -38,7 +39,8 @@ as_of=2026-11-05
 
 - **未运行**：报告里该步骤为 `not_run`（上游失败）或根本不在步骤表内；不得读作通过。
 - **非阻断失败**：CI 中带 `continue-on-error` 的步骤（`rk3288_cli`、INT8 量化/精度、Web E2E）失败时 job 仍绿，
-  必须单独读该步骤日志。`unit-tests` 已恢复阻断；`linux` job 本身阻断，但不是必需检查。
+  必须单独读该步骤日志。`unit-tests` 已恢复阻断；`linux` job 本身阻断，但不是必需检查；
+  `linux-arm-cross` 为 job 级非阻断（交叉编译参考信号）。
 - **缺资产**：`TEST_SKIP_ABSENT` / `TEST_UNVERIFIED` / `GTEST_SKIP` 表示缺少模型、符号链接权限或平台不适用，
   不等于通过，也不等于失败。
 - **跳过**：跳过数取本次报告；不要把「跳过」计入覆盖率，也不要把跳过当作回归。

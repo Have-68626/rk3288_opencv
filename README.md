@@ -137,9 +137,9 @@ node scripts/docs-sync-audit.js --skip-links
 
 ## CI 流水线与合并
 
-[主 CI](.github/workflows/ci.yml)包含变更分类、仓库卫生、核心测试、Linux 全量构建、文档、Web、Android 和 Windows 检查；另有[独立文档工作流](.github/workflows/docs-audit.yml)。主 CI 支持面向 master 的 PR、master push 和手动触发，Windows 与 Linux 全量构建 job 不在手动触发时运行。
+[主 CI](.github/workflows/ci.yml)包含变更分类、仓库卫生、核心测试、Linux 全量构建与 ARM 交叉编译、文档、Web、Android 和 Windows 检查；另有[独立文档工作流](.github/workflows/docs-audit.yml)。主 CI 支持面向 master 的 PR、master push 和手动触发，Windows、Linux 与 ARM 交叉 job 不在手动触发时运行。
 
-纯文档变更保留分类及文档门禁，其余主 CI job 按条件跳过。Web E2E/覆盖率及部分设备无关辅助步骤为既有非阻断信号，须人工查看结果，不能由 job 绿色推断全部检查通过。Linux 全量构建当前不是必需检查，稳定后再单独授权转门禁。具体门禁边界见 [CI 说明](AGENTS.md#ci-pipeline)。
+纯文档变更保留分类及文档门禁，其余主 CI job 按条件跳过。Web E2E/覆盖率、ARM 交叉编译及部分设备无关辅助步骤为既有非阻断信号，须人工查看结果，不能由 job 绿色推断全部检查通过。Linux 全量构建当前不是必需检查，稳定后再单独授权转门禁。具体门禁边界见 [CI 说明](AGENTS.md#ci-pipeline)。
 
 合并前须处理审查意见、核对冲突和必需检查；仅使用 squash and merge。提交、推送、创建 PR 与实际合并分别遵循用户授权，Draft PR 不自动获得合并授权。
 

@@ -79,6 +79,26 @@ ctest --test-dir cache/builds/linux-core -R '^core_unit_tests$' --output-on-fail
 - 若仍解析到 Windows 侧包，先删除 `CMakeCache.txt` 重配；需要确定性时可加 `-DWITH_TIFF=OFF -DWITH_OPENJPEG=OFF`（本用途不需要这两个编码）。
 - `scripts/run-builds.py` 的各配置以 Windows 宿主为前提，不覆盖 Linux；Linux 以本节命令为准。
 
+ARM 交叉编译（只编不跑，工具链文件在 `cmake/toolchains/`；本机需先安装 `g++-arm-linux-gnueabihf` 与 `g++-aarch64-linux-gnu`）：
+
+```bash
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export OPENCV_ROOT=/mnt/d/ProgramData/OpenCV/opencv-4.10.0
+export OPENCV_CONTRIB_ROOT=/mnt/d/ProgramData/OpenCV/opencv_contrib-4.10.0
+for a in armhf aarch64; do
+  cmake -S . -B "cache/builds/linux-$a-cross" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/linux-$a.cmake" \
+    -DCMAKE_BUILD_TYPE=Release -DOPENCV_ROOT="$OPENCV_ROOT" \
+    -DOPENCV_CONTRIB_ROOT="$OPENCV_CONTRIB_ROOT"
+  cmake --build "cache/builds/linux-$a-cross" -j "$(nproc)" --target \
+    core_unit_tests core_gtest_tests face_infer_unit_tests \
+    rk3288_cli opencv_verify_cli inference_bench_cli
+  file "cache/builds/linux-$a-cross/bin/rk3288_cli"   # 确认确为目标架构
+done
+```
+
+交叉编译通过只证明可在该架构编译，不证明运行、性能或 RK3288 真机可用。
+
 ## Android
 
 PowerShell：

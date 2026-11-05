@@ -56,6 +56,7 @@ as_of=2026-10-20
 | `designs/model-acquisition-import.md` | living | 模型获取与导入流程 |
 | `designs/rk3288-fingerprint-integration-design.md` | living | RK3288 指纹/读卡外设接入设计（**未落地设计稿**，含未定论项） |
 | `designs/assistant-terminal-vision.md` | living | 桌面助手终端产品愿景与关键决策（**未落地**：三节点拓扑、时间与顺序、设备锁、信息源离线分级、B站与微信桥） |
+| `designs/linux-runtime-service.md` | living | Linux 运行时服务设计：范围、现状证据、9 项已定决策（0600+OpenSSL / XDG+UTF-8+libcurl / V4L2+SIGTERM）与 4a–4e 切分（**未落地**） |
 
 ## guides/
 
@@ -129,7 +130,7 @@ as_of=2026-10-20
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `plans/2026-10-21-build-coordination-plan.md` | snapshot | B01/B02实施结果、最终构建与测试报告位置及未验收边界 |
-| `plans/2026-11-05-linux-restoration.md` | snapshot | Linux 恢复阶段 1–2：三处编译/运行时修复、`unit-tests` 转阻断、`linux` 全量构建 job 与验证边界 |
+| `plans/2026-11-05-linux-restoration.md` | snapshot | Linux 恢复阶段 1–3：三处修复、`unit-tests` 转阻断、`linux` 全量构建与 `linux-arm-cross` job 及验证边界 |
 | `plans/2026-10-13-pr495-audit-remediation.md` | living | PR #495 全量审计 62 项整改账本与验收边界 |
 | `plans/2026-10-16-ffmpeg-kit-build.md` | living | FFmpegKit x264/OpenSSL 双 ABI 自编译 AAR、来源与 APK 集成验证 |
 | `plans/2026-10-17-rtmp-lan-validation.md` | living | 双机局域网推流准备、候选APK与逐台设备验收边界 |

@@ -126,7 +126,7 @@ merge_strategy=squash_and_merge
 <a id="ci-pipeline"></a>
 ## CI 与本地验收
 
-仓库维护[主 CI](.github/workflows/ci.yml)和[独立文档审计](.github/workflows/docs-audit.yml)。主 CI 的八个 job 如下；实际触发、步骤与条件以 workflow 为准，不由文档或缓存测试数量推断。
+仓库维护[主 CI](.github/workflows/ci.yml)和[独立文档审计](.github/workflows/docs-audit.yml)。主 CI 的九个 job 如下；实际触发、步骤与条件以 workflow 为准，不由文档或缓存测试数量推断。
 
 | Job ID / 检查名 | 主要检查与门禁边界 |
 |---|---|
@@ -134,6 +134,7 @@ merge_strategy=squash_and_merge
 | `repo-hygiene` | 仓库卫生、JNI 同步、action 版本固定、Node 工具回归及量化配对 pytest；纯文档时跳过 |
 | `unit-tests` | Linux 核心测试与指定 Windows 共享源的 GCC 编译检查；阻断失败（非纯文档时） |
 | `linux` / `linux-build-test` | 仅 PR/push 且非纯文档；源码构建 OpenCV，构建核心/CLI/测试目标并运行选定 CTest。当前非必需检查，稳定后另行授权转门禁 |
+| `linux-arm-cross` | 仅 PR/push 且非纯文档；armhf 与 aarch64 交叉编译核心/CLI/测试目标，只编不跑；job 级非阻断，非必需检查 |
 | `docs-audit` | high=0 且 medium=0；纯文档也运行。独立工作流另先执行审计器单测 |
 | `web` / `web-build-test` | pnpm 10.33.0 冻结安装、漏洞审计、lint、Vitest、build、显式安装 Cypress；E2E与覆盖率仍为非阻断步骤，须另读结果 |
 | `android` / `android-build-test` | Java 21 的桩 APK、模型禁入检查、单测、lint；另有非阻断的 JNI 语法检查及失败/未就绪可见化，不等于真实后端或真机验收 |
